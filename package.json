@@ -17,6 +17,7 @@
     "@solana/web3.js": "^1.98.4",
     "@upstash/redis": "^1.39.0",
     "@vercel/blob": "^2.8.0",
+    "@vercel/functions": "^3.9.11",
     "bs58": "^6.0.0",
     "next": "^14.2.33",
     "react": "^18.3.1",
