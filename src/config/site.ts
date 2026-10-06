@@ -5,7 +5,10 @@ export const SITE = {
   ticker: "RAT",
   tagline: "Pretraining the first model raised in the trenches.",
   sub: "From scratch. On nothing but what its rats dig up.",
-  url: process.env.NEXT_PUBLIC_SITE_URL || "https://ratnet.fun",
+  // no domain yet: falls back to the Vercel production URL automatically
+  url: process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000"),
+  x: "https://x.com/Ratnetdev",
+  handle: "@Ratnetdev",
 };
 
 // pump.fun program + mint authority. The mint authority signs every pump.fun create tx,
@@ -39,7 +42,7 @@ export const DEFAULT_SETTINGS = {
   sniffCost: 10_000,
   minWork: 50,
   freeSniff: true, // free sniffs while no CA is set (pre-launch preview)
-  links: { x: "", tg: "", pump: "", dex: "" },
+  links: { x: "https://x.com/Ratnetdev", tg: "", pump: "", dex: "" },
   // HISTORIAN: replays past pump.fun launches so the models start trained (see src/lib/historian.ts)
   history: {
     on: true,

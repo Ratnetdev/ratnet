@@ -103,6 +103,8 @@ export type DeskState = {
   demotions: number;
   lastEqAt: number;
   equity: number;
+  wallet?: string | null; // desk wallet the paper run is mirroring
+  funded?: number | null; // its balance as last booked (deposits and withdrawals move the start, not the P&L)
 };
 export type Exam = { trades: number; winRate: number; pnlPct: number; maxDD: number; walletSol: number | null; checks: { label: string; need: string; now: string; ok: boolean }[]; passed: boolean };
 
@@ -166,6 +168,40 @@ async function loadLearn(): Promise<Learn> {
   const l = await redis().get<Learn>(K.deskLearn);
   const e = emptyLearn();
   return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) } } : e;
+}
+
+/** The paper desk mirrors the real desk wallet, so the start on the site is the real balance. */
+async function syncWallet(state: DeskState, kp: Keypair | null, walletSol: number | null, minSol: number, b: Batch): Promise<DeskState> {
+  if (!kp || walletSol == null || state.live) return state;
+  const addr = kp.publicKey.toBase58();
+  if (walletSol < minSol) {
+    if (state.wallet !== addr) {
+      state.wallet = addr;
+      state.funded = walletSol;
+      log(b, "LEDGER", `desk wallet ${addr.slice(0, 4)}…${addr.slice(-4)} found with ${walletSol.toFixed(4)} SOL: too little to trade. paper stays on its own start until it is funded`, "info");
+    }
+    return state;
+  }
+  if (state.wallet !== addr || state.funded == null || state.funded < minSol) {
+    // new (or newly funded) wallet: fresh paper run from the real balance; old paper trades used other rules/sizes
+    const r = redis();
+    await r.del(K.deskPos, K.deskTrades, K.deskEq, K.deskShadow, K.deskStalk, K.deskAfter, K.deskVet);
+    const now = Date.now();
+    const fresh: DeskState = { live: false, cash: walletSol, start: walletSol, startedAt: now, realized: 0, closed: 0, wins: 0, dayKey: dayKey(), dayStart: walletSol, peakEq: walletSol, maxDD: 0, liveStart: null, promotedAt: null, demotions: state.demotions || 0, lastEqAt: 0, equity: walletSol, wallet: addr, funded: walletSol };
+    log(b, "LEDGER", `desk wallet ${addr.slice(0, 4)}…${addr.slice(-4)} holds ${walletSol.toFixed(4)} SOL. paper desk restarted from that real balance`, "win");
+    return fresh;
+  }
+  const d = walletSol - state.funded;
+  if (Math.abs(d) >= 0.001) {
+    state.start += d;
+    state.cash += d;
+    state.dayStart += d;
+    state.peakEq += d;
+    state.equity += d;
+    state.funded = walletSol;
+    log(b, "LEDGER", `${d > 0 ? "deposit" : "withdrawal"} of ${Math.abs(d).toFixed(4)} SOL on the desk wallet. start moved to ${state.start.toFixed(4)} SOL (not counted as profit)`, "info");
+  }
+  return state;
 }
 
 export async function resetDesk() {
@@ -420,6 +456,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     const cfg = s.desk;
     if (cfg.mode === "off") return { off: true };
     let state = await loadState(cfg.start);
+    const kp0 = wallet();
+    const ws0 = kp0 ? (await conn().getBalance(kp0.publicKey).catch(() => null)) : null;
+    state = await syncWallet(state, kp0, ws0 == null ? null : ws0 / 1e9, cfg.minSol, b);
     const learnS = await loadLearn();
     await earlyStats(learnS);
     let learnDirty = false;
@@ -902,7 +941,8 @@ export async function getDesk() {
   return {
     mode: s.desk.mode,
     live: state.live,
-    wallet: state.live ? addr : null,
+    wallet: addr, // the desk wallet is public, paper or live
+    walletSol,
     walletReady: !!addr,
     cfg: s.desk,
     state,

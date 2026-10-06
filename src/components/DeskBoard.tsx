@@ -31,6 +31,7 @@ type Desk = {
   mode: string;
   live: boolean;
   wallet: string | null;
+  walletSol?: number | null;
   walletReady: boolean;
   cfg: Record<string, any>;
   state: { start: number; equity: number; realized: number; closed: number; wins: number; dayStart: number; maxDD: number; promotedAt: number | null; liveStart: number | null; demotions: number };
@@ -127,7 +128,7 @@ export default function DeskBoard() {
           <div className="row" style={{ gap: 10 }}>
             <span className={`tag ${d?.live ? "v-BOND" : "v-WATCH"}`}>{d ? (d.mode === "off" ? "OFF" : d.live ? "LIVE" : "PAPER") : "…"}</span>
             <span className="tiny muted"><Info k="desk">{d?.live ? "real wallet, real fills" : "real prices, simulated fills"}</Info></span>
-            {d?.live && d.wallet && <a className="tiny" href={solscanAcc(d.wallet)} target="_blank" rel="noreferrer">wallet {short(d.wallet)} →</a>}
+            {d?.wallet && <a className="tiny" href={solscanAcc(d.wallet)} target="_blank" rel="noreferrer">desk wallet {short(d.wallet)} · {d.walletSol != null ? `${d.walletSol.toFixed(4)} SOL` : "…"} →</a>}
           </div>
           <div className="desk-bal">
             <span className="big rat" style={{ fontSize: 64 }}><CountUp value={eq} decimals={3} /></span>

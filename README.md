@@ -22,12 +22,12 @@
 </p>
 
 <p align="center">
-  <a href="https://ratnet.fun">App</a> ·
-  <a href="https://ratnet.fun/desk">Desk</a> ·
-  <a href="https://ratnet.fun/king">Rat King</a> ·
-  <a href="https://ratnet.fun/lab">Lab</a> ·
-  <a href="https://ratnet.fun/developers">API</a> ·
-  <a href="https://ratnet.fun/dataset">Dataset</a>
+  <a href="https://x.com/Ratnetdev">X @Ratnetdev</a> ·
+  <a href="#8-the-desk-autonomous-trading">Desk</a> ·
+  <a href="#6-the-rat-king-models">Rat King</a> ·
+  <a href="#8b-how-it-learns-past-present-run">How it learns</a> ·
+  <a href="#12-open-api">API</a> ·
+  <a href="#11-the-open-dataset">Dataset</a>
 </p>
 
 ---
@@ -464,10 +464,10 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `ADMIN_PASSWORD` | Password for `/admin`. |
 | `CRON_SECRET` | Random string. Also the key for the scheduler ping. |
 | `PAYOUT_WALLET_SECRET` | Base58 secret of the wallet that pays rat owners. |
-| `NEXT_PUBLIC_SITE_URL` | Public URL, for example `https://ratnet.fun`. |
+| `NEXT_PUBLIC_SITE_URL` | Optional. Your own domain once you have one. Without it the site uses the Vercel production URL automatically. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | Set automatically by the Upstash integration. |
 | `BLOB_READ_WRITE_TOKEN` | Set automatically by the Blob integration. |
-| `DESK_WALLET_SECRET` | Optional. Base58 secret of the desk wallet. Without it the desk stays on paper. |
+| `DESK_WALLET_SECRET` | Optional. Base58 secret of the desk wallet. Without it the desk stays on paper. With it, the paper desk mirrors the wallet's real balance as its start (deposits move the start, not the P&L), and the wallet is shown on `/desk`. |
 | `JUPITER_API_KEY` | Optional. Key from portal.jup.ag for live swaps. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 

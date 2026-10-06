@@ -8,7 +8,8 @@ export async function getSettings(): Promise<Settings> {
       ...DEFAULT_SETTINGS,
       ...(s || {}),
       litter: { ...DEFAULT_SETTINGS.litter, ...(s?.litter || {}) },
-      links: { ...DEFAULT_SETTINGS.links, ...(s?.links || {}) },
+      // an empty link saved in /admin never hides a default (the X handle is known)
+      links: { ...DEFAULT_SETTINGS.links, ...Object.fromEntries(Object.entries(s?.links || {}).filter(([, v]) => !!v)) },
       desk: { ...DEFAULT_SETTINGS.desk, ...(s?.desk || {}) },
       history: { ...DEFAULT_SETTINGS.history, ...(s?.history || {}) },
     };

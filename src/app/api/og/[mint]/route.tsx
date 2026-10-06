@@ -25,7 +25,7 @@ export async function GET(_: Request, { params }: { params: { mint: string } }) 
       <div style={{ display: "flex", width: "100%", height: "100%", flexDirection: "column", background: "#060807", color: "#c8d3cc", padding: 60, fontFamily: "monospace" }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 30, color: "#8cff5a" }}>
           <span>RATNET · RAT KING</span>
-          <span style={{ color: "#6c7b73" }}>ratnet.fun</span>
+          <span style={{ color: "#6c7b73" }}>@Ratnetdev</span>
         </div>
         <div style={{ display: "flex", flex: 1, alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", flexDirection: "column" }}>

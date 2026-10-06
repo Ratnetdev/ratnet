@@ -1,3 +1,5 @@
+import { SITE } from "@/config/site";
+
 export const metadata = { title: "API · RATNET" };
 
 const EPS: [string, string, string][] = [
@@ -37,11 +39,11 @@ export default function Developers() {
       <h2>Example: a BOND call bot</h2>
       <pre className="panel pb small" style={{ overflowX: "auto", margin: 0 }}>{`const seen = new Set();
 setInterval(async () => {
-  const { calls } = await (await fetch("https://ratnet.fun/api/king?verdict=BOND")).json();
+  const { calls } = await (await fetch("${SITE.url}/api/king?verdict=BOND")).json();
   for (const c of calls) {
     if (seen.has(c.mint) || !c.counted) continue;
     seen.add(c.mint);
-    post(\`Rat King: $\${c.symbol} BOND \${c.score}/100 https://ratnet.fun/c/\${c.mint}\`);
+    post(\`Rat King: $\${c.symbol} BOND \${c.score}/100 ${SITE.url}/c/\${c.mint}\`);
   }
 }, 15_000);`}</pre>
       <h2>Dataset</h2>
