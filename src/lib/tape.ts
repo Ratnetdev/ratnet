@@ -43,7 +43,56 @@ export type Tape = {
   bundleShare: number; // bundle SOL / all SOL in
   early: string[]; // earliest buyer wallets (max 25), for smart-money learning
   insiders: Insider[]; // token accounts to watch while the desk holds the coin
+  // FARM signals (v0.1.4): block-0 pumps that only their own wallets and volume bots ever trade
+  instant?: number; // curve % reached inside the create slot + 2 slots
+  organic?: number; // unique traders that are not the dev, bundle wallets or snipers
+  wash?: number; // trades per trader in the sample (volume bots trade the same wallets over and over)
+  sizeCv?: number; // spread of buy sizes (bots buy the same size every time; low = uniform)
+  farm?: Farm;
 };
+
+export type Farm = { farm: boolean; score: number; why: string };
+
+/** pump.fun curve: vSol = 30 + real SOL, vTok = 30 * 1073M / vSol, sold = 1073M - vTok, progress = sold / 793.1M */
+export function progressFromSol(realSol: number) {
+  const vSol = 30 + Math.max(0, realSol);
+  const vTok = (30 * 1073e6) / vSol;
+  return Math.max(0, Math.min(100, Math.round(((1073e6 - vTok) / 793.1e6) * 10000) / 100));
+}
+
+/**
+ * Farm or real? A real block-0 launch: a few wallets buy in the create slot, then organic buyers arrive.
+ * A farm: block 0 takes the curve far up at once, then almost nobody but its own wallets and volume bots trades.
+ * Transparent rules; the same signals also go to nano as features so it learns the pattern itself.
+ */
+export function farmCheck(t: Pick<Tape, "instant" | "organic" | "wash" | "sizeCv" | "bundleShare" | "uniq">): Farm {
+  const instant = t.instant ?? 0;
+  const organic = t.organic ?? 0;
+  const wash = t.wash ?? 1;
+  const cv = t.sizeCv ?? 1;
+  const why: string[] = [];
+  let score = 0;
+  if (instant >= 25) {
+    score += Math.min(0.5, instant / 100);
+    why.push(`curve ${Math.round(instant)}% in block 0-2`);
+  }
+  if (t.bundleShare >= 0.5) {
+    score += 0.25;
+    why.push(`bundle ${Math.round(t.bundleShare * 100)}% of SOL in`);
+  }
+  if (organic < 12) {
+    score += 0.25;
+    why.push(`${organic} organic traders`);
+  }
+  if (wash >= 3 && cv < 0.3) {
+    score += 0.3;
+    why.push("volume-bot trading");
+  }
+  // a big block 0 is fine when real buyers follow it
+  if (organic >= 25) score -= 0.35;
+  const farm = (instant >= 25 && organic < 15) || (t.bundleShare >= 0.6 && organic < 20) || (wash >= 3 && cv < 0.3 && t.uniq < 25);
+  return { farm, score: Math.max(0, Math.min(1, Math.round(score * 100) / 100)), why: farm ? why.join(", ") : "" };
+}
 
 export function parseTrade(tx: ParsedTransactionWithMeta | null, curve: string, mint: string): Trade | null {
   if (!tx || !tx.meta || tx.meta.err) return null;
@@ -139,7 +188,24 @@ export function buildTape(trades: Trade[], nSigs: number, createSlot: number | n
       if (early.length >= 25) break;
     }
     const mins = Math.max(1, (at - createdAt) / 60_000);
+    const instantSol = createSlot != null ? trades.filter((t) => t.sol > 0 && t.slot <= createSlot + 2).reduce((a, t) => a + t.sol, 0) : 0;
+    const insiderW = new Set([creator, ...bundleW, ...sniperW]);
+    const organic = new Set(trades.filter((t) => !insiderW.has(t.w)).map((t) => t.w)).size;
+    const uniqAll = new Set(trades.map((t) => t.w)).size;
+    const later = buys.filter((t) => createSlot == null || t.slot > createSlot + 2).map((t) => t.sol);
+    const mean = later.length ? later.reduce((a, b) => a + b, 0) / later.length : 0;
+    const sd = later.length > 1 ? Math.sqrt(later.reduce((a, b) => a + (b - mean) ** 2, 0) / (later.length - 1)) : 0;
+    const f = {
+      instant: progressFromSol(instantSol),
+      organic,
+      wash: uniqAll ? r3(trades.length / uniqAll) : 1,
+      sizeCv: later.length >= 5 && mean > 0 ? r3(sd / mean) : 1,
+      bundleShare: solIn ? r3(bundleSol / solIn) : 0,
+      uniq: uniqAll,
+    };
     return {
+      ...f,
+      farm: farmCheck(f),
       at,
       n: nSigs,
       vel: Math.round((nSigs / mins) * 10) / 10,

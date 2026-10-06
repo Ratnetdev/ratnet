@@ -1,7 +1,7 @@
 // Rat King v0: a transparent baseline scorer. Every weight is public on /king.
 // v1 replaces this with a model trained from scratch on the dug dataset.
 
-export const KING_VERSION = "v0";
+export const KING_VERSION = "v0.1"; // v0.1: farm penalty
 
 export type ScoreInput = {
   progress: number | null; // bonding curve % at call time
@@ -13,6 +13,7 @@ export type ScoreInput = {
   symbol: string;
   name: string;
   devBuySol: number | null;
+  farm?: boolean; // block-0 farm pattern from the tape (see tape.ts farmCheck)
 };
 
 export const WEIGHTS = [
@@ -25,9 +26,10 @@ export const WEIGHTS = [
   { key: "dev", label: "Dev buy between 0.5 and 5 SOL (over 5 SOL: 2 pts)", max: 5 },
   { key: "ticker", label: "Clean ticker (2 to 8 letters or digits)", max: 4 },
   { key: "name", label: "Name of 24 characters or less, not a test", max: 3 },
+  { key: "farm", label: "Block-0 farm: curve pumped in block 0-2 with no organic buyers, or bundle-run, or volume bots (penalty)", max: -45 },
 ] as const;
 
-const MAX_RAW = WEIGHTS.reduce((a, w) => a + w.max, 0); // 95
+const MAX_RAW = WEIGHTS.reduce((a, w) => a + Math.max(0, w.max), 0); // 95
 
 export const VERDICTS = { bond: 60, watch: 30 }; // >=60 BOND, 30..59 WATCH, <30 DUST
 export type Verdict = "BOND" | "WATCH" | "DUST";
@@ -52,8 +54,9 @@ export function score(i: ScoreInput) {
   parts.dev = d >= 0.5 && d <= 5 ? 5 : d > 5 ? 2 : 0;
   parts.ticker = /^[A-Za-z0-9]{2,8}$/.test(i.symbol || "") ? 4 : 0;
   parts.name = i.name && i.name.length <= 24 && !/test/i.test(i.name) ? 3 : 0;
+  parts.farm = i.farm ? -45 : 0;
   const raw = Object.values(parts).reduce((a, b) => a + b, 0);
-  const s = Math.round((raw / MAX_RAW) * 100);
+  const s = Math.max(0, Math.round((raw / MAX_RAW) * 100));
   return { score: s, verdict: verdictOf(s), parts };
 }
 

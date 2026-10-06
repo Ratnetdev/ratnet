@@ -32,6 +32,16 @@ export const NANO_FEATURES = [
   { key: "copy", label: "copy of a recent winner" },
   { key: "dup", label: "same ticker launches (log)" },
   { key: "meta", label: "hot meta lift (log)" },
+  // v0.1.4b: farms, seasons, history
+  { key: "farm", label: "block-0 farm pattern" },
+  { key: "instant", label: "curve % in block 0-2" },
+  { key: "organic", label: "organic traders (log)" },
+  { key: "wash", label: "trades per trader" },
+  { key: "size_cv", label: "buy size spread" },
+  { key: "sol24", label: "SOL 24h trend" },
+  { key: "sol7d", label: "SOL 7d trend" },
+  { key: "lrate", label: "pump.fun launch rate (log)" },
+  { key: "hist", label: "replayed from history" },
 ] as const;
 
 export const NANO_MIN = 200; // labelled samples before nano starts making counted calls
@@ -47,7 +57,17 @@ export type NanoModel = {
   loss: number; // EMA of log loss
   acc: number; // EMA of accuracy at 0.5
   updatedAt: number;
+  lossFast?: number; // fast EMA of log loss: when it runs well above the slow one, the market has shifted
+  boost?: number; // lessons left at a raised learning rate after a shift
+  shifts?: number;
+  shiftAt?: number;
 };
+
+// Faster learning when the market moves (drift detection, as in ADWIN/Page-Hinkley but cheap):
+const FAST = 0.05;
+const SHIFT_RATIO = 1.3;
+const BOOST_LESSONS = 400;
+const BOOST_LR = 2.5;
 
 export type FeatureInput = {
   curve5: number;
@@ -62,7 +82,9 @@ export type FeatureInput = {
   devN: number;
   devB: number;
   createdAt: number;
-  tape?: { vel: number; uniq: number; solPerBuy: number; buyShare: number; bundleShare: number; sniperN: number; top5: number; devSold: number } | null;
+  tape?: { vel: number; uniq: number; solPerBuy: number; buyShare: number; bundleShare: number; sniperN: number; top5: number; devSold: number; instant?: number; organic?: number; wash?: number; sizeCv?: number; farm?: { farm: boolean } } | null;
+  rg?: { sol24: number | null; sol7d: number | null; lrate: number | null } | null;
+  hist?: boolean;
   smartN?: number;
   clRatio?: number;
   copy?: boolean;
@@ -107,6 +129,15 @@ export function features(i: FeatureInput): number[] {
     i.copy ? 1 : 0,
     Math.log1p(Math.max(0, (i.dup || 1) - 1)) / 4,
     Math.min(1, Math.log(Math.max(1, i.lift || 1)) / 3),
+    i.tape?.farm?.farm ? 1 : 0,
+    i.tape?.instant != null ? Math.min(100, i.tape.instant) / 100 : 0,
+    i.tape?.organic != null ? Math.log1p(i.tape.organic) / 4 : 0,
+    i.tape?.wash != null ? Math.min(6, i.tape.wash) / 6 : 0,
+    i.tape?.sizeCv != null ? Math.min(2, i.tape.sizeCv) / 2 : 0,
+    i.rg?.sol24 != null ? Math.max(-1, Math.min(1, i.rg.sol24 / 20)) : 0,
+    i.rg?.sol7d != null ? Math.max(-1, Math.min(1, i.rg.sol7d / 40)) : 0,
+    i.rg?.lrate != null ? Math.log1p(i.rg.lrate) / 9 : 0,
+    i.hist ? 1 : 0,
   ].map(r);
 }
 
@@ -123,7 +154,7 @@ export function nanoScore(m: NanoModel, x: number[]) {
 }
 
 /** One SGD step on one resolved launch. Mutates and returns the model. */
-export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = POS_WEIGHT, sampleWeight = 1): NanoModel {
+export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = POS_WEIGHT, sampleWeight = 1, replay = false): NanoModel {
   if (m.w.length !== x.length) m.w = x.map((_, i) => m.w[i] || 0);
   const p = predict(m, x);
   const y = bonded ? 1 : 0;
@@ -131,11 +162,19 @@ export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = PO
   const g = (p - y) * wt;
   for (let i = 0; i < x.length; i++) {
     const reg = i === 0 ? 0 : L2 * m.w[i];
-    m.w[i] = m.w[i] - LR * (g * x[i] + reg);
+    m.w[i] = m.w[i] - LR * (m.boost && m.boost > 0 ? BOOST_LR : 1) * (g * x[i] + reg);
   }
+  if (replay) return m; // replays sharpen the weights; they are not new lessons
   const eps = 1e-7;
   const ll = -(y * Math.log(p + eps) + (1 - y) * Math.log(1 - p + eps));
   m.loss = m.loss * (1 - EMA) + ll * EMA;
+  m.lossFast = (m.lossFast ?? m.loss) * (1 - FAST) + ll * FAST;
+  if (m.boost && m.boost > 0) m.boost--;
+  else if (m.n > 500 && m.lossFast > m.loss * SHIFT_RATIO) {
+    m.boost = BOOST_LESSONS;
+    m.shifts = (m.shifts || 0) + 1;
+    m.shiftAt = Date.now();
+  }
   m.acc = m.acc * (1 - EMA) + ((p >= 0.5) === bonded ? 1 : 0) * EMA;
   m.n += 1;
   if (bonded) m.pos += 1;

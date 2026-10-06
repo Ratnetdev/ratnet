@@ -29,7 +29,8 @@ export const GLOSSARY: Record<string, string> = {
   insiders: "Bags of the dev, bundle wallets, snipers and top early buyers, watched every 4s. If they dump, the desk is out.",
   learn: "What the desk learned from its own trades: trail scale from exit reviews, which entry works best, and whether early entries are earned.",
   arms: "Every clean signal is followed in shadow four ways: buy now, or wait for a 20, 30 or 45% pullback. Mean result 30 minutes later.",
-  historian: "Replays past pump.fun launches in time order and rebuilds what the rats would have seen at minute 1 and 5. Only past records are used for each launch, so nothing leaks from the future.",
+  historian: "Replays past pump.fun launches, today first and then back in time, rebuilding what the rats would have seen at minute 1 and 5. Older days weigh less, because seasons change.",
+  season: "SOL's trend and how busy pump.fun is. Every lesson carries the season it happened in, so the models learn what works in this kind of market. A jump in recent errors means the market shifted: the models then learn faster for a while.",
   prequential: "Each past launch is scored by the model before it learns from it. Base = how many bonded within 2h (weighted sample).",
   early: "The minute-1 model. Its calls are shadowed until its record beats the minute-5 King over 50+ calls.",
 };

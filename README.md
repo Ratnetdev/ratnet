@@ -198,7 +198,8 @@ The raw total (max 95) is normalised to 0 to 100.
 Nano is a model trained from scratch, live, on nothing but what the rats dig. No pretrained weights and no outside data.
 
 - **Model:** logistic regression trained online with SGD, one step per resolved launch.
-- **Features (28):** bias, curve at 5m, curve climb since dig, dev buy (log SOL), X, Telegram, website, real description, clean ticker, short name, dev past launches (log), dev past bond rate, UTC hour (sin and cos), plus what TAPE, GRAPH and META read: trades read, trades per minute, unique traders, SOL per buy, buy share, bundle share, snipers, top-5 early share, dev already sold, smart wallets early, dev funder cluster edge, copy of a recent winner, same-ticker launches and hot meta lift.
+- **Features (37):** bias, curve at 5m, curve climb since dig, dev buy (log SOL), X, Telegram, website, real description, clean ticker, short name, dev past launches (log), dev past bond rate, UTC hour (sin and cos), plus what TAPE, GRAPH and META read: trades read, trades per minute, unique traders, SOL per buy, buy share, bundle share, snipers, top-5 early share, dev already sold, smart wallets early, dev funder cluster edge, copy of a recent winner, same-ticker launches and hot meta lift, plus the farm signals (block-0 curve jump, organic traders, trades per trader, buy size spread, farm flag), the season (SOL 24h and 7d trend, pump.fun launch rate) and a flag for lessons replayed from history.
+- **Faster learning:** every run replays a random slice of recent lessons at half weight, and when recent errors run 30% above the long-run average the market has shifted, so the learning rate rises 2.5x for the next 400 lessons.
 - **One label window:** every launch is learned at its 2-hour mark as "bonded within 2h" or not. Winners bond in minutes while losers take a day to resolve; learning both at the same moment keeps the model from concluding that everything bonds.
 - **Class balance:** bonds are rare, so they are weighted 8x. Otherwise the model would learn to say "dies" every time.
 - **Regularisation:** L2 at 1e-4, learning rate 0.05.
@@ -267,6 +268,7 @@ The Desk is a team of thirteen agents that turns calls into trades and learns fr
 | Bundle | create-slot bundle wallets put in at most 60% of the SOL |
 | Funder cluster | not a cluster with 5+ launches and 0 bonds |
 | Not a copycat | ticker did not just bond on another coin |
+| Not a farm | no block-0 pump without organic buyers, no bundle-run, no volume bots |
 | Live order flow | curve did not drop 5%+ in a 3 second read, buys at least 55% of recent trades |
 | Never chase | more than +60% over the call price: wait for a pullback instead |
 | Daily loss limit, open slots | equity not down 25% on the day, at most 5 open |
@@ -315,11 +317,13 @@ Live swaps are routed through Jupiter with a `veryHigh` priority fee and 15% max
 
 | Learner | What it learns | How it stays honest |
 |---|---|---|
-| **HISTORIAN** | Replays past pump.fun launches (default 14 days) and trains nano, the early model, the runner model, dev records, funder clusters and smart wallets. | Walks history forward in time. Each launch is rebuilt from on-chain history at minute 1 and minute 5 only. Records are credited only once the replay clock passes their label time. Every launch is scored before it is learned, so its backtest is out of sample. Every bonded launch plus 1 in 10 of the rest is replayed, weighted back to the true base rate. |
+| **HISTORIAN** | Replays past pump.fun launches, today first and then back in time (default 30 days), and trains nano, the early model, the runner model, dev records, funder clusters and smart wallets. | Each launch is rebuilt from on-chain history at minute 1 and minute 5 only. Walking backwards, a launch's dev, cluster and smart-wallet records are not knowable, so those features are masked in replayed lessons (proven 0 in the simulator). Older lessons weigh less (21-day half-life) and carry their season. Every launch is scored before it is learned, so its backtest is out of sample. |
 | **Live models** | Nano and the early model learn every launch at its 2-hour label. | Winners and losers are learned at the same delay. |
 | **Runner model** | P(next milestone), from $25K to $50M, learned from every bond followed for 7 days and from historic post-bond candles. | A milestone counts as reached only if the next one came within 6 hours; every snapshot is settled at the same horizon. |
 | **COACH: exits** | After every exit it keeps watching the coin. If the coin ran 2x+ after a trail or ladder sale, trails widen 6%. If the desk gave back 40%+ from the peak before selling, trails tighten 3%. | Hard exits (dev or insider dumps, stops) are never tuned away. |
 | **COACH: entries** | Every clean signal is followed in shadow four ways: buy now, or wait for a 20, 30 or 45% pullback and a bounce. Each is scored 30 minutes later. | Pullback entries switch on only after 30+ signals show a pullback beating buying now by 10%+. |
+| **FARM detector** | Block-0 bundles that pump the curve with no organic buyers after, bundle-run coins, volume bots. | Transparent rules in `tape.ts`; real block-0 launches followed by organic buyers pass. Farms get a 45-point King penalty and never reach the desk. |
+| **Seasons** | SOL trend and pump.fun's launch rate at the moment of every lesson. | Live and replayed lessons carry the same regime features; the Lab shows the season now. |
 | **Early gate** | Whether minute-1 calls can be traded. | Unlocks only after 50+ early BOND reads whose 2-hour record matches or beats the minute-5 King. |
 
 All of it is public: `/lab` (models, ladder, historian), `/desk` (what the desk learned), `/king` (runners).

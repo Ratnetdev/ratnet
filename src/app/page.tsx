@@ -2,6 +2,7 @@ import Link from "next/link";
 import LiveBoard from "@/components/LiveBoard";
 import { RatCamHero } from "@/components/RatCam";
 import HeroProof from "@/components/HeroProof";
+import DeskStatus from "@/components/DeskStatus";
 
 export default function Home() {
   return (
@@ -18,6 +19,7 @@ export default function Home() {
             IN THE TRENCHES
           </h1>
           <p>Rats dig every new pump.fun coin. At minute 5 the Rat King calls it. The chain proves it right or wrong, in public.</p>
+          <DeskStatus />
           <HeroProof />
           <div className="row wrapx mt" style={{ gap: 10 }}>
             <Link href="/radar" className="btn">Open the radar</Link>

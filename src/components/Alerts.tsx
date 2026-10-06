@@ -2,13 +2,15 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLive } from "./Live";
+import AlertCard, { AlertT, Kind as CardKind, Term, TERMS } from "./AlertCard";
 
 type FeedItem = { kind: string; rat: string; mint: string; symbol: string; name: string; at: number; text: string };
-type Settings = { on: boolean; king: boolean; nano: boolean; agree: boolean; near: boolean; grad: boolean; sound: boolean; vol: number; push: boolean };
-type Kind = "bond" | "near" | "grad";
-type Toast = { id: string; kind: Kind; title: string; sub: string; mint: string; at: number };
+type Settings = { on: boolean; king: boolean; nano: boolean; agree: boolean; near: boolean; grad: boolean; desk: boolean; sound: boolean; vol: number; push: boolean; term: Term };
+type Kind = CardKind;
+type Toast = AlertT & { exp: number; pinned?: boolean; hover?: boolean };
+const LIFE: Record<Kind, number> = { bond: 25_000, near: 18_000, grad: 18_000, desk: 18_000 };
 
-const DEF: Settings = { on: false, king: true, nano: true, agree: false, near: true, grad: true, sound: true, vol: 0.5, push: false };
+const DEF: Settings = { on: false, king: true, nano: true, agree: false, near: true, grad: true, desk: true, sound: true, vol: 0.5, push: false, term: "gmgn" };
 
 function load(): Settings {
   try {
@@ -51,7 +53,7 @@ export function playSound(kind: Kind, vol: number) {
     // the rat squeak: two quick upward chirps
     tone(1400, 0, 0.09, vol, "square", 2600);
     tone(1700, 0.12, 0.11, vol, "square", 3200);
-  } else if (kind === "near") {
+  } else if (kind === "near" || kind === "desk") {
     [0, 0.1, 0.2].forEach((s, i) => tone(880 + i * 220, s, 0.07, vol * 0.8, "triangle"));
   } else {
     // graduation: arpeggio
@@ -65,7 +67,6 @@ function parseCall(text: string) {
   return { v: v?.[1] || "", vs: Number(v?.[2] || 0), n: n?.[1] || "", ns: Number(n?.[2] || 0), late: /late/.test(text) };
 }
 
-const COLOR: Record<Kind, string> = { bond: "var(--bond)", near: "var(--watch)", grad: "var(--bond)" };
 
 export default function Alerts() {
   const live = useLive();
@@ -101,9 +102,8 @@ export default function Alerts() {
 
   const fire = useCallback(
     (t: Toast) => {
-      setToasts((x) => [t, ...x].slice(0, 4));
+      setToasts((x) => [t, ...x.filter((y) => y.id !== t.id)].slice(0, 8));
       setUnread((u) => u + 1);
-      setTimeout(() => setToasts((x) => x.filter((y) => y.id !== t.id)), 12000);
       if (s.sound) playSound(t.kind, s.vol);
       if (document.visibilityState !== "visible") {
         if (!baseTitle.current || !document.title.startsWith("(")) baseTitle.current = document.title;
@@ -122,6 +122,20 @@ export default function Alerts() {
     },
     [s.sound, s.vol, s.push]
   );
+
+  // expire cards; a hovered or pinned card stays
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const now = Date.now();
+      setToasts((x) => {
+        const next = x.map((y) => (y.hover ? { ...y, exp: Math.max(y.exp, now + 4000) } : y)).filter((y) => y.pinned || y.exp > now);
+        return next.length === x.length && next.every((y, i) => y === x[i]) ? x : next;
+      });
+    }, 500);
+    return () => clearInterval(iv);
+  }, []);
+  const patch = (id: string, p: Partial<Toast>) => setToasts((x) => x.map((y) => (y.id === id ? { ...y, ...p } : y)));
+  const close = (id: string) => setToasts((x) => x.filter((y) => y.id !== id));
 
   useEffect(() => {
     const feed = (live.data?.feed || []) as FeedItem[];
@@ -147,15 +161,17 @@ export default function Alerts() {
         const nanoBond = c.n === "BOND";
         const hit = s.agree ? kingBond && nanoBond : (s.king && kingBond) || (s.nano && nanoBond);
         if (!hit) continue;
-        const who = kingBond && nanoBond ? "King + nano call BOND" : kingBond ? "King calls BOND" : "Nano calls BOND";
-        fire({ id, kind: "bond", title: `${who} · $${f.symbol}`, sub: `King ${c.v} ${c.vs}${c.n ? ` · nano ${c.n} ${c.ns}` : ""} · 5 min old`, mint: f.mint, at: f.at });
+        const who = kingBond && nanoBond ? "King + nano agree" : kingBond ? "King" : "Nano";
+        fire({ id, kind: "bond", title: `${who} BOND · $${f.symbol}`, sub: `King ${c.v} ${c.vs}${c.n ? ` · nano ${c.n} ${c.ns}` : ""}`, mint: f.mint, symbol: f.symbol, at: f.at, king: c.vs, nano: c.n ? c.ns : null, who, exp: Date.now() + LIFE.bond });
       } else if (f.kind === "near" && s.near) {
-        fire({ id, kind: "near", title: `About to graduate · $${f.symbol}`, sub: f.text.replace(/^about to graduate · /, ""), mint: f.mint, at: f.at });
+        fire({ id, kind: "near", title: `About to bond · $${f.symbol}`, sub: f.text.replace(/^about to graduate · /, ""), mint: f.mint, symbol: f.symbol, at: f.at, exp: Date.now() + LIFE.near });
       } else if (f.kind === "grad" && s.grad) {
-        fire({ id, kind: "grad", title: `Graduated · $${f.symbol}`, sub: f.text.replace(/^GRADUATED /, ""), mint: f.mint, at: f.at });
+        fire({ id, kind: "grad", title: `Graduated · $${f.symbol}`, sub: f.text.replace(/^GRADUATED /, ""), mint: f.mint, symbol: f.symbol, at: f.at, who: f.text.match(/in [\dhm s]+/)?.[0]?.trim(), exp: Date.now() + LIFE.grad });
+      } else if (f.kind === "desk" && s.desk && f.rat === "DESK·EXEC" && /^bought/.test(f.text) && f.mint) {
+        fire({ id, kind: "desk", title: `Desk bought $${f.symbol}`, sub: f.text, mint: f.mint, symbol: f.symbol, at: f.at, who: /paper/.test(f.text) ? "paper" : "live", exp: Date.now() + LIFE.desk });
       }
     }
-  }, [live.tick, live.data, s.on, s.king, s.nano, s.agree, s.near, s.grad, fire]);
+  }, [live.tick, live.data, s.on, s.king, s.nano, s.agree, s.near, s.grad, s.desk, fire]);
 
   const enable = async () => {
     audio();
@@ -209,6 +225,7 @@ export default function Alerts() {
                         ["agree", "Only when King + nano agree"],
                         ["near", "Coin about to graduate (85%+)"],
                         ["grad", "Coin graduated"],
+                        ["desk", "The desk buys a coin"],
                         ["sound", "Sound"],
                       ] as [keyof Settings, string][]
                     ).map(([k, l]) => (
@@ -217,6 +234,14 @@ export default function Alerts() {
                         {l}
                       </label>
                     ))}
+                  </div>
+                  <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+                    <span className="muted tiny">buy button opens</span>
+                    <select className="input" style={{ padding: "4px 8px", fontSize: 12, flex: 1, margin: 0 }} value={s.term} onChange={(e) => set({ term: e.target.value as Term })}>
+                      {(Object.keys(TERMS) as Term[]).map((k) => (
+                        <option key={k} value={k}>{TERMS[k].label}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="row" style={{ gap: 8 }}>
                     <span className="muted tiny">volume</span>
@@ -234,6 +259,7 @@ export default function Alerts() {
                       <button className="btn ghost" style={{ padding: "5px 12px" }} onClick={askPush}>Also notify me in the background</button>
                     )}
                   </div>
+                  <p className="tiny muted">Shortcuts on the newest alert: <kbd>B</kbd> buy · <kbd>C</kbd> copy CA · <kbd>O</kbd> open · <kbd>P</kbd> pin · <kbd>Esc</kbd> close. Hover keeps an alert open.</p>
                   <p className="tiny muted" style={{ marginBottom: 0 }}>Browsers slow down background tabs, so alerts there can arrive up to a minute late. Not financial advice.</p>
                 </>
               )}
@@ -243,20 +269,24 @@ export default function Alerts() {
       </span>
 
       <div className="toasts" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className="toast" style={{ borderColor: COLOR[t.kind] }}>
-            <div className="row between">
-              <b style={{ color: COLOR[t.kind] }}>{t.title}</b>
-              <button className="x" onClick={() => setToasts((x) => x.filter((y) => y.id !== t.id))}>×</button>
-            </div>
-            <div className="tiny muted" style={{ margin: "4px 0 8px" }}>{t.sub}</div>
-            <div className="row" style={{ gap: 6 }}>
-              <Link className="btn" style={{ padding: "3px 10px", fontSize: 11 }} href={`/c/${t.mint}`}>open</Link>
-              <button className="btn dim" style={{ padding: "3px 10px", fontSize: 11 }} onClick={() => navigator.clipboard?.writeText(t.mint)}>copy CA</button>
-              <a className="btn dim" style={{ padding: "3px 10px", fontSize: 11 }} href={`https://pump.fun/coin/${t.mint}`} target="_blank" rel="noreferrer">pump</a>
-            </div>
-          </div>
+        {toasts.slice(0, 3).map((t, i) => (
+          <AlertCard
+            key={t.id}
+            t={t}
+            term={s.term}
+            top={i === 0}
+            pinned={!!t.pinned}
+            life={LIFE[t.kind]}
+            onClose={() => close(t.id)}
+            onPin={() => patch(t.id, { pinned: !t.pinned })}
+            onHover={(h) => patch(t.id, { hover: h })}
+          />
         ))}
+        {toasts.length > 3 && (
+          <button className="ac-more" onClick={() => setToasts((x) => x.slice(0, 3))}>
+            +{toasts.length - 3} more · clear
+          </button>
+        )}
       </div>
     </>
   );

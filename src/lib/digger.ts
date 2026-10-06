@@ -10,9 +10,13 @@ import { readTape, Tape } from "./tape";
 import { creditResolve, Graph, readGraph } from "./graph";
 import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
 import { enroll, Run, runnerPass } from "./runner";
+import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
-type Extra = { tape: Tape | null; g: Graph | null; meta: Meta | null; px: number };
+type Extra = { tape: Tape | null; g: Graph | null; meta: Meta | null; px: number; rg?: Regime | null };
+const REPLAY_KEY = "rn:replay"; // recent lessons, replayed in small batches so the models learn faster
+const REPLAY_MAX = 4000;
+const REPLAY_PER_RUN = 64;
 const MAX_TAPES_PER_RUN = 12;
 // Every lesson waits for the same label window: "bonded within 2h". Without it, winners (which bond in minutes) would be
 // learned long before losers (which take up to 24h to resolve), and the models would learn that everything bonds.
@@ -79,6 +83,7 @@ export type Call = {
   devB?: number;
   soc?: number;
   px?: number; // curve price (SOL) at the call, so the desk knows when it would be chasing
+  farm?: string; // why the tape flagged it as a farm (never sent to the desk)
   tp?: { n: number; uniq: number; spb: number; bs: number; sn: number; sm: number; cl: number; ds: number } | null; // tape + graph summary
 };
 
@@ -233,6 +238,8 @@ export async function dig(): Promise<Record<string, unknown>> {
     RUN_EV = { bonded: [], died: [] };
     CURVE_USD = {};
     SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
+    await recordSol(SOL_USD).catch(() => {});
+    ensureSolHistory().catch(() => {});
     const dug = await digNew(model);
     const due = await processDue(model);
     const hot = await hotWatch(model);
@@ -582,8 +589,9 @@ export async function processDue(model: NanoModel) {
     r.hmget<Record<string, number>>(K.stat, "tape_n", "tape_b"),
   ]);
   const base = tapeBase(st);
+  const rg = await regimeAt(now).catch(() => null);
   const extras: Record<string, Extra> = {};
-  for (const it of reading) extras[it.m] = { tape: null, g: null, meta: metaMap[it.mint] || null, px: curves[it.mint]?.priceSol || 0 };
+  for (const it of reading) extras[it.m] = { tape: null, g: null, meta: metaMap[it.mint] || null, px: curves[it.mint]?.priceSol || 0, rg };
   await pmap(tapeable, 4, async (it) => {
     const rec = recs[it.mint];
     const tape = await readTape(rec.mint, rec.creator, rec.createdAt);
@@ -685,6 +693,7 @@ function featIn(rec: Launch, curveNow: number, ex: Extra): FeatureInput {
     copy: ex.meta?.copy,
     dup: ex.meta?.dup,
     lift: ex.meta?.lift,
+    rg: ex.rg ?? null,
   };
 }
 
@@ -727,7 +736,7 @@ function graphLine(g: Graph, meta: Meta | null) {
 /** Minute-1 read: its own model, its own scoreboard. The desk may act on it only after the early record earns it. */
 function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   const x = features(featIn(rec, curveNow, ex));
-  const v0 = score({ progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, description: rec.description, symbol: rec.symbol, name: rec.name, devBuySol: rec.devBuySol });
+  const v0 = score({ progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, description: rec.description, symbol: rec.symbol, name: rec.name, devBuySol: rec.devBuySol, farm: !!ex.tape?.farm?.farm });
   const sc = c.model1.n >= NANO_MIN ? nanoScore(c.model1, x) : v0.score;
   const verdict = verdictOf(sc);
   rec.early = { at: c.now, score: sc, verdict, curve: curveNow, x };
@@ -738,7 +747,7 @@ function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   }
   rec.meta = ex.meta;
   inc(c, `e${verdict.toLowerCase()}_n`);
-  if (verdict === "BOND") {
+  if (verdict === "BOND" && !ex.tape?.farm?.farm) {
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
     const ev = { agent: "SCOUT", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} early read BOND ${sc} at minute 1, curve ${curveNow}%`, tone: "ok" };
     c.p.lpush(K.deskEv, ev);
@@ -752,6 +761,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     rec.g = ex.g;
   }
   if (ex.meta) rec.meta = ex.meta;
+  const farm = rec.tape?.farm?.farm ? rec.tape.farm : null;
   const sc = score({
     progress: curveNow,
     progress0: rec.p0,
@@ -762,6 +772,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     symbol: rec.symbol,
     name: rec.name,
     devBuySol: rec.devBuySol,
+    farm: !!farm,
   });
   const x = features(featIn(rec, curveNow, { ...ex, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null }));
   const nano =
@@ -791,6 +802,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     devB: rec.devB ?? 0,
     soc: [rec.twitter, rec.telegram, rec.website].filter(Boolean).length,
     px: ex.px || undefined,
+    farm: farm?.why || undefined,
     tp: rec.tape
       ? { n: rec.tape.n, uniq: rec.tape.uniq, spb: rec.tape.solPerBuy, bs: rec.tape.bundleShare, sn: rec.tape.sniperN, sm: rec.g?.smartN ?? 0, cl: rec.g?.clRatio ?? 1, ds: rec.tape.devSold }
       : null,
@@ -801,7 +813,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
-  if (counted && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+  if (counted && !farm && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
     // hand the coin to the desk; the desk loop picks it up within 2 seconds
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
     const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${sc.verdict} ${sc.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok" };
@@ -827,7 +839,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     symbol: rec.symbol,
     name: rec.name,
     at: c.now,
-    text: `${sc.verdict} ${sc.score}/100${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""} · curve ${curveNow}%${counted ? "" : " · late, not counted"}`,
+    text: `${sc.verdict} ${sc.score}/100${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""} · curve ${curveNow}%${farm ? ` · FARM (${farm.why})` : ""}${counted ? "" : " · late, not counted"}`,
   });
 }
 
@@ -841,6 +853,7 @@ async function lessons(model: NanoModel) {
   const recs = await r.mget<(Launch | null)[]>(...due.map((m) => K.launch(m)));
   const c = newCtx(model);
   let n = 0;
+  const fresh: Lesson[] = [];
   due.forEach((m, i) => {
     const rec = recs[i];
     if (!rec || rec.learned) return;
@@ -874,10 +887,43 @@ async function lessons(model: NanoModel) {
     }
     rec.learned = true;
     c.p.set(K.launch(m), rec, { keepTtl: true });
+    if (x?.length || x1?.length) fresh.push({ x: x?.length ? x : null, x1: x1?.length ? x1 : null, y: bonded ? 1 : 0 });
   });
   c.p.zrem(K.lessons, ...due);
+  if (fresh.length) {
+    c.p.lpush(REPLAY_KEY, ...fresh);
+    c.p.ltrim(REPLAY_KEY, 0, REPLAY_MAX - 1);
+  }
+  const shifted = c.model.shiftAt && c.model.shiftAt >= c.now - 15_000;
+  if (shifted) {
+    const ev = { agent: "COACH", at: c.now, text: `market shift: nano's recent loss ${(c.model.lossFast ?? 0).toFixed(3)} vs ${c.model.loss.toFixed(3)} long-run. learning ${2.5}x faster for the next 400 lessons`, tone: "info" };
+    c.p.lpush(K.deskEv, ev);
+    c.feed.push({ kind: "resolve", rat: "COACH", mint: "", symbol: "", name: "", at: c.now, text: ev.text });
+  }
   await flush(c);
-  return { lessons: n };
+  return { lessons: n, ...(await replay(model).catch(() => ({}))) };
+}
+
+type Lesson = { x: number[] | null; x1: number[] | null; y: number };
+
+/** Experience replay: a random slice of recent lessons, learned again at half weight. Sharpens the weights without counting as new lessons. */
+async function replay(model: NanoModel) {
+  const r = redis();
+  const len = (await r.llen(REPLAY_KEY)) || 0;
+  if (len < 200) return { replayed: 0 };
+  const off = Math.floor(Math.random() * Math.max(1, len - REPLAY_PER_RUN));
+  const batch = ((await r.lrange<Lesson>(REPLAY_KEY, off, off + REPLAY_PER_RUN - 1)) || []) as Lesson[];
+  const m1 = M1;
+  for (const l of batch) {
+    if (l.x) learn(model, l.x, l.y === 1, undefined, 0.5, true);
+    if (l.x1) learn(m1, l.x1, l.y === 1, undefined, 0.5, true);
+  }
+  const p = r.pipeline();
+  p.set(K.nano, model);
+  p.set(K.nano1, m1);
+  p.hincrby(K.stat, "replayed", batch.length);
+  await p.exec();
+  return { replayed: batch.length };
 }
 
 // ---------------------------------------------------------------- hot watch (bonds in near real time)

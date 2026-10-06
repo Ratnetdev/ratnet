@@ -46,7 +46,8 @@ export const DEFAULT_SETTINGS = {
   // HISTORIAN: replays past pump.fun launches so the models start trained (see src/lib/historian.ts)
   history: {
     on: true,
-    days: 14, // how far back to replay
+    days: 30, // how far back to replay (today first, then backwards)
+    halfLife: 21, // days: a lesson this old weighs half (seasons change)
     scanPerRun: 150, // create txs parsed per step (1 RPC credit each)
     deepPerRun: 8, // launches fully rebuilt per step (~50 credits each)
     sample: 10, // learn every bonded launch plus 1 in this many of the rest (weighted back up)

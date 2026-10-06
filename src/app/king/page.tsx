@@ -12,7 +12,7 @@ export default function KingPage() {
         <p>One question, asked of every pump.fun launch: will it bond? Every call is logged and checked against the chain. The hit rate is whatever the chain says it is.</p>
       </section>
       <KingBoard />
-      <div className="mt">
+      <div className="mt" id="runners" style={{ scrollMarginTop: 120 }}>
         <Runners limit={20} />
       </div>
       <section className="grid g2 mt">

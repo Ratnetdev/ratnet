@@ -31,7 +31,7 @@ proDevs.forEach((d) => funderOf.set(d, PRO));
 type Coin = {
   i: number; mint: string; curve: string; sig: string; t: number; slot0: number; creator: string;
   bondAt: number | null; peak: number; peakAt: number; socials: boolean; desc: boolean; dev: number;
-  rug: boolean; rugAt: number; bundled: boolean; smartIn: number; postPeakUsd: number; postPeakAt: number; symbol: string;
+  rug: boolean; rugAt: number; bundled: boolean; smartIn: number; postPeakUsd: number; postPeakAt: number; symbol: string; farm: boolean;
 };
 const coins: Coin[] = [];
 const bySig = new Map<string, Coin>();
@@ -53,7 +53,8 @@ function spawnCoin() {
   const socials = rand() < (pro ? 0.9 : 0.35);
   const desc = rand() < 0.4;
   const bondP = (fac ? 0.002 : pro ? 0.18 : 0.008) + (socials ? 0.015 : 0) + (desc ? 0.006 : 0);
-  const bonds = rand() < bondP;
+  const farm = rand() < 0.04; // block-0 farm: bundle pumps the curve, 5 bot wallets trade uniform sizes, fake bond, dump
+  const bonds = farm || rand() < bondP;
   // power law after bond: most die near $70K, a few run to $1M-$50M
   const u = Math.max(1e-6, rand());
   const postPeakUsd = bonds ? Math.min(5e7, 70_000 * Math.pow(1 / u, pro ? 1.4 : 1.0)) : 0;
@@ -62,8 +63,15 @@ function spawnCoin() {
     creator, bondAt: bonds ? NOW + (2 + rand() * 40) * 60_000 : null, peak: bonds ? 100 : Math.pow(rand(), 3) * 60, peakAt: NOW + rand() * 40 * 60_000,
     socials, desc, dev: Math.round(rand() * 30) / 10, rug: fac ? rand() < 0.7 : rand() < 0.15, rugAt: NOW + (4 + rand() * 30) * 60_000,
     bundled: fac ? rand() < 0.8 : rand() < 0.2, smartIn: bonds ? (rand() < 0.6 ? 1 + Math.floor(rand() * 4) : 0) : rand() < 0.04 ? 1 : 0,
-    postPeakUsd, postPeakAt: 0, symbol: `C${coins.length}`,
+    postPeakUsd: farm ? 80_000 : postPeakUsd, postPeakAt: 0, symbol: `C${coins.length}`, farm,
   };
+  if (farm) {
+    c.bondAt = NOW + (3 + rand() * 5) * 60_000;
+    c.bundled = true;
+    c.rug = true;
+    c.rugAt = c.bondAt + 5 * 60_000;
+    c.smartIn = 0;
+  }
   if (bonds) c.postPeakAt = c.bondAt! + (10 + rand() * 60 * 24) * 60_000;
   coins.push(c);
   bySig.set(c.sig, c);
@@ -117,9 +125,14 @@ function tradesOf(c: Coin): T[] {
     const add = (k: number, w: string, sol: number, role: string, dt: number, sl: number) => all!.push({ sig: `tr${c.i}x${k}`, slot: sl, t: c.t + dt, w, sol, tok: sol > 0 ? sol * 3e7 : sol * 3e7, role });
     add(0, c.creator, c.dev || 0.5, "dev", 0, c.slot0);
     let k = 1;
-    if (c.bundled) for (let j = 0; j < 4 + Math.floor(rr() * 6); j++) add(k++, `b${c.i}w${j}`, 0.5 + rr() * 2, "bundle", 0, c.slot0);
+    if (c.farm) for (let j = 0; j < 8; j++) add(k++, `b${c.i}w${j}`, 4 + rr() * 3, "bundle", 0, c.slot0);
+    else if (c.bundled) for (let j = 0; j < 4 + Math.floor(rr() * 6); j++) add(k++, `b${c.i}w${j}`, 0.5 + rr() * 2, "bundle", 0, c.slot0);
     for (let j = 0; j < 2 + Math.floor(rr() * 4); j++) add(k++, `s${c.i}w${j}`, 0.3 + rr(), "sniper", 400, c.slot0 + 1 + Math.floor(rr() * 2));
     for (let j = 0; j < c.smartIn; j++) add(k++, SMART[Math.floor(rr() * SMART.length)], 1 + rr() * 2, "smart", 2000 + j * 3000, c.slot0 + 5 + j * 7);
+    if (c.farm) {
+      // volume bots: the same 5 wallets, the same size, buy and sell
+      for (; k < n; k++) add(k, `bot${c.i}w${k % 5}`, (k % 2 ? 1 : -1) * 0.5, "bot", k * 1500, c.slot0 + 10 + k * 4);
+    }
     for (; k < n; k++) {
       const dt = k * (good ? 1500 : 4000) + rr() * 1000;
       const buy = rr() < (good ? 0.68 : 0.52);
@@ -304,6 +317,21 @@ async function main() {
   console.log("coins", coins.length, "bonded truth", coins.filter((c) => c.bondAt && c.bondAt <= NOW).length, "detected", st.bonded, "taped", st.tape_n, "taped bonded", st.tape_b);
   console.log("calls BOND hit", `${st.bond_hit}/${st.bond_res}`, "label-window: King BOND", `${st.lbond_hit}/${st.lbond_n}`, "early BOND", `${st.lebond_hit}/${st.lebond_n}`);
   console.log("smart wallets credited with a bond:", smartHits, "/", SMART.length);
+  const farmCoins = coins.filter((c) => c.farm && c.t <= NOW - 6 * 60_000);
+  let fFlag = 0, fCalled = 0, fBond = 0;
+  for (const c of farmCoins) {
+    const call = R.kv.get(`rn:call:${c.mint}`) as any;
+    if (!call) continue;
+    fCalled++;
+    if (call.farm) fFlag++;
+    if (call.verdict === "BOND") fBond++;
+  }
+  const realBundled = coins.filter((c) => !c.farm && c.bundled && c.bondAt);
+  let rFlag = 0, rCalled = 0;
+  for (const c of realBundled) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; rCalled++; if (call.farm) rFlag++; }
+  const boughtFarm = (d.trades as any[]).filter((t) => t.side === "buy" && byMint.get(t.mint)?.farm).length;
+  console.log(`farms: ${farmCoins.length} launched, ${fCalled} called, ${fFlag} flagged FARM, ${fBond} still called BOND · desk bought farms: ${boughtFarm}`);
+  console.log(`real block-0 bundles that bonded: ${rCalled} called, ${rFlag} wrongly flagged as farm`);
   console.log("clusters: FACTORY", cl[FACTORY] || 0, "launches /", clb[FACTORY] || 0, "bonded · PRO", cl[PRO] || 0, "/", clb[PRO] || 0, "· CEX", cl[CEX] || 0, "/", clb[CEX] || 0);
   console.log("runner ladder:", rn.ladder.map((l: any) => `${Math.round(l.from / 1000)}K→${l.up}/${l.n}`).join(" "));
   console.log("top runners:", top.map((v: any) => `$${v.symbol} ${v.x}x pk ${Math.round(v.pk / 1000)}K`).join(", "));

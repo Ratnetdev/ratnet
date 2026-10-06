@@ -137,8 +137,7 @@ async function main() {
   const { historianSession, getHistory } = await import("../src/lib/historian");
   const jobs: any[] = [];
   const orig = R.rpush.bind(R);
-  (R as any).rpush = async (k: string, ...v: any[]) => { if (k === "rn:h:q") jobs.push(...v); return orig(k, ...v); };
-  const t0 = Date.now();
+  (R as any).rpush = async (k: string, ...v: any[]) => { if (k === "rn:h:q2") jobs.push(...v); return orig(k, ...v); };
   for (let i = 0; i < 400; i++) {
     const res: any = await historianSession(45_000);
     if (res.history === "error") { console.log("ERR", res.error); break; }
@@ -146,28 +145,24 @@ async function main() {
     NOW += 60_000; // a minute between cron pings
   }
   const h: any = await getHistory();
-  console.log("phase", h.phase, "scanned", h.scanned, "/", coins.length, "bonded found", h.bonded, "/", coins.filter((c) => c.bondAt).length, "deep", h.deep, "runner lessons", h.runnerLessons, "gecko calls", gecko);
+  console.log("phase", h.phase, "scanned", h.scanned, "/", coins.length, "bonded found", h.bonded, "/", coins.filter((c) => c.bondAt).length, "lessons", h.lessons, "runner lessons", h.runnerLessons);
+  console.log("days (newest first):", (h.days || []).map((d: any) => `${d.day} ${d.scanned}/${d.bonded}`).join(" · "));
   console.log("backtest", h.backtest);
-  const n = R.kv.get("rn:h:g:n") || {}, b = R.kv.get("rn:h:g:b") || {};
-  console.log("historian clusters: FACTORY", n[FACTORY] || 0, "/", b[FACTORY] || 0, "· PRO", n[PRO] || 0, "/", b[PRO] || 0, "· CEX", n[CEX] || 0, "/", b[CEX] || 0);
-  const ln = R.kv.get("rn:g:n") || {};
-  console.log("live tables received:", Object.keys(ln).length, "funders");
-  const sw = R.kv.get("rn:h:sw:b") || {};
+  // order: today first, then back in time
+  const firstDay = jobs.length ? new Date(jobs[0].createdAt).toISOString().slice(0, 10) : "-";
+  const lastDay = jobs.length ? new Date(jobs[jobs.length - 1].createdAt).toISOString().slice(0, 10) : "-";
+  let backSteps = 0;
+  for (let i = 1; i < jobs.length; i++) if (jobs[i].createdAt > jobs[i - 1].createdAt + 3600_000) backSteps++;
+  console.log("order: first job", firstDay, "last job", lastDay, "· jumps forward in time:", backSteps);
+  const n = R.kv.get("rn:g:n") || {}, b = R.kv.get("rn:g:b") || {};
+  console.log("live clusters: FACTORY", n[FACTORY] || 0, "/", b[FACTORY] || 0, "· PRO", n[PRO] || 0, "/", b[PRO] || 0, "· CEX", n[CEX] || 0, "/", b[CEX] || 0);
+  const sw = R.kv.get("rn:sw:b") || {};
   console.log("smart wallets with bonds on record:", SMART.filter((w) => Number(sw[w] || 0) > 0).length, "/", SMART.length);
   const nano: any = R.kv.get("rn:nano");
-  console.log("nano n", nano?.n, "pos", nano?.pos, "loss", nano?.loss?.toFixed(3));
-  // leakage: every queued job's devB must count only bonds before its createdAt
-  const devBonds = new Map<string, number[]>();
-  for (const c of coins) if (c.bondAt) (devBonds.get(c.creator) || devBonds.set(c.creator, []).get(c.creator)!).push(c.bondAt);
-  let leaks = 0, under = 0, checked = 0;
-  for (const j of jobs) {
-    const truth = (devBonds.get(j.creator) || []).filter((t) => t < j.createdAt).length;
-    const prior = coins.filter((c) => c.creator === j.creator && c.t < j.createdAt).length;
-    checked++;
-    if (j.devB > truth || j.devN > prior) leaks++;
-    if (j.devB < truth) under++;
-  }
-  console.log("leak check:", checked, "jobs,", leaks, "saw the future,", under, "missed a past bond (credit lag, safe)");
-  console.log("ms", Date.now() - t0);
+  const { NANO_FEATURES } = await import("../src/lib/nano");
+  const idx = (k: string) => NANO_FEATURES.findIndex((f) => f.key === k);
+  const masked = ["dev_launches", "dev_bond_rate", "smart", "cluster"].map((k) => `${k}=${(nano?.w?.[idx(k)] ?? 0).toFixed(4)}`).join(" ");
+  console.log("leak check (record features must stay at 0 from history):", masked);
+  console.log("nano n", nano?.n, "hist weight", (nano?.w?.[idx("hist")] ?? 0).toFixed(3), "loss", nano?.loss?.toFixed(3));
 }
 main();

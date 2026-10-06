@@ -6,7 +6,7 @@ import "@fontsource/jetbrains-mono/700.css";
 import "@fontsource/vt323/400.css";
 import "./globals.css";
 import RatMark from "@/components/RatMark";
-import Nav from "@/components/Nav";
+import Nav, { XButton } from "@/components/Nav";
 import CaBar from "@/components/CaBar";
 import Heartbeat from "@/components/Heartbeat";
 import RatCam from "@/components/RatCam";
@@ -45,6 +45,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Nav />
               <span className="row" style={{ gap: 8 }}>
                 <SearchButton />
+                <XButton />
                 <Alerts />
                 <WalletButton />
               </span>

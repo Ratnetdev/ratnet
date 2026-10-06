@@ -1,96 +1,107 @@
 // HISTORIAN: digs the old tunnels. Replays past pump.fun launches so the models start trained instead of waiting weeks.
 //
+// Order: today first, then yesterday, then the day before, and so on. The most recent market teaches first.
+//
 // Rules that keep it honest (research pitfall: leakage makes backtests look brilliant and live trading fail):
-// 1. Walk history FORWARD in time. Dev, cluster and smart-wallet records used for a historic launch only contain
-//    launches before it, and outcomes are credited only once the replay clock passes their label time.
-// 2. Features are rebuilt exactly as the live rats see them at minute 1 and minute 5: the curve state from the last
+// 1. Features are rebuilt exactly as the live rats see them at minute 1 and minute 5: the curve state from the last
 //    transaction before the cut, and the tape from the trades before the cut. Nothing after the cut is read.
+// 2. Walking backwards means the dev, cluster and smart-wallet records for a past launch are not knowable "before" it,
+//    so replayed lessons mask those record features (they learn curve, tape, farm, meta and season) and carry a
+//    "replayed from history" flag. The records themselves still go into the live tables: for live calls, all of
+//    history is the past.
 // 3. Label: bonded within 2h, the same window the live models learn on.
-// 4. Prequential: every historic launch is scored by the current model BEFORE it learns from it. That score is the
-//    honest backtest number shown in the Lab.
-// 5. Sampling: every bonded launch, plus 1 in `sample` of the rest, learned with weight `sample`, so the base rate stays right.
+// 4. Prequential: every past launch is scored by the current model BEFORE it learns from it (honest backtest).
+// 5. Sampling: every bonded launch plus 1 in `sample` of the rest, weighted back up so the base rate stays right.
+// 6. Seasons: older lessons weigh less (half-life in days), and every lesson carries its regime (SOL trend,
+//    launch rate), so a late-2024 lesson never speaks as loud as last week.
 // Post-bond runs come from GeckoTerminal hourly candles and teach the runner model the milestone ladder.
 
 import { PublicKey } from "@solana/web3.js";
 import { CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
-import { K, redis } from "./redis";
+import { K, hourKey, redis } from "./redis";
 import { bondingCurvePda, conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr } from "./solana";
-import { buildTape, parsedTxs, parseTrade, Tape, Trade } from "./tape";
-import { creditMillion, creditResolve, funderOf, GK, HGK, readGraph } from "./graph";
-import { features, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
+import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "./tape";
+import { creditMillion, creditResolve, funderOf, GK } from "./graph";
+import { features, learn, nanoScore, NANO_MIN } from "./nano";
 import { score, verdictOf } from "./king";
 import { loadModel, LABEL_MS } from "./digger";
 import { features as runFeatures, MILESTONES, MILLION, RK, Run, loadRunner } from "./runner";
+import { ensureSolHistory, RG, regimeAt, seasonNow } from "./regime";
 import { getSettings } from "./settings";
 
 export const HK = {
-  state: "rn:h:state",
-  pages: "rn:h:pages", // list of page anchors (oldest signature of each 1000-signature page), newest page first
-  devN: "rn:h:dev:n",
-  devB: "rn:h:dev:b",
-  pend: "rn:h:pend", // zset: credits waiting for the replay clock (score = when they become knowable)
-  queue: "rn:h:q", // list: launches waiting for a deep read
+  state: "rn:h:state2",
+  queue: "rn:h:q2", // list: launches waiting for a deep read
   log: "rn:h:log",
   lock: "rn:lock:hist",
 };
 
 export type HState = {
-  phase: "anchor" | "scan" | "done";
+  phase: "scan" | "done";
   startedAt: number;
-  until: number; // replay stops here (where the live rats took over)
-  from: number; // oldest time covered
-  clock: number; // replay clock: createdAt of the last scanned launch
-  page: number; // index into pages, counting down to 0
-  top?: string | null; // the `before` cursor of page 0 (newest stored page)
-  sigs: string[]; // current page, oldest first
+  until: number; // newest time replayed (where the live rats took over)
+  from: number; // oldest time to reach
+  clock: number; // createdAt of the last scanned launch (moves backwards)
+  cursor: string | null; // signature to page back from
+  sigs: string[]; // current page, newest first
   pos: number;
+  days: Record<string, { scanned: number; bonded: number }>;
   scanned: number;
-  bonded: number; // bonded launches found
-  deep: number; // launches fully replayed
+  bonded: number;
+  deep: number;
   lessons: number;
   runnerLessons: number;
-  bt: { v0n: number; v0hit: number; nn: number; nhit: number; base: number; baseHit: number }; // prequential backtest
+  bt: { v0n: number; v0hit: number; nn: number; nhit: number; base: number; baseHit: number };
   errors: number;
   lastError?: string;
 };
 
-type Job = { mint: string; curve: string; creator: string; createdAt: number; slot: number; name: string; symbol: string; uri: string; devBuySol: number; devN: number; devB: number; w: number; bondedNow: boolean };
-type Pend = { at: number; kind: "dev" | "label" | "million"; creator?: string; funder?: string | null; early?: string[]; bonded?: boolean; id: string };
+type Job = { mint: string; curve: string; creator: string; createdAt: number; name: string; symbol: string; uri: string; devBuySol: number; w: number; bondedNow: boolean };
 
 const RENT = 0.0016;
 const CUT1 = CHECKPOINTS.t1;
 const CUT5 = CHECKPOINTS.t5;
 
-function progressFromSol(realSol: number) {
-  // pump.fun curve: vSol = 30 + real SOL, vTok = 30 * 1073M / vSol, sold = 1073M - vTok, progress = sold / 793.1M
-  const vSol = 30 + Math.max(0, realSol);
-  const vTok = (30 * 1073e6) / vSol;
-  return Math.max(0, Math.min(100, Math.round(((1073e6 - vTok) / 793.1e6) * 10000) / 100));
-}
-
 async function loadState(days: number): Promise<HState> {
   const r = redis();
   const s = await r.get<HState>(HK.state);
-  if (s) return s;
-  // replay ends where the live rats started: the first day with digs, else now
+  if (s) {
+    // the window can be widened from /admin at any time
+    const from = s.until - days * 86400_000;
+    if (from < s.from) {
+      s.from = from;
+      if (s.phase === "done") s.phase = "scan";
+    }
+    return s;
+  }
+  // start where the live rats started (the first day with digs), else an hour ago; walk back from there
   let until = Date.now() - 3600_000;
   for (let back = 40; back >= 0; back--) {
     const d = new Date(Date.now() - back * 86400_000).toISOString().slice(0, 10);
     const dug = await r.hget<number>(K.day(d), "dug");
     if (Number(dug || 0) > 0) {
+      // the first hour the rats dug that day
       until = Date.parse(`${d}T00:00:00Z`);
+      for (let h = 0; h < 24; h++) {
+        const t = until + h * 3600_000;
+        if (Number((await r.hget<number>(K.hr(hourKey(t)), "d")) || 0) > 0) {
+          until = t;
+          break;
+        }
+      }
       break;
     }
   }
   return {
-    phase: "anchor",
+    phase: "scan",
     startedAt: Date.now(),
     until,
     from: until - days * 86400_000,
-    clock: 0,
-    page: -1,
+    clock: until,
+    cursor: null,
     sigs: [],
     pos: 0,
+    days: {},
     scanned: 0,
     bonded: 0,
     deep: 0,
@@ -101,7 +112,6 @@ async function loadState(days: number): Promise<HState> {
   };
 }
 
-/** Oldest-first signatures of an address up to `untilMs` (Helius getTransactionsForAddress, else paging back). */
 async function oldestSigs(address: string, untilMs: number, max = 3000): Promise<{ signature: string; slot: number; blockTime: number | null; err: unknown }[]> {
   const url = process.env.HELIUS_RPC_URL;
   if (url) {
@@ -139,14 +149,15 @@ async function oldestSigs(address: string, untilMs: number, max = 3000): Promise
 }
 
 /** Replay one launch at minute 1 and minute 5, from history only. */
-async function replay(job: Job, base: number) {
+
+/** Replay one launch at minute 1 and minute 5, from history only. Record features are masked (see rule 2). */
+async function replay(job: Job) {
   const sigs = (await oldestSigs(job.curve, job.createdAt + CUT5 + 5000)).filter((x) => !x.err);
   if (!sigs.length) return null;
   const createSlot = sigs[0].slot;
   const in1 = sigs.filter((x) => (x.blockTime || 0) * 1000 <= job.createdAt + CUT1);
   const in5 = sigs.filter((x) => (x.blockTime || 0) * 1000 <= job.createdAt + CUT5);
   const in0 = sigs.filter((x) => (x.blockTime || 0) * 1000 <= job.createdAt + 15_000);
-  // earliest 28 + the last few before each cut
   const pick = Array.from(new Set([...in5.slice(0, 28), ...in1.slice(-4), ...in5.slice(-10), ...in0.slice(-1)].map((x) => x.signature)));
   const txs = await parsedTxs(pick);
   const bySig: Record<string, any> = {};
@@ -164,16 +175,11 @@ async function replay(job: Job, base: number) {
   const p0 = curveAt(in0) ?? 0;
   const p1 = curveAt(in1);
   const p5 = curveAt(in5);
-  const trades: Trade[] = pick
-    .map((s) => ({ s, t: parseTrade(bySig[s], job.curve, job.mint) }))
-    .filter((x): x is { s: string; t: Trade } => !!x.t && Math.abs(x.t.sol) > 1e-6)
-    .map((x) => x.t);
+  const trades: Trade[] = pick.map((s) => parseTrade(bySig[s], job.curve, job.mint)).filter((t): t is Trade => !!t && Math.abs(t.sol) > 1e-6);
   const t1 = trades.filter((t) => t.t <= job.createdAt + CUT1);
   const tape1: Tape | null = in1.length ? buildTape(t1, in1.length, createSlot, job.creator, job.createdAt, job.createdAt + CUT1) : null;
   const tape5: Tape | null = in5.length ? buildTape(trades, in5.length, createSlot, job.creator, job.createdAt, job.createdAt + CUT5) : null;
-  const off = await fetchOffchain(job.uri, 2000);
-  const g5 = await readGraph(job.creator, tape5?.early || [], base, HGK).catch(() => null);
-  const g1 = await readGraph(job.creator, tape1?.early || [], base, HGK).catch(() => null);
+  const [off, rg] = await Promise.all([fetchOffchain(job.uri, 2000), regimeAt(job.createdAt).catch(() => null)]);
   const common = {
     curve0: p0,
     devBuySol: job.devBuySol,
@@ -183,17 +189,18 @@ async function replay(job: Job, base: number) {
     description: off?.description || "",
     symbol: job.symbol,
     name: job.name,
-    devN: job.devN,
-    devB: job.devB,
+    devN: 0, // masked: walking backwards, the dev's earlier record is not known yet
+    devB: 0,
     createdAt: job.createdAt,
+    rg,
+    hist: true,
   };
-  const x5 = p5 != null ? features({ ...common, curve5: p5, tape: tape5, smartN: g5?.smartN, clRatio: g5?.clRatio }) : null;
-  const x1 = p1 != null ? features({ ...common, curve5: p1, tape: tape1, smartN: g1?.smartN, clRatio: g1?.clRatio }) : null;
-  const v0 = p5 != null ? score({ progress: p5, progress0: p0, twitter: common.twitter, telegram: common.telegram, website: common.website, description: common.description, symbol: job.symbol, name: job.name, devBuySol: job.devBuySol }) : null;
-  return { x5, x1, p5, v0, tape5, g5, funder: g5?.funder ?? null };
+  const x5 = p5 != null ? features({ ...common, curve5: p5, tape: tape5 }) : null;
+  const x1 = p1 != null ? features({ ...common, curve5: p1, tape: tape1 }) : null;
+  const v0 = p5 != null ? score({ progress: p5, progress0: p0, twitter: common.twitter, telegram: common.telegram, website: common.website, description: common.description, symbol: job.symbol, name: job.name, devBuySol: job.devBuySol, farm: !!tape5?.farm?.farm }) : null;
+  return { x5, x1, p5, v0, tape5 };
 }
 
-/** When did the curve complete? The newest transaction touching the curve is the migration. */
 async function bondTime(curve: string) {
   const s = await conn().getSignaturesForAddress(new PublicKey(curve), { limit: 1 });
   return s[0]?.blockTime ? s[0].blockTime * 1000 : null;
@@ -221,6 +228,8 @@ async function postRun(mint: string): Promise<{ t: number; mc: number }[] | null
 }
 
 /** One historian session (run next to the desk inside the minute cron). */
+
+/** One historian session (runs next to the desk inside the minute cron). */
 export async function historianSession(budgetMs = 45_000) {
   const r = redis();
   const s = await getSettings();
@@ -232,117 +241,99 @@ export async function historianSession(budgetMs = 45_000) {
   const st = await loadState(cfg.days);
   const log: string[] = [];
   try {
-    // --- 1. anchors: walk back from where live digging began, one 1000-signature page at a time
-    if (st.phase === "anchor") {
-      const pages = (await r.lrange<string>(HK.pages, 0, -1)) || [];
-      let before: string | undefined = pages.length ? pages[pages.length - 1] : st.top ?? undefined;
-      for (let i = 0; i < 12 && Date.now() - t0 < budgetMs / 2; i++) {
-        const page = await conn().getSignaturesForAddress(new PublicKey(PUMP_MINT_AUTHORITY), { before, limit: 1000 });
-        if (!page.length) {
-          st.phase = "scan";
-          break;
-        }
-        const oldest = page[page.length - 1];
-        const oldestT = (oldest.blockTime || 0) * 1000;
-        if (oldestT > st.until) {
-          before = oldest.signature; // still inside the live era: keep walking back
-          st.top = before;
-          continue;
-        }
-        if (!pages.length && !(await r.llen(HK.pages))) st.top = before ?? null; // page 0 is fetched with this cursor
-        before = oldest.signature;
-        await r.rpush(HK.pages, oldest.signature);
-        if ((oldest.blockTime || 0) * 1000 <= st.from) {
-          st.phase = "scan";
-          break;
-        }
-      }
-      if (st.phase === "scan") {
-        st.page = ((await r.llen(HK.pages)) || 0) - 1;
-        log.push(`mapped ${st.page + 1} pages of history back to ${new Date(st.from).toISOString().slice(0, 10)}. replay starts`);
-      }
-    }
-
+    ensureSolHistory().catch(() => {});
     const model = await loadModel();
     const model1 = await loadModel(K.nano1);
     const runner = await loadRunner();
     let dirty = false;
     let runDirty = false;
-    const statsB = (await r.hmget<Record<string, number>>(K.stat, "tape_n", "tape_b")) || {};
-    const base = Number(statsB.tape_n || 0) >= 200 ? Math.max(0.005, Number(statsB.tape_b) / Number(statsB.tape_n)) : 0.08;
+    const half = Math.max(1, cfg.halfLife || 21);
 
     while (st.phase === "scan" && Date.now() - t0 < budgetMs) {
       const qlen = (await r.llen(HK.queue)) || 0;
-      // --- 2. scan: parse create txs in time order, keep the dev record, queue deep reads
+      // --- 1. scan backwards: newest page first, parse create txs, keep dev records, queue deep reads
       if (qlen < cfg.deepPerRun * 4) {
-        if (!st.sigs.length || st.pos >= st.sigs.length) {
-          if (st.page < 0) {
+        if (st.pos >= st.sigs.length) {
+          const raw = await conn().getSignaturesForAddress(new PublicKey(PUMP_MINT_AUTHORITY), { before: st.cursor ?? undefined, limit: 1000 });
+          if (!raw.length) {
             st.phase = "done";
-            log.push(`history replay finished: ${st.scanned} launches, ${st.bonded} bonded, ${st.lessons} lessons`);
             break;
           }
-          const pages = (await r.lrange<string>(HK.pages, 0, -1)) || [];
-          const newer = st.page > 0 ? pages[st.page - 1] : st.top ?? undefined;
-          const raw = await conn().getSignaturesForAddress(new PublicKey(PUMP_MINT_AUTHORITY), { before: newer, limit: 1000 });
-          st.sigs = raw.filter((x) => !x.err && (x.blockTime || 0) * 1000 >= st.from && (x.blockTime || 0) * 1000 < st.until).map((x) => x.signature).reverse();
+          st.cursor = raw[raw.length - 1].signature;
+          const newest = (raw[0].blockTime || 0) * 1000;
+          const oldestT = (raw[raw.length - 1].blockTime || 0) * 1000;
+          // launch rate for the season features
+          if (newest > oldestT) await r.hset(RG.lrate, { [hourKey((newest + oldestT) / 2)]: Math.round(raw.length / ((newest - oldestT) / 3600_000)) });
+          st.sigs = raw.filter((x) => !x.err && (x.blockTime || 0) * 1000 < st.until && (x.blockTime || 0) * 1000 >= st.from).map((x) => x.signature);
           st.pos = 0;
-          st.page--;
+          if (oldestT < st.from) {
+            // last page: finish it, then stop
+            if (!st.sigs.length) {
+              st.phase = "done";
+              log.push(`replay reached ${new Date(st.from).toISOString().slice(0, 10)}: ${st.scanned} launches, ${st.bonded} bonded, ${st.lessons} lessons`);
+              break;
+            }
+          }
+          if (!st.sigs.length) continue; // still in the live era: keep paging back
         }
         const chunk = st.sigs.slice(st.pos, st.pos + cfg.scanPerRun);
         st.pos += chunk.length;
         const parsed = await pmap(chunk, 8, async (sig) => {
           try {
-            const tx = await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-            const l = parseCreateTx(sig, tx);
-            return l ? { ...l, slot: tx?.slot || 0 } : null;
+            return parseCreateTx(sig, await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }));
           } catch {
             return null;
           }
         });
-        const launches = parsed.filter((x): x is NonNullable<typeof x> => !!x).sort((a, b) => a.createdAt - b.createdAt);
+        const launches = parsed.filter((x): x is NonNullable<typeof x> => !!x);
         if (launches.length) {
           const curves = await getCurves(launches.map((l) => l.mint));
           const p = r.pipeline();
           for (const l of launches) {
-            await applyPending(l.createdAt);
-            const [dn, db] = await Promise.all([r.hget<number>(HK.devN, l.creator), r.hget<number>(HK.devB, l.creator)]);
-            p.hincrby(HK.devN, l.creator, 1);
-            p.hincrby(K.devN, l.creator, 1); // the live dev memory gets the past too
-            st.scanned++;
-            st.clock = l.createdAt;
             const bondedNow = !!curves[l.mint]?.complete;
-            if (bondedNow) st.bonded++;
-            const sampled = bondedNow || st.scanned % cfg.sample === 0;
-            if (sampled)
-              p.rpush(HK.queue, {
-                mint: l.mint, curve: bondingCurvePda(l.mint), creator: l.creator, createdAt: l.createdAt, slot: l.slot, name: l.name, symbol: l.symbol, uri: l.uri,
-                devBuySol: l.devBuySol, devN: Number(dn || 0), devB: Number(db || 0), w: bondedNow ? 1 : cfg.sample, bondedNow,
-              } satisfies Job);
+            st.scanned++;
+            st.clock = Math.min(st.clock, l.createdAt);
+            const day = new Date(l.createdAt).toISOString().slice(0, 10);
+            const d = (st.days[day] ||= { scanned: 0, bonded: 0 });
+            d.scanned++;
+            // live dev memory gets the past: everything here is before the live era
+            p.hincrby(K.devN, l.creator, 1);
+            if (bondedNow) {
+              st.bonded++;
+              d.bonded++;
+              p.hincrby(K.devB, l.creator, 1);
+            }
+            if (bondedNow || st.scanned % cfg.sample === 0)
+              p.rpush(HK.queue, { mint: l.mint, curve: bondingCurvePda(l.mint), creator: l.creator, createdAt: l.createdAt, name: l.name, symbol: l.symbol, uri: l.uri, devBuySol: l.devBuySol, w: bondedNow ? 1 : cfg.sample, bondedNow } satisfies Job);
           }
           await p.exec();
         }
       }
 
-      // --- 3. deep reads: rebuild minute 1 and minute 5, score first (prequential), then learn
-      const jobs = ((await r.lpop<Job[]>(HK.queue, cfg.deepPerRun)) || []) as unknown as Job[];
-      const list = Array.isArray(jobs) ? jobs : jobs ? [jobs as unknown as Job] : [];
-      if (!list.length && qlen === 0 && st.pos >= st.sigs.length && st.page < 0) continue;
+      // --- 2. deep reads: rebuild minute 1 and 5, score first (prequential), then learn with season weight
+      const got2 = await r.lpop<Job[]>(HK.queue, cfg.deepPerRun);
+      const list: Job[] = Array.isArray(got2) ? got2 : got2 ? [got2 as unknown as Job] : [];
+      if (!list.length) {
+        if (st.pos >= st.sigs.length && qlen === 0 && Date.now() - t0 > budgetMs / 2) break;
+        continue;
+      }
       const results = await pmap(list, 3, async (job) => {
         try {
-          const bt = job.bondedNow ? await bondTime(job.curve) : null;
-          const rep = await replay(job, base);
-          return { job, bt, rep };
+          const [bt, rep, funder] = await Promise.all([job.bondedNow ? bondTime(job.curve) : Promise.resolve(null), replay(job), funderOf(job.creator).catch(() => null)]);
+          return { job, bt, rep, funder };
         } catch (e) {
           st.errors++;
           st.lastError = safeErr(e);
-          return { job, bt: null, rep: null };
+          return { job, bt: null, rep: null, funder: null };
         }
       });
       const p = r.pipeline();
-      for (const { job, bt, rep } of results) {
+      for (const { job, bt, rep, funder } of results) {
         if (!rep?.x5) continue;
         const bonded = !!bt && bt - job.createdAt <= LABEL_MS;
-        // prequential backtest: score with the model as it is now, then learn
+        const ageDays = Math.max(0, (Date.now() - job.createdAt) / 86400_000);
+        const season = Math.pow(0.5, ageDays / half);
+        const w = job.w * season;
         st.bt.base += job.w;
         if (bonded) st.bt.baseHit += job.w;
         if (rep.v0?.verdict === "BOND") {
@@ -353,55 +344,51 @@ export async function historianSession(budgetMs = 45_000) {
           st.bt.nn += job.w;
           if (bonded) st.bt.nhit += job.w;
         }
-        learn(model, rep.x5, bonded, undefined, job.w);
-        if (rep.x1) learn(model1, rep.x1, bonded, undefined, job.w);
+        learn(model, rep.x5, bonded, undefined, w);
+        if (rep.x1) learn(model1, rep.x1, bonded, undefined, w);
         dirty = true;
         st.deep++;
         st.lessons++;
-        // credits become knowable at the label time (or the bond), not before
-        const at = job.createdAt + LABEL_MS;
+        // records for the live rats: the dev's funder cluster and the early wallets
         const early = rep.tape5?.early || [];
-        addPend(p, { at, kind: "label", funder: rep.funder, early, bonded, id: job.mint });
-        if (bt) addPend(p, { at: bt, kind: "dev", creator: job.creator, id: `d${job.mint}` });
-        // post-bond run: teach the runner ladder, credit $1M runs
+        creditResolve(p, funder, early, bonded, GK);
         if (bt && cfg.runner) {
           const path = await postRun(job.mint);
           if (path?.length) {
             const run: Run = {
               mint: job.mint, symbol: job.symbol, createdAt: job.createdAt, bondedAt: bt, hi: -1, pk: 0, xs: {},
-              s: { king: rep.v0?.score ?? 0, nano: null, smartN: rep.g5?.smartN ?? 0, clRatio: rep.g5?.clRatio ?? 1, bundleShare: rep.tape5?.bundleShare ?? 0, uniq: rep.tape5?.uniq ?? 0, solPerBuy: rep.tape5?.solPerBuy ?? 0, buyShare: rep.tape5?.buyShare ?? 0, copy: false, lift: 1, funder: rep.funder, early },
+              s: { king: rep.v0?.score ?? 0, nano: null, smartN: 0, clRatio: 1, bundleShare: rep.tape5?.bundleShare ?? 0, uniq: rep.tape5?.uniq ?? 0, solPerBuy: rep.tape5?.solPerBuy ?? 0, buyShare: rep.tape5?.buyShare ?? 0, copy: false, lift: 1, funder, early },
             };
             const first: Record<number, number> = {};
             for (const c of path) for (let i = 0; i < MILESTONES.length; i++) if (c.mc >= MILESTONES[i] && first[i] == null && c.t >= bt - 3600_000) first[i] = c.t;
             for (let i = MILESTONES.indexOf(1e5); i < MILESTONES.length - 1; i++) {
               if (first[i] == null) break;
-              const x = runFeatures(run, i, first[i]);
               const up = first[i + 1] != null && first[i + 1] - first[i] <= 6 * 3600_000;
-              learn(runner, x, up, 1.5);
+              learn(runner, runFeatures(run, i, first[i]), up, 1.5, season);
               p.hincrby(RK.emp, `n${i}`, 1);
               if (up) p.hincrby(RK.emp, `u${i}`, 1);
               st.runnerLessons++;
               runDirty = true;
             }
             if (first[MILLION] != null) {
-              addPend(p, { at: first[MILLION], kind: "million", funder: rep.funder, early, id: `m${job.mint}` });
-              log.push(`$${job.symbol} (${new Date(job.createdAt).toISOString().slice(0, 10)}) ran past $1M. its early wallets go on record`);
+              creditMillion(p, funder, early, GK);
+              log.push(`$${job.symbol} (${new Date(job.createdAt).toISOString().slice(0, 10)}) ran past $1M. its early wallets and dev cluster go on record`);
             }
           }
         }
+        if (rep.tape5?.farm?.farm && bonded) log.push(`$${job.symbol} (${new Date(job.createdAt).toISOString().slice(0, 10)}): farm that bonded (${rep.tape5.farm.why}). lesson learned`);
       }
       await p.exec();
-      if (!list.length && qlen === 0) break;
     }
     if (dirty) {
       await r.set(K.nano, model);
       await r.set(K.nano1, model1);
     }
     if (runDirty) await r.set(RK.model, runner);
-    for (const l of log) await r.lpush(HK.log, { at: Date.now(), text: l });
+    for (const l of log.slice(0, 10)) await r.lpush(HK.log, { at: Date.now(), text: l });
     await r.ltrim(HK.log, 0, 49);
-    if (log.length) await r.lpush(K.deskEv, ...log.map((text) => ({ agent: "HISTORIAN", at: Date.now(), text, tone: "info" })));
-    if (st.lessons) await r.hset(K.deskAgent, { HISTORIAN: { agent: "HISTORIAN", at: Date.now(), text: `replayed ${st.deep} past launches (${st.bonded} bonded found), clock at ${st.clock ? new Date(st.clock).toISOString().slice(0, 16).replace("T", " ") : "…"}`, tone: "info" } });
+    if (log.length) await r.lpush(K.deskEv, ...log.slice(0, 5).map((text) => ({ agent: "HISTORIAN", at: Date.now(), text, tone: "info" })));
+    if (st.scanned) await r.hset(K.deskAgent, { HISTORIAN: { agent: "HISTORIAN", at: Date.now(), text: `replayed back to ${new Date(st.clock).toISOString().slice(0, 16).replace("T", " ")}: ${st.deep} lessons, ${st.bonded} bonds found`, tone: "info" } });
     return { history: st.phase, scanned: st.scanned, deep: st.deep };
   } catch (e) {
     st.errors++;
@@ -413,54 +400,34 @@ export async function historianSession(budgetMs = 45_000) {
   }
 }
 
-function addPend(p: any, e: Pend) {
-  p.zadd(HK.pend, { score: e.at, member: JSON.stringify(e) });
-}
-
-/** Credit everything that became knowable before `t` (replay clock), into the historian's tables and the live ones. */
-async function applyPending(t: number) {
-  const r = redis();
-  const due = ((await r.zrange<string[]>(HK.pend, 0, t, { byScore: true, offset: 0, count: 500 })) || []) as (string | Pend)[];
-  if (!due.length) return;
-  const p = r.pipeline();
-  for (const raw of due) {
-    const e: Pend = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (e.kind === "dev" && e.creator) {
-      p.hincrby(HK.devB, e.creator, 1);
-      p.hincrby(K.devB, e.creator, 1);
-    } else if (e.kind === "label") {
-      creditResolve(p, e.funder, e.early, !!e.bonded, HGK);
-      creditResolve(p, e.funder, e.early, !!e.bonded, GK);
-    } else if (e.kind === "million") {
-      creditMillion(p, e.funder, e.early, HGK);
-      creditMillion(p, e.funder, e.early, GK);
-    }
-  }
-  p.zrem(HK.pend, ...due.map((x) => (typeof x === "string" ? x : JSON.stringify(x))));
-  await p.exec();
-}
-
 export async function getHistory() {
   const r = redis();
-  const [st, log, q, pages] = await Promise.all([r.get<HState>(HK.state), r.lrange(HK.log, 0, 9), r.llen(HK.queue), r.llen(HK.pages)]);
-  if (!st) return { phase: "not started", log: [] };
+  const [st, log, q, season, nano] = await Promise.all([r.get<HState>(HK.state), r.lrange(HK.log, 0, 9), r.llen(HK.queue), seasonNow().catch(() => null), loadModel()]);
+  const drift = { shifts: nano.shifts || 0, boost: nano.boost || 0, shiftAt: nano.shiftAt || null, lossFast: nano.lossFast ?? null, loss: nano.loss };
+  if (!st) return { phase: "starting", log: [], season, drift };
   const rate = (h: number, n: number) => (n ? Math.round((h / n) * 1000) / 10 : null);
   const span = st.until - st.from;
+  const days = Object.entries(st.days || {})
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .slice(0, 14)
+    .map(([day, d]) => ({ day, ...d, rate: d.scanned ? Math.round((d.bonded / d.scanned) * 10000) / 100 : null }));
   return {
     phase: st.phase,
     from: st.from,
     until: st.until,
     clock: st.clock,
-    done: span > 0 && st.clock ? Math.min(100, Math.round(((st.clock - st.from) / span) * 1000) / 10) : 0,
-    pages,
+    done: span > 0 ? Math.min(100, Math.round(((st.until - st.clock) / span) * 1000) / 10) : 0,
     queue: q,
     scanned: st.scanned,
     bonded: st.bonded,
     deep: st.deep,
     lessons: st.lessons,
     runnerLessons: st.runnerLessons,
+    days,
     backtest: { base: rate(st.bt.baseHit, st.bt.base), v0: rate(st.bt.v0hit, st.bt.v0n), v0n: st.bt.v0n, nano: rate(st.bt.nhit, st.bt.nn), nanoN: st.bt.nn },
     errors: st.errors,
     log: log || [],
+    season,
+    drift,
   };
 }

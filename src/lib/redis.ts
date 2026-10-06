@@ -65,6 +65,7 @@ export const K = {
   deskShadow: "rn:desk:shadow", // signals followed in shadow to learn entries (hash)
   deskAfter: "rn:desk:after", // closed positions followed by COACH (hash)
   deskStalk: "rn:desk:stalk", // live stalks waiting for a pullback (hash)
+  deskExam: "rn:desk:exam", // exam summary for the homepage
   deskLearn: "rn:desk:learn", // what the desk has learned (trail scale, pullback arms, early gate)
   nanoLog: "rn:nanolog",
   workAll: "rn:workall",
