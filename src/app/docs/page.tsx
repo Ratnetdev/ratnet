@@ -36,6 +36,8 @@ export default function Docs() {
       <ul>
         <li><a href="/radar">The Radar</a>: every live launch whose curve is filling, sorted by how close it is to graduating, with the King&apos;s call and the dev&apos;s record.</li>
         <li><a href="/king?tab=grads">Graduations</a>: every coin that bonded, how fast, and what the King said at 5 minutes.</li>
+        <li><a href="/explore">Explore</a>: every coin the King or nano liked in the last 24h, filtered by prediction, outcome, dev record and socials, with the real bond rate of your filter.</li>
+        <li>The Rat Cam: watch a rat dig live in the corner of every page.</li>
         <li>A page per coin with a share card for X.</li>
       </ul>
       <h3>Spawning</h3>

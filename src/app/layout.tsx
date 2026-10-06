@@ -9,6 +9,7 @@ import RatMark from "@/components/RatMark";
 import Nav from "@/components/Nav";
 import CaBar from "@/components/CaBar";
 import Heartbeat from "@/components/Heartbeat";
+import RatCam from "@/components/RatCam";
 import { WalletProvider, WalletButton } from "@/components/Wallet";
 import { SITE } from "@/config/site";
 
@@ -29,6 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <WalletProvider>
           <Heartbeat />
+          <RatCam />
           <header className="top">
             <div className="wrap">
               <Link href="/" className="brand">

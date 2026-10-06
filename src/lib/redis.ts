@@ -41,6 +41,8 @@ export const K = {
   exports: "rn:exports",
   hot: "rn:hot",
   hotCur: "rn:hotcur",
+  idx: "rn:idx",
+  idxT: "rn:idxt",
   peak: "rn:peak",
   near: "rn:near",
   radar: "rn:radar",

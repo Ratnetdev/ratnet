@@ -57,7 +57,59 @@ export type Call = {
   nano: { score: number; verdict: Verdict } | null;
   x: number[];
   outcome: Outcome | null;
+  devN?: number;
+  devB?: number;
+  soc?: number;
 };
+
+/** Compact row for the explorer index (short keys keep the payload small). */
+export type IdxRow = {
+  m: string; // mint
+  s: string; // symbol
+  n: string; // name
+  t: number; // created
+  v: number; // v0 score
+  V: string; // v0 verdict B/W/D
+  ns: number | null; // nano score
+  NV: string; // nano verdict or ""
+  o: string; // outcome B/A/D or "" pending
+  p: number; // curve at call
+  c: 0 | 1; // counted
+  dn: number;
+  db: number;
+  so: number; // socials count
+  bs: number | null; // seconds to bond
+};
+
+const IDX_WINDOW_MS = 24 * 3600_000;
+
+function idxRow(call: Call, bondSecs?: number): IdxRow {
+  return {
+    m: call.mint,
+    s: (call.symbol || "").slice(0, 12),
+    n: (call.name || "").slice(0, 24),
+    t: call.createdAt,
+    v: call.score,
+    V: call.verdict[0],
+    ns: call.nano?.score ?? null,
+    NV: call.nano ? call.nano.verdict[0] : "",
+    o: call.outcome ? call.outcome[0] : "",
+    p: call.progress,
+    c: call.counted ? 1 : 0,
+    dn: call.devN ?? 0,
+    db: call.devB ?? 0,
+    so: call.soc ?? 0,
+    bs: bondSecs ?? null,
+  };
+}
+
+/** The explorer keeps every call the King or nano liked, plus every coin that bonded, for 24h. */
+function indexCall(c: Ctx, call: Call, bondSecs?: number) {
+  const liked = call.verdict !== "DUST" || (call.nano && call.nano.verdict !== "DUST");
+  if (!liked && call.outcome !== "BONDED") return;
+  c.p.hset(K.idx, { [call.mint]: idxRow(call, bondSecs) });
+  c.p.zadd(K.idxT, { score: call.createdAt, member: call.mint });
+}
 
 export type Grad = {
   mint: string;
@@ -347,6 +399,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
       tally(c, "", call.verdict, outcome);
       if (call.nano) tally(c, "n", call.nano.verdict, outcome);
     }
+    indexCall(c, call, rec.bondSecs);
     p.lpush(K.callRes, call);
     p.ltrim(K.callRes, 0, 199);
     if (call.x?.length) {
@@ -383,9 +436,20 @@ export function fmtSecs(s: number) {
 
 // ---------------------------------------------------------------- checkpoints + calls
 
+async function pruneIndex() {
+  const r = redis();
+  const old = (await r.zrange<string[]>(K.idxT, 0, Date.now() - IDX_WINDOW_MS, { byScore: true, offset: 0, count: 1000 })) || [];
+  if (!old.length) return;
+  const p = r.pipeline();
+  p.hdel(K.idx, ...old);
+  p.zrem(K.idxT, ...old);
+  await p.exec();
+}
+
 export async function processDue(model: NanoModel) {
   const r = redis();
   const now = Date.now();
+  await pruneIndex();
   const members = (await r.zrange<string[]>(K.due, 0, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN })) || [];
   if (!members.length) return { checked: 0 };
 
@@ -519,8 +583,12 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number) {
     nano,
     x,
     outcome: null,
+    devN: rec.devN ?? 0,
+    devB: rec.devB ?? 0,
+    soc: [rec.twitter, rec.telegram, rec.website].filter(Boolean).length,
   };
   c.p.set(K.call(rec.mint), rec.call, { ex: CALL_TTL });
+  indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
   if (counted) {

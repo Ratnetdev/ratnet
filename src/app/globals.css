@@ -200,3 +200,22 @@ footer a { color: var(--dim); }
   .nav { order: 3; flex-basis: 100%; }
   .nav a { padding: 5px 8px; }
 }
+
+/* rat cam */
+.ratcam { position: fixed; top: 102px; right: 16px; width: 322px; z-index: 45; background: rgba(6, 8, 7, 0.96); border: 1px solid var(--line2); box-shadow: 0 0 0 1px rgba(140, 255, 90, 0.06), 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(140, 255, 90, 0.06); font-size: 11px; }
+.ratcam-h { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); letter-spacing: 1px; }
+.ratcam-h b { color: var(--rat); font-weight: 500; }
+.ratcam-h button { all: unset; cursor: pointer; color: var(--dim); padding: 0 4px; font-size: 14px; line-height: 1; }
+.ratcam-h button:hover { color: var(--rat); }
+.ratcam canvas { border-bottom: 1px solid var(--line); image-rendering: pixelated; }
+.ratcam-t { padding: 8px 10px; height: 152px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; white-space: nowrap; line-height: 1.5; }
+.ratcam-t > div { overflow: hidden; text-overflow: ellipsis; }
+.ratcam-t a:hover { text-decoration: underline; }
+.ratcam-f { display: flex; justify-content: space-between; padding: 5px 10px; border-top: 1px solid var(--line); color: var(--mute); }
+.ratcam-pill { all: unset; box-sizing: border-box; cursor: pointer; position: fixed; right: 16px; bottom: 16px; z-index: 45; display: flex; align-items: center; gap: 8px; max-width: min(420px, calc(100vw - 32px)); padding: 8px 12px; background: rgba(6, 8, 7, 0.96); border: 1px solid var(--line2); font-family: var(--mono); font-size: 11px; color: var(--rat); letter-spacing: 1px; box-shadow: 0 6px 30px rgba(0, 0, 0, 0.5); }
+.ratcam-pill:hover { border-color: var(--rat); }
+.ratcam-pill .pill-line { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; letter-spacing: 0; }
+@media (max-width: 760px) {
+  .ratcam { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; }
+  .ratcam-t { height: 110px; }
+}
