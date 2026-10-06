@@ -317,8 +317,31 @@ let rpc = 0;
   async getBalance() { return 0; },
   async getSlot() { return 1; },
 };
-(globalThis as any).fetch = async (url: string) => {
+let llmCalls = 0;
+const llmKinds: Record<string, number> = {};
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "sim";
+(globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
+  if (u.includes("api.anthropic.com")) {
+    // stand-in trader: SEND coins born from a big post or with 2+ smart wallets, PASS the rest
+    llmCalls++;
+    const b = JSON.parse(init.body);
+    const text = b.messages[0].content.map((x: any) => x.text || "").join("\n");
+    let out: any;
+    if (b.system.includes("veteran")) {
+      llmKinds.judge = (llmKinds.judge || 0) + 1;
+      const smart = Number((/(\d+) smart wallets early/.exec(text) || [])[1] || 0);
+      const send = text.includes("POST BEHIND IT") || smart >= 2;
+      out = { verdict: send ? "SEND" : "PASS", conviction: send ? 82 : 25, thesis: send ? "Born from a big post with real buyers." : "Nothing here people will buy in the next hours.", reasons: ["test"], risks: ["test"], narrative: "sim", meme: "sim meme", copy: "original", horizon: "hours", lessons: ["s0", "s2"] };
+    } else if (b.system.includes("reviewing your own call")) {
+      llmKinds.pm = (llmKinds.pm || 0) + 1;
+      out = { lesson: `Coins tied to a big post keep going when real buyers keep coming (case ${llmCalls}).`, helped: ["s0"], hurt: ["s2"] };
+    } else {
+      llmKinds.school = (llmKinds.school || 0) + 1;
+      out = { lessons: [] };
+    }
+    return { ok: true, json: async () => ({ content: [{ type: "text", text: JSON.stringify(out) }] }) };
+  }
   if (u.includes("price/v3")) return { ok: true, json: async () => ({ So11111111111111111111111111111111111111112: { usdPrice: SOL_USD } }) };
   if (u.includes("dexscreener")) {
     const mints = u.split("/").pop()!.split(",");
@@ -345,6 +368,11 @@ async function main() {
   const { deskSession, getDesk } = await import("../src/lib/desk");
   const { getRunner, topRunners } = await import("../src/lib/runner");
   const { ingest, parseHook } = await import("../src/lib/wire");
+  const { mindSession, mindRecord, lessonBook } = await import("../src/lib/mind");
+  if (process.env.MIND !== "0") {
+    const cur: any = R.kv.get("rn:settings") || {};
+    R.kv.set("rn:settings", { ...cur, desk: { ...(cur.desk || {}), mindMode: "on" } });
+  }
   if (process.env.DAILY_LOSS) R.kv.set("rn:settings", { desk: { dailyLoss: Number(process.env.DAILY_LOSS), maxOpen: Number(process.env.MAX_OPEN || 5) } });
   const NAMES = [["Kekius Maximus", "KEKIUS"], ["Mars Colony", "MARS"], ["Gork", "GORK"], ["Dogefather", "DOGEFATHER"], ["Tariff Cat", "TARIFF"], ["Grok Imagine", "IMAGINE"], ["Pepe Tesla", "PEPETESLA"], ["Moonshot", "MOONSHOT"]];
   const AUTH = ["elonmusk", "realDonaldTrump", "cz_binance", "blknoiz06", "WatcherGuru"];
@@ -376,6 +404,10 @@ async function main() {
       if (d.ok === false && errs++ < 5) console.log("DIG ERR", d.error);
     });
     if (res?.error && errs++ < 8) console.log("DESK ERR", res.error);
+    if (process.env.MIND !== "0") {
+      const mr: any = await mindSession(40_000).catch((e: any) => ({ error: String(e?.stack || e) }));
+      if (mr?.error && errs++ < 8) console.log("MIND ERR", mr.error);
+    }
     if (NOW < t + 60_000) NOW = t + 60_000;
     if (NOW - lastLog >= 2 * 3600_000) {
       lastLog = NOW;
@@ -395,6 +427,13 @@ async function main() {
   const cl = R.kv.get("rn:g:n") || {};
   const clb = R.kv.get("rn:g:b") || {};
   console.log("\n=== summary");
+  if (process.env.MIND !== "0") {
+    const book = await lessonBook();
+    console.log("MIND llm calls", llmCalls, JSON.stringify(llmKinds), "record", JSON.stringify((await mindRecord()).map((r: any) => [r.verdict, r.n, r.h.map((h: any) => `${h.k}:${h.avg}%/${h.n}`).join(" ")])), "lessons", book.length, "top", book.slice(0, 2).map((l: any) => `${l.id} ${l.wins}-${l.losses}`).join(", "));
+    const mindTrips = ((R.kv.get("rn:desk:trips") || []) as any[]).filter((t) => t.how === "mind").length;
+    const mindGhost = ((R.kv.get("rn:ghost:trips") || []) as any[]).filter((t) => t.how === "mind").length;
+    console.log("MIND trades closed", mindTrips, "ghost", mindGhost, "cal", JSON.stringify(R.kv.get("rn:kcal:now") ? { ready: (R.kv.get("rn:kcal:now") as any).ready, n: (R.kv.get("rn:kcal:now") as any).n, pos: (R.kv.get("rn:kcal:now") as any).pos, bond: (R.kv.get("rn:kcal:now") as any).bond } : null));
+  }
   const ghosts = coins.filter((c) => c.ghost && c.bondAt && c.bondAt <= NOW - 31 * 60_000);
   const ghostBonded = ghosts.filter((c) => (R.kv.get(`rn:launch:${c.mint}`) as any)?.outcome === "BONDED").length;
   const realDone = coins.filter((c) => !c.ghost && c.bondAt && c.bondAt <= NOW - 60_000);

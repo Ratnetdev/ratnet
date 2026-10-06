@@ -172,6 +172,8 @@ function step(c: Ctx, p: any, run: Run, usd: number, at: number) {
     (run.upAt ||= {})[i] = at;
     run.xs[i] = features(run, i, at);
     run.xsAt[i] = at;
+    // HOUND digs into every coin that breaks out past $500K: who bought big before it ran?
+    if (MILESTONES[i] === 5e5) p.zadd("rn:hd:bq", { score: at, member: `${run.mint}|${run.createdAt}|${run.bondedAt || 0}|${run.symbol}` });
     if (i === MILLION) {
       creditMillion(p, run.s.funder, run.s.early);
       c.log.push(`$${run.symbol} crossed $1M. its early wallets and dev cluster get credit`);

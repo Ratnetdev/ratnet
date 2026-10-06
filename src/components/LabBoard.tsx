@@ -1,5 +1,6 @@
 "use client";
 import { usePoll } from "./usePoll";
+import { fullUrl, useAdmin } from "./useAdmin";
 import { num } from "./fmt";
 import type { Stats } from "./LiveBoard";
 import Info from "./Info";
@@ -80,8 +81,10 @@ function WeightBars({ weights }: { weights: Weights["weights"] }) {
 }
 
 export default function LabBoard() {
-  const { data } = usePoll<Weights>("/api/king/weights", 15000);
-  const { data: king } = usePoll<{ stats: Stats }>("/api/king", 15000);
+  const admin = useAdmin();
+  const { data } = usePoll<Weights>(fullUrl("/api/king/weights", admin), 15000);
+  const { data: king } = usePoll<{ stats: Stats; version?: string; v1?: { ready: boolean; lessons: number; bonds: number; base: number } | null }>("/api/king", 15000);
+  const hon = (king?.stats as any)?.honest as { n: number; hit: number; prec: number | null; bonds: number; recall: number | null; byVersion: { v: string; n: number; hit: number; prec: number | null }[] } | undefined;
   const s = king?.stats;
   const ready = (data?.samples ?? 0) >= (data?.counted_calls_from ?? 200);
   const rows: [string, string, string][] = s
@@ -122,9 +125,24 @@ export default function LabBoard() {
 
       <section className="grid g2 mt">
         <div className="panel">
-          <div className="ph"><span><Info k="t_weights"><b>weights</b></Info> · what it has learned</span><a href="/api/king/weights" target="_blank">json →</a></div>
+          <div className="ph"><span><Info k="honest"><b>honest scoreboard</b></Info> · graded at 2 hours, nothing pending</span><span className="tiny muted">{king?.version ?? ""}</span></div>
+          <div className="rec-stats">
+            <div><span className="k">BOND calls right</span><b>{hon?.prec != null ? `${hon.prec}%` : "–"}</b><em>{hon ? `${hon.hit} of ${hon.n} bonded within 2h` : ""}</em></div>
+            <div><span className="k">Bonds caught</span><b>{hon?.recall != null ? `${hon.recall}%` : "–"}</b><em>{hon ? `${hon.hit} of ${hon.bonds} bonds were called BOND` : ""}</em></div>
+            <div><span className="k">Base rate</span><b>{king?.v1?.base != null ? `${king.v1.base}%` : "–"}</b><em>launches that bond, last 7 days</em></div>
+          </div>
+          <div className="scroll">
+            <table className="tbl">
+              <thead><tr><th>Version</th><th>BOND calls graded</th><th>Right</th></tr></thead>
+              <tbody>{(hon?.byVersion || []).map((x) => <tr key={x.v}><td>{x.v}</td><td className="muted">{x.n}</td><td className="green">{x.prec != null ? `${x.prec}%` : "–"}</td></tr>)}</tbody>
+            </table>
+          </div>
+          <div className="pb tiny muted"><Info k="kingv1"><span>King v1</span></Info>: {king?.v1?.ready ? "live. nano leads, its BOND line is set from the last 7 days of graded lessons." : `waiting for enough graded lessons (${king?.v1?.lessons ?? 0} of 1,500, ${king?.v1?.bonds ?? 0} of 15 bonds). v0 calls until then.`}</div>
+        </div>
+        <div className="panel">
+          <div className="ph"><span><Info k="t_weights"><b>weights</b></Info> · what it has learned</span>{admin ? <a href="/api/king/weights?full=1" target="_blank">json →</a> : null}</div>
           <div className="pb">
-            {data ? <WeightBars weights={data.weights} /> : <span className="muted small">loading…</span>}
+            {data ? (data.weights?.length ? <WeightBars weights={data.weights} /> : <span className="muted small">The weights are private. The loss curve and the head to head with v0 stay public.</span>) : <span className="muted small">loading…</span>}
             <p className="tiny muted" style={{ marginBottom: 0 }}>Green pushes a launch toward BOND, red toward DUST. All start at zero. Nothing is hand-tuned.</p>
           </div>
         </div>
@@ -132,14 +150,14 @@ export default function LabBoard() {
           <div className="ph"><span><Info k="t_how"><b>how nano learns</b></Info></span></div>
           <div className="pb small muted">
             <div>· Born at zero. No pretrained weights, no outside data.</div>
-            <div>· 5 minutes after each launch, the rats freeze 28 features: curve, climb, dev buy, socials, ticker, the dev&apos;s history, time of day, plus what TAPE, GRAPH and META read: trade speed, SOL per buy, unique traders, bundles, snipers, top-5 share, dev sells, smart wallets, the dev&apos;s funder cluster, copycats and the hot meta.</div>
+            <div>· 5 minutes after each launch, the rats freeze 41 features: curve, climb, dev buy, socials, ticker, the dev&apos;s history, time of day, what TAPE, GRAPH and META read (trade speed, SOL per buy, unique traders, bundles, snipers, top-5 share, dev sells, smart wallets, the dev&apos;s funder cluster, copycats, the hot meta), and the story behind the coin: the post it came from, its author&apos;s reach, and how hot its narrative is.</div>
             <div>· Every lesson waits for the same 2-hour label (bonded within 2h), so winners and losers are learned at the same moment and the model is never fooled by fast winners.</div>
             <div>· A second model does the same at minute 1. The desk may act on it only once its record beats the minute-5 King.</div>
             <div>· The HISTORIAN replays past pump.fun launches in time order, scoring each one before learning from it, so the models start trained.</div>
             <div>· It learns from every graduation, including the ones the King got wrong and the ones that graduated before the 5-minute call (those use what the rats saw at dig time).</div>
-            <div>· Bonds are rare (around 1 in 100), so a bond counts 8x in the loss.</div>
+            <div>· Bonds are rare (around 1 in 100), so each bond counts as much as all the misses around it (up to 50x).</div>
             <div>· Its calls only count on the board after {data?.counted_calls_from ?? 200} lessons.</div>
-            <div className="mt"><b className="green">Next: Rat King v1.</b> A sequence model pretrained from scratch on the full dug dataset (launch text plus first-hour flow), loss curve public, weights on Hugging Face after the first epoch. Nano is the baseline it has to beat.</div>
+            <div className="mt"><b className="green">Next: Rat King v2.</b> A sequence model pretrained from scratch on the full dug dataset (launch text plus first-hour flow), loss curve public, weights on Hugging Face after the first epoch. Nano is the baseline it has to beat.</div>
           </div>
         </div>
       </section>

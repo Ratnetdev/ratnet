@@ -22,6 +22,10 @@ export class MockRedis {
   async hgetall(k: string) { this.calls++; return this.live(k) && Object.keys(this.kv.get(k)).length ? this.clone(this.kv.get(k)) : null; }
   async hmget(k: string, ...f: string[]) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; const o: any = {}; f.forEach((x) => (o[x] = h[x] ?? null)); return o; }
   async hlen(k: string) { this.calls++; return this.live(k) ? Object.keys(this.kv.get(k)).length : 0; }
+  async hsetnx(k: string, f: string, v: any) { this.calls++; const h = this.h(k); if (f in h) return 0; h[f] = this.clone(v); return 1; }
+  async zpopmin(k: string, n = 1) { this.calls++; const z = this.z(k); const arr = [...z.entries()].sort((x, y) => x[1] - y[1]).slice(0, n); arr.forEach(([m]) => z.delete(m)); return arr.flatMap((x) => [x[0], x[1]]); }
+  async zpopmax(k: string, n = 1) { this.calls++; const z = this.z(k); const arr = [...z.entries()].sort((x, y) => y[1] - x[1]).slice(0, n); arr.forEach(([m]) => z.delete(m)); return arr.flatMap((x) => [x[0], x[1]]); }
+  async rpop(k: string) { this.calls++; const l = this.live(k) ? this.kv.get(k) : []; return l.length ? l.pop() : null; }
   async hdel(k: string, ...f: string[]) { this.calls++; const h = this.h(k); f.forEach((x) => delete h[x]); return 1; }
   async hset(k: string, obj: any) { this.calls++; Object.assign(this.h(k), this.clone(obj)); return 1; }
   async mget(...ks: string[]) { this.calls++; return ks.map((k) => (this.live(k) ? this.clone(this.kv.get(k)) : null)); }

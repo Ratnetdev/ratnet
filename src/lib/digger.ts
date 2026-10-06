@@ -5,14 +5,14 @@ import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, l
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
-import { emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
+import { contributions, emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
 import { readTape, Tape } from "./tape";
 import { whyOf, type Why } from "./why";
 import { noteCall } from "./receipts";
 import { queueBonded, queueCall } from "./tg";
 import { reviewCall } from "./film";
 import { pulseMatch, pulseView } from "./pulse";
-import { closeTweet, dueTweets, matchOne, noteBondLink, noteMatch, noteOutcome, recentTweets, accountOf, type WireMatch, type XTweet } from "./wire";
+import { candidatesOf, closeTweet, dueTweets, matchOne, noteBondLink, noteMatch, noteOutcome, noteTweetLink, recentTweets, tweetIdOf, tweetLinks, accountOf, type WireMatch, type XTweet } from "./wire";
 import { creditResolve, Graph, readGraph } from "./graph";
 import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
 import { enroll, Run, runnerPass } from "./runner";
@@ -20,6 +20,10 @@ import { migrated, poolUsd, readPools } from "./pool";
 import { ensureEpoch } from "./epoch";
 import { trackFees, trackWeights } from "./fees";
 import { agentLog } from "./agents";
+import { enqueueLens } from "./lens";
+import { enqueueMind } from "./mind";
+import { addVamp, featOf, loadW, notePickSet, pickedOn, pickLessons, scoreOf, vampWatch, VAMP_MAX, type Cand } from "./picker";
+import { computeCal, loadCal, noteCal, posWeight, v1Verdict, type Cal } from "./kingcal";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
@@ -101,6 +105,9 @@ export type Call = {
   px?: number; // curve price (SOL) at the call, so the desk knows when it would be chasing
   farm?: string; // why the tape flagged it as a farm (never sent to the desk)
   why?: Why; // the reasons behind the score, in plain words
+  v0?: { score: number; verdict: Verdict }; // v0 rules, kept on the card once v1 (nano-led) makes the call
+  parts?: Record<string, number>; // v0 points per rule (admin scorecard)
+  nc?: [string, number][]; // nano: strongest feature pulls on the logit (admin scorecard)
   tp?: { n: number; uniq: number; spb: number; bs: number; sn: number; sm: number; cl: number; ds: number } | null; // tape + graph summary
 };
 
@@ -219,6 +226,8 @@ let M1: NanoModel = emptyModel();
 let RUN_EV: { bonded: string[]; died: string[]; stuck: string[] } = { bonded: [], died: [], stuck: [] };
 let CURVE_USD: Record<string, number> = {};
 let SOL_USD = 0;
+let CAL: Cal | null = null; // King v1 lines (lib/kingcal.ts), reloaded every dig
+let CAL_AT = 0;
 
 function newCtx(model: NanoModel): Ctx {
   return { p: redis().pipeline(), now: Date.now(), feed: [], stat: {}, model, modelDirty: false, model1: M1, model1Dirty: false, nanoLog: [] };
@@ -266,7 +275,13 @@ async function digInner(): Promise<Record<string, unknown>> {
     SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
     await recordSol(SOL_USD).catch(() => {});
     ensureSolHistory().catch(() => {});
+    CAL = await loadCal().catch(() => CAL);
+    if (Date.now() - CAL_AT > 600_000) {
+      CAL_AT = Date.now();
+      CAL = await computeCal().catch(() => CAL);
+    }
     const dug = await digNew(model);
+    const tl = await tweetLinks().catch((e) => ({ tlinkError: safeErr(e) }));
     const wire = await wirePicks().catch((e) => ({ wireError: safeErr(e) }));
     const due = await processDue(model);
     const hot = await hotWatch(model);
@@ -275,7 +290,7 @@ async function digInner(): Promise<Record<string, unknown>> {
     const run = await runnerPass(CURVE_USD, RUN_EV, SOL_USD).catch((e) => ({ runnerError: safeErr(e) }));
     // live $RAT fee pool and payout weights for the money pages (each throttled, cheap when fresh)
     await Promise.all([trackFees().catch(() => null), trackWeights().catch(() => null)]);
-    return { ok: true, ...(ep || {}), ...dug, ...wire, ...due, ...hot, ...mig, ...les, ...run, ms: Date.now() - started };
+    return { ok: true, ...(ep || {}), ...dug, ...tl, ...wire, ...due, ...hot, ...mig, ...les, ...run, ms: Date.now() - started };
   } catch (e) {
     return { ok: false, error: safeErr(e) };
   } finally {
@@ -364,6 +379,9 @@ async function digNew(model: NanoModel) {
     const wm = posts.length ? matchOne({ ...l, description: rec.description, twitter: rec.twitter }, posts) : null;
     const pm = !wm && rising.length ? pulseMatch(l, rising) : null;
     if (pm) rec.pulse = pm;
+    // a post WIRE was not watching: fetch it (lib/wire.ts tweetLinks) and treat it as a match
+    const tid = !wm ? tweetIdOf(rec.twitter, rec.description, rec.website) : null;
+    if (tid) noteTweetLink(p, tid, l.mint, l.createdAt);
     if (wm) {
       rec.wire = wm;
       noteMatch(p, l.mint, l.createdAt, wm);
@@ -464,6 +482,9 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
   if (bonded) {
     RUN_EV.bonded.push(rec.mint);
     metaBond(p, rec.name, rec.symbol);
+    // just migrated: LENS looks, then MIND judges whether it keeps going (most bonded coins dump within 20 minutes)
+    enqueueLens(p, rec.mint, "bond");
+    enqueueMind(p, rec.mint, "bonded");
     // every bonded coin is followed for a week so the runner model sees how far it really went
     if (!rec.tape) enroll(p, runOf(rec, c.now));
   } else RUN_EV.died.push(rec.mint);
@@ -758,6 +779,8 @@ function featIn(rec: Launch, curveNow: number, ex: Extra): FeatureInput {
     dup: ex.meta?.dup,
     lift: ex.meta?.lift,
     rg: ex.rg ?? null,
+    post: rec.wire ? { score: rec.wire.score, f: rec.wire.f ?? 0, link: rec.wire.how === "links the post" || rec.wire.how === "posted the CA" } : null,
+    pulseX: rec.pulse?.x ?? 0,
   };
 }
 
@@ -850,6 +873,16 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
           return { score: ns, verdict: verdictOf(ns) };
         })()
       : null;
+  // Rat King v1: once nano is trained and its lines are calibrated on the last 7 days (lib/kingcal.ts), nano leads.
+  // v0's rules stay on the card. A coin born from a big post keeps a v0 BOND: nano is only starting to see posts.
+  const v1 = nano && CAL?.ready ? v1Verdict(nano.score, CAL) : null;
+  if (nano && v1) nano.verdict = v1;
+  const bigPost = !!rec.wire && ((rec.wire.f ?? 0) >= 100_000 || rec.wire.how === "posted the CA");
+  const kv = v1
+    ? farm || !(bigPost && sc.verdict === "BOND" && v1 !== "BOND")
+      ? { score: nano!.score, verdict: (farm ? "DUST" : v1) as Verdict, version: "v1.0" }
+      : { score: sc.score, verdict: "BOND" as Verdict, version: "v1.0" }
+    : { score: sc.score, verdict: sc.verdict, version: KING_VERSION };
   const counted = c.now - rec.createdAt <= CALL_MAX_AGE_MS;
   rec.call = {
     mint: rec.mint,
@@ -858,13 +891,16 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     image: rec.image,
     createdAt: rec.createdAt,
     at: c.now,
-    score: sc.score,
-    verdict: sc.verdict,
+    score: kv.score,
+    verdict: kv.verdict,
+    v0: { score: sc.score, verdict: sc.verdict },
     counted,
     progress: curveNow,
-    version: KING_VERSION,
+    version: kv.version,
     nano,
     x,
+    parts: sc.parts,
+    nc: c.model.n >= 50 ? contributions(c.model, x) : undefined,
     outcome: null,
     devN: rec.devN ?? 0,
     devB: rec.devB ?? 0,
@@ -882,22 +918,30 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
-  if (counted && sc.verdict === "BOND" && !farm) queueCall(c.p, { mint: rec.mint, symbol: rec.symbol, name: rec.name, score: sc.score, nano, progress: curveNow, mc: CURVE_USD[rec.mint] ? Math.round(CURVE_USD[rec.mint]) : null, plus: rec.call.why?.plus || [], minus: rec.call.why?.minus || [] });
-  if (counted && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+  // LENS takes a hands-on look at BOND calls and at launches named after a rising narrative
+  if (counted && !farm && (kv.verdict === "BOND" || nano?.verdict === "BOND")) {
+    enqueueLens(c.p, rec.mint, "bond");
+    enqueueMind(c.p, rec.mint, "bond");
+  } else if (counted && !farm && rec.pulse && curveNow >= 10) {
+    enqueueLens(c.p, rec.mint, "pulse");
+    enqueueMind(c.p, rec.mint, "pulse");
+  }
+  if (counted && kv.verdict === "BOND" && !farm) queueCall(c.p, { mint: rec.mint, symbol: rec.symbol, name: rec.name, score: kv.score, nano, progress: curveNow, mc: CURVE_USD[rec.mint] ? Math.round(CURVE_USD[rec.mint]) : null, plus: rec.call.why?.plus || [], minus: rec.call.why?.minus || [] });
+  if (counted && (kv.verdict === "BOND" || nano?.verdict === "BOND")) {
     // every counted BOND call (King or nano) is listed on the homepage, farms included so nothing is hidden
     c.p.lpush(BOND_CALLS, rec.mint);
     c.p.ltrim(BOND_CALLS, 0, 99);
   }
-  if (counted && !farm && !rec.tape && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+  if (counted && !farm && !rec.tape && (kv.verdict === "BOND" || nano?.verdict === "BOND")) {
     // never hand the desk a coin nobody has read the trades of
-    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${sc.verdict} ${sc.score}, kept from the desk: no tape read in time`, tone: "info" };
+    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}, kept from the desk: no tape read in time`, tone: "info" };
     c.p.lpush(K.deskEv, ev);
     agentLog(c.p, [ev]);
   }
-  if (counted && !farm && rec.tape && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+  if (counted && !farm && rec.tape && (kv.verdict === "BOND" || nano?.verdict === "BOND")) {
     // hand the coin to the desk; the desk loop picks it up within 2 seconds
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
-    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${sc.verdict} ${sc.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok" };
+    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok" };
     const evs: any[] = [ev];
     if (rec.tape) evs.push({ agent: "TAPE", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${tapeLine(rec.tape)}`, tone: rec.tape.devSold > 0 || rec.tape.bundleShare > 0.5 ? "bad" : "info" });
     if (rec.g) evs.push({ agent: "GRAPH", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${graphLine(rec.g, rec.meta ?? null)}`, tone: rec.g.clRatio < 0.5 ? "bad" : rec.g.smartN || rec.g.clRatio > 2 ? "ok" : "info" });
@@ -906,11 +950,11 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   }
   if (counted) {
     noteCall(c.p, rec.call); // hashed into the hourly on-chain receipt (see lib/receipts.ts)
-    c.p.hincrby(K.calib, `v${bucket(sc.score)}n`, 1);
+    c.p.hincrby(K.calib, `v${bucket(kv.score)}n`, 1);
     if (nano) c.p.hincrby(K.calib, `n${bucket(nano.score)}n`, 1);
-    if (sc.verdict === "BOND") hrInc(c, rec.createdAt, "bn");
+    if (kv.verdict === "BOND") hrInc(c, rec.createdAt, "bn");
     if (nano?.verdict === "BOND") hrInc(c, rec.createdAt, "nbn");
-    inc(c, `${sc.verdict.toLowerCase()}_n`);
+    inc(c, `${kv.verdict.toLowerCase()}_n`);
     if (nano) inc(c, `n${nano.verdict.toLowerCase()}_n`);
     c.p.hincrby(K.day(dayKey()), "calls", 1);
   } else inc(c, "calls_late");
@@ -921,7 +965,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     symbol: rec.symbol,
     name: rec.name,
     at: c.now,
-    text: `${sc.verdict} ${sc.score}/100${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""} · curve ${curveNow}%${farm ? ` · FARM (${farm.why})` : ""}${counted ? "" : " · late, not counted"}`,
+    text: `${kv.verdict} ${kv.score}/100${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""} · curve ${curveNow}%${farm ? ` · FARM (${farm.why})` : ""}${counted ? "" : " · late, not counted"}`,
   });
 }
 
@@ -930,58 +974,108 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
 const WIRE_MIN_CURVE = 2; // % before a tweet coin counts as a real candidate
 const WIRE_WAIT_MS = 10 * 60_000; // give up on a post after this long without a real candidate
 
-/** 30s after the first launch on a post: pick the leader among the copies, read its tape, hand it to the desk. */
+/** 30s after the first launch on a post: score every copy with the learned picker (volume, holders, who was first),
+ *  read the tapes of the strongest, hand the leader to the desk. Then watch the post 30 minutes for a vamp. */
 async function wirePicks() {
   const r = redis();
   const due = await dueTweets();
-  if (!due.length) return { wirePicked: 0 };
   let picked = 0;
   const s = await getSettings();
+  const W = await loadW();
   for (const d of due) {
     const mints = d.mints.map((x) => x.mint);
     const recs = mints.length ? (((await r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m)))) || []) as (Launch | null)[]) : [];
     const curves = mints.length ? await getCurves(mints) : {};
-    const ranked = d.mints
-      .map((x, i) => ({ ...x, rec: recs[i], cv: curves[x.mint] }))
-      .filter((x) => x.rec && !x.rec.outcome && x.cv && !x.cv.complete && x.cv.progress >= WIRE_MIN_CURVE)
-      // the coin that links the post (or was posted) beats a same-named copy; the first one out gets an edge too
-      .map((x) => ({ ...x, rank: x.cv!.progress * x.score * x.score }))
-      .sort((a, b) => b.rank - a.rank);
-    const firstAt = Math.min(...ranked.map((x) => x.rec!.createdAt));
-    for (const x of ranked) if (x.rec!.createdAt === firstAt) x.rank *= 1.3;
-    ranked.sort((a, b) => b.rank - a.rank);
+    const all = d.mints.map((x, i) => ({ ...x, rec: recs[i], cv: curves[x.mint] })).filter((x) => x.rec);
+    const live = all.filter((x) => !x.rec!.outcome && x.cv && !x.cv.complete && x.cv.progress >= WIRE_MIN_CURVE);
     const wm = recs.find((x) => x?.wire)?.wire;
-    if (!ranked.length) {
+    if (!live.length) {
       if (d.age > WIRE_WAIT_MS) await closeTweet(d.tid, null, wm?.h || "?");
       continue;
     }
-    // the leader: most real SOL in among the best matches. Copies are noise.
-    let lead: (typeof ranked)[number] | null = null;
-    for (const cand of ranked.slice(0, 2)) {
-      const tape = await readTape(cand.mint, cand.rec!.creator, cand.rec!.createdAt).catch(() => null);
-      if (!tape || tape.farm?.farm) continue;
-      cand.rec!.tape = tape;
-      lead = cand;
-      break;
-    }
+    const firstAt = Math.min(...all.map((x) => x.rec!.createdAt));
+    // traction: how many coins the post spawned and how much SOL went into all of them together
+    const trac = { copies: all.length, sol: Math.round(all.reduce((a, x) => a + (x.cv?.realSol ?? 0), 0) * 10) / 10 };
+    // tapes for the 3 copies with the most SOL in: holders, bundles, farms
+    const bySol = [...live].sort((a, b) => (b.cv!.realSol ?? 0) - (a.cv!.realSol ?? 0)).slice(0, 3);
+    const tapes: Record<string, Tape | null> = {};
+    for (const x of bySol) tapes[x.mint] = await readTape(x.mint, x.rec!.creator, x.rec!.createdAt).catch(() => null);
+    const now = Date.now();
+    const cands = live.map((x) => {
+      const t = tapes[x.mint];
+      const c: Cand = { mint: x.mint, symbol: x.rec!.symbol, createdAt: x.rec!.createdAt, score: x.score, how: x.rec!.wire?.how || "", progress: x.cv!.progress, realSol: x.cv!.realSol, uniq: t ? t.organic ?? t.uniq : null, top5: t ? t.top5 : null, bundle: t ? t.bundleShare : null };
+      const f = featOf(c, firstAt, now);
+      return { ...x, c, f, s: scoreOf(W.w, f), tape: t };
+    });
+    // the leader: best learned score among the copies whose trades were read and that are not farms
+    const eligible = cands.filter((x) => x.tape && !x.tape.farm?.farm).sort((a, b) => b.s - a.s);
+    const lead = eligible[0];
     const rec = lead?.rec;
     if (!rec || !rec.wire) {
       if (d.age > WIRE_WAIT_MS) await closeTweet(d.tid, null, wm?.h || "?");
       continue;
     }
-    rec.wire = { ...rec.wire, pick: true };
+    rec.tape = lead.tape!;
+    rec.wire = { ...rec.wire, pick: true, trac };
     await r.set(K.launch(rec.mint), rec, { keepTtl: true });
     await closeTweet(d.tid, rec.mint, rec.wire.h);
+    await notePickSet(d.tid, rec.wire.h, rec.mint, cands.map((x) => ({ mint: x.mint, symbol: x.c.symbol, x: x.f })));
     picked++;
     const { w } = await accountOf(rec.wire.h);
     const p = r.pipeline();
     const send = w >= (s.desk.wireMinW ?? 0.2);
     if (send) p.zadd(K.deskQ, { score: Date.now(), member: `w:${rec.mint}` });
-    agentLog(p, [{ agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `picked $${rec.symbol} for @${rec.wire.h}'s post: ${d.mints.length} coin${d.mints.length > 1 ? "s" : ""} launched on it, leader at ${lead!.cv!.progress}% curve, ${rec.tape!.uniq} traders. trust in @${rec.wire.h} ${w}${send ? ", sent to the desk" : ", below the trust line: learning only"}`, tone: send ? "ok" : "info" }]);
+    enqueueLens(p, rec.mint, "wire");
+    enqueueMind(p, rec.mint, "wire");
+    const why = [lead.f[0] ? "first out" : null, `${lead.c.realSol.toFixed(1)} SOL in`, lead.c.uniq != null ? `${lead.c.uniq} traders` : null, lead.c.top5 != null ? `top 5 hold ${Math.round(lead.c.top5 * 100)}%` : null].filter(Boolean).join(", ");
+    agentLog(p, [{ agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `picked $${rec.symbol} of ${trac.copies} coin${trac.copies > 1 ? "s" : ""} on @${rec.wire.h}'s post (${why}; all copies ${trac.sol} SOL). trust in @${rec.wire.h} ${w}${send ? ", sent to the desk" : ", below the trust line: learning only"}. watching 30 minutes for a vamp`, tone: send ? "ok" : "info" }]);
     if (send) p.lpush(K.deskEv, { agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} from @${rec.wire.h}'s post, sent to the desk`, tone: "ok" });
     await p.exec();
   }
-  return { wirePicked: picked };
+  const vamps = await vampPicks(s).catch(() => 0);
+  return { wirePicked: picked, vamps, ...(await pickLessons().catch(() => ({}))) };
+}
+
+/** A copy that clearly out-pulls the pick (more SOL in, faster) on a post with proven traction: pick it too. */
+async function vampPicks(s: Awaited<ReturnType<typeof getSettings>>) {
+  const r = redis();
+  let n = 0;
+  for (const tid of await vampWatch()) {
+    const already = await pickedOn(tid);
+    if (already.length >= 1 + VAMP_MAX) continue;
+    const cs = await candidatesOf(tid);
+    if (cs.length < 2) continue;
+    const recs = ((await r.mget<(Launch | null)[]>(...cs.map((x) => K.launch(x.mint)))) || []) as (Launch | null)[];
+    const curves = await getCurves(cs.map((x) => x.mint));
+    const rows = cs.map((x, i) => ({ ...x, rec: recs[i], cv: curves[x.mint] })).filter((x) => x.rec && x.cv);
+    const trac = { copies: rows.length, sol: Math.round(rows.reduce((a, x) => a + (x.cv?.realSol ?? 0), 0) * 10) / 10 };
+    // proven hype: many copies and real money across them (a hint COACH can overrule through the traction prior)
+    if (trac.copies < 4 || trac.sol < 40) continue;
+    const pace = (x: (typeof rows)[number]) => (x.cv!.realSol ?? 0) / Math.max(0.5, (Date.now() - x.rec!.createdAt) / 60_000);
+    const mine = rows.filter((x) => already.includes(x.mint));
+    const base = Math.max(0, ...mine.map((x) => x.cv!.realSol ?? 0));
+    const basePace = Math.max(0, ...mine.map(pace));
+    const v = rows
+      .filter((x) => !already.includes(x.mint) && !x.rec!.outcome && !x.cv!.complete && x.cv!.progress <= 85 && (x.cv!.realSol ?? 0) >= Math.max(base * 1.25, 15) && pace(x) > basePace)
+      .sort((a, b) => pace(b) - pace(a))[0];
+    if (!v) continue;
+    const tape = await readTape(v.mint, v.rec!.creator, v.rec!.createdAt).catch(() => null);
+    if (!tape || tape.farm?.farm) continue;
+    const rec = v.rec!;
+    rec.tape = tape;
+    rec.wire = { ...(rec.wire || { tid, h: "?", score: v.score, how: "named after the post", lagSec: 0, text: "" }), pick: true, vamp: true, trac };
+    await r.set(K.launch(rec.mint), rec, { keepTtl: true });
+    await addVamp(tid, rec.mint);
+    n++;
+    const { w } = await accountOf(rec.wire.h);
+    const send = w >= (s.desk.wireMinW ?? 0.2);
+    const p = r.pipeline();
+    if (send) p.zadd(K.deskQ, { score: Date.now(), member: `w:${rec.mint}` });
+    enqueueMind(p, rec.mint, "wire");
+    agentLog(p, [{ agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `vamp on @${rec.wire.h}'s post: $${rec.symbol} pulls ${(v.cv!.realSol ?? 0).toFixed(1)} SOL vs ${base.toFixed(1)} on our pick, faster (${trac.copies} copies, ${trac.sol} SOL across them)${send ? ", sent to the desk as a vamp" : ": learning only"}`, tone: send ? "ok" : "info" }]);
+    await p.exec();
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------- graduation proof
@@ -1059,14 +1153,16 @@ async function lessons(model: NanoModel) {
     const bonded = rec.outcome === "BONDED" && (rec.bondSecs ?? Infinity) * 1000 <= LABEL_MS;
     const x = rec.call?.x?.length ? rec.call.x : rec.xpre;
     if (x?.length) {
-      learn(c.model, x, bonded);
+      // King v1 calibration: nano's score on this lesson BEFORE it learns from it
+      noteCal(c.p, nanoScore(c.model, x), bonded);
+      learn(c.model, x, bonded, posWeight(c.model.n, c.model.pos));
       c.modelDirty = true;
       n++;
       if (c.model.n % 25 === 0) c.nanoLog.push({ n: c.model.n, loss: round4(c.model.loss), acc: round4(c.model.acc), pos: c.model.pos, at: c.now });
     }
     const x1 = rec.early?.x?.length ? rec.early.x : rec.xpre;
     if (x1?.length) {
-      learn(c.model1, x1, bonded);
+      learn(c.model1, x1, bonded, posWeight(c.model1.n, c.model1.pos));
       c.model1Dirty = true;
     }
     // same moment for winners and losers: wallet and cluster records, and the early-vs-King record that gates early entries
@@ -1082,7 +1178,12 @@ async function lessons(model: NanoModel) {
     if (rec.call?.counted && rec.call.verdict === "BOND") {
       inc(c, "lbond_n");
       if (bonded) inc(c, "lbond_hit");
+      // honest scoreboard per King version, resolved at the 2-hour label only
+      inc(c, `lb:${rec.call.version}:n`);
+      if (bonded) inc(c, `lb:${rec.call.version}:hit`);
     }
+    // recall: every bond in the window, called or not
+    if (bonded) inc(c, "lbonded");
     rec.learned = true;
     c.p.set(K.launch(m), rec, { keepTtl: true });
     if (x?.length || x1?.length) fresh.push({ x: x?.length ? x : null, x1: x1?.length ? x1 : null, y: bonded ? 1 : 0 });

@@ -55,16 +55,43 @@ function DeskDot() {
   return <i className={`nav-dot ${d?.live ? "live" : ""}`} title={d?.live ? "trading its own wallet" : "learning on paper"} />;
 }
 
+/** Scroll to #hash after a menu click on the same page (Next keeps the scroll position otherwise). */
+function goHash(href: string) {
+  const h = href.split("#")[1];
+  if (!h) return;
+  setTimeout(() => document.getElementById(h)?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+}
+
 export default function Nav() {
   const path = usePathname();
+  const pointer = useRef<string>("mouse");
   const [open, setOpen] = useState<string | null>(null);
   const [mobile, setMobile] = useState(false);
+  const [going, setGoing] = useState(false);
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
     setOpen(null);
     setMobile(false);
+    setGoing(false);
   }, [path]);
+  // any internal link click starts the progress bar, so a click always shows it landed (slow pages included)
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as HTMLElement)?.closest?.("a") as HTMLAnchorElement | null;
+      if (!a || a.target === "_blank" || !a.href) return;
+      const u = new URL(a.href, location.href);
+      if (u.origin !== location.origin || u.pathname === location.pathname) return;
+      setGoing(true);
+    };
+    document.addEventListener("click", onClick, true);
+    const t = going ? setTimeout(() => setGoing(false), 10_000) : null;
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      if (t) clearTimeout(t);
+    };
+  }, [going]);
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(null);
@@ -88,23 +115,24 @@ export default function Nav() {
 
   return (
     <nav className="nav" ref={ref}>
+      {going && <i className="nav-progress" aria-hidden />}
       <div className="nav-desk">
         {GROUPS.map((g) =>
           g.href ? (
-            <Link key={g.label} href={g.href} className={`nav-top ${active(path, g) ? "on" : ""}`}>
+            <Link key={g.label} href={g.href} className={`nav-top ${active(path, g) ? "on" : ""}`} onClick={() => setOpen(null)}>
               {g.label}
               {g.href === "/desk" && <DeskDot />}
             </Link>
           ) : (
             <div key={g.label} className="nav-grp" onMouseEnter={() => setOpen(g.label)} onMouseLeave={() => setOpen((o) => (o === g.label ? null : o))}>
-              <button className={`nav-top ${active(path, g) ? "on" : ""} ${open === g.label ? "open" : ""}`} aria-expanded={open === g.label} onClick={() => setOpen(open === g.label ? null : g.label)}>
+              <button className={`nav-top ${active(path, g) ? "on" : ""} ${open === g.label ? "open" : ""}`} aria-expanded={open === g.label} onPointerDown={(e) => (pointer.current = e.pointerType)} onClick={() => setOpen(pointer.current === "mouse" ? g.label : open === g.label ? null : g.label)}>
                 {g.label}
                 <svg width="8" height="8" viewBox="0 0 8 8" shapeRendering="crispEdges" fill="currentColor" aria-hidden><rect x="1" y="2" width="6" height="1" /><rect x="2" y="3" width="4" height="1" /><rect x="3" y="4" width="2" height="1" /></svg>
               </button>
               {open === g.label && (
                 <div className="nav-menu" role="menu">
                   {g.items!.map((i) => (
-                    <Link key={i.href} href={i.href} className={`nav-item ${path === i.href.split("#")[0] ? "on" : ""}`} role="menuitem">
+                    <Link key={i.href} href={i.href} className={`nav-item ${path === i.href.split("#")[0] ? "on" : ""}`} role="menuitem" onClick={() => { setOpen(null); goHash(i.href); }}>
                       <b>
                         {i.label}
                         {i.tag && <em>{i.tag}</em>}
@@ -140,7 +168,7 @@ export default function Nav() {
         <div className="nav-sheet">
           <div className="nav-sheet-top">
             {GROUPS.filter((g) => g.href).map((g) => (
-              <Link key={g.label} href={g.href!} className={`nav-big ${active(path, g) ? "on" : ""}`}>
+              <Link key={g.label} href={g.href!} className={`nav-big ${active(path, g) ? "on" : ""}`} onClick={() => setMobile(false)}>
                 {g.label}
                 {g.href === "/desk" && <DeskDot />}
               </Link>
@@ -150,7 +178,7 @@ export default function Nav() {
             <div key={g.label} className="nav-sheet-grp">
               <div className="nav-sheet-h">{g.label}</div>
               {g.items!.map((i) => (
-                <Link key={i.href} href={i.href} className={`nav-item ${path === i.href.split("#")[0] ? "on" : ""}`}>
+                <Link key={i.href} href={i.href} className={`nav-item ${path === i.href.split("#")[0] ? "on" : ""}`} onClick={() => { setMobile(false); goHash(i.href); }}>
                   <b>
                     {i.label}
                     {i.tag && <em>{i.tag}</em>}

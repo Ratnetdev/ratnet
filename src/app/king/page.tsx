@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import KingBoard from "@/components/KingBoard";
 import { HourlyChart, ScoreChart } from "@/components/Proof";
 import Runners from "@/components/Runners";
@@ -12,7 +13,9 @@ export default function KingPage() {
         <h1 style={{ fontSize: "clamp(36px,6vw,64px)" }}>THE RAT KING</h1>
         <p>One question, asked of every pump.fun launch: will it bond? Every call is logged and checked against the chain. The hit rate is whatever the chain says it is.</p>
       </section>
-      <KingBoard />
+      <Suspense fallback={null}>
+        <KingBoard />
+      </Suspense>
       <div className="mt" id="runners" style={{ scrollMarginTop: 120 }}>
         <Runners limit={20} />
       </div>

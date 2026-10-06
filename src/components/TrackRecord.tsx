@@ -5,6 +5,8 @@ import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { ago, usd } from "./fmt";
 import TripDetail, { Trip, col, dur, moveOf, sgn } from "./TripDetail";
+import { fullUrl, useAdmin } from "./useAdmin";
+import { TradeIcons } from "./venues";
 
 type Rec = {
   live: boolean;
@@ -23,6 +25,7 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
         <td>
           <span className="trip-caret">{open ? "▾" : "▸"}</span>
           <Link href={`/c/${t.mint}`} onClick={(e) => e.stopPropagation()}>${t.symbol}</Link>
+          {full ? <TradeIcons ca={t.mint} /> : null}
           {t.open ? <span className="trip-tag open">open</span> : null}
           {t.how === "wire" ? <span className="trip-tag">tweet</span> : t.how === "early" ? <span className="trip-tag">1m</span> : null}
           {t.live ? <span className="trip-tag live">live</span> : null}
@@ -49,7 +52,8 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
 /** The desk's public track record. `compact` for the homepage, full table on /desk. Click any trade for every detail. */
 export default function TrackRecord({ compact = false }: { compact?: boolean }) {
   const [tab, setTab] = useState<"all" | "open" | "closed" | "ghost">("all");
-  const d = usePoll<Rec>(`/api/desk/record${tab === "ghost" ? "?book=ghost" : ""}`, compact ? 10000 : 5000).data;
+  const admin = useAdmin();
+  const d = usePoll<Rec>(fullUrl(`/api/desk/record${tab === "ghost" ? "?book=ghost" : ""}`, admin && !compact), compact ? 10000 : 5000).data;
   const isGhost = tab === "ghost";
   const s = d?.summary;
   const trips = (d?.trips || []).filter((t) => (tab === "all" || tab === "ghost" ? true : tab === "open" ? t.open : !t.open));

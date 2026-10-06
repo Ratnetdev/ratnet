@@ -4,7 +4,7 @@ import { fail, json } from "@/lib/http";
 export const dynamic = "force-dynamic";
 
 // twitterapi.io webhook: tracked posts arrive here within seconds. Set the webhook URL in the twitterapi.io dashboard to
-// https://<your site>/api/x/hook?key=<X_HOOK_SECRET or CRON_SECRET>
+// https://www.ratnet.network/api/x/hook?key=<X_HOOK_SECRET or CRON_SECRET>
 export async function POST(req: Request) {
   const key = new URL(req.url).searchParams.get("key") || "";
   const secret = process.env.X_HOOK_SECRET || process.env.CRON_SECRET || "";

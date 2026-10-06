@@ -36,7 +36,7 @@ export function ReportCard({ r }: { r: Report }) {
         <div>
           <div className="tiny muted">RAT KING {r.version} · SNIFF REPORT</div>
           <div style={{ fontSize: 18, marginTop: 4 }}>
-            <a href={`https://pump.fun/coin/${r.ca}`} target="_blank" rel="noreferrer">${r.symbol || "?"}</a>{" "}
+            <a href={`/c/${r.ca}`}>${r.symbol || "?"}</a>{" "}
             <span className="muted small">{r.name}</span>
           </div>
           <div className="tiny mute2">{r.ca}</div>
@@ -132,7 +132,7 @@ export default function SniffBoard() {
             <tbody>
               {(recent?.sniffs || []).map((s) => (
                 <tr key={s.id}>
-                  <td><a href={`https://pump.fun/coin/${s.ca}`} target="_blank" rel="noreferrer">${s.symbol || short(s.ca)}</a></td>
+                  <td><a href={`/c/${s.ca}`}>${s.symbol || short(s.ca)}</a></td>
                   <td><span style={{ color: color(s.verdict) }}>{s.score ?? "–"}</span> <span className={`tag v-${s.verdict}`}>{s.verdict}</span></td>
                   <td className="muted">{s.wallet ? short(s.wallet) : s.free ? "preview" : "–"}</td>
                   <td className="muted">{ago(s.at)}</td>

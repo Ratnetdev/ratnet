@@ -4,6 +4,8 @@
 // it. It grows its own account list from what actually moves coins, and mutes accounts that never do.
 // Data: twitterapi.io filter rules push tweets to /api/x/hook within seconds (X_API_KEY + the webhook URL set in the
 // twitterapi.io dashboard). Without a key WIRE stays idle.
+import { enqueueMind, noteKolCall, noteStudy } from "./mind";
+import { enqueueLens } from "./lens";
 import { redis } from "./redis";
 import { X_SEED } from "@/config/x-accounts";
 import { agentLog } from "./agents";
@@ -14,8 +16,9 @@ import { j7Covered, j7State } from "./j7";
 import { pulseView } from "./pulse";
 
 export type XTweet = { id: string; h: string; name?: string; f: number; at: number; text: string; terms: string[]; url: string; kind: "post" | "reply" | "quote" | "rt"; inner?: string; ca?: string; src?: string };
-export type WireMatch = { tid: string; h: string; score: number; how: string; lagSec: number; text: string; pick?: boolean };
-type Acc = { h: string; cat: string; tier: "seed" | "found" | "j7" | "muted"; added: number; why?: string };
+export type WireMatch = { tid: string; h: string; score: number; how: string; lagSec: number; text: string; pick?: boolean; f?: number; vamp?: boolean; trac?: { copies: number; sol: number } };
+type Acc = { h: string; cat: string; tier: "seed" | "found" | "j7" | "muted"; added: number; why?: string; f?: number };
+const CALLERS = new Set(["kol", "trader"]); // accounts whose CA posts are calls MIND looks at, and whose posts MIND studies
 
 const ACC = "rn:x:acc"; // handle -> Acc
 const ST = "rn:x:st"; // {h}:tweets|sparks|picks|runs|pnl (counters)
@@ -76,14 +79,28 @@ export function parseHook(body: any): XTweet[] {
   return out;
 }
 
+let seeded = 0;
 export async function ensureSeed() {
+  if (seeded === X_SEED.length) return;
   const r = redis();
-  if (await r.exists(ACC)) return;
+  // new seeds in a later version are added to a running WIRE; accounts it already knows keep their record
+  if (Number((await r.get("rn:x:seedn")) || 0) === X_SEED.length) {
+    seeded = X_SEED.length;
+    return;
+  }
+  const have = ((await r.hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>;
   const now = Date.now();
   const obj: Record<string, Acc> = {};
-  for (const s of X_SEED) obj[s.h.toLowerCase()] = { h: s.h, cat: s.cat, tier: "seed", added: now };
-  await r.hset(ACC, obj);
-  await r.set(DIRTY, 1);
+  for (const s of X_SEED) {
+    const k = s.h.toLowerCase();
+    if (!have[k] || have[k].tier !== "seed") obj[k] = { ...(have[k] || {}), h: s.h, cat: s.cat, tier: "seed", added: have[k]?.added || now };
+  }
+  if (Object.keys(obj).length) {
+    await r.hset(ACC, obj);
+    await r.set(DIRTY, 1);
+  }
+  await r.set("rn:x:seedn", X_SEED.length);
+  seeded = X_SEED.length;
 }
 
 /** New posts from any source (J7 feed, twitterapi.io webhook): store, count, feed PULSE, act on posted CAs. */
@@ -113,6 +130,8 @@ export async function ingest(tweets: XTweet[]) {
       if (!accs[h]) p.hincrby(FOUND, h, 1);
     }
     const acc = accs[key] || newAccs[key];
+    // MIND's school: what the KOLs and traders it follows are saying
+    if (acc && CALLERS.has(acc.cat) && t.kind !== "rt" && t.text.length >= 60) noteStudy(p, t.h, t.text, t.at);
     if (acc?.tier !== "muted" && t.kind !== "reply" && (acc?.tier === "seed" || t.f >= 50_000 || t.ca))
       agentLog(p, [{ agent: "WIRE", at: Date.now(), text: `@${t.h}${t.src && !["j7", "tapi"].includes(t.src) ? ` on ${t.src}` : ""}${t.kind === "rt" ? " reposted" : t.kind === "quote" ? " quoted" : ""}: "${t.text.slice(0, 90)}${t.text.length > 90 ? "…" : ""}"${t.ca ? " · posted a CA" : ` · watching launches for ${t.terms.slice(0, 4).join(", ") || "anything linked"}`}`, tone: t.ca ? "ok" : "info" }]);
   }
@@ -120,6 +139,20 @@ export async function ingest(tweets: XTweet[]) {
   p.ltrim(TW, 0, 399);
   await p.exec();
   for (const t of cas) await onCA(t).catch(() => {});
+  // KOL and trader calls: a CA posted by a caller (or any 10k+ account) is a call MIND looks at, at any age, and the
+  // caller is graded 6 hours later
+  for (const t of cas) {
+    const acc = accs[t.h.toLowerCase()] || newAccs[t.h.toLowerCase()];
+    if (!t.ca || acc?.tier === "muted" || !(CALLERS.has(acc?.cat || "") || t.f >= 10_000)) continue;
+    const rec = await r.get<any>(K.launch(t.ca)).catch(() => null);
+    await noteKolCall(t.h, t.ca, !!rec && !rec.outcome).catch(() => {});
+    if (rec) {
+      const q = r.pipeline();
+      enqueueLens(q, t.ca, "wire");
+      enqueueMind(q, t.ca, "kol");
+      await q.exec();
+    }
+  }
   return { stored: n, cas: cas.length };
 }
 
@@ -167,7 +200,7 @@ export function matchOne(l: { mint: string; name: string; symbol: string; descri
     }
     // the sooner after the post, the likelier it is the coin about it
     if (score) score = Math.round(score * (lag <= 300 ? 1 : lag <= 900 ? 0.85 : 0.65) * 100) / 100;
-    if (score >= 0.5 && (!best || score > best.score)) best = { tid: t.id, h: t.h, score, how, lagSec: Math.max(0, lag), text: t.text.slice(0, 160) };
+    if (score >= 0.5 && (!best || score > best.score)) best = { tid: t.id, h: t.h, score, how, lagSec: Math.max(0, lag), text: t.text.slice(0, 160), f: t.f };
   }
   return best;
 }
@@ -304,7 +337,9 @@ export function weightOf(a: Acc | undefined, S: Record<string, number>) {
   const h = a.h.toLowerCase();
   const picks = Number(S[`${h}:picks`] || 0);
   const runs = Number(S[`${h}:runs`] || 0);
-  const prior = a.tier === "seed" ? (a.cat === "leader" || a.cat === "celeb" ? 0.5 : 0.3) : a.tier === "j7" ? 0.22 : 0.15;
+  // big accounts found through tweet links start with more trust than unknown ones
+  const reach = (a.f ?? 0) >= 1_000_000 ? 0.45 : (a.f ?? 0) >= 100_000 ? 0.32 : (a.f ?? 0) >= 20_000 ? 0.22 : 0;
+  const prior = Math.max(reach, a.tier === "seed" ? (a.cat === "leader" || a.cat === "celeb" ? 0.5 : 0.3) : a.tier === "j7" ? 0.22 : 0.15);
   // shrunk toward the prior: 4 picks of evidence weigh as much as the prior
   return Math.round(((runs + prior * 4) / (picks + 4)) * 100) / 100;
 }
@@ -326,9 +361,93 @@ export async function wireView() {
   const picks = tweets.length ? ((await r.mget<(string | null)[]>(...tweets.map((t) => PICKED(t.id)))) || []) : [];
   const n = (h: string, k: string) => Number(S[`${h.toLowerCase()}:${k}`] || 0);
   const accounts = Object.values(A)
-    .map((a) => ({ h: a.h, cat: a.cat, tier: a.tier, why: a.why, tweets: n(a.h, "tweets"), matches: n(a.h, "matches"), sparks: n(a.h, "sparks"), picks: n(a.h, "picks"), runs: n(a.h, "runs"), pnl: Math.round(n(a.h, "pnl") * 1000) / 1000, w: weightOf(a, S) }))
+    .map((a) => ({ h: a.h, cat: a.cat, tier: a.tier, why: a.why, tweets: n(a.h, "tweets"), matches: n(a.h, "matches"), sparks: n(a.h, "sparks"), picks: n(a.h, "picks"), runs: n(a.h, "runs"), pnl: Math.round(n(a.h, "pnl") * 1000) / 1000, w: weightOf(a, S), f: a.f ?? null, calls: n(a.h, "kc"), callAvg: n(a.h, "kc") ? Math.round((Math.exp(n(a.h, "ks") / n(a.h, "kc")) - 1) * 1000) / 10 : null, call2x: n(a.h, "k2") }))
     .sort((a, b) => b.runs - a.runs || b.sparks - a.sparks || b.tweets - a.tweets);
   const cands = Object.entries((found || {}) as Record<string, number>).map(([h, pts]) => ({ h, pts: Number(pts) })).sort((a, b) => b.pts - a.pts).slice(0, 8);
   const [j7, pulse] = await Promise.all([j7State().catch(() => null), pulseView().catch(() => null)]);
   return { on: xOn() || !!j7?.on, j7, pulse, tweets: tweets.map((t, i) => ({ ...t, picked: picks[i] || null })), accounts, candidates: cands };
+}
+
+
+// ---------------------------------------------------------------- tweet links (any account)
+
+const TLQ = "rn:x:tlq"; // "tweetId|mint" for launches that link a post, scored by launch time
+const TLC = (id: string) => `rn:x:tl:${id}`; // fetched post (6h)
+export const tweetIdOf = (...s: string[]) => {
+  for (const x of s) {
+    const m = /(?:x|twitter)\.com\/(?:[A-Za-z0-9_]{1,15}|i\/web)\/status\/(\d{8,25})/i.exec(x || "");
+    if (m) return m[1];
+  }
+  return null;
+};
+
+/** A launch links a post that WIRE was not watching: queue it, the post gets fetched within seconds. */
+export function noteTweetLink(p: { zadd: Function }, tid: string, mint: string, createdAt: number) {
+  p.zadd(TLQ, { score: createdAt, member: `${tid}|${mint}` });
+}
+
+/** Fetch the posts that new launches link (twitterapi.io, one call for up to 50), treat each as a WIRE match:
+ *  the post's author joins WIRE (big accounts start with more trust), copies named after it match too, and after
+ *  30 seconds WIRE picks the leader as usual. */
+export async function tweetLinks() {
+  if (!xOn()) return { tlinks: 0 };
+  const r = redis();
+  const items = ((await r.zrange<string[]>(TLQ, 0, 49)) || []).map(String);
+  if (!items.length) return { tlinks: 0 };
+  await r.zrem(TLQ, ...items);
+  const fresh = items;
+  const ids = Array.from(new Set(fresh.map((x) => x.split("|")[0])));
+  const cached = ((await r.mget<(XTweet | null)[]>(...ids.map(TLC))) || []) as (XTweet | null)[];
+  const byId: Record<string, XTweet> = {};
+  ids.forEach((id, i) => cached[i] && (byId[id] = cached[i]!));
+  const need = ids.filter((id) => !byId[id]);
+  if (need.length) {
+    const res = await fetch(`${API}/twitter/tweets?tweet_ids=${need.join(",")}`, { headers: { "X-API-Key": process.env.X_API_KEY! }, cache: "no-store" }).catch(() => null);
+    const j: any = res?.ok ? await res.json().catch(() => null) : null;
+    for (const t of parseHook({ tweets: j?.tweets || [] })) {
+      byId[t.id] = t;
+      await r.set(TLC(t.id), t, { ex: 6 * 3600 });
+    }
+  }
+  const accs = ((await r.hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>;
+  const p = r.pipeline();
+  const newAccs: Record<string, Acc> = {};
+  let n = 0;
+  for (const it of fresh) {
+    const [tid, mint] = it.split("|");
+    const t = byId[tid];
+    if (!t) continue;
+    const rec = await r.get<any>(K.launch(mint));
+    if (!rec || rec.wire) continue;
+    const lag = Math.max(0, Math.round((rec.createdAt - t.at) / 1000));
+    // a post from days ago is decoration, not the story
+    if (lag > 6 * 3600) continue;
+    const m: WireMatch = { tid: t.id, h: t.h, score: 1, how: "links the post", lagSec: lag, text: t.text.slice(0, 160), f: t.f };
+    rec.wire = m;
+    p.set(K.launch(mint), rec, { keepTtl: true });
+    noteMatch(p, mint, rec.createdAt, m);
+    const key = t.h.toLowerCase();
+    if (!accs[key] && !newAccs[key]) newAccs[key] = { h: t.h, cat: "found", tier: "found", added: Date.now(), why: "a launch linked their post", f: t.f };
+    else if (accs[key] && !accs[key].f) newAccs[key] = { ...accs[key], f: t.f };
+    // the post joins WIRE's buffer, so copies named after it match too
+    if (await r.set(SEEN(t.id), 1, { nx: true, ex: 3 * 86400 })) {
+      p.lpush(TW, { ...t, src: "link" });
+      notePulse(p as any, t);
+    }
+    if (t.f >= 20_000) enqueueLens(p, mint, "wire");
+    agentLog(p, [{ agent: "WIRE", at: Date.now(), mint, symbol: rec.symbol, text: `$${rec.symbol} links a post by @${t.h} (${t.f >= 1000 ? `${Math.round(t.f / 1000)}k` : t.f} followers, ${lag}s before launch): "${t.text.slice(0, 80)}"`, tone: t.f >= 100_000 ? "ok" : "info" }]);
+    n++;
+  }
+  if (Object.keys(newAccs).length) p.hset(ACC, newAccs);
+  p.ltrim(TW, 0, 399);
+  await p.exec();
+  return { tlinks: n };
+}
+
+/** Every coin matched to a post so far, best match first. */
+export async function candidatesOf(tid: string) {
+  const flat = ((await redis().zrange<(string | number)[]>(CAND(tid), 0, 29, { rev: true, withScores: true })) || []) as (string | number)[];
+  const out: { mint: string; score: number }[] = [];
+  for (let i = 0; i < flat.length; i += 2) out.push({ mint: String(flat[i]), score: Number(flat[i + 1]) });
+  return out;
 }

@@ -70,7 +70,7 @@ export default function Docs() {
       </p>
       <h3>nano · learning live</h3>
       <p>
-        Next to v0 runs <b>Rat King nano</b>, a model born at zero that learns from every outcome the rats record. One gradient step per launch once its 2-hour label is in, 28 features frozen at the 5-minute mark (curve, socials, dev history, plus trade speed, bundles, snipers, smart wallets and the dev&apos;s funder cluster), nothing borrowed. The HISTORIAN replays past launches in time order so it starts trained. Its calls count once it has 200 lessons. Loss curve, weights and a head to head against v0 are public in <a href="/lab">the Lab</a>.
+        Next to v0 runs <b>Rat King nano</b>, a model born at zero that learns from every outcome the rats record. One gradient step per launch once its 2-hour label is in, 41 features frozen at the 5-minute mark (curve, socials, dev history, trade speed, bundles, snipers, smart wallets, the dev&apos;s funder cluster, and the story: the post behind the coin, its author&apos;s reach and the narrative), nothing borrowed. The HISTORIAN replays past launches in time order so it starts trained. Its calls count once it has 200 lessons. From King v1 on, nano leads and its BOND line is set from the last 7 days of graded lessons. Loss curve, the honest scoreboard and a head to head against v0 are public in <a href="/lab">the Lab</a>.
       </p>
       <h3>v1 · training</h3>
       <p>
@@ -117,7 +117,13 @@ export default function Docs() {
         <li>Rat King nano learning live in the Lab.</li>
         <li>Litter 1 spawning, sniff orders, payout ledger, public dataset and open API.</li>
       </ul>
-      <h3><span className="pill soon">next</span> Rat King v1</h3>
+      <h3><span className="pill">live</span> Rat King v1 and MIND</h3>
+      <ul>
+        <li>Rat King v1: nano leads, BOND line calibrated on the last 7 days, honest scoreboard per version.</li>
+        <li>MIND, the trader&apos;s mind: judges the meme, the narrative and who is talking, before and after migration, and keeps a lesson book.</li>
+        <li>Tweet links: any post a launch links is read and its author tracked.</li>
+      </ul>
+      <h3><span className="pill soon">next</span> Rat King v2</h3>
       <ul>
         <li>First from-scratch pretraining run on the dug dataset, public loss curve.</li>
         <li>Weights and dataset on Hugging Face after the first epoch.</li>
@@ -127,7 +133,7 @@ export default function Docs() {
       <h3><span className="pill soon">next</span> The King speaks up</h3>
       <ul>
         <li>Telegram and X bot that posts the King&apos;s calls in real time.</li>
-        <li>Rat King v2 with first-hour trade flow, hit rate per version.</li>
+        <li>Rat King v3 with first-hour trade flow, hit rate per version.</li>
       </ul>
       <h3><span className="pill">graduation</span> The King talks</h3>
       <ul>

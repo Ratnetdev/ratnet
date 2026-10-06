@@ -2,26 +2,28 @@
 //   king  - BOND calls at minute 5 (and pullback entries on them)
 //   early - minute-1 reads, once the early record earns them
 //   wire  - coins born from posts by tracked X accounts (WIRE)
+//   vamp  - a later copy on a hot post that out-pulls the first pick (WIRE vamp watch)
+//   mind  - coins MIND (the trader's mind) calls SEND, once its own record has earned it (any age, curve or migrated)
 // PM sizes each sleeve by how well it has been doing for the risk it takes (mean over spread of its last 30 trades),
 // and pauses a sleeve for 2 hours after a bad run. More strategies that earn in different moments = a smoother curve.
 import { redis } from "./redis";
 
-export type Sleeve = "king" | "early" | "wire";
-export const SLEEVES: Sleeve[] = ["king", "early", "wire"];
+export type Sleeve = "king" | "early" | "wire" | "vamp" | "mind";
+export const SLEEVES: Sleeve[] = ["king", "early", "wire", "vamp", "mind"];
 const KEY = "rn:desk:pm";
-const PRIOR: Record<Sleeve, number> = { king: 1, early: 0.7, wire: 0.8 }; // weight before a sleeve has a record
+const PRIOR: Record<Sleeve, number> = { king: 1, early: 0.7, wire: 0.8, vamp: 0.5, mind: 0.6 }; // weight before a sleeve has a record
 const MIN_N = 6; // trades before the record moves the weight
 const PAUSE_MS = 2 * 3600_000;
 
 type S = { r: number[]; pausedUntil: number; n: number; wins: number; g?: number[] };
 type PM = Record<Sleeve, S>;
 
-export const sleeveOf = (how?: string): Sleeve => (how === "early" ? "early" : how === "wire" ? "wire" : "king");
+export const sleeveOf = (how?: string, vamp?: boolean): Sleeve => (how === "early" ? "early" : how === "wire" ? (vamp ? "vamp" : "wire") : how === "mind" ? "mind" : "king");
 
 const empty = (): S => ({ r: [], pausedUntil: 0, n: 0, wins: 0 });
 async function load(): Promise<PM> {
   const x = ((await redis().get<PM>(KEY)) || {}) as Partial<PM>;
-  return { king: { ...empty(), ...(x.king || {}) }, early: { ...empty(), ...(x.early || {}) }, wire: { ...empty(), ...(x.wire || {}) } };
+  return { king: { ...empty(), ...(x.king || {}) }, early: { ...empty(), ...(x.early || {}) }, wire: { ...empty(), ...(x.wire || {}) }, vamp: { ...empty(), ...(x.vamp || {}) }, mind: { ...empty(), ...(x.mind || {}) } };
 }
 
 function stats(s: S) {
@@ -95,4 +97,44 @@ export async function pmView() {
     const g = s.g || [];
     return { ghost: g.length, ghostAvg: g.length ? Math.round((Math.exp(g.reduce((a, b) => a + b, 0) / g.length) - 1) * 1000) / 10 : null, sleeve: sl, trades: s.n, wins: s.wins, winRate: s.n ? Math.round((s.wins / s.n) * 1000) / 10 : null, avg: n ? Math.round((Math.exp(mean) - 1) * 1000) / 10 : null, w: weightOf(sl, s), paused: s.pausedUntil > now ? s.pausedUntil : null };
   });
+}
+
+// ---------------------------------------------------------------- exit profiles per sleeve
+// How each strategy's coins actually move while held: how high they peak and how fast. Tweet coins and vamps often
+// dump right after the first push; King calls can run for hours. Once a sleeve has 12+ closed trades (real or ghost),
+// its initials sit at 80% of its typical peak (never above the desk's own setting) and, when its coins peak fast,
+// its time stop shortens. Learned from the trades, not set by hand.
+const PX = "rn:desk:pmx";
+type Prof = { pk: number[]; ttp: number[] };
+export type ExitProfile = { n: number; medPk: number; medTtp: number; initials: number | null; timeStop: number | null };
+const med = (a: number[]) => {
+  if (!a.length) return 0;
+  const s = [...a].sort((x, y) => x - y);
+  return s[Math.floor(s.length / 2)];
+};
+
+export async function noteExit(sl: Sleeve, peakMult: number, ttpMin: number) {
+  const r = redis();
+  const cur = ((await r.hget<Prof>(PX, sl)) || { pk: [], ttp: [] }) as Prof;
+  cur.pk = [...cur.pk, Math.round(Math.max(0.01, peakMult) * 100) / 100].slice(-30);
+  cur.ttp = [...cur.ttp, Math.round(Math.max(0, ttpMin) * 10) / 10].slice(-30);
+  await r.hset(PX, { [sl]: cur });
+}
+
+export async function exitProfiles(initialsAt: number, timeStop: number): Promise<Record<string, ExitProfile>> {
+  const all = ((await redis().hgetall<Record<string, Prof>>(PX)) || {}) as Record<string, Prof>;
+  const out: Record<string, ExitProfile> = {};
+  for (const [sl, p] of Object.entries(all)) {
+    const n = p.pk.length;
+    const medPk = med(p.pk);
+    const medTtp = med(p.ttp);
+    out[sl] = {
+      n,
+      medPk,
+      medTtp,
+      initials: n >= 12 ? Math.max(30, Math.min(initialsAt, Math.round((medPk - 1) * 100 * 0.8))) : null,
+      timeStop: n >= 12 && medTtp < 15 ? Math.max(8, Math.min(timeStop, Math.round(medTtp * 2.5))) : null,
+    };
+  }
+  return out;
 }

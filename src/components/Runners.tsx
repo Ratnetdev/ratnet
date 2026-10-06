@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePoll } from "./usePoll";
 import Info from "./Info";
+import { TradeIcons } from "./venues";
 import { VerdictTag } from "./Calls";
 import { usdK } from "./Grads";
 import { ago } from "./fmt";
@@ -25,7 +26,7 @@ export default function Runners({ limit = 15 }: { limit?: number }) {
           <tbody>
             {top.map((v) => (
               <tr key={v.mint}>
-                <td><Link href={`/c/${v.mint}`}>${v.symbol}</Link></td>
+                <td><Link href={`/c/${v.mint}`}>${v.symbol}</Link><TradeIcons ca={v.mint} /></td>
                 <td>{v.verdict ? <VerdictTag v={v.verdict} /> : <span className="tiny mute2">–</span>}</td>
                 <td className="muted">{usdK(v.cUsd)}</td>
                 <td>{usdK(v.pk)}</td>

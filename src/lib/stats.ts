@@ -50,6 +50,19 @@ export async function getStats() {
       watch: { n: n(s.nwatch_n), res: n(s.nwatch_res), bonded: n(s.nwatch_bonded), rate: pct(n(s.nwatch_bonded), n(s.nwatch_res)) },
       dust: { n: n(s.ndust_n), res: n(s.ndust_res), hit: n(s.ndust_hit), rate: pct(n(s.ndust_hit), n(s.ndust_res)) },
     },
+    // honest scoreboard: BOND calls graded at their 2-hour label only (no pending), and how many of all bonds were caught
+    honest: (() => {
+      const ln = n(s.lbond_n), lh = n(s.lbond_hit), lb = n(s.lbonded);
+      const vers = Array.from(new Set(Object.keys(s).filter((k) => k.startsWith("lb:")).map((k) => k.split(":")[1])));
+      return {
+        n: ln,
+        hit: lh,
+        prec: pct(lh, ln),
+        bonds: lb,
+        recall: pct(lh, lb),
+        byVersion: vers.map((v) => ({ v, n: n((s as any)[`lb:${v}:n`]), hit: n((s as any)[`lb:${v}:hit`]), prec: pct(n((s as any)[`lb:${v}:hit`]), n((s as any)[`lb:${v}:n`])) })).sort((a, b) => a.v.localeCompare(b.v)),
+      };
+    })(),
     gaps: n(s.gaps),
     burnedRat: n(s.burned),
     sniffs: n(s.sniffs),
@@ -65,7 +78,7 @@ export async function getCalls(limit = 60, offset = 0): Promise<Call[]> {
   const mints = (await r.zrange<string[]>(K.calls, offset, offset + limit - 1, { rev: true })) || [];
   if (!mints.length) return [];
   const calls = await r.mget<(Call | null)[]>(...mints.map((m) => K.call(m)));
-  return calls.filter((c): c is Call => !!c);
+  return calls.filter((c): c is Call => !!c).map((c) => ({ ...c, parts: undefined, nc: undefined }));
 }
 
 /** The latest counted BOND calls (King or nano), newest first. */
@@ -74,7 +87,7 @@ export async function getBondCalls(limit = 8): Promise<Call[]> {
   const mints = ((await r.lrange<string>("rn:bondcalls", 0, limit - 1)) || []) as string[];
   if (!mints.length) return [];
   const calls = await r.mget<(Call | null)[]>(...mints.map((m) => K.call(m)));
-  return calls.filter((c): c is Call => !!c);
+  return calls.filter((c): c is Call => !!c).map((c) => ({ ...c, parts: undefined, nc: undefined }));
 }
 
 export async function getResolvedCalls(limit = 40): Promise<Call[]> {
@@ -193,7 +206,10 @@ export async function getCoin(mint: string) {
     // the desk-only bits stay private: insider token accounts are not needed on the page
     if (launch.tape) launch.tape = { ...launch.tape, insiders: [], early: [] };
   }
-  const c = call || launch?.call || null;
+  const c0 = call || launch?.call || null;
+  // the numbers behind a call (v0 points, nano pulls, the feature vector) are admin only
+  const c = c0 ? ({ ...c0, x: [], parts: undefined, nc: undefined } as Call) : null;
+  if (launch?.call) launch.call = c!;
   if (c && !c.why && launch) c.why = whyOf({ ...launch, progress: c.progress, progress0: launch.p0, twitter: !!launch.twitter, telegram: !!launch.telegram, website: !!launch.website, tape: launch.tape ?? null, g: launch.g ?? null, meta: launch.meta ?? null });
   const seal = c?.counted ? await sealFor(c.at).catch(() => null) : null;
   return { launch, call: c, mkt, run: runs[mint] ?? null, seal: seal ? { hour: seal.hour, sig: seal.sig, sha: seal.sha, n: seal.n } : null };

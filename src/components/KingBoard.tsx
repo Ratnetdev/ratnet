@@ -1,4 +1,5 @@
 "use client";
+import { useSearchParams } from "next/navigation";
 import HallOfFame from "./HallOfFame";
 import { useEffect, useState } from "react";
 import GradList, { Grad } from "./Grads";
@@ -22,10 +23,13 @@ type King = {
 export default function KingBoard() {
   const [page, setPage] = useState(0);
   const [tab, setTab] = useState<"latest" | "bond" | "grads" | "resolved" | "fame">("latest");
+  // follow ?tab= on first load AND when the menu links to another tab while this page is already open
+  const sp = useSearchParams();
+  const qTab = sp?.get("tab");
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (t === "grads" || t === "bond" || t === "resolved" || t === "fame") setTab(t);
-  }, []);
+    if (qTab === "grads" || qTab === "bond" || qTab === "resolved" || qTab === "fame") setTab(qTab);
+    else if (!qTab) setTab("latest");
+  }, [qTab]);
   const { data } = usePoll<King>(`/api/king?page=${page}${tab === "bond" ? "&verdict=BOND" : ""}`, 8000);
   const s = data?.stats;
   return (

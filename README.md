@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.1.4-8cff5a?style=flat-square&labelColor=060807" alt="version">
+  <img src="https://img.shields.io/badge/version-v0.1.11-8cff5a?style=flat-square&labelColor=060807" alt="version">
   <img src="https://img.shields.io/badge/chain-Solana-8cff5a?style=flat-square&labelColor=060807" alt="Solana">
   <img src="https://img.shields.io/badge/source-pump.fun-ffb547?style=flat-square&labelColor=060807" alt="pump.fun">
   <img src="https://img.shields.io/badge/model-trained%20from%20scratch-7fd1ff?style=flat-square&labelColor=060807" alt="from scratch">
@@ -22,6 +22,7 @@
 </p>
 
 <p align="center">
+  <a href="https://www.ratnet.network">www.ratnet.network</a> ·
   <a href="https://x.com/Ratnetdev">X @Ratnetdev</a> ·
   <a href="#8-the-desk-autonomous-trading">Desk</a> ·
   <a href="#6-the-rat-king-models">Rat King</a> ·
@@ -212,7 +213,7 @@ Nano is a model trained from scratch, live, on nothing but what the rats dig. No
 - **Warm-up:** nano calls only count after 200 lessons.
 - **An early twin:** the same model is trained on what the rats see at minute 1. Its calls are recorded on their own board, and the desk may act on them only once that record beats the minute-5 King.
 - **Learns from what it missed:** coins that bond before the 5 minute call are still turned into lessons, so the King learns from the bonds it never got to call.
-- **Fully public:** current weights, sample count and the loss log are served at `/api/king/weights` and charted in the Lab.
+- **Public record, private weights:** sample count, loss log and the honest scoreboard are public at `/api/king/weights` and in the Lab; the weights themselves are admin only.
 
 ### Rat King v1: pretraining (roadmap)
 
@@ -268,6 +269,10 @@ The Desk is a team of seventeen agents that turns calls and posts into trades an
 | COACH | Reviews every exit and every entry, follows each coin 5m, 15m, 1h, 2h, 6h, 1d and 7d after the exit with what moved it, and retunes the desk. |
 | LEDGER | Keeps the books. |
 | WIRE | The social monitor: tracks X accounts whose posts spawn coins, matches every launch against the last hour of posts, picks the real coin among the copies 30 seconds in, and hands it to the desk. Learns trust per account from results and grows its own account list. |
+| HOUND | The wallet book: FOMO traders with a positive EV (home-run hitters, steady hands), KOL wallets with objective ownership proof, smart wallets found on chain from breakouts. Live buys via one Helius webhook, copy records per wallet and class, confluence sent to MIND. |
+| OVERSEER | Explores Reddit, GitHub, arXiv and X for ideas, reads the whole protocol every 6 hours, and proposes improvements on Telegram (/yes, /no, /later). Proposes only. |
+| MIND | The trader's mind: judges KOL calls, tweet coins, BOND calls, fresh migrations and narrative coins like a sharp memecoin trader (the meme and its image, the narrative, who is talking, copies, timing, the website and X) and says SEND, WATCH or PASS with a conviction and a thesis. Follows every call 24 hours; its SEND calls trade only once that record earns it. Keeps a lesson book from post-mortems, from what KOLs and traders post, and from what the admin teaches it. |
+| LENS | The hands-on look: opens the website, the X account or post, an X search for the CA and ticker, and the Telegram of every desk buy, tweet pick, BOND call and narrative coin, live in the LensCam on /desk. Writes a 0-100 dossier. Informs, never blocks. |
 | PULSE | Reads the room: counts what every tracked post is about in 5-minute and hourly windows, weighted by reach, and flags narratives running at 3x+ their usual pace, with a mood. Launches named after one get +5 from the King. |
 | PM | The portfolio manager: runs King calls, early reads and tweet coins as separate sleeves and sizes each by its risk-adjusted record, so no single strategy decides the curve. |
 | FILM | The film room: goes back over every decision (King calls, VET, FLOW and never-chase skips) and scores it against what the coin did next. |
@@ -430,7 +435,7 @@ The schema and all drops are listed on `/dataset`. Three tunnels are open today.
 
 ## 12. Open API
 
-All read endpoints are public, JSON, and cached at the edge for a few seconds.
+All read endpoints are public, JSON, and cached at the edge for a few seconds. Base URL: `https://www.ratnet.network`.
 
 | Endpoint | Returns |
 |---|---|
@@ -438,7 +443,7 @@ All read endpoints are public, JSON, and cached at the edge for a few seconds.
 | `GET /api/radar` | Live launches sorted by curve, with calls, dev record and market data. |
 | `GET /api/graduations` | Every bond, time to bond and what the King said, with head start. |
 | `GET /api/king?page=0` | The King's calls. Add `verdict=BOND` for BOND calls only. |
-| `GET /api/king/weights` | Nano and early-model weights, sample counts and loss log. |
+| `GET /api/king/weights` | Nano and early-model sample counts and loss log (weights: admin only). |
 | `GET /api/proof` | Calibration buckets, hourly hit rate vs base rate, head start, receipts. |
 | `GET /api/coins` | 24h index of every BOND or WATCH call plus every bond. |
 | `GET /api/coin/{CA}` | Everything RATNET knows about one coin. |
@@ -452,6 +457,8 @@ All read endpoints are public, JSON, and cached at the edge for a few seconds.
 | `GET /api/desk/record` | The track record: every round trip with its full entry context, fills and COACH follow-ups. |
 | `GET /api/desk/coin?mint={CA}` | The desk on one coin: its trades, the last VET verdict, every agent line about it. |
 | `GET /api/desk/agent?name=FILM` | One agent's history and counters. |
+| `GET /api/mind` | MIND: what it is judging right now, its latest calls and its record. `?mint={CA}` for one coin. |
+| `GET /api/lens` | LENS: the live look and the latest dossiers. `?mint={CA}` for one coin. |
 | `GET /api/x` | WIRE: latest tracked posts with the coin picked for each, the account board with trust, and discovery candidates. |
 
 Full documentation with examples lives at `/developers`.
@@ -505,7 +512,7 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `ADMIN_PASSWORD` | Password for `/admin`. |
 | `CRON_SECRET` | Random string. Also the key for the scheduler ping. |
 | `PAYOUT_WALLET_SECRET` | Base58 secret of the wallet that pays rat owners. |
-| `NEXT_PUBLIC_SITE_URL` | Optional. Your own domain once you have one. Without it the site uses the Vercel production URL automatically. |
+| `NEXT_PUBLIC_SITE_URL` | `https://www.ratnet.network` (the default when unset). Set it to `http://localhost:3000` for local runs. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | Set automatically by the Upstash integration. |
 | `BLOB_READ_WRITE_TOKEN` | Set automatically by the Blob integration. |
 | `DESK_WALLET_SECRET` | Optional. Base58 secret of the desk wallet. Without it the desk stays on paper. With it, the paper desk mirrors the wallet's real balance as its start (deposits move the start, not the P&L), and the wallet is shown on `/desk`. |
@@ -514,7 +521,16 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `RECEIPT_WALLET_SECRET` | Optional. Base58 secret of a small wallet (0.02 SOL lasts months) that writes the hourly call receipts on-chain. Falls back to `DESK_WALLET_SECRET`. Without either, receipts are not sealed. |
 | `J7_JWT` | Optional, recommended. Your J7Tracker session token. WIRE listens to the J7 feed (its main account list, its free shared pool, Truth Social, Instagram, TikTok, YouTube, contract addresses in posts) during every minute run, and adds the whole free pool to your feed hourly. |
 | `J7_HOST` | Optional. `https://nyc.j7tracker.io` (default) or `https://dfw.j7tracker.io`. |
-| `X_API_KEY` | Optional. twitterapi.io key for WIRE. Set the webhook URL in the twitterapi.io dashboard to `https://<your site>/api/x/hook?key=<CRON_SECRET>`; WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `/api/x/sync?key=<CRON_SECRET>`). |
+| `FOMO_API_KEY` | Optional. fomoapi.io key: HOUND profiles FOMO traders (free tier ~1,000 calls a month is enough to start). |
+| `MADEONSOL_API_KEY` | Optional. MadeOnSol KOL roster (free tier). |
+| `SOLANATRACKER_API_KEY` | Optional. Second KOL roster, so two rosters can agree. |
+| `HELIUS_API_KEY` | Optional. Taken from `HELIUS_RPC_URL` when that holds `?api-key=`. HOUND keeps one webhook on every tracked wallet (1 credit per swap). |
+| `TELEGRAM_IDEAS_CHAT_ID` | Private group or channel for OVERSEER's ideas and your answers. Add your bot, send /id there to get the number. Then open `https://www.ratnet.network/api/tg/setup?key=<CRON_SECRET>` once. |
+| `TELEGRAM_ADMIN_IDS` | Optional. Your Telegram user id(s), comma separated, to use the commands from a private chat with the bot too. |
+| `ANTHROPIC_API_KEY` | Optional. Turns MIND on (the language model behind it). Without it MIND stays off and everything else runs. |
+| `MIND_MODEL` | Optional. Default `claude-sonnet-5-5`. `claude-haiku-4-5-20251001` is about 3x cheaper. |
+| `MIND_PER_HOUR` | Optional. Judgements per hour (default 30), plus up to 6 post-mortem and school calls. |
+| `X_API_KEY` | Optional. twitterapi.io key for WIRE and LENS (LENS uses it for X profiles, posts and the CA search; ~3 reads per coin, max 60 coins an hour). Without it LENS still reads websites, domains and Telegram. Set the webhook URL in the twitterapi.io dashboard to `https://www.ratnet.network/api/x/hook?key=<CRON_SECRET>`; WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `https://www.ratnet.network/api/x/sync?key=<CRON_SECRET>`). |
 | `X_RULE_INTERVAL` | Optional. Seconds between twitterapi.io rule checks (default `1`). Higher is cheaper and slower. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 
@@ -588,3 +604,10 @@ Every rule above traces to a source. The main ones:
   <img src="docs/assets/mark.png" alt="" width="48"><br>
   <sub>RATNET is experimental software. Nothing here is financial advice. Calls and trades can and will be wrong.<br>MIT licensed.</sub>
 </p>
+
+
+## Private playbook and feedback (v0.1.9)
+
+Public pages show every trade and why it was taken, but not the playbook: desk thresholds, priors, learned stats, FILM rule grades, check values and nano weights are stripped. Sign in at `/admin` and the same pages show everything; the **strategy** tab has the whole playbook on one page, and every trade view and coin page gets a feedback box (good or bad, tags, note).
+
+Trade buttons (GMGN, Axiom, FOMO, pump.fun, DexScreener) take your referral codes from the **trade buttons** panel in admin. Click-test each venue once after saving.

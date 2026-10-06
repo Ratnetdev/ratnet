@@ -1,6 +1,6 @@
 // Rat King nano: a model learned from scratch, live, on what the rats dig.
 // Plain logistic regression trained one sample at a time (online SGD) the moment a launch resolves.
-// No pretrained weights, no outside data. Every weight is public at /api/king/weights.
+// No pretrained weights, no outside data. Weights are admin only (/api/king/weights?full=1, or the Strategy tab).
 
 export const NANO_FEATURES = [
   { key: "bias", label: "bias" },
@@ -42,6 +42,11 @@ export const NANO_FEATURES = [
   { key: "sol7d", label: "SOL 7d trend" },
   { key: "lrate", label: "pump.fun launch rate (log)" },
   { key: "hist", label: "replayed from history" },
+  // v0.1.10: the story behind the coin (WIRE, tweet links, PULSE)
+  { key: "post", label: "born from a post" },
+  { key: "post_reach", label: "post author reach (log)" },
+  { key: "post_link", label: "links the post itself" },
+  { key: "narrative", label: "rising narrative pace (log)" },
 ] as const;
 
 export const NANO_MIN = 200; // labelled samples before nano starts making counted calls
@@ -90,6 +95,8 @@ export type FeatureInput = {
   copy?: boolean;
   dup?: number;
   lift?: number;
+  post?: { score: number; f: number; link: boolean } | null;
+  pulseX?: number;
 };
 
 export function emptyModel(): NanoModel {
@@ -138,6 +145,10 @@ export function features(i: FeatureInput): number[] {
     i.rg?.sol7d != null ? Math.max(-1, Math.min(1, i.rg.sol7d / 40)) : 0,
     i.rg?.lrate != null ? Math.log1p(i.rg.lrate) / 9 : 0,
     i.hist ? 1 : 0,
+    i.post ? i.post.score : 0,
+    i.post ? Math.log10(1 + Math.max(0, i.post.f)) / 7 : 0,
+    i.post?.link ? 1 : 0,
+    i.pulseX ? Math.log1p(i.pulseX) / 3 : 0,
   ].map(r);
 }
 
@@ -180,4 +191,13 @@ export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = PO
   if (bonded) m.pos += 1;
   m.updatedAt = Date.now();
   return m;
+}
+
+/** What pushed one nano score: each feature's pull on the logit (w x), strongest first. For the scorecard. */
+export function contributions(m: NanoModel, x: number[], n = 8): [string, number][] {
+  return x
+    .map((v, i) => [NANO_FEATURES[i]?.label || `f${i}`, Math.round((m.w[i] || 0) * v * 100) / 100] as [string, number])
+    .filter(([l, c], i) => i > 0 && c !== 0)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, n);
 }

@@ -1,0 +1,524 @@
+// HOUND: the wallet book. One agent maps every wallet worth watching, in three books, and tells the others the
+// moment one of them buys.
+//
+//  1. FOMO traders (fomoapi.io): every trader on the leaderboard is profiled from their own closed trades: win rate,
+//     average win, average loss, expected value per trade, best trade. Only two kinds get tracked:
+//       home-run hitters: low win rate, but a history of huge single wins and a positive EV
+//       steady hands:     high win rate, smaller wins, positive EV
+//     Everyone else is left out, so the book only holds traders worth copying.
+//  2. KOL wallets: from public KOL rosters and from the admin. A wallet only counts as CONFIRMED when the proof is
+//     objective: the person's own X account posted the address, or the wallet carries their X handle in the on-chain
+//     SNS registry, or two independent rosters agree. Otherwise it is shown as unconfirmed. The name is always shown.
+//  3. Smart wallets, found on chain: every coin that breaks out past $500K is dug up. Wallets that bought big before
+//     the run get credit (size, how early, the multiple since). Wallets that do it again and again, and are not
+//     spray-everything bots, join the book.
+//
+// Live: every tracked wallet is on one Helius webhook. A buy lands here within seconds: the feed shows who bought
+// what and how much, MIND gets the coin when several tracked wallets pile in (or one strong one), and every buy is
+// followed 1h, 6h and 24h later, so each wallet and each class gets a copy-trade record of its own. MIND and RISK
+// see those records; nothing is followed blindly.
+import { K, redis } from "./redis";
+import { SITE } from "@/config/site";
+import { agentLog } from "./agents";
+import { bondingCurvePda, getCurves, pmap, solUsd } from "./solana";
+import { readPools } from "./pool";
+import { oldestSigs } from "./historian";
+import { parseTrade } from "./tape";
+import { conn } from "./solana";
+import { enqueueMind } from "./mind";
+import { enqueueLens } from "./lens";
+import { GK } from "./graph";
+import { xOn } from "./wire";
+
+const W = "rn:hd:w"; // wallet -> Wallet
+const FEED = "rn:hd:feed"; // latest buys
+const M = (m: string) => `rn:hd:m:${m}`; // mint -> wallet -> buy
+const EV = "rn:hd:ev"; // {w}:n|s|x2 and c:{cls}:n|s|x2 (copy-trade record at 6h)
+const DUE = "rn:hd:due";
+const BUY = "rn:hd:b"; // id -> pending follow
+const BQ = "rn:hd:bq"; // breakouts to dig
+const SB = "rn:hd:sb"; // wallet -> breakout record
+const HOOK = "rn:hd:hook"; // { id, n, at }
+const DIRTY = "rn:hd:dirty";
+const FOMO_AT = "rn:hd:fomoAt";
+const KOL_AT = "rn:hd:kolAt";
+const FOMO_P = "rn:hd:fp"; // handle -> profile (7 days)
+const LIVE = "rn:hd:live"; // what HOUND is doing right now
+const WSOL = "So11111111111111111111111111111111111111112";
+const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+export type Cls = "fomo-homerun" | "fomo-steady" | "kol" | "smart" | "admin";
+export type Wallet = {
+  w: string;
+  cls: Cls;
+  name: string;
+  handle?: string | null;
+  conf: "confirmed" | "likely" | "unconfirmed";
+  proof: string[];
+  src: string[];
+  stats?: { n: number; wr: number; avgWin: number; avgLoss: number; ev: number; best: number; big: number } | null;
+  sb?: { n: number; sol: number; best: number } | null;
+  at: number;
+  off?: boolean;
+};
+export type Buy = { id: string; w: string; name: string; cls: Cls; conf: string; mint: string; symbol: string; sol: number; at: number; sig: string; side: "buy" | "sell" };
+
+export const CLASS_LABEL: Record<Cls, string> = { "fomo-homerun": "FOMO home-run", "fomo-steady": "FOMO steady", kol: "KOL", smart: "smart wallet", admin: "added by admin" };
+
+const isAddr = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s || "");
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+async function live(text: string) {
+  await redis().set(LIVE, { at: Date.now(), text }, { ex: 600 }).catch(() => {});
+}
+
+export async function book(): Promise<Record<string, Wallet>> {
+  return ((await redis().hgetall<Record<string, Wallet>>(W)) || {}) as Record<string, Wallet>;
+}
+
+async function upsert(list: Wallet[]) {
+  if (!list.length) return;
+  const r = redis();
+  const have = await book();
+  const obj: Record<string, Wallet> = {};
+  for (const x of list) {
+    const old = have[x.w];
+    // the admin's word wins; otherwise merge proof and sources
+    if (old?.cls === "admin" && x.cls !== "admin") continue;
+    obj[x.w] = old ? { ...old, ...x, proof: Array.from(new Set([...(old.proof || []), ...x.proof])), src: Array.from(new Set([...(old.src || []), ...x.src])), off: old.off } : x;
+  }
+  await r.hset(W, obj);
+  await r.set(DIRTY, 1);
+}
+
+// ---------------------------------------------------------------- 1. FOMO traders
+
+const FOMO = "https://api.fomoapi.io";
+const fomoOn = () => !!process.env.FOMO_API_KEY;
+async function fomo<T = any>(path: string): Promise<T | null> {
+  const r = await fetch(`${FOMO}${path}`, { headers: { authorization: `Bearer ${process.env.FOMO_API_KEY}` }, cache: "no-store" }).catch(() => null);
+  if (!r?.ok) return null;
+  return (await r.json().catch(() => null)) as T | null;
+}
+
+/** Profile one trader from their closed trades. Exported for the sim. */
+export function profileOf(trades: { realizedPnlUsd: number; costBasisUsd: number; status: string }[]) {
+  const closed = trades.filter((t) => t.status === "closed" && t.costBasisUsd > 1);
+  const rets = closed.map((t) => t.realizedPnlUsd / t.costBasisUsd);
+  const wins = rets.filter((x) => x > 0);
+  const losses = rets.filter((x) => x <= 0);
+  const n = rets.length;
+  const wr = n ? wins.length / n : 0;
+  const avgWin = wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
+  const ev = wr * avgWin + (1 - wr) * avgLoss;
+  return { n, wr: r2(wr), avgWin: r2(avgWin), avgLoss: r2(avgLoss), ev: r2(ev), best: r2(Math.max(0, ...rets)), big: rets.filter((x) => x >= 9).length };
+}
+
+/** Home-run hitters and steady hands, both with a positive expected value. Everyone else is not worth tracking. */
+export function classify(p: ReturnType<typeof profileOf>): Cls | null {
+  if (p.n < 15 || p.ev <= 0) return null;
+  if (p.wr <= 0.4 && p.big >= 2 && p.avgWin >= 2) return "fomo-homerun";
+  if (p.wr >= 0.6 && p.avgWin >= 0.2 && p.avgLoss >= -0.5) return "fomo-steady";
+  return null;
+}
+
+async function fomoSync() {
+  if (!fomoOn()) return 0;
+  const r = redis();
+  if (Date.now() - Number((await r.get(FOMO_AT)) || 0) < 6 * 3600_000) return 0;
+  await r.set(FOMO_AT, Date.now());
+  await live("reading the FOMO leaderboards (30 days and all time)");
+  const seen = new Map<string, any>();
+  for (const win of ["30d", "all", "7d"]) {
+    const lb = await fomo<{ traders: any[] }>(`/v2/leaderboard/${win}`);
+    for (const t of lb?.traders || []) if (t?.handle && !seen.has(t.handle)) seen.set(t.handle, t);
+  }
+  const profiles = ((await r.hgetall<Record<string, any>>(FOMO_P)) || {}) as Record<string, any>;
+  // profile up to 12 traders per run that have no fresh profile (each costs one API call)
+  const todo = [...seen.values()].filter((t) => !profiles[t.handle] || Date.now() - profiles[t.handle].at > 7 * 86400_000).slice(0, 12);
+  const add: Wallet[] = [];
+  let n = 0;
+  for (const t of todo) {
+    await live(`profiling FOMO trader @${t.handle}: win rate, average win and loss, expected value`);
+    const res = await fomo<any>(`/v2/users/${encodeURIComponent(t.handle)}/trades`);
+    const trades = Array.isArray(res) ? res : res?.trades || res?.data || [];
+    const p = profileOf(trades);
+    const cls = classify(p);
+    await r.hset(FOMO_P, { [t.handle]: { at: Date.now(), ...p, cls } });
+    n++;
+    const sol = t.wallets?.solana;
+    if (cls && isAddr(sol)) add.push({ w: sol, cls, name: t.displayName || t.handle, handle: t.handle, conf: "confirmed", proof: ["FOMO profile wallet (fomoapi.io)"], src: ["fomo"], stats: p, at: Date.now() });
+  }
+  await upsert(add);
+  if (add.length) {
+    const p = r.pipeline();
+    agentLog(p, add.map((x) => ({ agent: "HOUND", at: Date.now(), text: `tracking FOMO trader ${x.name} (${CLASS_LABEL[x.cls]}): ${Math.round(x.stats!.wr * 100)}% win rate, avg win +${Math.round(x.stats!.avgWin * 100)}%, avg loss ${Math.round(x.stats!.avgLoss * 100)}%, EV ${x.stats!.ev > 0 ? "+" : ""}${Math.round(x.stats!.ev * 100)}% per trade`, tone: "ok" })));
+    await p.exec();
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------- 2. KOL wallets
+
+/** On-chain proof: the SNS registry links this wallet to an X handle (Bonfida's Twitter verification). */
+async function snsHandle(w: string): Promise<string | null> {
+  const r = await fetch(`https://sns-sdk-proxy.bonfida.workers.dev/twitter/get-handle-by-key/${w}`, { cache: "no-store" }).catch(() => null);
+  const j: any = r?.ok ? await r.json().catch(() => null) : null;
+  const h = typeof j?.result === "string" ? j.result : null;
+  return h && /^[A-Za-z0-9_]{1,15}$/.test(h) ? h : null;
+}
+
+/** Proof from the person: their own X account posted the address. */
+async function selfPosted(handle: string, w: string): Promise<string | null> {
+  if (!xOn()) return null;
+  const q = encodeURIComponent(`from:${handle} ${w}`);
+  const r = await fetch(`https://api.twitterapi.io/twitter/tweet/advanced_search?query=${q}&queryType=Latest`, { headers: { "X-API-Key": process.env.X_API_KEY! }, cache: "no-store" }).catch(() => null);
+  const j: any = r?.ok ? await r.json().catch(() => null) : null;
+  const t = (j?.tweets || []).find((x: any) => String(x.text || "").includes(w));
+  return t ? t.url || `https://x.com/${handle}/status/${t.id}` : null;
+}
+
+/** Check a KOL wallet and grade the proof. */
+export async function verifyKol(w: string, handle: string | null, rosters: string[]) {
+  const proof: string[] = [];
+  let conf: Wallet["conf"] = "unconfirmed";
+  const sns = await snsHandle(w).catch(() => null);
+  if (sns && handle && sns.toLowerCase() === handle.toLowerCase()) {
+    proof.push(`SNS registry links the wallet to @${sns} (on-chain)`);
+    conf = "confirmed";
+  } else if (sns) proof.push(`SNS registry links the wallet to @${sns}`);
+  if (conf !== "confirmed" && handle) {
+    const url = await selfPosted(handle, w).catch(() => null);
+    if (url) {
+      proof.push(`@${handle} posted this address: ${url}`);
+      conf = "confirmed";
+    }
+  }
+  if (rosters.length) proof.push(`listed by ${rosters.join(" and ")}`);
+  if (conf === "unconfirmed" && rosters.length >= 2) conf = "likely";
+  return { conf, proof, sns };
+}
+
+async function kolSync() {
+  const r = redis();
+  if (Date.now() - Number((await r.get(KOL_AT)) || 0) < 12 * 3600_000) return 0;
+  await r.set(KOL_AT, Date.now());
+  const found = new Map<string, { name: string; handle: string | null; src: string[] }>();
+  const note = (w: string, name: string, handle: string | null, src: string) => {
+    if (!isAddr(w)) return;
+    const cur = found.get(w) || { name, handle, src: [] };
+    cur.src = Array.from(new Set([...cur.src, src]));
+    cur.handle ||= handle;
+    found.set(w, cur);
+  };
+  if (process.env.MADEONSOL_API_KEY) {
+    await live("reading the MadeOnSol KOL roster");
+    const res = await fetch("https://madeonsol.com/api/v1/kol/wallets", { headers: { authorization: `Bearer ${process.env.MADEONSOL_API_KEY}` }, cache: "no-store" }).catch(() => null);
+    const j: any = res?.ok ? await res.json().catch(() => null) : null;
+    for (const k of j?.data || j?.wallets || j || []) note(k.wallet || k.address, k.name || k.handle || "KOL", (k.twitter || k.handle || "").replace(/^@|https?:\/\/(x|twitter)\.com\//g, "") || null, "MadeOnSol");
+  }
+  if (process.env.SOLANATRACKER_API_KEY) {
+    await live("reading the Solana Tracker KOL roster");
+    const res = await fetch("https://data.solanatracker.io/v2/pnl/leaderboard/kols", { headers: { "x-api-key": process.env.SOLANATRACKER_API_KEY }, cache: "no-store" }).catch(() => null);
+    const j: any = res?.ok ? await res.json().catch(() => null) : null;
+    for (const k of j?.wallets || j?.data || j || []) note(k.wallet || k.address, k.name || k.identity?.name || "KOL", (k.twitter || k.identity?.twitter || "").replace(/^@|https?:\/\/(x|twitter)\.com\//g, "") || null, "Solana Tracker");
+  }
+  const have = await book();
+  const todo = [...found.entries()].filter(([w]) => !have[w] || (have[w].conf !== "confirmed" && Date.now() - have[w].at > 7 * 86400_000)).slice(0, 25);
+  const add: Wallet[] = [];
+  for (const [w, k] of todo) {
+    await live(`checking ${k.name}'s wallet ${w.slice(0, 4)}…${w.slice(-4)}: SNS registry, their own posts, rosters`);
+    const v = await verifyKol(w, k.handle, k.src);
+    add.push({ w, cls: "kol", name: k.name, handle: k.handle, conf: v.conf, proof: v.proof, src: k.src, at: Date.now() });
+  }
+  await upsert(add);
+  return add.length;
+}
+
+/** Admin: add a wallet by hand (KOL or anyone worth watching), checked like any other. */
+export async function addWallet(w: string, name: string, handle: string | null, proofUrl: string | null, cls: Cls = "kol") {
+  if (!isAddr(w)) throw new Error("not a Solana address");
+  const v = await verifyKol(w, handle, []);
+  const proof = [...v.proof, ...(proofUrl ? [`admin proof: ${proofUrl}`] : []), "added by admin"];
+  const conf = v.conf === "confirmed" ? "confirmed" : proofUrl ? "likely" : "unconfirmed";
+  const x: Wallet = { w, cls: cls === "admin" ? "admin" : cls, name: name.slice(0, 40), handle, conf, proof, src: ["admin"], at: Date.now() };
+  const r = redis();
+  await r.hset(W, { [w]: x });
+  await r.set(DIRTY, 1);
+  return x;
+}
+
+export async function setWallet(w: string, patch: Partial<Pick<Wallet, "off" | "name" | "handle" | "cls">>) {
+  const r = redis();
+  const x = await r.hget<Wallet>(W, w);
+  if (!x) return null;
+  const y = { ...x, ...patch };
+  await r.hset(W, { [w]: y });
+  await r.set(DIRTY, 1);
+  return y;
+}
+
+// ---------------------------------------------------------------- 3. smart wallets from breakouts
+
+/** Dig one breakout: every buy on its curve before it bonded. Big early buyers get credit. */
+async function digBreakout() {
+  const r = redis();
+  const top = (await r.zpopmin<string>(BQ, 1)) as any[];
+  if (!top?.length) return 0;
+  const [mint, createdAt, bondedAt, symbol] = String(top[0]).split("|");
+  const until = Number(bondedAt) || Number(createdAt) + 6 * 3600_000;
+  await live(`digging the breakout $${symbol}: every buy on its curve before it bonded`);
+  const curve = bondingCurvePda(mint);
+  const sigs = (await oldestSigs(curve, until, 1500).catch(() => [])).filter((s) => !s.err).slice(0, 600);
+  if (!sigs.length) return 0;
+  const txs: any[] = [];
+  for (let i = 0; i < sigs.length; i += 100) {
+    const chunk = sigs.slice(i, i + 100).map((s) => s.signature);
+    const got = await conn().getParsedTransactions(chunk, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => pmap(chunk, 6, (s) => conn().getParsedTransaction(s, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null)));
+    txs.push(...got);
+  }
+  const trades = txs.map((tx) => parseTrade(tx, curve, mint)).filter((t): t is NonNullable<typeof t> => !!t && t.sol > 0);
+  // net SOL in per wallet and the curve fill when they first bought (earlier = lower market cap)
+  let filled = 0;
+  const by = new Map<string, { sol: number; fill: number; t: number }>();
+  for (const t of trades.sort((a, b) => a.slot - b.slot)) {
+    filled += t.sol;
+    const cur = by.get(t.w) || { sol: 0, fill: filled, t: t.t };
+    cur.sol += t.sol;
+    by.set(t.w, cur);
+  }
+  const p = r.pipeline();
+  const sn = ((await r.hmget<Record<string, number>>(GK.sN, ...[...by.keys()])) || {}) as Record<string, number | null>;
+  const sbN = ((await r.hmget<Record<string, number>>(GK.sB, ...[...by.keys()])) || {}) as Record<string, number | null>;
+  let credited = 0;
+  for (const [w, x] of by) {
+    if (x.sol < 1) continue; // "absurd amounts": 1+ SOL before the run
+    // spray bots buy everything early; skip wallets with a long record and a base-rate hit rate
+    const n = Number(sn[w] || 0);
+    const b = Number(sbN[w] || 0);
+    if (n >= 30 && b / n < 0.05) continue;
+    const mult = Math.max(1, 85 / Math.max(1, x.fill)); // curve SOL at their entry vs ~85 SOL at bond
+    const cur = ((await r.hget<{ n: number; sol: number; best: number; coins: string[] }>(SB, w)) || { n: 0, sol: 0, best: 0, coins: [] }) as any;
+    if (cur.coins.includes(mint)) continue;
+    cur.n++;
+    cur.sol = r2(cur.sol + x.sol);
+    cur.best = r2(Math.max(cur.best, mult));
+    cur.coins = [...cur.coins, mint].slice(-12);
+    p.hset(SB, { [w]: cur });
+    credited++;
+    // promote: 3+ breakouts bought big before the run, or 2 with 10x+ entries and 3+ SOL in total
+    if (cur.n >= 3 || (cur.n >= 2 && cur.best >= 10 && cur.sol >= 3)) {
+      const have = await r.hget<Wallet>(W, w);
+      if (!have) {
+        p.hset(W, { [w]: { w, cls: "smart", name: `smart ${w.slice(0, 4)}…${w.slice(-4)}`, handle: null, conf: "confirmed", proof: [`bought big before ${cur.n} breakouts (on-chain)`], src: ["breakouts"], sb: { n: cur.n, sol: cur.sol, best: cur.best }, at: Date.now() } satisfies Wallet });
+        p.set(DIRTY, 1);
+        agentLog(p, [{ agent: "HOUND", at: Date.now(), mint, symbol, text: `new smart wallet ${w.slice(0, 4)}…${w.slice(-4)}: bought ${cur.sol} SOL before ${cur.n} breakouts, best entry ${cur.best}x before bond`, tone: "ok" }]);
+      } else if (have.cls === "smart") p.hset(W, { [w]: { ...have, sb: { n: cur.n, sol: cur.sol, best: cur.best } } });
+    }
+  }
+  agentLog(p, [{ agent: "HOUND", at: Date.now(), mint, symbol, text: `dug the breakout $${symbol}: ${trades.length} buys before bond, ${credited} wallets put 1+ SOL in early`, tone: "info" }]);
+  await p.exec();
+  return 1;
+}
+
+// ---------------------------------------------------------------- live: the Helius webhook
+
+const heliusKey = () => process.env.HELIUS_API_KEY || (process.env.HELIUS_RPC_URL || "").match(/api-key=([A-Za-z0-9-]+)/)?.[1] || "";
+const hookAuth = () => `rn-${(process.env.CRON_SECRET || "").slice(0, 24)}`;
+export const checkHook = (req: Request) => !!process.env.CRON_SECRET && req.headers.get("authorization") === hookAuth();
+
+/** Keep one Helius webhook on every tracked wallet (only when the book changed, at most every 10 minutes). */
+async function syncHook() {
+  const key = heliusKey();
+  const r = redis();
+  if (!key || !process.env.CRON_SECRET) return { hook: "off (no Helius key)" };
+  if (!(await r.get(DIRTY))) return { hook: "unchanged" };
+  const prev = await r.get<{ id: string; n: number; at: number }>(HOOK);
+  if (prev && Date.now() - prev.at < 10 * 60_000) return { hook: "waiting" };
+  const addrs = Object.values(await book()).filter((x) => !x.off).map((x) => x.w).slice(0, 100_000);
+  if (!addrs.length) return { hook: "no wallets yet" };
+  const body = { webhookURL: `${SITE.url}/api/hound/hook`, transactionTypes: ["SWAP"], accountAddresses: addrs, webhookType: "enhanced", authHeader: hookAuth() };
+  const base = "https://api.helius.xyz/v0/webhooks";
+  const res = prev?.id
+    ? await fetch(`${base}/${prev.id}?api-key=${key}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null)
+    : await fetch(`${base}?api-key=${key}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+  const j: any = res?.ok ? await res.json().catch(() => null) : null;
+  if (!j?.webhookID && !prev?.id) return { hook: `failed ${res?.status ?? "no answer"}` };
+  await r.set(HOOK, { id: j?.webhookID || prev!.id, n: addrs.length, at: Date.now() });
+  await r.del(DIRTY);
+  return { hook: `${addrs.length} wallets live` };
+}
+
+/** Parse Helius enhanced SWAP transactions into buys and sells of tracked wallets. */
+export async function onSwaps(txs: any[]) {
+  const r = redis();
+  const list = Array.isArray(txs) ? txs : [];
+  if (!list.length) return { buys: 0 };
+  const ws = Array.from(new Set(list.map((t) => t.feePayer).filter(Boolean)));
+  const got = ((await r.hmget<Record<string, Wallet>>(W, ...ws)) || {}) as Record<string, Wallet | null>;
+  const out: Buy[] = [];
+  for (const t of list) {
+    const wl = got[t.feePayer];
+    if (!wl || wl.off) continue;
+    const tt: any[] = t.tokenTransfers || [];
+    const inTok = tt.find((x) => x.toUserAccount === t.feePayer && x.mint !== WSOL && x.mint !== USDC);
+    const outTok = tt.find((x) => x.fromUserAccount === t.feePayer && x.mint !== WSOL && x.mint !== USDC);
+    const nat: any[] = t.nativeTransfers || [];
+    const solOut = nat.filter((x) => x.fromUserAccount === t.feePayer).reduce((a, x) => a + Number(x.amount || 0), 0) / 1e9;
+    const wsolOut = tt.filter((x) => x.fromUserAccount === t.feePayer && x.mint === WSOL).reduce((a, x) => a + Number(x.tokenAmount || 0), 0);
+    const side: Buy["side"] = inTok ? "buy" : "sell";
+    const mint = (inTok || outTok)?.mint;
+    if (!mint) continue;
+    const sol = r2(side === "buy" ? Math.max(solOut, wsolOut) : 0);
+    out.push({ id: t.signature, w: wl.w, name: wl.name, cls: wl.cls, conf: wl.conf, mint, symbol: "", sol, at: (t.timestamp || Date.now() / 1000) * 1000, sig: t.signature, side });
+  }
+  if (!out.length) return { buys: 0 };
+  const recs = ((await r.mget<any[]>(...out.map((b) => K.launch(b.mint)))) || []) as any[];
+  out.forEach((b, i) => (b.symbol = recs[i]?.symbol || ""));
+  const p = r.pipeline();
+  const hot = new Set<string>();
+  for (const b of out) {
+    p.lpush(FEED, b);
+    if (b.side !== "buy") continue;
+    p.hset(M(b.mint), { [b.w]: { at: b.at, sol: b.sol, name: b.name, cls: b.cls, conf: b.conf } });
+    p.expire(M(b.mint), 3 * 86400);
+    // follow every buy: what would copying it have made?
+    p.hset(BUY, { [b.id]: { ...b, px0: null } });
+    p.zadd(DUE, { score: Date.now() + 60_000, member: b.id });
+    hot.add(b.mint);
+  }
+  p.ltrim(FEED, 0, 199);
+  await p.exec();
+  // confluence: 2+ tracked wallets in 30 minutes, or one strong one (confirmed KOL with a positive copy record, a
+  // FOMO home-run hitter, a smart wallet), sends the coin to LENS and MIND
+  const ev = ((await r.hgetall<Record<string, number>>(EV)) || {}) as Record<string, number>;
+  for (const mint of hot) {
+    const buyers = Object.values(((await r.hgetall<Record<string, any>>(M(mint))) || {}) as Record<string, any>).filter((x) => Date.now() - x.at < 30 * 60_000);
+    const strong = buyers.some((x) => x.cls === "fomo-homerun" || x.cls === "smart" || (x.cls === "kol" && x.conf === "confirmed" && Number(ev[`c:kol:s`] || 0) >= 0));
+    if (buyers.length >= 2 || strong) {
+      const q = r.pipeline();
+      enqueueLens(q, mint, "wire");
+      enqueueMind(q, mint, "wallets");
+      await q.exec();
+    }
+  }
+  return { buys: out.filter((b) => b.side === "buy").length };
+}
+
+// ---------------------------------------------------------------- copy-trade records
+
+async function prices(mints: string[]) {
+  const out: Record<string, number> = {};
+  if (!mints.length) return out;
+  const curves = await getCurves(mints).catch(() => ({} as Record<string, any>));
+  const done = mints.filter((m) => !curves[m] || curves[m]!.complete);
+  const pools = done.length ? await readPools(done).catch(() => ({} as Record<string, any>)) : {};
+  const rest: string[] = [];
+  for (const m of mints) {
+    const c = curves[m];
+    if (c && !c.complete && c.priceSol > 0) out[m] = c.priceSol;
+    else if (pools[m]?.px) out[m] = pools[m].px;
+    else rest.push(m);
+  }
+  // not a pump.fun coin: DexScreener's biggest pair
+  for (let i = 0; i < rest.length; i += 30) {
+    const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${rest.slice(i, i + 30).join(",")}`, { cache: "no-store" }).catch(() => null);
+    const pairs: any[] = res?.ok ? ((await res.json().catch(() => [])) as any[]) : [];
+    const best: Record<string, any> = {};
+    for (const pr of pairs || []) {
+      const m = pr?.baseToken?.address;
+      if (m && (!best[m] || (pr.liquidity?.usd || 0) > (best[m].liquidity?.usd || 0))) best[m] = pr;
+    }
+    for (const [m, pr] of Object.entries(best)) if (Number(pr.priceNative) > 0) out[m] = Number(pr.priceNative);
+  }
+  return out;
+}
+
+async function follow() {
+  const r = redis();
+  const ids = ((await r.zrange<string[]>(DUE, 0, Date.now(), { byScore: true, offset: 0, count: 80 })) || []).map(String);
+  if (!ids.length) return 0;
+  const got = ((await r.hmget<Record<string, any>>(BUY, ...ids)) || {}) as Record<string, any>;
+  const items = ids.map((i) => got[i]).filter(Boolean);
+  const px = await prices(Array.from(new Set(items.map((b) => b.mint))));
+  const p = r.pipeline();
+  for (const i of ids) p.zrem(DUE, i);
+  for (const b of items) {
+    const now = px[b.mint];
+    if (b.px0 == null) {
+      // first look a minute after the buy sets the copy price (what we could have bought at)
+      if (!now) {
+        p.hdel(BUY, b.id);
+        continue;
+      }
+      b.px0 = now;
+      b.step = 0;
+      p.hset(BUY, { [b.id]: b });
+      p.zadd(DUE, { score: b.at + 3600_000, member: b.id });
+      continue;
+    }
+    const ret = now ? Math.log(Math.max(1e-12, now) / b.px0) : Math.log(0.05);
+    const hk = ["1h", "6h", "24h"][b.step];
+    for (const key of [b.w, `c:${b.cls}`]) {
+      p.hincrby(EV, `${key}:${hk}:n`, 1);
+      p.hincrbyfloat(EV, `${key}:${hk}:s`, Math.max(-3, Math.min(5, ret)));
+      if (ret >= Math.log(2)) p.hincrby(EV, `${key}:${hk}:x2`, 1);
+    }
+    b.step++;
+    if (b.step < 3) {
+      p.hset(BUY, { [b.id]: b });
+      p.zadd(DUE, { score: b.at + [3600_000, 6 * 3600_000, 24 * 3600_000][b.step], member: b.id });
+    } else p.hdel(BUY, b.id);
+  }
+  await p.exec();
+  return items.length;
+}
+
+const avgOf = (ev: Record<string, number>, key: string, hk: string) => {
+  const n = Number(ev[`${key}:${hk}:n`] || 0);
+  return { n, avg: n ? Math.round((Math.exp(Number(ev[`${key}:${hk}:s`] || 0) / n) - 1) * 1000) / 10 : null, x2: Number(ev[`${key}:${hk}:x2`] || 0) };
+};
+
+/** Who among the tracked wallets bought this coin, with their copy records (for MIND, VET and the coin page). */
+export async function buyersOf(mint: string) {
+  const r = redis();
+  const [m, ev] = await Promise.all([r.hgetall<Record<string, any>>(M(mint)), r.hgetall<Record<string, number>>(EV)]);
+  const E = (ev || {}) as Record<string, number>;
+  return Object.entries((m || {}) as Record<string, any>)
+    .map(([w, x]) => ({ w, ...x, copy6h: avgOf(E, w, "6h"), class6h: avgOf(E, `c:${x.cls}`, "6h") }))
+    .sort((a, b) => a.at - b.at);
+}
+
+// ---------------------------------------------------------------- session and views
+
+export async function houndSession() {
+  const out: Record<string, unknown> = {};
+  out.fomo = await fomoSync().catch((e) => `error ${e?.message || e}`);
+  out.kol = await kolSync().catch((e) => `error ${e?.message || e}`);
+  out.breakouts = await digBreakout().catch((e) => `error ${e?.message || e}`);
+  out.followed = await follow().catch(() => 0);
+  Object.assign(out, await syncHook().catch((e) => ({ hook: `error ${e?.message || e}` })));
+  return out;
+}
+
+export async function houndView(full: boolean) {
+  const r = redis();
+  const [feed, ws, ev, hook, lv, q] = await Promise.all([r.lrange<Buy>(FEED, 0, 39), book(), r.hgetall<Record<string, number>>(EV), r.get<any>(HOOK), r.get<any>(LIVE), r.zcard(BQ)]);
+  const E = (ev || {}) as Record<string, number>;
+  const all = Object.values(ws);
+  const counts = { fomo: all.filter((x) => x.cls.startsWith("fomo")).length, kol: all.filter((x) => x.cls === "kol").length, kolConfirmed: all.filter((x) => x.cls === "kol" && x.conf === "confirmed").length, smart: all.filter((x) => x.cls === "smart").length, admin: all.filter((x) => x.cls === "admin").length };
+  const classes = (["fomo-homerun", "fomo-steady", "kol", "smart", "admin"] as Cls[]).map((c) => ({ cls: c, label: CLASS_LABEL[c], h1: avgOf(E, `c:${c}`, "1h"), h6: avgOf(E, `c:${c}`, "6h"), h24: avgOf(E, `c:${c}`, "24h") }));
+  // public: names of KOLs and FOMO traders are public anyway; smart wallets stay anonymous and addresses are hidden
+  const show = (b: Buy) => (full ? b : { ...b, w: b.cls === "smart" ? "" : b.w, name: b.cls === "smart" ? "smart wallet" : b.name });
+  return {
+    live: lv || null,
+    hook: hook ? { n: hook.n, at: hook.at } : null,
+    breakoutsQueued: q || 0,
+    counts,
+    classes,
+    feed: ((feed || []) as Buy[]).map(show),
+    wallets: full ? all.map((x) => ({ ...x, copy6h: avgOf(E, x.w, "6h") })).sort((a, b) => (b.copy6h.n || 0) - (a.copy6h.n || 0)) : undefined,
+    sources: { fomo: fomoOn(), madeonsol: !!process.env.MADEONSOL_API_KEY, solanatracker: !!process.env.SOLANATRACKER_API_KEY, helius: !!heliusKey(), x: xOn() },
+  };
+}

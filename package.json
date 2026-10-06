@@ -1,6 +1,6 @@
 {
   "name": "ratnet",
-  "version": "0.1.8",
+  "version": "0.1.11",
   "description": "",
   "scripts": {
     "dev": "next dev",
@@ -33,5 +33,6 @@
   "private": true,
   "engines": {
     "node": ">=20"
-  }
+  },
+  "homepage": "https://www.ratnet.network"
 }

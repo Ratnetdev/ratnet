@@ -1,7 +1,7 @@
 // WIRE seed list: X accounts whose posts are known to spawn pump.fun coins. WIRE starts here, then adds accounts by
 // itself (the authors of tweets that coins link to and that bond, and accounts the tracked ones keep amplifying) and
 // mutes accounts that never spark a coin. Edit freely; handles only, no @.
-export const X_SEED: { h: string; cat: "leader" | "celeb" | "founder" | "kol" | "news" | "brand" }[] = [
+export const X_SEED: { h: string; cat: "leader" | "celeb" | "founder" | "kol" | "trader" | "news" | "brand" }[] = [
   // world leaders and politics
   { h: "realDonaldTrump", cat: "leader" },
   { h: "POTUS", cat: "leader" },
@@ -50,6 +50,18 @@ export const X_SEED: { h: string; cat: "leader" | "celeb" | "founder" | "kol" | 
   { h: "CryptoKaleo", cat: "kol" },
   { h: "KookCapitalLLC", cat: "kol" },
   { h: "zachxbt", cat: "kol" },
+  // memecoin traders: MIND studies what they post, and their CA posts are calls it judges (graded per caller)
+  { h: "Cupseyy", cat: "trader" },
+  { h: "orangie", cat: "trader" },
+  { h: "Cented7", cat: "trader" },
+  { h: "Ga__ke", cat: "trader" },
+  { h: "dingalingts", cat: "trader" },
+  { h: "0xSisyphus", cat: "trader" },
+  { h: "HsakaTrades", cat: "trader" },
+  { h: "loopierr", cat: "trader" },
+  { h: "theunipcs", cat: "trader" },
+  { h: "inversebrah", cat: "trader" },
+  { h: "rasmr_eth", cat: "trader" },
   // breaking news (memes launch off headlines)
   { h: "WatcherGuru", cat: "news" },
   { h: "tier10k", cat: "news" },

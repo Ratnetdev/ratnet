@@ -116,7 +116,7 @@ async function loadState(days: number): Promise<HState> {
   };
 }
 
-async function oldestSigs(address: string, untilMs: number, max = 3000): Promise<{ signature: string; slot: number; blockTime: number | null; err: unknown }[]> {
+export async function oldestSigs(address: string, untilMs: number, max = 3000): Promise<{ signature: string; slot: number; blockTime: number | null; err: unknown }[]> {
   const url = process.env.HELIUS_RPC_URL;
   if (url) {
     try {

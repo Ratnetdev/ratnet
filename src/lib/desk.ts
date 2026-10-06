@@ -24,9 +24,12 @@ import { NANO_MIN, type NanoModel } from "./nano";
 import { agentLog, type AgentEv } from "./agents";
 import { coachStats, coachStep, follow, followsFor, tripId, type Check } from "./coach";
 import { filmStats, filmStep, logSkip } from "./film";
-import { onClose as pmClose, onGhost as pmGhost, pmView, sleeveOf, sleeveWeight } from "./pm";
+import { exitProfiles, noteExit, onClose as pmClose, onGhost as pmGhost, pmView, sleeveOf, sleeveWeight, type ExitProfile } from "./pm";
 import { accountOf, notePnl, wireView } from "./wire";
 import { getHistory } from "./historian";
+import { enqueueLens, lensDossier } from "./lens";
+import { mindJudgement } from "./mind";
+import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 
@@ -72,8 +75,9 @@ export type Pos = {
   nano: number | null;
   live: boolean;
   series: Sample[];
-  how?: "direct" | "stalk" | "early" | "wire";
-  wire?: { h: string; tid: string; text: string } | null; // the post a tweet coin was born from
+  how?: "direct" | "stalk" | "early" | "wire" | "mind";
+  wire?: { h: string; tid: string; text: string; vamp?: boolean } | null; // the post a tweet coin was born from
+  peakAt?: number; // when the price peaked while held (exit profiles)
   msHi?: number; // highest milestone the ladder has acted on
   pn?: number; // P(next milestone) at the last check
   noPxSince?: number; // first beat with no price (curve complete, not migrated yet)
@@ -112,6 +116,10 @@ export type EntryCtx = {
   solUsd: number | null;
   sleeve?: string;
   wire?: { h: string; text: string; how: string; lagSec: number; trust: number } | null;
+  // scorecard: the plain-word reasons (public) and the numbers behind them (admin)
+  mind?: { verdict: string; conviction: number; thesis: string; narrative: string; reasons: string[]; risks: string[] } | null;
+  wallets?: { name: string; cls: string; conf: string; sol: number; minsBefore: number }[] | null;
+  card?: { plus: string[]; minus: string[]; parts?: Record<string, number> | null; nc?: [string, number][] | null; lens?: { score: number; flags: string[]; good: string[] } | null };
 };
 export type Trade = {
   id: string;
@@ -173,6 +181,16 @@ export type Learn = {
   // every coin it skips is followed in shadow, and COACH drops the rule if those coins do better than the ones bought.
   floorOn: boolean;
   floor: { n: number; sum: number }; // skipped-for-dump signals: count and summed 30-minute log return
+  // PRIOR "socials": a coin with no X, website or Telegram is usually a quick rug, unless it is tied to a tweet.
+  // Same deal as the floor: skipped coins are followed in shadow and COACH drops the prior if they do better.
+  socialsOn: boolean;
+  socials: { n: number; sum: number };
+  // PRIOR "post traction": a tweet coin only counts when its post spawned a wave (3+ coins or 25+ SOL across them).
+  // Most headlines move nothing. Skipped tweet coins are followed in shadow; COACH drops the prior if they do better.
+  tractionOn: boolean;
+  traction: { n: number; sum: number };
+  // trail scale per strategy sleeve (tweet coins and vamps dump fast after the first push; King calls can run)
+  trailBy: Record<string, number>;
 };
 export const LEARN_RULES = {
   devMin: 15, // dev-sell cases before the dev exit can switch itself on
@@ -180,6 +198,10 @@ export const LEARN_RULES = {
   floorMax: 40, // % under the coin's high (since launch) where the floor prior skips it
   floorMin: 30, // skipped cases before COACH can overrule the floor prior
   floorEdge: 0.05, // skipped coins must beat bought coins by this much (30-minute log return) to overrule it
+  socialsMin: 30, // skipped no-socials cases before COACH can overrule the socials prior
+  socialsEdge: 0.05,
+  tractionMin: 20, // skipped low-traction tweet coins before COACH can overrule the traction prior
+  tractionEdge: 0.05,
   stalkMin: 30, // shadow signals before pullback entries can unlock
   stalkEdge: 0.1, // mean log return must beat buying now by this much (about +10%)
   earlyMin: 50, // resolved minute-1 BOND reads before early entries can unlock
@@ -202,12 +224,17 @@ function emptyLearn(): Learn {
     devStat: { n: 0, saved: 0, cost: 0 },
     floorOn: true,
     floor: { n: 0, sum: 0 },
+    socialsOn: true,
+    socials: { n: 0, sum: 0 },
+    tractionOn: true,
+    traction: { n: 0, sum: 0 },
+    trailBy: {},
   };
 }
 
 type ArmTrack = { hi: number; lo: number; armed: boolean; fill: number | null };
-type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" };
-type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean };
+type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" | "socials" | "traction" };
+type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string };
 type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean };
 
 export const EXAM = { trades: 30, winRate: 40, pnlPct: 10, maxDD: 30, minWallet: 0.5, liveMaxDD: 40 };
@@ -227,7 +254,7 @@ async function loadState(start: number): Promise<DeskState> {
 async function loadLearn(): Promise<Learn> {
   const l = await redis().get<Learn>(K.deskLearn);
   const e = emptyLearn();
-  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn } : e;
+  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn, traction: { ...e.traction, ...(l.traction || {}) }, tractionOn: l.tractionOn ?? e.tractionOn, trailBy: { ...(l.trailBy || {}) } } : e;
 }
 
 /** The paper desk mirrors the real desk wallet, so the start on the site is the real balance. */
@@ -449,21 +476,41 @@ function stepArm(t: ArmTrack, depth: number, px: number, px0: number) {
   }
 }
 
+const PRIOR_RULES: Record<string, "floor" | "socials" | "traction"> = { holding_floor: "floor", has_socials: "socials", post_traction: "traction" };
+
+/** Socials prior. Tweet-linked coins (a WIRE match or an X link to a post) and coins with 2+ smart wallets early pass anyway. */
+function socialsCheck(rec: Launch, l: Learn) {
+  const soc = [rec.twitter && "X", rec.website && "website", rec.telegram && "Telegram"].filter(Boolean) as string[];
+  const tweet = !!rec.wire || /\/status\/\d+/.test(String(rec.twitter || ""));
+  const smart = rec.g?.smartN ?? 0;
+  const ok = !l.socialsOn || soc.length > 0 || tweet || smart >= 2;
+  const v = soc.length ? soc.join(", ") : tweet ? "no socials, but tied to a tweet" : smart >= 2 ? `no socials, but ${smart} smart wallets early` : "no X, website or Telegram";
+  return { rule: "has_socials", ok, v: `${v}${l.socialsOn ? "" : " (prior overruled)"}` };
+}
+
 function scoreShadow(l: Learn, sh: Shadow, b: Batch) {
   // 30 minutes on: what each entry would have returned by now (log return; no fill = 0)
   const end = sh.last;
-  if (sh.tag === "floor") {
-    // a coin the floor prior skipped: would buying it anyway have paid?
+  if (sh.tag === "floor" || sh.tag === "socials" || sh.tag === "traction") {
+    // a coin a prior skipped: would buying it anyway have paid?
     const ret = Math.log(Math.max(1e-9, end) / sh.px0);
-    l.floor.n++;
-    l.floor.sum += ret;
+    const tg = sh.tag;
+    const st = tg === "floor" ? l.floor : tg === "socials" ? l.socials : l.traction;
+    st.n++;
+    st.sum += ret;
     const direct = l.arms["0"];
     const takenMean = direct.n ? direct.sum / direct.n : 0;
-    const skipMean = l.floor.sum / l.floor.n;
-    const was = l.floorOn;
-    if (l.floor.n >= LEARN_RULES.floorMin) l.floorOn = !(skipMean > takenMean + LEARN_RULES.floorEdge);
-    log(b, "COACH", `floor review $${sh.symbol} (skipped, dumped from its high): ${fmtPct((Math.exp(ret) - 1) * 100)} in 30m. skipped avg ${fmtPct((Math.exp(skipMean) - 1) * 100)} vs bought ${fmtPct((Math.exp(takenMean) - 1) * 100)} over ${l.floor.n} cases`, ret > 0 ? "bad" : "ok", { mint: sh.mint, symbol: sh.symbol });
-    if (was !== l.floorOn) log(b, "COACH", l.floorOn ? "floor prior back on: dumped coins are doing worse than the ones bought" : "floor prior overruled: coins that dumped from their high did better than the ones bought", "win");
+    const skipMean = st.sum / st.n;
+    const was = tg === "floor" ? l.floorOn : tg === "socials" ? l.socialsOn : l.tractionOn;
+    const min = tg === "floor" ? LEARN_RULES.floorMin : tg === "socials" ? LEARN_RULES.socialsMin : LEARN_RULES.tractionMin;
+    const edge = tg === "floor" ? LEARN_RULES.floorEdge : tg === "socials" ? LEARN_RULES.socialsEdge : LEARN_RULES.tractionEdge;
+    const now = st.n >= min ? !(skipMean > takenMean + edge) : was;
+    if (tg === "floor") l.floorOn = now;
+    else if (tg === "socials") l.socialsOn = now;
+    else l.tractionOn = now;
+    const what = tg === "floor" ? "dumped from its high" : tg === "socials" ? "no X, website or Telegram" : "a post that spawned no wave";
+    log(b, "COACH", `${sh.tag} review $${sh.symbol} (skipped, ${what}): ${fmtPct((Math.exp(ret) - 1) * 100)} in 30m. skipped avg ${fmtPct((Math.exp(skipMean) - 1) * 100)} vs bought ${fmtPct((Math.exp(takenMean) - 1) * 100)} over ${st.n} cases`, ret > 0 ? "bad" : "ok", { mint: sh.mint, symbol: sh.symbol });
+    if (was !== now) log(b, "COACH", now ? `${sh.tag} prior back on: skipped coins are doing worse than the ones bought` : `${sh.tag} prior overruled: coins it skipped (${what}) did better than the ones bought`, "win");
     return;
   }
   const parts: string[] = [];
@@ -501,14 +548,19 @@ function reviewExit(l: Learn, a: After, b: Batch): boolean {
   const coin = { mint: a.mint, symbol: a.symbol };
   l.reviews++;
   const gaveBack = a.peakHeld > 0 ? 1 - a.exitPx / a.peakHeld : 0;
+  const sl = a.sl || "king";
+  l.trailBy ||= {};
+  const cur = l.trailBy[sl] ?? l.trailK;
   if (ranAfter && a.tunable) {
     l.early++;
-    l.trailK = Math.min(1.6, l.trailK * 1.06);
-    log(b, "COACH", `$${a.symbol} ran to ${(a.hi / a.exitPx).toFixed(1)}x after we sold (${a.reason}). trails widened to ${l.trailK.toFixed(2)}x`, "bad", coin);
+    l.trailBy[sl] = Math.min(1.6, cur * 1.06);
+    if (sl === "king") l.trailK = l.trailBy[sl];
+    log(b, "COACH", `$${a.symbol} ran to ${(a.hi / a.exitPx).toFixed(1)}x after we sold (${a.reason}). ${sl} trails widened to ${l.trailBy[sl].toFixed(2)}x`, "bad", coin);
   } else if (a.tunable && gaveBack >= 0.4) {
     l.late++;
-    l.trailK = Math.max(0.6, l.trailK * 0.97);
-    log(b, "COACH", `$${a.symbol} gave back ${(gaveBack * 100).toFixed(0)}% from its peak before we sold. trails tightened to ${l.trailK.toFixed(2)}x`, "bad", coin);
+    l.trailBy[sl] = Math.max(0.5, cur * 0.97);
+    if (sl === "king") l.trailK = l.trailBy[sl];
+    log(b, "COACH", `$${a.symbol} gave back ${(gaveBack * 100).toFixed(0)}% from its peak before we sold. ${sl} trails tightened to ${l.trailBy[sl].toFixed(2)}x`, "bad", coin);
   } else {
     l.good++;
     log(b, "COACH", `$${a.symbol} exit held up: ${dumped ? `fell ${(100 - (a.lo / a.exitPx) * 100).toFixed(0)}% after we sold` : "no big move after we sold"}`, "ok", coin);
@@ -555,6 +607,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let lastBeat = 0;
     let sol = (await solUsd()) || 0;
     let runModel: NanoModel = await loadRunner();
+    let prof: Record<string, ExitProfile> = await exitProfiles(cfg.initialsAt, cfg.timeStop).catch(() => ({}));
     let emp: Record<string, number> = (await r.hgetall<Record<string, number>>(RK.emp)) || {};
     let runs: Record<string, Run | null> = {};
     let lastRunsAt = 0;
@@ -608,7 +661,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const ghosts = Object.values(((await r.hgetall<Record<string, Pos>>(GHOST_POS)) || {}) as Record<string, Pos>);
       // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
       const px = await priceOf(
-        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^w:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
+        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wm]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
       );
       if (now - lastRunsAt > 10_000) {
         lastRunsAt = now;
@@ -618,6 +671,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         runs = Object.fromEntries(ms.map((m, i) => [m, got2[i]]));
         if (loops % 30 === 1) {
           runModel = await loadRunner();
+          prof = await exitProfiles(cfg.initialsAt, cfg.timeStop).catch(() => prof);
           emp = (await r.hgetall<Record<string, number>>(RK.emp)) || {};
         }
       }
@@ -643,8 +697,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const decide = (p: Pos, q: Px, gt = "") => {
         p.noPxSince = undefined;
         p.lastPx = q.px;
+        if (q.px > p.peakPx) p.peakAt = now;
         p.peakPx = Math.max(p.peakPx, q.px);
         const rs = (recent[p.mint] ||= []);
+        // this strategy's own exit profile (initials, time stop) and COACH's trail scale for it
+        const sl = sleeveOf(p.how, p.wire?.vamp);
+        const pf = prof[sl];
+        const initialsAt = pf?.initials ?? cfg.initialsAt;
+        const timeStop = pf?.timeStop ?? cfg.timeStop;
+        const trailK = learnS.trailBy?.[sl] ?? learnS.trailK;
         rs.push([now, q.px, q.real]);
         while (rs.length && now - rs[0][0] > 60_000) rs.shift();
         const lastS = p.series[p.series.length - 1];
@@ -676,14 +737,14 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         else if (!p.tp1Done) {
           if (gain <= cfg.sl) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
           else if (drain <= -20) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}% in 40s`];
-          else if (gain >= cfg.initialsAt) [sellFrac, reason] = [cfg.initialsFrac, `initials at ${mult.toFixed(1)}x, cost is back`];
+          else if (gain >= initialsAt) [sellFrac, reason] = [cfg.initialsFrac, `initials at ${mult.toFixed(1)}x${initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf!.medPk}x)` : ""}, cost is back`];
           else if (q.grad && !p.gradSeen) {
             p.gradSeen = true;
             if (p.pn < cfg.gradKeepP) [sellFrac, reason] = [1, `migrated before initials, P(next) ${Math.round(p.pn * 100)}%: out`];
-          } else if (age >= cfg.timeStop) [sellFrac, reason] = [1, `time stop ${Math.round(age)}m at ${fmtPct(gain)}`];
+          } else if (age >= timeStop) [sellFrac, reason] = [1, `time stop ${Math.round(age)}m at ${fmtPct(gain)}${timeStop !== cfg.timeStop ? ` (${sl} coins peak within ${pf!.medTtp}m)` : ""}`];
         } else {
           // house money: trail + milestone ladder + migration check
-          const width = Math.max(15, Math.min(65, trailFor(cfg.trail, mult) * learnS.trailK * (0.85 + 0.3 * p.pn)));
+          const width = Math.max(15, Math.min(65, trailFor(cfg.trail, mult) * trailK * (0.85 + 0.3 * p.pn)));
           p.trail = Math.round(width);
           if (q.px <= p.peakPx * (1 - width / 100)) {
             [sellFrac, reason, tunable] = [1, `trailing stop ${p.trail}% off the peak (${(p.peakPx / p.entryPx).toFixed(1)}x), out at ${mult.toFixed(1)}x`, true];
@@ -737,7 +798,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           }
           if (ok && p.tokens <= 0) {
             // COACH follows the coin after we leave it
-            await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable } satisfies After });
+            await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
           }
         }
         if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
@@ -772,7 +833,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             learnDirty = true;
           }
           // COACH reviews ghost exits like real ones (trail too tight or too loose)
-          if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable } satisfies After });
+          if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
         }
         if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
         else await r.hdel(GHOST_POS, p.mint);
@@ -787,9 +848,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       for (const q0 of queued) {
         await r.zrem(K.deskQ, q0);
         const wireSig = q0.startsWith("w:");
-        const m = wireSig ? q0.slice(2) : q0;
+        const mindSig = q0.startsWith("m:");
+        const m = wireSig || mindSig ? q0.slice(2) : q0;
         const rec = await r.get<Launch>(K.launch(m));
-        if (!rec || rec.outcome) continue;
+        // MIND may buy after migration too; everything else trades the curve only
+        if (!rec || (rec.outcome && !(mindSig && rec.outcome === "BONDED"))) continue;
+        if (mindSig) {
+          if (px[m]) await mindEntry(b, state, rec, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `MIND signal $${rec.symbol}: ${safeErr(e)}`, "bad"));
+          continue;
+        }
         const early = !wireSig && !rec.call && rec.early?.verdict === "BOND";
         if (!wireSig && !rec.call && !early) continue;
         if (wireSig && !rec.wire?.pick) continue;
@@ -799,7 +866,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const curve = q.curve?.progress ?? 0;
         // tweet coins have their own slots, so the King's positions never crowd them out (and the reverse)
         const liveNow = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
-        const open = liveNow.filter((p) => (p.how === "wire") === wireSig).length;
+        const open = liveNow.filter((p) => (wireSig ? p.how === "wire" : p.how !== "wire" && p.how !== "mind")).length;
         const t = rec.tape;
         const g = rec.g;
         const callPx = rec.call?.px || 0;
@@ -812,6 +879,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const checks = wireSig
           ? [
               { rule: "wire_post", ok: trust >= (cfg.wireMinW ?? 0.2), v: `@${rec.wire!.h} · ${rec.wire!.how} · ${rec.wire!.lagSec}s after the post · trust ${trust}` },
+              // PRIOR: most headlines move nothing. The post has to have spawned a wave (or the author posted the CA)
+              (() => {
+                const tr = rec.wire!.trac;
+                const ok = !learnS.tractionOn || rec.wire!.how === "posted the CA" || (!!tr && (tr.copies >= 3 || tr.sol >= 25));
+                return { rule: "post_traction", ok, v: `${tr ? `${tr.copies} coins, ${tr.sol} SOL across them` : "no count"}${rec.wire!.vamp ? " · vamp" : ""}${learnS.tractionOn ? "" : " (prior overruled)"}` };
+              })(),
               { rule: "curve_window", ok: curve <= (cfg.wireMaxCurve ?? 85), v: `${curve}%` },
               { rule: "dev_buy_sane", ok: rec.devBuySol <= cfg.maxDevBuy, v: `${rec.devBuySol} SOL` },
               { rule: "bundle_ok", ok: !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in, ${t.bundleN} wallets` : "not read" },
@@ -837,15 +910,18 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           { rule: "tape_read", ok: !!t, v: t ? `${t.n} trades, ${t.uniq} traders read` : "no tape read in time" },
           { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders, block-0 curve ${Math.round(t.instant ?? 0)}%` : "not read" },
           { rule: "holding_floor", ok: !learnS.floorOn || dd < LEARN_RULES.floorMax, v: `${dd}% under its high${learnS.floorOn ? "" : " (prior overruled)"}` },
+          // PRIOR: no socials is usually a rug. A tweet-linked coin or 2+ smart wallets early outweigh it. Not a hard cap: COACH can overrule it.
+          socialsCheck(rec, learnS),
           { rule: "fresh_signal", ok: now - (rec.call?.at ?? rec.early!.at) < 3 * 60_000, v: `${Math.round((now - (rec.call?.at ?? rec.early!.at)) / 1000)}s old` },
           { rule: "open_slots", ok: open < cfg.maxOpen && !posMap[m] && !stalks[m], v: `${open}/${cfg.maxOpen}` },
           { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
         ];
         const fail = checks.find((c) => !c.ok);
         const fails = checks.filter((c) => !c.ok);
-        if (fails.length === 1 && fails[0].rule === "holding_floor" && ((await r.hlen(K.deskShadow)) || 0) < 60) {
-          // the prior skipped it: follow it anyway so COACH can tell whether the prior helps
-          const sh = { ...newShadow(m, rec.symbol, q.px, early), k: `f:${m}`, tag: "floor" as const };
+        if (fails.length === 1 && PRIOR_RULES[fails[0].rule] && ((await r.hlen(K.deskShadow)) || 0) < 60) {
+          // a prior skipped it: follow it anyway so COACH can tell whether the prior helps
+          const tag = PRIOR_RULES[fails[0].rule];
+          const sh = { ...newShadow(m, rec.symbol, q.px, early), k: `${tag[0]}:${m}`, tag };
           await r.hset(K.deskShadow, { [sh.k]: sh });
         }
         await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
@@ -1041,23 +1117,35 @@ function fallbackRun(p: Pos): Run {
 
 type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 
-async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire", xm: number | null) {
+async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind", xm: number | null) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
+  enqueueLens(r, rec.mint, "buy");
   // SIZE: research on fat tails says small, equal bets; never size up on conviction
   const avail = state.live ? (walletSol ?? 0) - 0.02 : state.cash;
   // liquidity cap: on the curve, buying S SOL moves the price by ((vSol + S) / vSol)^2 - 1, vSol = 30 + real SOL
   const vSol = 30 + Math.max(0, real);
   const liqCap = vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
   // PM: each strategy sleeve is sized by its own record; a paused sleeve sits out
-  const sl = sleeveOf(how);
+  const sl = sleeveOf(how, rec.wire?.vamp);
   const pmw = await sleeveWeight(sl).catch(() => ({ w: 1, paused: false, until: 0 }));
   if (pmw.paused) {
     log(b, "PM", `$${rec.symbol}: ${sl} sleeve is paused until ${new Date(pmw.until).toISOString().slice(11, 16)} UTC after a bad run. ghost desk takes it`, "info", coin);
     await ghostEnter(b, rec, px, real, how, `${sl} sleeve paused by PM`, cfg);
     return;
   }
-  const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct * pmw.w) / 100);
+  // RISK: tracked wallets in the coin move the size, by how copying their class has actually done (bounded 0.7x to 1.4x)
+  const buyers = (await buyersOf(rec.mint).catch(() => [])).filter((x: any) => Date.now() - x.at < 2 * 3600_000);
+  let wmul = 1;
+  if (buyers.length) {
+    const recs = buyers.filter((x: any) => x.class6h.n >= 10).map((x: any) => x.class6h.avg as number);
+    if (recs.length) {
+      const avg = recs.reduce((a: number, b: number) => a + b, 0) / recs.length;
+      wmul = Math.max(0.7, Math.min(1.4, 1 + avg / 200));
+      if (wmul !== 1) log(b, "RISK", `$${rec.symbol}: ${buyers.length} tracked wallet${buyers.length > 1 ? "s" : ""} in (${buyers.slice(0, 3).map((x: any) => x.name).join(", ")}); their classes averaged ${Math.round(avg)}% at 6h when copied: size ${wmul.toFixed(2)}x`, "info", coin);
+    }
+  }
+  const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct * pmw.w * wmul) / 100);
   if (pmw.w !== 1) log(b, "PM", `$${rec.symbol}: ${sl} sleeve at ${pmw.w}x size`, "info", coin);
   const size = Math.min(cfg.maxSol, want, liqCap, avail * 0.95);
   if (want > liqCap && liqCap < cfg.maxSol) log(b, "SIZE", `$${rec.symbol}: liquidity caps the buy at ${liqCap.toFixed(2)} SOL (max ${cfg.maxImpact ?? 6}% price impact on a ${vSol.toFixed(0)} SOL curve)`, "info", coin);
@@ -1110,7 +1198,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     state.cash -= sol;
   }
   const now = Date.now();
-  const why = how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
+  const why = how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? "" : " (paper)"}`, "ok", coin);
@@ -1135,8 +1223,52 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     msHi: -1,
     ctx,
     creator: rec.creator,
-    wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text } : null,
+    wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null,
+    // bought after migration: the migration rules do not apply
+    ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}),
   };
+}
+
+/** A MIND SEND signal: its own checks (no curve window, no floor: MIND may buy migrated coins), its own slots. */
+async function mindEntry(b: Batch, state: DeskState, rec: Launch, q: Px, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null, posMap: Record<string, Pos>) {
+  const r = redis();
+  const now = Date.now();
+  const m = rec.mint;
+  const coin = { mint: m, symbol: rec.symbol };
+  const c: any = cfg;
+  const j = await mindJudgement(m);
+  const t = rec.tape;
+  const open = Object.values(posMap).filter((p) => p.how === "mind").length;
+  const checks = [
+    { rule: "mind_send", ok: !!j && j.verdict === "SEND" && j.conviction >= (c.mindMin ?? 75), v: j ? `${j.verdict} ${j.conviction}: ${j.thesis.slice(0, 90)}` : "no judgement" },
+    { rule: "fresh_signal", ok: !!j && now - j.at < 10 * 60_000, v: j ? `${Math.round((now - j.at) / 1000)}s old` : "-" },
+    { rule: "liquidity_ok", ok: !q.grad || q.real >= (c.mindMinPoolSol ?? 20), v: q.grad ? `${Math.round(q.real)} SOL in the pool` : `on the curve, ${q.curve?.progress ?? "?"}%` },
+    { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders` : "not read" },
+    { rule: "bundle_ok", ok: q.grad || !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in` : "not read" },
+    { rule: "open_slots", ok: open < (c.mindMaxOpen ?? 2) && !posMap[m], v: `${open}/${c.mindMaxOpen ?? 2} MIND slots` },
+    { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
+  ];
+  const fails = checks.filter((x) => !x.ok);
+  const fail = fails[0];
+  await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
+  await r.set(VET_KEY(m), { at: now, checks, passed: !fail }, { ex: 7 * 86400 });
+  const dk = DAY_KEY(now);
+  await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
+  await r.hincrby(dk, "seen", 1);
+  const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule)) && !posMap[m];
+  if (fail && !deskBlock) {
+    log(b, "VET", `skipped MIND's $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
+    if (fail.rule !== "mind_send" && fail.rule !== "fresh_signal") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
+    return;
+  }
+  await r.set(ENTRY_KEY(m), { checks, flow: q.grad ? `migrated, ${Math.round(q.real)} SOL in the pool` : null, buzz: j ? `MIND: ${j.thesis}` : null, chase: 0 }, { ex: 3 * 3600 });
+  if (deskBlock) {
+    log(b, "VET", `MIND's $${rec.symbol} passes; the desk is blocked (${fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", ")}). ghost desk follows it`, "info", coin);
+    await ghostEnter(b, rec, q.px, q.real, "mind", fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", "), cfg);
+    return;
+  }
+  log(b, "VET", `MIND's $${rec.symbol} clean: SEND ${j!.conviction}${q.grad ? `, migrated, ${Math.round(q.real)} SOL pool` : ""}`, "ok", coin);
+  await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "mind", null);
 }
 
 async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number, reason: string, slip: number, kp: Keypair | null) {
@@ -1178,12 +1310,13 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     // keep the whole trade for the public track record: chart, the call behind it, peak while held
     const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
     const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
-    await redis().lpush(TRIPS_KEY, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: p.ctx } satisfies TripMeta);
+    await redis().lpush(TRIPS_KEY, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: await withLens(p.ctx, p.mint) } satisfies TripMeta);
     await redis().ltrim(TRIPS_KEY, 0, 999);
     // COACH keeps watching the coin after we leave it: 5m, 15m, 1h, 2h, 6h, 1d, 7d
     await follow({ id: tripId(p.mint, p.openedAt), mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: Date.now(), entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
     log(b, "COACH", `following $${p.symbol} after the exit: checks at 5m, 15m, 1h, 2h, 6h, 1d and 7d, and what moved it`, "info", coin);
-    const pmNote = await pmClose(sleeveOf(p.how), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
+    await noteExit(sleeveOf(p.how, p.wire?.vamp), Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
+    const pmNote = await pmClose(sleeveOf(p.how, p.wire?.vamp), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
     if (pmNote) log(b, "PM", pmNote, "info");
     if (p.wire?.h) await notePnl(p.wire.h, p.soldSol - p.costSol).catch(() => {});
     state.closed++;
@@ -1210,9 +1343,9 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const tokens = (sol * (1 - FEE)) / fillPx;
   const now = Date.now();
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
-  const why = how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}`;
+  const why = how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}`;
   (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
-  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text } : null };
+  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];
   if (ins.length) {
     const amt = await tokenAmounts(ins.map((i) => i.acc)).catch(() => ({} as Record<string, number>));
@@ -1239,11 +1372,12 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   p.tokens = 0;
   const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
   const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
-  await redis().lpush(GHOST_TRIPS, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: p.ctx } satisfies TripMeta);
+  await redis().lpush(GHOST_TRIPS, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: await withLens(p.ctx, p.mint) } satisfies TripMeta);
   await redis().ltrim(GHOST_TRIPS, 0, 999);
   // COACH follows ghost exits too (5m to 7d), and PM hears how a paused strategy would have done
   await follow({ id: `g:${tripId(p.mint, p.openedAt)}`, mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: now, entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
-  const note = await pmGhost(sleeveOf(p.how), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
+  await noteExit(sleeveOf(p.how, p.wire?.vamp), Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
+  const note = await pmGhost(sleeveOf(p.how, p.wire?.vamp), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
   if (note) log(b, "PM", note, "win");
   const total = p.soldSol - p.costSol;
   log(b, "LEDGER", `ghost desk closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))}). not counted`, "info", coin);
@@ -1371,7 +1505,7 @@ async function entryCtx(rec: Launch, px: number, real: number, how: Pos["how"]):
   return {
     createdAt: rec.createdAt,
     ageMs: now - rec.createdAt,
-    curve: real > 0 ? progressFromSol(real) : null,
+    curve: real > 0 && rec.outcome !== "BONDED" ? progressFromSol(real) : null,
     callAt: rec.call?.at ?? rec.early?.at ?? null,
     callCurve: rec.call?.progress ?? rec.early?.curve ?? null,
     callMc: callPx ? mcUsd(callPx, sol) : null,
@@ -1388,9 +1522,34 @@ async function entryCtx(rec: Launch, px: number, real: number, how: Pos["how"]):
     socials: { x: !!rec.twitter, tg: !!rec.telegram, web: !!rec.website },
     meta: rec.meta ? { hot: rec.meta.hot ?? null, copy: !!rec.meta.copy } : null,
     solUsd: sol,
-    sleeve: sleeveOf(how),
+    sleeve: sleeveOf(how, rec.wire?.vamp),
     wire: rec.wire ? { h: rec.wire.h, text: rec.wire.text, how: rec.wire.how, lagSec: rec.wire.lagSec, trust: (await accountOf(rec.wire.h).catch(() => ({ w: 0 }))).w } : null,
+    wallets: await (async () => {
+      const bs = await buyersOf(rec.mint).catch(() => []);
+      return bs.length ? bs.slice(0, 8).map((x: any) => ({ name: x.cls === "smart" ? "smart wallet" : x.name, cls: CLASS_LABEL[x.cls as keyof typeof CLASS_LABEL] || x.cls, conf: x.conf, sol: x.sol, minsBefore: Math.round((now - x.at) / 60_000) })) : null;
+    })(),
+    mind: await (async () => {
+      const j = await mindJudgement(rec.mint).catch(() => null);
+      return j ? { verdict: j.verdict, conviction: j.conviction, thesis: j.thesis, narrative: j.narrative, reasons: j.reasons, risks: j.risks } : null;
+    })(),
+    card: await (async () => {
+      const ln = await lensDossier(rec.mint).catch(() => null);
+      return {
+        plus: rec.call?.why?.plus || [],
+        minus: rec.call?.why?.minus || [],
+        parts: rec.call?.parts ?? null,
+        nc: rec.call?.nc ?? null,
+        lens: ln && ln.done ? { score: ln.score, flags: ln.flags, good: ln.good } : null,
+      };
+    })(),
   };
+}
+/** Attach the LENS dossier to a trade's context when it was not ready at the buy. */
+async function withLens(ctx: EntryCtx | undefined, mint: string) {
+  if (!ctx || ctx.card?.lens) return ctx;
+  const ln = await lensDossier(mint).catch(() => null);
+  if (!ln?.done) return ctx;
+  return { ...ctx, card: { plus: ctx.card?.plus || [], minus: ctx.card?.minus || [], parts: ctx.card?.parts ?? null, nc: ctx.card?.nc ?? null, lens: { score: ln.score, flags: ln.flags, good: ln.good } } };
 }
 type TripMeta = { mint: string; symbol: string; openedAt: number; closedAt: number; king: number; nano: number | null; how: string; entryPx: number; peakPx: number; exitPx: number; series: [number, number][]; ctx?: EntryCtx };
 

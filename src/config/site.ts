@@ -5,8 +5,8 @@ export const SITE = {
   ticker: "RAT",
   tagline: "Pretraining the first model raised in the trenches.",
   sub: "From scratch. On nothing but what its rats dig up.",
-  // no domain yet: falls back to the Vercel production URL automatically
-  url: process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000"),
+  // the live domain; NEXT_PUBLIC_SITE_URL overrides it (local dev: set it to http://localhost:3000)
+  url: process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://www.ratnet.network"),
   x: "https://x.com/Ratnetdev",
   handle: "@Ratnetdev",
 };
@@ -46,6 +46,15 @@ export const DEFAULT_SETTINGS = {
   minWork: 50,
   freeSniff: true, // free sniffs while no CA is set (pre-launch preview)
   links: { x: "https://x.com/Ratnetdev", tg: "", pump: "", dex: "" },
+  // trade buttons on every coin: your referral code per venue, and the link formats ({ca} = coin, {ref} = your code)
+  refs: { pump: "", gmgn: "", axiom: "", fomo: "" },
+  venueTpl: {
+    pump: { ref: "https://pump.fun/coin/{ca}?ref={ref}", plain: "https://pump.fun/coin/{ca}" },
+    dex: { ref: "https://dexscreener.com/solana/{ca}", plain: "https://dexscreener.com/solana/{ca}" },
+    gmgn: { ref: "https://gmgn.ai/sol/token/{ref}_{ca}", plain: "https://gmgn.ai/sol/token/{ca}" }, // format from GMGN's docs
+    axiom: { ref: "https://axiom.trade/t/{ca}/@{ref}", plain: "https://axiom.trade/t/{ca}" },
+    fomo: { ref: "https://fomo.family/r/{ref}", plain: "https://fomo.family" }, // FOMO codes only count at signup
+  },
   // HISTORIAN: replays past pump.fun launches so the models start trained (see src/lib/historian.ts)
   history: {
     on: true,
@@ -93,6 +102,11 @@ export const DEFAULT_SETTINGS = {
     wireMinW: 0.2, // trust an account's posts must have before WIRE sends its coins to the desk (seeds start at 0.3 to 0.5)
     wireMaxCurve: 85, // tweet coins move fast: allowed up to this curve %
     wireMaxOpen: 2, // tweet-coin positions open at once
+    // MIND (the trader's mind): auto = trades its SEND calls only once its own record earns it; on = now; off = never
+    mindMode: "auto" as "auto" | "on" | "off",
+    mindMin: 75, // conviction MIND needs before a SEND goes to the desk
+    mindMaxOpen: 2, // MIND positions open at once
+    mindMinPoolSol: 20, // migrated coins: SOL in the pool needed before MIND may buy
     ghostSol: 0.1, // ghost desk: fixed size per trade (not counted anywhere, only learned from)
     slippageBps: 1500,
   },

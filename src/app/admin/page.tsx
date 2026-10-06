@@ -1,5 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import Strategy from "@/components/admin/Strategy";
+import Wallets from "@/components/admin/Wallets";
+import Overseer from "@/components/admin/Overseer";
 
 type Settings = {
   mint: string;
@@ -10,6 +13,8 @@ type Settings = {
   minWork: number;
   freeSniff: boolean;
   links: { x: string; tg: string; pump: string; dex: string };
+  refs: Record<"pump" | "gmgn" | "axiom" | "fomo", string>;
+  venueTpl: Record<string, { ref: string; plain: string }>;
   desk: Record<string, any>;
   history: Record<string, any>;
 };
@@ -37,6 +42,7 @@ export default function Admin() {
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
   const [deskJson, setDeskJson] = useState("");
   const [histJson, setHistJson] = useState("");
+  const [tab, setTab] = useState<"settings" | "strategy" | "wallets" | "overseer">("settings");
 
   const load = useCallback(async () => {
     const r = await fetch("/api/admin", { cache: "no-store" });
@@ -98,8 +104,13 @@ export default function Admin() {
     <div className="grid" style={{ gap: 16 }}>
       <div className="row between wrapx">
         <h2 className="crt green" style={{ fontSize: 34 }}>ADMIN</h2>
+        <span className="strat-tabs">
+          {(["settings", "strategy", "wallets", "overseer"] as const).map((k) => <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{k}</button>)}
+        </span>
         <span className="small">{msg && <span className="green">{msg}</span>} {err && <span style={{ color: "var(--dust)" }}>{err}</span>}</span>
       </div>
+
+      {tab === "strategy" ? <Strategy /> : tab === "wallets" ? <Wallets /> : tab === "overseer" ? <Overseer /> : <>
 
       <div className="panel">
         <div className="ph"><span><b>health</b></span></div>
@@ -139,6 +150,20 @@ export default function Admin() {
         </div>
 
         <div className="grid" style={{ alignContent: "start" }}>
+          <div className="panel">
+            <div className="ph"><span><b>trade buttons</b> · referral codes</span></div>
+            <div className="pb">
+              <p className="muted small" style={{ marginTop: 0 }}>Every coin on the site shows GMGN, Axiom, FOMO, pump.fun and DexScreener buttons. Enter your referral code per venue (letters and numbers only). Empty = plain link. {"{ca}"} is the coin, {"{ref}"} your code. Click-test each venue once after saving.</p>
+              {(["gmgn", "axiom", "fomo", "pump"] as const).map((k) => (
+                <div key={k} className="grid g2" style={{ gap: 10 }}>
+                  <div><label className="l">{k} code</label><input className="input" value={s.refs?.[k] || ""} onChange={(e) => set({ refs: { ...s.refs, [k]: e.target.value.trim() } })} /></div>
+                  <div><label className="l">{k} link with code</label><input className="input" style={{ fontSize: 11 }} value={s.venueTpl?.[k]?.ref || ""} onChange={(e) => set({ venueTpl: { ...s.venueTpl, [k]: { ...s.venueTpl[k], ref: e.target.value.trim() } } })} /></div>
+                </div>
+              ))}
+              <button className="btn mt" onClick={() => run("Save codes", () => call({ action: "settings", settings: { refs: s.refs, venueTpl: s.venueTpl } }))}>Save codes</button>
+            </div>
+          </div>
+
           <div className="panel">
             <div className="ph"><span><b>close a round</b> · current #{cur}</span></div>
             <div className="pb">
@@ -230,6 +255,7 @@ export default function Admin() {
           </table>
         </div>
       </div>
+      </>}
     </div>
   );
 }

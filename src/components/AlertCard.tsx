@@ -1,4 +1,5 @@
 "use client";
+import { Logo, useVenues } from "./venues";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { chg, short, usd } from "./fmt";
@@ -7,13 +8,14 @@ import { chg, short, usd } from "./fmt";
 
 export type Kind = "bond" | "near" | "grad" | "desk";
 export type AlertT = { id: string; kind: Kind; title: string; sub: string; mint: string; symbol: string; at: number; king?: number | null; nano?: number | null; who?: string };
-export type Term = "gmgn" | "bullx" | "pump" | "dex";
-
-export const TERMS: Record<Term, { label: string; url: (m: string) => string }> = {
-  gmgn: { label: "GMGN", url: (m) => `https://gmgn.ai/sol/token/${m}` },
-  bullx: { label: "BullX", url: (m) => `https://neo.bullx.io/terminal?chainId=1399811149&address=${m}` },
-  pump: { label: "pump.fun", url: (m) => `https://pump.fun/coin/${m}` },
-  dex: { label: "DexScreener", url: (m) => `https://dexscreener.com/solana/${m}` },
+export type Term = "gmgn" | "axiom" | "fomo" | "pump" | "dex";
+// alert buy buttons use the same referral links as the rest of the site
+export const TERMS: Record<Term, { label: string }> = {
+  gmgn: { label: "GMGN" },
+  axiom: { label: "Axiom" },
+  fomo: { label: "FOMO" },
+  pump: { label: "pump.fun" },
+  dex: { label: "DexScreener" },
 };
 
 const KIND: Record<Kind, { label: string; color: string; glow: string }> = {
@@ -90,6 +92,7 @@ const Ring = ({ v, label, color }: { v: number | null | undefined; label: string
 };
 
 export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHover, onRaise, life }: { t: AlertT; term: Term; top: boolean; pinned: boolean; onClose: () => void; onPin: () => void; onHover: (h: boolean) => void; onRaise?: () => void; life: number }) {
+  const url = useVenues();
   const d = useCoin(t.mint);
   const age = useAge(t.at);
   const [copied, setCopied] = useState(false);
@@ -118,7 +121,7 @@ export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHove
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
       const key = e.key.toLowerCase();
-      if (key === "b") window.open(TERMS[term].url(t.mint), "_blank", "noopener");
+      if (key === "b") window.open(url(TERMS[term] ? term : "gmgn", t.mint), "_blank", "noopener");
       else if (key === "c") copy();
       else if (key === "o") window.location.href = `/c/${t.mint}`;
       else if (key === "p") onPin();
@@ -209,8 +212,8 @@ export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHove
       {t.kind === "desk" && <div className="ac-sub">{t.sub}</div>}
 
       <div className="ac-actions">
-        <a className="ac-buy" href={TERMS[term].url(t.mint)} target="_blank" rel="noreferrer">
-          BUY ON {TERMS[term].label.toUpperCase()} <kbd>B</kbd>
+        <a className="ac-buy" href={url(TERMS[term] ? term : "gmgn", t.mint)} target="_blank" rel="noreferrer">
+          <Logo v={TERMS[term] ? term : "gmgn"} size={13} /> BUY ON {(TERMS[term] || TERMS.gmgn).label.toUpperCase()} <kbd>B</kbd>
         </a>
         <button className="ac-btn" onClick={copy}>{copied ? "✓" : "CA"} <kbd>C</kbd></button>
         <Link className="ac-btn" href={`/c/${t.mint}`}>OPEN <kbd>O</kbd></Link>
@@ -218,7 +221,7 @@ export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHove
           {l?.twitter && <a href={l.twitter.startsWith("http") ? l.twitter : `https://${l.twitter}`} target="_blank" rel="noreferrer nofollow" title="X">X</a>}
           {l?.telegram && <a href={l.telegram.startsWith("http") ? l.telegram : `https://${l.telegram}`} target="_blank" rel="noreferrer nofollow" title="Telegram">TG</a>}
           {l?.website && <a href={l.website.startsWith("http") ? l.website : `https://${l.website}`} target="_blank" rel="noreferrer nofollow" title="Website">WEB</a>}
-          <a href={TERMS.dex.url(t.mint)} target="_blank" rel="noreferrer" title="Chart">CHART</a>
+          <a href={url("dex", t.mint)} target="_blank" rel="noreferrer" title="DexScreener"><Logo v="dex" size={12} /></a>
         </div>
       </div>
 

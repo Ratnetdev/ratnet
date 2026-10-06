@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { ago } from "./fmt";
+import { TradeIcons } from "./venues";
 import Info from "./Info";
 
 export type Verdict = "BOND" | "WATCH" | "DUST";
@@ -16,6 +17,7 @@ export type Call = {
   counted: boolean;
   progress: number;
   version: string;
+  v0?: { score: number; verdict: Verdict } | null;
   nano?: { score: number; verdict: Verdict } | null;
   outcome: "BONDED" | "ALIVE" | "DIED" | null;
   why?: { plus: string[]; minus: string[] };
@@ -47,8 +49,14 @@ export function Mark({ h }: { h: boolean | null }) {
   if (h === false) return <span className="tiny" style={{ color: "var(--dust)" }}> ✗</span>;
   return null;
 }
-export function CoinLink({ mint, symbol }: { mint: string; symbol: string }) {
-  return <Link href={`/c/${mint}`}>${symbol || "?"}</Link>;
+/** The coin's page, plus small trade buttons (GMGN, Axiom, FOMO, pump.fun, DexScreener) with the referral codes. */
+export function CoinLink({ mint, symbol, trade = true }: { mint: string; symbol: string; trade?: boolean }) {
+  return (
+    <>
+      <Link href={`/c/${mint}`}>${symbol || "?"}</Link>
+      {trade ? <TradeIcons ca={mint} /> : null}
+    </>
+  );
 }
 
 export function CallList({ calls, compact = false }: { calls: Call[]; compact?: boolean }) {
@@ -59,7 +67,7 @@ export function CallList({ calls, compact = false }: { calls: Call[]; compact?: 
         <thead>
           <tr>
             <th>Coin</th>
-            <th><Info k="v0">v0</Info></th>
+            <th><Info k="kingv1">King</Info></th>
             {!compact && <th><Info k="nano">Nano</Info></th>}
             {!compact && <th><Info k="curvecall">Curve @ call</Info></th>}
             <th><Info k="outcome">Outcome</Info></th>
@@ -75,7 +83,7 @@ export function CallList({ calls, compact = false }: { calls: Call[]; compact?: 
               </td>
               <td>
                 <span className="row" style={{ gap: 8 }}>
-                  <span style={{ width: 22 }}>{c.score}</span>
+                  <span style={{ width: 22 }} title={c.v0 ? `King ${c.version}: nano leads. v0 rules said ${c.v0.verdict} ${c.v0.score}` : `King ${c.version}`}>{c.score}</span>
                   <ScoreBar s={c.score} v={c.verdict} w={compact ? 44 : 60} />
                   <VerdictTag v={c.verdict} />
                   <Mark h={hitOf(c.verdict, c.outcome, c.counted)} />

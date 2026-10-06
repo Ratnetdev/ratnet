@@ -7,6 +7,7 @@ import { CurveBar } from "./Radar";
 import { fmtSecs } from "./Grads";
 import { ago, chg, num, usd, type Mkt } from "./fmt";
 import Info from "./Info";
+import { TradeIcons } from "./venues";
 
 type Row = {
   m: string;
@@ -217,7 +218,7 @@ export default function Explorer() {
             <tbody>
               {view.map((x) => (
                 <tr key={x.m}>
-                  <td><Link href={`/c/${x.m}`}>${x.s || "?"}</Link> <span className="muted small">{x.n.slice(0, 16)}</span></td>
+                  <td><Link href={`/c/${x.m}`}>${x.s || "?"}</Link><TradeIcons ca={x.m} /> <span className="muted small">{x.n.slice(0, 16)}</span></td>
                   <td className="muted">{ago(x.t)}</td>
                   <td>
                     <span className="row" style={{ gap: 6 }}>
