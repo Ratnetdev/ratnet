@@ -26,6 +26,8 @@ const RULE: Record<string, string> = {
   cluster_ok: "dev's funder has a bad record",
   not_a_copycat: "copycat of a recent winner",
   not_a_farm: "farm (no organic buyers)",
+  has_socials: "no X, website or Telegram",
+  holding_floor: "already dumped from its high",
   fresh_signal: "signal too old",
   open_slots: "all slots in use",
   daily_loss_ok: "daily loss limit",

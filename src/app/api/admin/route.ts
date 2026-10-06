@@ -32,6 +32,8 @@ export async function POST(req: Request) {
         if (p.freeSniff !== undefined) clean.freeSniff = !!p.freeSniff;
         if (p.litter) clean.litter = { n: Math.max(1, Number(p.litter.n)), size: Math.max(1, Number(p.litter.size)), open: !!p.litter.open };
         if (p.links) clean.links = p.links;
+        if (p.refs && typeof p.refs === "object") clean.refs = Object.fromEntries(Object.entries(p.refs).map(([k, v]) => [k, String(v || "").trim().replace(/[^A-Za-z0-9_\-.]/g, "")]));
+        if (p.venueTpl && typeof p.venueTpl === "object") clean.venueTpl = Object.fromEntries(Object.entries(p.venueTpl).filter(([, v]: any) => v && /^https:\/\//.test(v.plain || "") && /^https:\/\//.test(v.ref || "")).map(([k, v]: any) => [k, { ref: String(v.ref).trim(), plain: String(v.plain).trim() }]));
         if (p.desk && typeof p.desk === "object") {
           const d: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(p.desk)) d[k] = k === "mode" ? String(v) : typeof v === "boolean" ? v : Array.isArray(v) ? v.map(Number) : Number(v);

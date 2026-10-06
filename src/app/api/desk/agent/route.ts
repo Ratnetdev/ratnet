@@ -2,7 +2,7 @@ import { getAgent } from "@/lib/agents";
 import { cached, fail } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
-const NAMES = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "WIRE", "PM", "PULSE"];
+const NAMES = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "WIRE", "PM", "PULSE", "LENS"];
 
 // One agent's history and counters, for the agent panel on /desk.
 export async function GET(req: Request) {

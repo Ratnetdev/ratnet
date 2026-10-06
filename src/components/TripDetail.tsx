@@ -1,5 +1,7 @@
 "use client";
 import Link from "next/link";
+import TradeLinks from "./venues";
+import Scorecard, { FeedbackBox, type Card } from "./Scorecard";
 import { solscanTx, solscanAcc, short, usd } from "./fmt";
 
 export type Ctx = {
@@ -13,7 +15,7 @@ export type Ctx = {
   king: { score: number; verdict: string } | null;
   nano: { score: number; verdict: string } | null;
   early: { score: number; verdict: string } | null;
-  checks: { rule: string; ok: boolean; v: string }[];
+  checks: { rule: string; ok: boolean; v?: string }[];
   flow: string | null;
   buzz: string | null;
   tape: { n: number; vel: number; uniq: number; organic: number | null; spb: number; buyShare: number; bundle: number; bundleN: number; snipers: number; top5: number; devSold: number } | null;
@@ -24,6 +26,7 @@ export type Ctx = {
   solUsd: number | null;
   sleeve?: string;
   wire?: { h: string; text: string; how: string; lagSec: number; trust: number } | null;
+  card?: Card | null;
 };
 export type Exit = { at: number; sol: number; reason: string; pnlPct: number | null; sig?: string; px?: number; mc?: number | null; tokens?: number };
 export type Trip = {
@@ -125,6 +128,8 @@ const RULE: Record<string, string> = {
   tape_read: "Trades read by TAPE",
   fresh_signal: "Signal fresh",
   holding_floor: "Holding its floor (not dumped from its high)",
+  has_socials: "Has X, website or Telegram (or tied to a tweet)",
+  wire_post: "Tracked X post behind it",
   open_slots: "Free slot",
   daily_loss_ok: "Daily loss limit not hit",
 };
@@ -245,6 +250,8 @@ export default function TripDetail({ t, coinLink = true }: { t: Trip; coinLink?:
         </section>
       ) : null}
 
+      <Scorecard card={c?.card} king={c?.king} nano={c?.nano} />
+
       <section className="td-sec">
         <h4>Price</h4>
         <TripChart t={t} />
@@ -286,10 +293,11 @@ export default function TripDetail({ t, coinLink = true }: { t: Trip; coinLink?:
         </div>
       </section>
 
+      <FeedbackBox mint={t.mint} symbol={t.symbol} kind="trade" refAt={t.openedAt} />
+
       <div className="td-links">
         {coinLink && <Link href={`/c/${t.mint}`}>open ${t.symbol} →</Link>}
-        <a href={`https://pump.fun/coin/${t.mint}`} target="_blank" rel="noreferrer">pump.fun</a>
-        <a href={`https://dexscreener.com/solana/${t.mint}`} target="_blank" rel="noreferrer">chart</a>
+        <TradeLinks ca={t.mint} size="sm" />
       </div>
     </div>
   );

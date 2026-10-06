@@ -8,7 +8,7 @@ const EPS: [string, string, string][] = [
   ["GET", "/api/king?page=0", "Latest Rat King calls, 60 per page, plus hit rates for v0 and nano. Add &verdict=BOND to filter."],
   ["GET", "/api/graduations", "The last 100 launches that bonded, time to bond, and what the King said at 5 minutes."],
   ["GET", "/api/coin/{CA}", "Everything the rats dug on one launch: metadata, dev history, checkpoints, call, outcome."],
-  ["GET", "/api/king/weights", "Rat King nano's live weights, sample count and loss log. Run it yourself: p = sigmoid(Σ w·x)."],
+  ["GET", "/api/king/weights", "Rat King nano's sample count, loss and training log."],
   ["GET", "/api/ledger", "Payout rounds, burns and the public dataset drops."],
   ["GET", "/api/og/{CA}", "1200×630 share card for a call. Use it as an image in bots and posts."],
 ];

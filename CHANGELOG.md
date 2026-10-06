@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.9 · LENS, scorecards, a private playbook
+- Trade buttons on every coin, everywhere pump.fun used to be the only link: GMGN, Axiom, FOMO, pump.fun and DexScreener (the old "chart" button), each with its logo. Referral codes per venue are set in admin (trade buttons panel), with editable link templates; empty code = plain link. Buy $RAT uses the pump.fun link with your code.
+- LENS (18th agent): the hands-on look. For every desk buy, tweet pick, BOND call and launch named after a rising narrative it opens the website (loads? shows this CA? links the same X? builder? domain age via RDAP), the X account or the post the coin is tied to (followers, age, posts, blue, WIRE trust), searches X for the CA and ticker (who posted it in the last hour, reach, trusted accounts, shill-bot pattern) and reads the Telegram member count. Writes a 0-100 dossier with red flags and good signs. Up to 60 an hour, newest and most important first.
+- LensCam: LENS's browser streamed live on /desk (tabs, address bar, the page it is reading, its checklist ticking off), the latest dossiers under it, and the full dossier on every coin page.
+- Scorecard on every trade and coin page: the reasons for and against, and the LENS read. Admins also see the numbers behind them: King v0 points per rule and nano's strongest feature pulls.
+- New prior has_socials: a coin with no X, website or Telegram is skipped, unless it is tied to a tweet or 2+ smart wallets bought early. Not a hard cap: every skipped coin is followed in shadow and COACH overrules the prior when those coins do better than the ones bought (same as holding_floor). FILM grades it like every other rule.
+- Feedback (admin only): good or bad, tags (no socials, bought the top, sold too early...) and a note on any trade, call or skip, from the trade view or the coin page. Tallied in the Strategy tab.
+- Admin Strategy tab: the whole playbook on one page. Priors and what COACH made of them, every desk rule, what the desk learned (trail scale, entry arms, unlocks), King rules, nano weights, FILM grades per rule, PM sleeves, COACH follow-ups, WIRE's accounts and your feedback.
+- The playbook is private: public pages no longer show desk thresholds, learned stats, FILM rule grades, check values or nano weights. Signed in to admin, the same pages show everything (admin answers are never cached). Trades still show why they were taken.
+- Sim (3h): socials prior reviewed 40 skipped coins (avg -13% in 30m vs +34% bought), stays on. 0 errors.
+
+
 ## v0.1.8 · The ghost desk
 - Ghost desk: every signal that passes every check on the coin but is blocked only by the desk itself (daily loss limit, full slots, a strategy paused by PM, no paper balance left) is traded anyway in a separate book: same entry, same exit rules, fixed 0.1 SOL, up to 10 open. Ghost trades never touch the balance, the exam or the track record. COACH (exit reviews and follow-ups 5m to 7d), the dev-sell prior and the entry shadows learn from them; PM lets a paused strategy back in early when its last 4 ghost trades made money.
 - Track record: a "ghost" tab with every ghost trade in full detail (same trade view as real trades).

@@ -268,6 +268,7 @@ The Desk is a team of seventeen agents that turns calls and posts into trades an
 | COACH | Reviews every exit and every entry, follows each coin 5m, 15m, 1h, 2h, 6h, 1d and 7d after the exit with what moved it, and retunes the desk. |
 | LEDGER | Keeps the books. |
 | WIRE | The social monitor: tracks X accounts whose posts spawn coins, matches every launch against the last hour of posts, picks the real coin among the copies 30 seconds in, and hands it to the desk. Learns trust per account from results and grows its own account list. |
+| LENS | The hands-on look: opens the website, the X account or post, an X search for the CA and ticker, and the Telegram of every desk buy, tweet pick, BOND call and narrative coin, live in the LensCam on /desk. Writes a 0-100 dossier. Informs, never blocks. |
 | PULSE | Reads the room: counts what every tracked post is about in 5-minute and hourly windows, weighted by reach, and flags narratives running at 3x+ their usual pace, with a mood. Launches named after one get +5 from the King. |
 | PM | The portfolio manager: runs King calls, early reads and tweet coins as separate sleeves and sizes each by its risk-adjusted record, so no single strategy decides the curve. |
 | FILM | The film room: goes back over every decision (King calls, VET, FLOW and never-chase skips) and scores it against what the coin did next. |
@@ -514,7 +515,7 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `RECEIPT_WALLET_SECRET` | Optional. Base58 secret of a small wallet (0.02 SOL lasts months) that writes the hourly call receipts on-chain. Falls back to `DESK_WALLET_SECRET`. Without either, receipts are not sealed. |
 | `J7_JWT` | Optional, recommended. Your J7Tracker session token. WIRE listens to the J7 feed (its main account list, its free shared pool, Truth Social, Instagram, TikTok, YouTube, contract addresses in posts) during every minute run, and adds the whole free pool to your feed hourly. |
 | `J7_HOST` | Optional. `https://nyc.j7tracker.io` (default) or `https://dfw.j7tracker.io`. |
-| `X_API_KEY` | Optional. twitterapi.io key for WIRE. Set the webhook URL in the twitterapi.io dashboard to `https://<your site>/api/x/hook?key=<CRON_SECRET>`; WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `/api/x/sync?key=<CRON_SECRET>`). |
+| `X_API_KEY` | Optional. twitterapi.io key for WIRE and LENS (LENS uses it for X profiles, posts and the CA search; ~3 reads per coin, max 60 coins an hour). Without it LENS still reads websites, domains and Telegram. Set the webhook URL in the twitterapi.io dashboard to `https://<your site>/api/x/hook?key=<CRON_SECRET>`; WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `/api/x/sync?key=<CRON_SECRET>`). |
 | `X_RULE_INTERVAL` | Optional. Seconds between twitterapi.io rule checks (default `1`). Higher is cheaper and slower. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 
@@ -588,3 +589,10 @@ Every rule above traces to a source. The main ones:
   <img src="docs/assets/mark.png" alt="" width="48"><br>
   <sub>RATNET is experimental software. Nothing here is financial advice. Calls and trades can and will be wrong.<br>MIT licensed.</sub>
 </p>
+
+
+## Private playbook and feedback (v0.1.9)
+
+Public pages show every trade and why it was taken, but not the playbook: desk thresholds, priors, learned stats, FILM rule grades, check values and nano weights are stripped. Sign in at `/admin` and the same pages show everything; the **strategy** tab has the whole playbook on one page, and every trade view and coin page gets a feedback box (good or bad, tags, note).
+
+Trade buttons (GMGN, Axiom, FOMO, pump.fun, DexScreener) take your referral codes from the **trade buttons** panel in admin. Click-test each venue once after saving.

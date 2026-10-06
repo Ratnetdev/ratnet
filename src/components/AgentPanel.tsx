@@ -72,6 +72,10 @@ export const PROFILE: Record<string, { what: string; how: string[] }> = {
     what: "Reads the room. Counts what every tracked post on X is about, minute by minute, and spots the narratives taking off right now.",
     how: ["Every post from the J7 feed and WIRE's own accounts is split into the words a coin would be named after", "Counted in 5-minute and hourly windows, weighted by the author's reach", "Rising = running at 3x+ its usual pace over the last 24 hours", "Mood per narrative from trench words (send, ape, rug, dump...)", "Tells the King (+5 for a launch named after a rising narrative) and logs every new one"],
   },
+  LENS: {
+    what: "The hands-on look. For the coins that matter it opens what a trader would open by hand: the website, the X account or the post behind the coin, an X search for the CA, the Telegram. You can watch it work in the LensCam.",
+    how: ["Looks at every desk buy first, then tweet picks, BOND calls and launches named after a rising narrative", "Website: does it load, does it show this exact CA, does it link the same X, how old is the domain, which builder made it", "X: followers, account age, posts, blue check. A coin tied to a post is judged by the post's author", "Who is talking: accounts that posted the CA or ticker in the last hour, their reach, and whether WIRE trusts any of them. Many posts from few accounts reads as shill bots", "Telegram: member count from the public page", "Writes a 0-100 dossier with the red flags and the good signs. It informs the desk and rides along on every trade so COACH and FILM can learn what it is worth"],
+  },
   PM: {
     what: "The portfolio manager. Runs the desk as several strategies side by side and gives more capital to whatever is earning, so the curve climbs steadily instead of spiking and crashing.",
     how: ["Sleeves: King calls, early reads, tweet coins (WIRE), each with its own record", "Size per sleeve = its average return over its spread, last 30 trades, shrunk toward a starting weight while the record is short", "A sleeve that loses 60% of a stake over its last 6 trades sits out for 2 hours", "Every buy is still capped by the coin's liquidity"],

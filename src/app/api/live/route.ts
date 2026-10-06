@@ -1,3 +1,4 @@
+import { venueTemplates } from "@/lib/venues";
 import { getBondCalls, getCalls, getFeed, getGrads, getRadar, getStats } from "@/lib/stats";
 import { getSettings } from "@/lib/settings";
 import { cached, fail } from "@/lib/http";
@@ -19,7 +20,7 @@ export async function GET() {
       redis().get(K.deskExam),
       getBondCalls(8).catch(() => []),
     ]);
-    return cached({ stats, feed, calls, bondCalls, burns, radar, grads, desk: desk ? { eq: desk.equity, base: desk.live ? desk.liveStart ?? desk.start : desk.start, live: desk.live, day: desk.dayStart, exam: exam || null } : null, live: { mint: s.mint, links: s.links, litter: s.litter }, now: Date.now() }, 3);
+    return cached({ stats, feed, calls, bondCalls, burns, radar, grads, desk: desk ? { eq: desk.equity, base: desk.live ? desk.liveStart ?? desk.start : desk.start, live: desk.live, day: desk.dayStart, exam: exam || null } : null, live: { mint: s.mint, links: s.links, litter: s.litter, venues: venueTemplates(s) }, now: Date.now() }, 3);
   } catch (e) {
     return fail(e, 500);
   }
