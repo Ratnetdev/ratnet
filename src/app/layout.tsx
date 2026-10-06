@@ -10,6 +10,9 @@ import Nav from "@/components/Nav";
 import CaBar from "@/components/CaBar";
 import Heartbeat from "@/components/Heartbeat";
 import RatCam from "@/components/RatCam";
+import { LiveProvider } from "@/components/Live";
+import Alerts from "@/components/Alerts";
+import CmdK, { SearchButton } from "@/components/CmdK";
 import { WalletProvider, WalletButton } from "@/components/Wallet";
 import { SITE } from "@/config/site";
 
@@ -29,8 +32,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <WalletProvider>
+        <LiveProvider>
           <Heartbeat />
           <RatCam />
+          <CmdK />
           <header className="top">
             <div className="wrap">
               <Link href="/" className="brand">
@@ -38,7 +43,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 RATNET
               </Link>
               <Nav />
-              <WalletButton />
+              <span className="row" style={{ gap: 8 }}>
+                <SearchButton />
+                <Alerts />
+                <WalletButton />
+              </span>
             </div>
           </header>
           <CaBar />
@@ -53,6 +62,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </span>
             </div>
           </footer>
+        </LiveProvider>
         </WalletProvider>
       </body>
     </html>

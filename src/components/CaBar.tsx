@@ -1,11 +1,11 @@
 "use client";
 import { useState } from "react";
-import { usePoll } from "./usePoll";
+import { useLive } from "./Live";
 
 type Live = { live: { mint: string; links: { x: string; tg: string; pump: string; dex: string } }; stats: { dug: number } };
 
 export default function CaBar() {
-  const { data } = usePoll<Live>("/api/live", 15000);
+  const data = useLive().data as Live | null;
   const [copied, setCopied] = useState(false);
   const mint = data?.live.mint;
   const l = data?.live.links;

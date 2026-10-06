@@ -10,7 +10,10 @@ Pretraining the first model raised in the trenches. Rats dig every new pump.fun 
 - **Dev memory**: launches and bonds per creator, used in reports, the radar and the learner.
 - **Rat King nano**: online logistic regression trained from scratch on every resolved launch (`src/lib/nano.ts`), loss log and weights public at `/api/king/weights`. Calls count after 200 lessons.
 - **Explore** `/explore`: client-side filters over a 24h index (`rn:idx`) of every call the King or nano rated BOND/WATCH plus every bond. Filters live in the URL.
-- **Rat Cam**: floating live terminal + pixel tunnel that plays the feed (`src/components/RatCam.tsx`).
+- **Rat Cam**: large live tunnel + terminal in the home hero, small floating version on other pages (`src/components/RatCam.tsx`).
+- **Proof**: `/api/proof` serves score-bucket calibration, hourly hit rate vs base rate, average lead time and receipts.
+- **Alerts**: client-side sound + popup + desktop notifications on BOND calls, near-graduation and graduations (`src/components/Alerts.tsx`).
+- **Market data**: DexScreener per coin, cached 30s in Redis (`src/lib/market.ts`, `/api/market`).
 - **Coin pages** `/c/{CA}` with a 1200×630 share card at `/api/og/{CA}`.
 - **Open API** documented at `/developers`. Read endpoints are CDN-cached for a few seconds.
 - **Rat King v0**: transparent scorer (`src/lib/king.ts`), call at 5m, hit rate tracked. Calls later than 15m after birth are marked late and never count.

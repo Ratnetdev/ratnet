@@ -13,7 +13,6 @@ const LINKS = [
   ["/ledger", "Ledger"],
   ["/dataset", "Dataset"],
   ["/docs", "Docs"],
-  ["/developers", "API"],
 ];
 
 export default function Nav() {

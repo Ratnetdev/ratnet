@@ -7,9 +7,9 @@ export const dynamic = "force-dynamic";
 export async function GET(_: Request, { params }: { params: { mint: string } }) {
   if (!isPubkey(params.mint)) return fail("Not a valid CA");
   try {
-    const { launch, call } = await getCoin(params.mint);
+    const { launch, call, mkt } = await getCoin(params.mint);
     if (!launch && !call) return fail("The rats have not dug this coin", 404);
-    return cached({ launch, call }, 5);
+    return cached({ launch, call, mkt }, 5);
   } catch (e) {
     return fail(e, 500);
   }

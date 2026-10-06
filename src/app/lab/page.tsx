@@ -1,4 +1,5 @@
 import LabBoard from "@/components/LabBoard";
+import { ScoreChart } from "@/components/Proof";
 
 export const metadata = { title: "Lab · RATNET" };
 
@@ -10,6 +11,9 @@ export default function LabPage() {
         <p>Rat King nano is learning from scratch, live, on nothing but what the rats dig up. Every outcome is a lesson. The loss curve and every weight are public.</p>
       </section>
       <LabBoard />
+      <div className="mt">
+        <ScoreChart />
+      </div>
     </>
   );
 }

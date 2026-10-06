@@ -2,6 +2,8 @@ import { K, dayKey, redis } from "./redis";
 import type { Call, FeedItem, Grad, Launch } from "./digger";
 import { loadModel } from "./digger";
 import { NANO_MIN } from "./nano";
+import { getMarket, type Mkt } from "./market";
+import { solUsd } from "./solana";
 import { getSettings } from "./settings";
 import { allRats, isActive, roundOf, roundStart } from "./rats";
 import { ROUND_MS } from "@/config/site";
@@ -102,6 +104,8 @@ export type RadarRow = {
   devB: number;
   socials: number;
   call: { score: number; verdict: string; nano: { score: number; verdict: string } | null } | null;
+  mkt?: Mkt | null;
+  mcUsd?: number | null;
 };
 
 export async function getRadar(limit = 15): Promise<RadarRow[]> {
@@ -117,6 +121,7 @@ export async function getRadar(limit = 15): Promise<RadarRow[]> {
   const [recs, peaks] = await Promise.all([r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m))), r.zmscore(K.peak, mints)]);
   const peakOf: Record<string, number> = {};
   mints.forEach((m, i) => (peakOf[m] = Number(peaks?.[i] ?? 0)));
+  const [mkt, sol] = await Promise.all([getMarket(mints).catch(() => ({} as Record<string, Mkt | null>)), solUsd()]);
   return recs
     .filter((l): l is Launch => !!l && !l.outcome)
     .map((l) => ({
@@ -132,6 +137,8 @@ export async function getRadar(limit = 15): Promise<RadarRow[]> {
       devB: l.devB ?? 0,
       socials: [l.twitter, l.telegram, l.website].filter(Boolean).length,
       call: l.call ? { score: l.call.score, verdict: l.call.verdict, nano: l.call.nano } : null,
+      mkt: mkt[l.mint] ?? null,
+      mcUsd: mkt[l.mint]?.mc ?? (sol && l.mcapNow ? Math.round(l.mcapNow * sol) : null),
     }));
 }
 
@@ -151,10 +158,48 @@ export async function getCoin(mint: string) {
     if (live != null) launch.pNow = Number(live);
     if (peak != null) launch.peak = Math.max(launch.peak ?? 0, Number(peak));
   }
-  return { launch, call: call || launch?.call || null };
+  const mkt = (await getMarket([mint]).catch(() => ({} as Record<string, Mkt | null>)))[mint] ?? null;
+  return { launch, call: call || launch?.call || null, mkt };
 }
 
 export async function getNano() {
   const [model, log] = await Promise.all([loadModel(), redis().lrange(K.nanoLog, 0, -1)]);
   return { model, log: log || [], min: NANO_MIN };
+}
+
+export type Bucket = { lo: number; n: number; b: number; rate: number | null };
+export type HourRow = { h: number; d: number; b: number; bn: number; bh: number; nbn: number; nbh: number };
+
+/** Everything the site needs to prove the score means something. */
+export async function getProof() {
+  const r = redis();
+  const now = Date.now();
+  const hours = Array.from({ length: 24 }, (_, i) => Math.floor(now / 3600_000) * 3600_000 - (23 - i) * 3600_000);
+  const p = r.pipeline();
+  p.hgetall(K.calib);
+  p.hgetall(K.stat);
+  for (const h of hours) p.hgetall(K.hr(new Date(h).toISOString().slice(0, 13)));
+  const res = (await p.exec()) as (Record<string, unknown> | null)[];
+  const calib = res[0] || {};
+  const st = res[1] || {};
+  const mk = (pre: string): Bucket[] =>
+    Array.from({ length: 10 }, (_, i) => {
+      const nn = n(calib[`${pre}${i}n`]);
+      const bb = n(calib[`${pre}${i}b`]);
+      return { lo: i * 10, n: nn, b: bb, rate: pct(bb, nn) };
+    });
+  const hourly: HourRow[] = hours.map((h, i) => {
+    const x = res[i + 2] || {};
+    return { h, d: n(x.d), b: n(x.b), bn: n(x.bn), bh: n(x.bh), nbn: n(x.nbn), nbh: n(x.nbh) };
+  });
+  const grads = await getGrads(120);
+  const receipts = grads.filter((g) => g.v0?.verdict === "BOND" && g.v0.counted && g.lead != null).slice(0, 8);
+  return {
+    v0: mk("v"),
+    nano: mk("n"),
+    hourly,
+    leadAvg: n(st.lead_n) ? Math.round(n(st.lead_sum) / n(st.lead_n)) : null,
+    leadN: n(st.lead_n),
+    receipts,
+  };
 }

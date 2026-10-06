@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePoll } from "./usePoll";
 import { burnFlow, useWallet, WalletButton } from "./Wallet";
 import { ago, num, short } from "./fmt";
@@ -69,6 +69,10 @@ export default function SniffBoard() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const isLive = !!live?.live.mint;
+  useEffect(() => {
+    const ca = new URLSearchParams(window.location.search).get("ca");
+    if (ca) setCa(ca);
+  }, []);
 
   const go = async () => {
     setErr("");

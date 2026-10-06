@@ -133,6 +133,7 @@ export default function LabBoard() {
             <div>· Born at zero. No pretrained weights, no outside data.</div>
             <div>· 5 minutes after each launch, the rats freeze 14 features: curve, climb, dev buy, socials, ticker, the dev&apos;s history, time of day.</div>
             <div>· When the chain decides the outcome (bonded, dead at the 1-hour check, or settled at 24h), nano takes one gradient step on that launch.</div>
+            <div>· It learns from every graduation, including the ones the King got wrong and the ones that graduated before the 5-minute call (those use what the rats saw at dig time).</div>
             <div>· Bonds are rare (around 1 in 100), so a bond counts 8x in the loss.</div>
             <div>· Its calls only count on the board after {data?.counted_calls_from ?? 200} lessons.</div>
             <div className="mt"><b className="green">Next: Rat King v1.</b> A sequence model pretrained from scratch on the full dug dataset (launch text plus first-hour flow), loss curve public, weights on Hugging Face after the first epoch. Nano is the baseline it has to beat.</div>

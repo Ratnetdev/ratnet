@@ -1,9 +1,11 @@
 "use client";
 import Link from "next/link";
-import { usePoll } from "./usePoll";
+import { useLive } from "./Live";
 import Feed, { FeedItem } from "./Feed";
 import { Call, CallList } from "./Calls";
 import { num } from "./fmt";
+import Info from "./Info";
+import CountUp from "./CountUp";
 import RadarTable, { RadarRow } from "./Radar";
 import GradList, { Grad } from "./Grads";
 
@@ -30,7 +32,8 @@ export type Stats = {
 type Live = { stats: Stats; feed: FeedItem[]; calls: Call[]; radar: RadarRow[]; grads: Grad[]; live: { mint: string; litter: { n: number; size: number; open: boolean } } };
 
 export default function LiveBoard() {
-  const { data, error } = usePoll<Live>("/api/live", 4000);
+  const { data: d, error } = useLive();
+  const data = d as Live | null;
   const s = data?.stats;
   const lift = s?.bond.rate != null && s?.baseRate ? Math.round((s.bond.rate / s.baseRate) * 10) / 10 : null;
 
@@ -39,14 +42,14 @@ export default function LiveBoard() {
       <section className="grid g4">
         <div className="panel glow">
           <div className="pb stat">
-            <div className="k">Launches dug</div>
-            <div className="big rat">{num(s?.dug ?? 0)}</div>
+            <div className="k"><Info k="dug">Launches dug</Info></div>
+            <div className="big rat"><CountUp value={s?.dug ?? 0} /></div>
             <div className="s">+{num(s?.dugToday ?? 0)} today · {num(s?.tracking ?? 0)} checkpoints queued</div>
           </div>
         </div>
         <div className="panel">
           <div className="pb stat">
-            <div className="k">King hit rate (BOND calls)</div>
+            <div className="k"><Info k="hit">King hit rate (BOND calls)</Info></div>
             <div className="big" style={{ color: "var(--bond)" }}>{s?.bond.rate != null ? `${s.bond.rate}%` : "–"}</div>
             <div className="s">
               {s ? `${num(s.bond.hit)} of ${num(s.bond.n)} BOND calls bonded` : "warming up"}
@@ -56,15 +59,15 @@ export default function LiveBoard() {
         </div>
         <div className="panel">
           <div className="pb stat">
-            <div className="k">Trench base rate</div>
+            <div className="k"><Info k="base">Trench base rate</Info></div>
             <div className="big">{s?.baseRate != null ? `${s.baseRate}%` : "–"}</div>
             <div className="s">of all dug launches graduated</div>
           </div>
         </div>
         <div className="panel">
           <div className="pb stat">
-            <div className="k">Graduated</div>
-            <div className="big" style={{ color: "var(--bond)" }}>{num(s?.bonded ?? 0)}</div>
+            <div className="k"><Info k="bond">Graduated</Info></div>
+            <div className="big" style={{ color: "var(--bond)" }}><CountUp value={s?.bonded ?? 0} /></div>
             <div className="s">{s ? `DUST calls right ${s.dust.rate != null ? s.dust.rate + "%" : "–"} · ${num(s.calls)} calls` : "–"}</div>
           </div>
         </div>
@@ -74,7 +77,7 @@ export default function LiveBoard() {
         <div className="panel">
           <div className="ph">
             <span>
-              <b>live</b> · rat feed · pump.fun
+              <b>live</b> · <Info k="feed">rat feed · pump.fun</Info>
             </span>
             <span className="row" style={{ gap: 6 }}>
               <span className={`dot ${error ? "off" : ""}`} />
@@ -88,7 +91,7 @@ export default function LiveBoard() {
           <div className="panel glow">
             <div className="ph">
               <span>
-                <b>radar</b> · curves filling now
+                <b>radar</b> · <Info k="radar">curves filling now</Info>
               </span>
               <Link href="/radar">full radar →</Link>
             </div>
@@ -97,7 +100,7 @@ export default function LiveBoard() {
           <div className="panel">
             <div className="ph">
               <span>
-                <b style={{ color: "var(--bond)" }}>graduations</b> · bonded live
+                <b style={{ color: "var(--bond)" }}>graduations</b> · <Info k="grads">bonded live</Info>
               </span>
               <Link href="/king?tab=grads">all →</Link>
             </div>
@@ -139,17 +142,6 @@ export default function LiveBoard() {
                   <div className="muted small">Burn $RAT, get a Rat King score, dev history and a report on any coin.</div>
                 </div>
                 <Link href="/sniff" className="btn ghost">Sniff</Link>
-              </div>
-            </div>
-          </div>
-          <div className="panel">
-            <div className="pb">
-              <div className="row between">
-                <div>
-                  <div className="crt" style={{ fontSize: 26, color: "var(--rat)" }}>The Lab</div>
-                  <div className="muted small">Watch Rat King nano learn from every outcome. Loss curve and weights, public.</div>
-                </div>
-                <Link href="/lab" className="btn dim">Open</Link>
               </div>
             </div>
           </div>

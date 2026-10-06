@@ -12,6 +12,7 @@ export type Grad = {
   devN: number;
   v0: { score: number; verdict: string; counted: boolean } | null;
   nano: { score: number; verdict: string } | null;
+  lead?: number | null;
 };
 
 export function fmtSecs(s: number) {
@@ -50,7 +51,7 @@ export default function GradList({ grads, full = false }: { grads: Grad[]; full?
                   <span className="row" style={{ gap: 6 }}>
                     <VerdictTag v={g.v0.verdict} />
                     <span className="tiny muted">{g.v0.score}</span>
-                    {g.v0.verdict === "BOND" && g.v0.counted && <span className="green tiny">called it</span>}
+                    {g.v0.verdict === "BOND" && g.v0.counted && <span className="green tiny">{g.lead ? `called ${fmtSecs(g.lead)} early` : "called it"}</span>}
                   </span>
                 ) : (
                   <span className="tiny mute2">bonded before 5m</span>

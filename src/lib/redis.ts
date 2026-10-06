@@ -42,6 +42,8 @@ export const K = {
   hot: "rn:hot",
   hotCur: "rn:hotcur",
   idx: "rn:idx",
+  hr: (h: string) => `rn:hr:${h}`,
+  calib: "rn:calib",
   idxT: "rn:idxt",
   peak: "rn:peak",
   near: "rn:near",

@@ -19,3 +19,12 @@ export function countdown(to: number) {
   const ss = s % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
+export function usd(n: number | null | undefined) {
+  if (n == null) return "–";
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
+  return `$${Math.round(n)}`;
+}
+export const chg = (n: number | null | undefined) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n.toFixed(n >= 100 || n <= -100 ? 0 : 1)}%`);
+export type Mkt = { mc: number | null; v5: number; v1: number; v24: number; c5: number | null; c1: number | null; liq: number | null; b1: number; s1: number; dex: string; url: string };

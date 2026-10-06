@@ -1,18 +1,17 @@
 "use client";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Info from "./Info";
+import { useLive } from "./Live";
 
 type FeedItem = { kind: string; rat: string; mint: string; symbol: string; name: string; at: number; text: string };
 type Line = { t: string; c?: string; href?: string };
 type Mode = "open" | "min";
 
 // ---------- tunnel scene
-const CELL = 3;
-const W = 320;
-const H = 96;
-const COLS = Math.ceil(W / CELL) + 2;
-const ROWS_N = Math.floor(H / CELL);
+type Dims = { W: number; H: number; CELL: number; PX: number; FONT: number };
+const FLOAT: Dims = { W: 320, H: 96, CELL: 3, PX: 2.2, FONT: 9 };
 const RAT = [
   "...........##....",
   "..........#..#...",
@@ -58,9 +57,14 @@ function linesFor(f: FeedItem): Line[] {
   }
 }
 
-function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, nuggets: React.MutableRefObject<Nugget[]>) {
+function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, nuggets: React.MutableRefObject<Nugget[]>, dims: Dims) {
   useEffect(() => {
     if (!active) return;
+    const { W, H, CELL, PX, FONT } = dims;
+    const COLS = Math.ceil(W / CELL) + 2;
+    const ROWS_N = Math.floor(H / CELL);
+    const NOSE = Math.round((17 * PX) / CELL); // sprite width in cells
+    const HALF = Math.ceil((4.5 * PX) / CELL); // half sprite height in cells
     const cv = canvas.current;
     const ctx = cv?.getContext("2d");
     if (!cv || !ctx) return;
@@ -108,16 +112,16 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
         else ratCol++;
         while (world.length - base < COLS + 40) newCol();
         // carve tunnel around the rat's nose
-        for (let dy = -3; dy <= 3; dy++) {
+        for (let dy = -HALF; dy <= HALF; dy++) {
           const r = ratRow + dy;
-          const col = world[ratCol + 12];
+          const col = world[ratCol + NOSE];
           if (col && r >= 0 && r < ROWS_N) col[r] = 1;
         }
         // keep the rat at ~35% of the screen
         if (ratCol - base > Math.floor(COLS * 0.35)) base++;
         // reached a nugget?
         for (const n of nuggets.current) {
-          if (!n.hit && ratCol + 12 >= n.col && Math.abs(ratRow - n.row) <= 3) {
+          if (!n.hit && ratCol + NOSE >= n.col && Math.abs(ratRow - n.row) <= HALF) {
             n.hit = true;
             flash = n.big ? 10 : 4;
           }
@@ -145,7 +149,7 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
         }
       }
       // nuggets
-      ctx.font = "9px monospace";
+      ctx.font = `${FONT}px monospace`;
       for (const n of nuggets.current) {
         const sx = (n.col - base) * CELL;
         if (sx < -40 || sx > W + 10) continue;
@@ -154,17 +158,17 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
         for (let i = 0; i < sz; i++) for (let j = 0; j < sz; j++) if ((i + j) % 3 !== 2 || n.big) ctx.fillRect(sx + i * CELL, (n.row - 1 + j) * CELL, CELL - 0.5, CELL - 0.5);
         if (!n.hit) {
           ctx.fillStyle = n.color;
-          ctx.fillText(n.label, sx - 2, Math.max(9, (n.row - 2) * CELL));
+          ctx.fillText(n.label, sx - 2, Math.max(FONT, (n.row - 2) * CELL));
         }
       }
       // rat
       const rx = (ratCol - base) * CELL;
-      const ry = (ratRow - 3) * CELL - 1;
+      const ry = ratRow * CELL - Math.round(4.5 * PX);
       const sprite = [...RAT, LEGS[frame % 4 < 2 ? 0 : 1]];
       ctx.fillStyle = "#8cff5a";
       ctx.shadowColor = "rgba(140,255,90,0.8)";
       ctx.shadowBlur = 6;
-      const px = 2.2;
+      const px = PX;
       sprite.forEach((row, y) => row.split("").forEach((c, x) => c === "#" && ctx.fillRect(rx + x * px, ry + y * px, px, px)));
       // dust kicked up behind the nose
       ctx.shadowBlur = 0;
@@ -184,67 +188,32 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
       nuggets.current.push({ col: ratCol + 30 + ahead * 26, row: 5 + Math.floor(rnd() * (ROWS_N - 10)), color, label, big, hit: false });
     };
     return () => cancelAnimationFrame(raf);
-  }, [active, canvas, nuggets]);
+  }, [active, canvas, nuggets, dims]);
 }
 
-export default function RatCam() {
-  const path = usePathname();
-  const [mode, setMode] = useState<Mode>("min");
+function useRatStream(canvas: React.RefObject<HTMLCanvasElement>, keep: number) {
   const [lines, setLines] = useState<Line[]>([]);
   const [typing, setTyping] = useState<{ line: Line; n: number } | null>(null);
   const [rat, setRat] = useState("SCOUT-1");
-  const [stats, setStats] = useState<{ dug: number; bonded: number } | null>(null);
   const seen = useRef<Set<string>>(new Set());
   const queue = useRef<FeedItem[]>([]);
-  const nuggets = useRef<Nugget[]>([]);
-  const canvas = useRef<HTMLCanvasElement>(null);
   const first = useRef(true);
+  const live = useLive();
 
-  // default: open on the home page on wide screens, minimized elsewhere; the viewer's choice wins
   useEffect(() => {
-    let saved: string | null = null;
-    try {
-      saved = localStorage.getItem("rn_cam");
-    } catch {}
-    if (saved === "open" || saved === "min") setMode(saved);
-    else setMode(path === "/" && window.innerWidth > 900 ? "open" : "min");
-  }, [path]);
-  const choose = (m: Mode) => {
-    setMode(m);
-    try {
-      localStorage.setItem("rn_cam", m);
-    } catch {}
-  };
-
-  // poll the live feed (CDN cached, so cheap)
-  useEffect(() => {
-    let stop = false;
-    const load = async () => {
-      if (document.visibilityState !== "visible") return;
-      try {
-        const r = await fetch("/api/live", { cache: "no-store" });
-        const j = await r.json();
-        if (stop || !j.feed) return;
-        setStats({ dug: j.stats?.dug ?? 0, bonded: j.stats?.bonded ?? 0 });
-        const fresh = (j.feed as FeedItem[]).filter((f) => {
-          const k = `${f.at}-${f.mint}-${f.kind}`;
-          if (seen.current.has(k)) return false;
-          seen.current.add(k);
-          return true;
-        });
-        const ordered = fresh.reverse(); // oldest first
-        queue.current.push(...(first.current ? ordered.slice(-6) : ordered));
-        first.current = false;
-        if (queue.current.length > 30) queue.current = queue.current.slice(-30);
-      } catch {}
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => {
-      stop = true;
-      clearInterval(t);
-    };
-  }, []);
+    const j = live.data;
+    if (!j?.feed) return;
+    const fresh = (j.feed as FeedItem[]).filter((f) => {
+      const k = `${f.at}-${f.mint}-${f.kind}`;
+      if (seen.current.has(k)) return false;
+      seen.current.add(k);
+      return true;
+    });
+    const ordered = fresh.reverse();
+    queue.current.push(...(first.current ? ordered.slice(-8) : ordered));
+    first.current = false;
+    if (queue.current.length > 30) queue.current = queue.current.slice(-30);
+  }, [live.tick, live.data]);
 
   // play the queue: one event at a time, typed out
   useEffect(() => {
@@ -271,7 +240,7 @@ export default function RatCam() {
           if (n < next.t.length) setTimeout(typeIt, 18);
           else {
             setTyping(null);
-            setLines((l) => [...l, next].slice(-9));
+            setLines((l) => [...l, next].slice(-keep));
             setTimeout(tick, queue.current.length > 10 ? 90 : 260);
           }
         };
@@ -282,11 +251,102 @@ export default function RatCam() {
     return () => {
       alive = false;
     };
+  }, [canvas, keep]);
+
+  return { lines, typing, rat, stats: live.data?.stats as { dug: number; bonded: number } | undefined };
+}
+
+function Terminal({ lines, typing }: { lines: Line[]; typing: { line: Line; n: number } | null }) {
+  return (
+    <>
+      {lines.map((l, i) => (
+        <div key={i} style={{ color: l.c || "var(--dim)", opacity: 0.45 + (i / lines.length) * 0.55, whiteSpace: "pre" }}>
+          {l.href ? <Link href={l.href} style={{ color: "inherit" }}>{l.t}</Link> : l.t}
+        </div>
+      ))}
+      <div style={{ color: typing?.line.c || "var(--text)", whiteSpace: "pre" }}>
+        {typing ? typing.line.t.slice(0, typing.n) : ""}
+        <span className="caret" style={{ width: 6, height: "0.9em" }} />
+      </div>
+    </>
+  );
+}
+
+const LEGEND = [
+  { c: "#c8ffb0", l: "new launch", tip: "A rat just read a brand new pump.fun coin." },
+  { c: "#ffb547", l: "BOND / graduated", tip: "The King thinks it will graduate, or it just did. Gold flash = graduation." },
+  { c: "#7fd1ff", l: "WATCH / near", tip: "Could go either way, or the curve is past 85%." },
+  { c: "#ff5c5c", l: "DUST / died", tip: "The King thinks it dies, or it did." },
+];
+
+/** Big embedded rat cam for the home hero. */
+export function RatCamHero() {
+  const wrap = useRef<HTMLDivElement>(null);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const nuggets = useRef<Nugget[]>([]);
+  const [w, setW] = useState(560);
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setW(Math.max(280, Math.round(el.clientWidth / 20) * 20)));
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
+  const dims = useMemo<Dims>(() => (w < 500 ? { W: w, H: 160, CELL: 3, PX: 2.4, FONT: 9 } : { W: w, H: 240, CELL: 5, PX: 3.8, FONT: 11 }), [w]);
+  const { lines, typing, rat, stats } = useRatStream(canvas, 10);
+  useTunnel(canvas, true, nuggets, dims);
+  return (
+    <div className="ratcam-hero panel glow" ref={wrap} aria-label="Rat cam, live">
+      <div className="ratcam-h">
+        <span className="row" style={{ gap: 6 }}>
+          <span className="dot" /> <b>RAT CAM</b> <span className="muted">· {rat} · live</span>
+        </span>
+        <span className="tiny muted cam-stats">
+          <Info k="cam">{stats ? `${stats.dug.toLocaleString("en-US")} dug · ${stats.bonded.toLocaleString("en-US")} graduated` : "connecting…"}</Info>
+        </span>
+      </div>
+      <canvas ref={canvas} style={{ width: dims.W, height: dims.H, display: "block", maxWidth: "100%" }} />
+      <div className="ratcam-t" style={{ height: 196, fontSize: 12 }}>
+        <Terminal lines={lines} typing={typing} />
+      </div>
+      <div className="ratcam-f">
+        <span className="row wrapx" style={{ gap: 12 }}>
+          {LEGEND.map((x) => (
+            <span key={x.l} className="legend" title={x.tip}>
+              <i style={{ background: x.c }} />
+              {x.l}
+            </span>
+          ))}
+        </span>
+      </div>
+    </div>
+  );
+}
 
-  useTunnel(canvas, mode === "open", nuggets);
+/** Small floating cam on every other page. */
+export default function RatCam() {
+  const path = usePathname();
+  const [mode, setMode] = useState<Mode>("min");
+  const nuggets = useRef<Nugget[]>([]);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem("rn_cam");
+    } catch {}
+    setMode(saved === "open" ? "open" : "min");
+  }, [path]);
+  const choose = (m: Mode) => {
+    setMode(m);
+    try {
+      localStorage.setItem("rn_cam", m);
+    } catch {}
+  };
+  const { lines, typing, rat, stats } = useRatStream(canvas, 9);
+  const home = path === "/";
+  useTunnel(canvas, mode === "open" && !home, nuggets, FLOAT);
 
-  if (path?.startsWith("/admin")) return null;
+  if (home || path?.startsWith("/admin")) return null;
 
   if (mode === "min")
     return (
@@ -304,17 +364,9 @@ export default function RatCam() {
         </span>
         <button onClick={() => choose("min")} aria-label="Minimize">_</button>
       </div>
-      <canvas ref={canvas} style={{ width: W, height: H, display: "block", maxWidth: "100%" }} />
+      <canvas ref={canvas} style={{ width: FLOAT.W, height: FLOAT.H, display: "block", maxWidth: "100%" }} />
       <div className="ratcam-t">
-        {lines.map((l, i) => (
-          <div key={i} style={{ color: l.c || "var(--dim)", opacity: 0.45 + (i / lines.length) * 0.55, whiteSpace: "pre" }}>
-            {l.href ? <Link href={l.href} style={{ color: "inherit" }}>{l.t}</Link> : l.t}
-          </div>
-        ))}
-        <div style={{ color: typing?.line.c || "var(--text)", whiteSpace: "pre" }}>
-          {typing ? typing.line.t.slice(0, typing.n) : ""}
-          <span className="caret" style={{ width: 6, height: "0.9em" }} />
-        </div>
+        <Terminal lines={lines} typing={typing} />
       </div>
       <div className="ratcam-f">
         <span>{stats ? `${stats.dug.toLocaleString("en-US")} dug · ${stats.bonded.toLocaleString("en-US")} graduated` : "connecting…"}</span>

@@ -122,7 +122,16 @@ export type Grad = {
   devN: number;
   v0: { score: number; verdict: Verdict; counted: boolean } | null;
   nano: { score: number; verdict: Verdict } | null;
+  lead?: number | null; // seconds between the King's call and the bond
 };
+
+const HR_TTL = 60 * 60 * 24 * 3;
+const bucket = (score: number) => Math.min(9, Math.max(0, Math.floor(score / 10)));
+function hrInc(c: Ctx, at: number, field: string, n = 1) {
+  const k = K.hr(hourKey(at));
+  c.p.hincrby(k, field, n);
+  c.p.expire(k, HR_TTL);
+}
 
 export type FeedItem = {
   kind: "dig" | Stage | "call" | "resolve" | "near" | "grad";
@@ -310,6 +319,12 @@ async function digNew(model: NanoModel) {
   }
 
   inc(c, "dug", launches.length);
+  const perHour: Record<number, number> = {};
+  for (const l of launches) {
+    const h = Math.floor(l.createdAt / 3600_000) * 3600_000;
+    perHour[h] = (perHour[h] || 0) + 1;
+  }
+  for (const [h, n] of Object.entries(perHour)) hrInc(c, Number(h), "d", n);
   p.hincrby(K.day(dayKey()), "dug", launches.length);
   p.expire(K.day(dayKey()), 60 * 60 * 24 * 40);
   p.set(K.cursor, newCursor);
@@ -363,6 +378,19 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
     rec.peak = 100;
     rec.pNow = 100;
     if (rec.creator) p.hincrby(K.devB, rec.creator, 1);
+    hrInc(c, rec.createdAt, "b");
+    const call0 = rec.call;
+    const lead = call0 ? Math.max(0, Math.round((c.now - call0.at) / 1000)) : null;
+    if (call0?.counted) {
+      p.hincrby(K.calib, `v${bucket(call0.score)}b`, 1);
+      if (call0.nano) p.hincrby(K.calib, `n${bucket(call0.nano.score)}b`, 1);
+      if (call0.verdict === "BOND") {
+        hrInc(c, rec.createdAt, "bh");
+        inc(c, "lead_sum", lead || 0);
+        inc(c, "lead_n");
+      }
+      if (call0.nano?.verdict === "BOND") hrInc(c, rec.createdAt, "nbh");
+    }
     const g: Grad = {
       mint: rec.mint,
       symbol: rec.symbol,
@@ -374,10 +402,13 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
       devN: rec.devN ?? 0,
       v0: rec.call ? { score: rec.call.score, verdict: rec.call.verdict, counted: rec.call.counted } : null,
       nano: rec.call?.nano || null,
+      lead,
     };
     p.lpush(K.grads, g);
     p.ltrim(K.grads, 0, 299);
-    const said = rec.call ? ` · king said ${rec.call.verdict} ${rec.call.score}${rec.call.nano ? ` · nano ${rec.call.nano.score}` : ""}` : " · bonded before the call";
+    const said = rec.call
+      ? ` · king said ${rec.call.verdict} ${rec.call.score}${rec.call.verdict === "BOND" && lead ? ` ${fmtSecs(lead)} early` : ""}${rec.call.nano ? ` · nano ${rec.call.nano.score}` : ""}`
+      : " · bonded before the call";
     c.feed.push({ kind: "grad", rat: "LEDGER", mint: rec.mint, symbol: rec.symbol, name: rec.name, at: c.now, text: `GRADUATED in ${fmtSecs(rec.bondSecs)}${said}` });
   } else {
     c.feed.push({
@@ -408,6 +439,29 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
       if (c.model.n % 25 === 0)
         c.nanoLog.push({ n: c.model.n, loss: round4(c.model.loss), acc: round4(c.model.acc), pos: c.model.pos, at: c.now });
     }
+  }
+
+  // Graduated before the 5-minute call: nano still learns from it, using what the rats saw at dig time.
+  // No call is logged, so the scoreboard is untouched; only the model gets the lesson.
+  if (!rec.call && outcome === "BONDED") {
+    const x = features({
+      curve5: rec.p0,
+      curve0: rec.p0,
+      devBuySol: rec.devBuySol,
+      twitter: !!rec.twitter,
+      telegram: !!rec.telegram,
+      website: !!rec.website,
+      description: rec.description,
+      symbol: rec.symbol,
+      name: rec.name,
+      devN: rec.devN ?? 0,
+      devB: rec.devB ?? 0,
+      createdAt: rec.createdAt,
+    });
+    learn(c.model, x, true);
+    c.modelDirty = true;
+    inc(c, "learn_precall");
+    if (c.model.n % 25 === 0) c.nanoLog.push({ n: c.model.n, loss: round4(c.model.loss), acc: round4(c.model.acc), pos: c.model.pos, at: c.now });
   }
 
   p.rpush(K.resolvedHour(hourKey(rec.createdAt)), compactRow(rec));
@@ -592,6 +646,10 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number) {
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
   if (counted) {
+    c.p.hincrby(K.calib, `v${bucket(sc.score)}n`, 1);
+    if (nano) c.p.hincrby(K.calib, `n${bucket(nano.score)}n`, 1);
+    if (sc.verdict === "BOND") hrInc(c, rec.createdAt, "bn");
+    if (nano?.verdict === "BOND") hrInc(c, rec.createdAt, "nbn");
     inc(c, `${sc.verdict.toLowerCase()}_n`);
     if (nano) inc(c, `n${nano.verdict.toLowerCase()}_n`);
     c.p.hincrby(K.day(dayKey()), "calls", 1);

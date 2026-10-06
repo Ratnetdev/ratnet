@@ -1,9 +1,9 @@
 "use client";
 import { usePoll } from "./usePoll";
 import { Outcome, VerdictTag, hitOf, Mark } from "./Calls";
-import { CurveBar, DevTag } from "./Radar";
+import { CurveBar, DevTag, FlowBar } from "./Radar";
 import { fmtSecs } from "./Grads";
-import { ago, num, short } from "./fmt";
+import { ago, chg, num, short, usd, type Mkt } from "./fmt";
 import { useState } from "react";
 
 type Cp = { p: number; mcap: number; at: number };
@@ -29,6 +29,7 @@ type Launch = {
   cp: { t5?: Cp; h1?: Cp; d1?: Cp };
   outcome?: string;
   bondSecs?: number;
+  resolvedAt?: number;
 };
 type Call = { score: number; verdict: string; counted: boolean; progress: number; nano?: { score: number; verdict: string } | null; outcome: string | null; at: number; symbol: string; name: string };
 
@@ -48,9 +49,10 @@ function socialLinks(l: Launch) {
 }
 
 export default function CoinView({ mint }: { mint: string }) {
-  const { data, error } = usePoll<{ launch: Launch | null; call: Call | null }>(`/api/coin/${mint}`, 6000);
+  const { data, error } = usePoll<{ launch: Launch | null; call: Call | null; mkt?: Mkt | null }>(`/api/coin/${mint}`, 6000);
   const [copied, setCopied] = useState(false);
   const l = data?.launch;
+  const m = data?.mkt;
   const c = data?.call;
   const sym = c?.symbol || l?.symbol || "";
   const outcome = c?.outcome || l?.outcome || null;
@@ -111,10 +113,34 @@ export default function CoinView({ mint }: { mint: string }) {
           <div className="ph"><span><b>outcome</b></span></div>
           <div className="pb">
             <div style={{ marginBottom: 10 }}><Outcome o={outcome} /> {l?.bondSecs ? <span className="small" style={{ color: "var(--bond)" }}>in {fmtSecs(l.bondSecs)}</span> : null}</div>
+            {outcome === "BONDED" && c && l?.resolvedAt && c.verdict === "BOND" && (
+              <div className="small green" style={{ marginBottom: 8 }}>King called it {fmtSecs(Math.max(0, Math.round((l.resolvedAt - c.at) / 1000)))} before graduation</div>
+            )}
             <CurveBar p={l?.pNow ?? l?.p0 ?? 0} />
             <div className="tiny muted mt">peak {l?.peak ?? "–"}% · mcap {l?.mcapNow ? `${num(Math.round(l.mcapNow))} ◎` : "–"}</div>
           </div>
         </div>
+      </section>
+
+      <section className="panel mt">
+        <div className="ph">
+          <span><b>market</b> · live from the chain</span>
+          {m?.url && <a href={m.url} target="_blank" rel="noreferrer">dexscreener →</a>}
+        </div>
+        {m ? (
+          <div className="mkt">
+            <div><span className="k">Market cap</span><b>{usd(m.mc)}</b></div>
+            <div><span className="k">Vol 5m</span><b>{usd(m.v5)}</b></div>
+            <div><span className="k">Vol 1h</span><b>{usd(m.v1)}</b></div>
+            <div><span className="k">Vol 24h</span><b>{usd(m.v24)}</b></div>
+            <div><span className="k">Change 5m</span><b style={{ color: (m.c5 ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{chg(m.c5)}</b></div>
+            <div><span className="k">Change 1h</span><b style={{ color: (m.c1 ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{chg(m.c1)}</b></div>
+            <div><span className="k">Buys / sells 1h</span><FlowBar b={m.b1} s={m.s1} /></div>
+            <div><span className="k">{m.liq ? "Liquidity" : "Venue"}</span><b>{m.liq ? usd(m.liq) : m.dex || "–"}</b></div>
+          </div>
+        ) : (
+          <div className="pb small muted">{data ? "No market data yet. Very fresh coins can take a minute to show up." : "loading…"}</div>
+        )}
       </section>
 
       {l && (

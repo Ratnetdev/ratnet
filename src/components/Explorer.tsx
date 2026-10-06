@@ -5,7 +5,7 @@ import { usePoll } from "./usePoll";
 import { ScoreBar } from "./Calls";
 import { CurveBar } from "./Radar";
 import { fmtSecs } from "./Grads";
-import { ago, num } from "./fmt";
+import { ago, chg, num, usd, type Mkt } from "./fmt";
 
 type Row = {
   m: string;
@@ -137,6 +137,18 @@ export default function Explorer() {
   const PER = 50;
   const pages = Math.max(1, Math.ceil(rows.length / PER));
   const view = rows.slice(page * PER, page * PER + PER);
+  const viewKey = view.map((x) => x.m).join(",");
+  const [mkt, setMkt] = useState<Record<string, Mkt | null>>({});
+  useEffect(() => {
+    if (!viewKey) return;
+    const t = setTimeout(() => {
+      fetch(`/api/market?m=${viewKey}`)
+        .then((r) => r.json())
+        .then((j) => setMkt((old) => ({ ...old, ...(j.market || {}) })))
+        .catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [viewKey, data?.now]);
 
   return (
     <>
@@ -199,7 +211,7 @@ export default function Explorer() {
         <div className="scroll">
           <table className="tbl">
             <thead>
-              <tr><th>Coin</th><th>Age</th><th>King</th><th>Nano</th><th>Curve / outcome</th><th>Peak</th><th>Dev</th><th>Socials</th></tr>
+              <tr><th>Coin</th><th>Age</th><th>King</th><th>Nano</th><th>Curve / outcome</th><th>Mcap</th><th>Vol 1h</th><th>Peak</th><th>Dev</th><th>Socials</th></tr>
             </thead>
             <tbody>
               {view.map((x) => (
@@ -227,13 +239,18 @@ export default function Explorer() {
                       <span className="tiny mute2">quiet</span>
                     )}
                   </td>
+                  <td>
+                    {usd(mkt[x.m]?.mc)}
+                    {mkt[x.m]?.c1 != null && <span className="tiny" style={{ color: (mkt[x.m]!.c1 ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}> {chg(mkt[x.m]!.c1)}</span>}
+                  </td>
+                  <td className="muted">{mkt[x.m] ? usd(mkt[x.m]!.v1) : "–"}</td>
                   <td className="muted">{x.pk != null ? `${x.pk}%` : "–"}</td>
                   <td className="tiny" style={{ color: x.dn >= 5 && x.db === 0 ? "var(--dust)" : x.db > 0 ? "var(--bond)" : x.dn === 0 ? "var(--rat)" : "var(--dim)" }}>{x.dn === 0 ? "fresh" : `${x.dn} / ${x.db} bonded`}</td>
                   <td className="muted tiny">{x.so ? "●".repeat(x.so) : "–"}</td>
                 </tr>
               ))}
               {!view.length && (
-                <tr><td colSpan={8} className="muted">{data ? "No coins match. Loosen a filter." : "Loading the index…"}</td></tr>
+                <tr><td colSpan={10} className="muted">{data ? "No coins match. Loosen a filter." : "Loading the index…"}</td></tr>
               )}
             </tbody>
           </table>
