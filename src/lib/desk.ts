@@ -27,7 +27,6 @@ import { filmStats, filmStep, logSkip } from "./film";
 import { onClose as pmClose, onGhost as pmGhost, pmView, sleeveOf, sleeveWeight } from "./pm";
 import { accountOf, notePnl, wireView } from "./wire";
 import { getHistory } from "./historian";
-import { enqueueLens, lensDossier } from "./lens";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 
@@ -113,8 +112,6 @@ export type EntryCtx = {
   solUsd: number | null;
   sleeve?: string;
   wire?: { h: string; text: string; how: string; lagSec: number; trust: number } | null;
-  // scorecard: the plain-word reasons (public) and the numbers behind them (admin)
-  card?: { plus: string[]; minus: string[]; parts?: Record<string, number> | null; nc?: [string, number][] | null; lens?: { score: number; flags: string[]; good: string[] } | null };
 };
 export type Trade = {
   id: string;
@@ -176,10 +173,6 @@ export type Learn = {
   // every coin it skips is followed in shadow, and COACH drops the rule if those coins do better than the ones bought.
   floorOn: boolean;
   floor: { n: number; sum: number }; // skipped-for-dump signals: count and summed 30-minute log return
-  // PRIOR "socials": a coin with no X, website or Telegram is usually a quick rug, unless it is tied to a tweet.
-  // Same deal as the floor: skipped coins are followed in shadow and COACH drops the prior if they do better.
-  socialsOn: boolean;
-  socials: { n: number; sum: number };
 };
 export const LEARN_RULES = {
   devMin: 15, // dev-sell cases before the dev exit can switch itself on
@@ -187,8 +180,6 @@ export const LEARN_RULES = {
   floorMax: 40, // % under the coin's high (since launch) where the floor prior skips it
   floorMin: 30, // skipped cases before COACH can overrule the floor prior
   floorEdge: 0.05, // skipped coins must beat bought coins by this much (30-minute log return) to overrule it
-  socialsMin: 30, // skipped no-socials cases before COACH can overrule the socials prior
-  socialsEdge: 0.05,
   stalkMin: 30, // shadow signals before pullback entries can unlock
   stalkEdge: 0.1, // mean log return must beat buying now by this much (about +10%)
   earlyMin: 50, // resolved minute-1 BOND reads before early entries can unlock
@@ -211,13 +202,11 @@ function emptyLearn(): Learn {
     devStat: { n: 0, saved: 0, cost: 0 },
     floorOn: true,
     floor: { n: 0, sum: 0 },
-    socialsOn: true,
-    socials: { n: 0, sum: 0 },
   };
 }
 
 type ArmTrack = { hi: number; lo: number; armed: boolean; fill: number | null };
-type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" | "socials" };
+type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" };
 type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean };
 type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean };
 
@@ -238,7 +227,7 @@ async function loadState(start: number): Promise<DeskState> {
 async function loadLearn(): Promise<Learn> {
   const l = await redis().get<Learn>(K.deskLearn);
   const e = emptyLearn();
-  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn } : e;
+  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn } : e;
 }
 
 /** The paper desk mirrors the real desk wallet, so the start on the site is the real balance. */
@@ -460,38 +449,21 @@ function stepArm(t: ArmTrack, depth: number, px: number, px0: number) {
   }
 }
 
-const PRIOR_RULES: Record<string, "floor" | "socials"> = { holding_floor: "floor", has_socials: "socials" };
-
-/** Socials prior. Tweet-linked coins (a WIRE match or an X link to a post) and coins with 2+ smart wallets early pass anyway. */
-function socialsCheck(rec: Launch, l: Learn) {
-  const soc = [rec.twitter && "X", rec.website && "website", rec.telegram && "Telegram"].filter(Boolean) as string[];
-  const tweet = !!rec.wire || /\/status\/\d+/.test(String(rec.twitter || ""));
-  const smart = rec.g?.smartN ?? 0;
-  const ok = !l.socialsOn || soc.length > 0 || tweet || smart >= 2;
-  const v = soc.length ? soc.join(", ") : tweet ? "no socials, but tied to a tweet" : smart >= 2 ? `no socials, but ${smart} smart wallets early` : "no X, website or Telegram";
-  return { rule: "has_socials", ok, v: `${v}${l.socialsOn ? "" : " (prior overruled)"}` };
-}
-
 function scoreShadow(l: Learn, sh: Shadow, b: Batch) {
   // 30 minutes on: what each entry would have returned by now (log return; no fill = 0)
   const end = sh.last;
-  if (sh.tag === "floor" || sh.tag === "socials") {
-    // a coin a prior skipped: would buying it anyway have paid?
+  if (sh.tag === "floor") {
+    // a coin the floor prior skipped: would buying it anyway have paid?
     const ret = Math.log(Math.max(1e-9, end) / sh.px0);
-    const isF = sh.tag === "floor";
-    const st = isF ? l.floor : l.socials;
-    st.n++;
-    st.sum += ret;
+    l.floor.n++;
+    l.floor.sum += ret;
     const direct = l.arms["0"];
     const takenMean = direct.n ? direct.sum / direct.n : 0;
-    const skipMean = st.sum / st.n;
-    const was = isF ? l.floorOn : l.socialsOn;
-    const now = st.n >= (isF ? LEARN_RULES.floorMin : LEARN_RULES.socialsMin) ? !(skipMean > takenMean + (isF ? LEARN_RULES.floorEdge : LEARN_RULES.socialsEdge)) : was;
-    if (isF) l.floorOn = now;
-    else l.socialsOn = now;
-    const what = isF ? "dumped from its high" : "no X, website or Telegram";
-    log(b, "COACH", `${sh.tag} review $${sh.symbol} (skipped, ${what}): ${fmtPct((Math.exp(ret) - 1) * 100)} in 30m. skipped avg ${fmtPct((Math.exp(skipMean) - 1) * 100)} vs bought ${fmtPct((Math.exp(takenMean) - 1) * 100)} over ${st.n} cases`, ret > 0 ? "bad" : "ok", { mint: sh.mint, symbol: sh.symbol });
-    if (was !== now) log(b, "COACH", now ? `${sh.tag} prior back on: skipped coins are doing worse than the ones bought` : `${sh.tag} prior overruled: coins it skipped (${what}) did better than the ones bought`, "win");
+    const skipMean = l.floor.sum / l.floor.n;
+    const was = l.floorOn;
+    if (l.floor.n >= LEARN_RULES.floorMin) l.floorOn = !(skipMean > takenMean + LEARN_RULES.floorEdge);
+    log(b, "COACH", `floor review $${sh.symbol} (skipped, dumped from its high): ${fmtPct((Math.exp(ret) - 1) * 100)} in 30m. skipped avg ${fmtPct((Math.exp(skipMean) - 1) * 100)} vs bought ${fmtPct((Math.exp(takenMean) - 1) * 100)} over ${l.floor.n} cases`, ret > 0 ? "bad" : "ok", { mint: sh.mint, symbol: sh.symbol });
+    if (was !== l.floorOn) log(b, "COACH", l.floorOn ? "floor prior back on: dumped coins are doing worse than the ones bought" : "floor prior overruled: coins that dumped from their high did better than the ones bought", "win");
     return;
   }
   const parts: string[] = [];
@@ -865,18 +837,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           { rule: "tape_read", ok: !!t, v: t ? `${t.n} trades, ${t.uniq} traders read` : "no tape read in time" },
           { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders, block-0 curve ${Math.round(t.instant ?? 0)}%` : "not read" },
           { rule: "holding_floor", ok: !learnS.floorOn || dd < LEARN_RULES.floorMax, v: `${dd}% under its high${learnS.floorOn ? "" : " (prior overruled)"}` },
-          // PRIOR: no socials is usually a rug. A tweet-linked coin or 2+ smart wallets early outweigh it. Not a hard cap: COACH can overrule it.
-          socialsCheck(rec, learnS),
           { rule: "fresh_signal", ok: now - (rec.call?.at ?? rec.early!.at) < 3 * 60_000, v: `${Math.round((now - (rec.call?.at ?? rec.early!.at)) / 1000)}s old` },
           { rule: "open_slots", ok: open < cfg.maxOpen && !posMap[m] && !stalks[m], v: `${open}/${cfg.maxOpen}` },
           { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
         ];
         const fail = checks.find((c) => !c.ok);
         const fails = checks.filter((c) => !c.ok);
-        if (fails.length === 1 && PRIOR_RULES[fails[0].rule] && ((await r.hlen(K.deskShadow)) || 0) < 60) {
-          // a prior skipped it: follow it anyway so COACH can tell whether the prior helps
-          const tag = PRIOR_RULES[fails[0].rule];
-          const sh = { ...newShadow(m, rec.symbol, q.px, early), k: `${tag[0]}:${m}`, tag };
+        if (fails.length === 1 && fails[0].rule === "holding_floor" && ((await r.hlen(K.deskShadow)) || 0) < 60) {
+          // the prior skipped it: follow it anyway so COACH can tell whether the prior helps
+          const sh = { ...newShadow(m, rec.symbol, q.px, early), k: `f:${m}`, tag: "floor" as const };
           await r.hset(K.deskShadow, { [sh.k]: sh });
         }
         await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
@@ -1075,7 +1044,6 @@ type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire", xm: number | null) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
-  enqueueLens(r, rec.mint, "buy");
   // SIZE: research on fat tails says small, equal bets; never size up on conviction
   const avail = state.live ? (walletSol ?? 0) - 0.02 : state.cash;
   // liquidity cap: on the curve, buying S SOL moves the price by ((vSol + S) / vSol)^2 - 1, vSol = 30 + real SOL
@@ -1210,7 +1178,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     // keep the whole trade for the public track record: chart, the call behind it, peak while held
     const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
     const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
-    await redis().lpush(TRIPS_KEY, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: await withLens(p.ctx, p.mint) } satisfies TripMeta);
+    await redis().lpush(TRIPS_KEY, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: p.ctx } satisfies TripMeta);
     await redis().ltrim(TRIPS_KEY, 0, 999);
     // COACH keeps watching the coin after we leave it: 5m, 15m, 1h, 2h, 6h, 1d, 7d
     await follow({ id: tripId(p.mint, p.openedAt), mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: Date.now(), entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
@@ -1271,7 +1239,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   p.tokens = 0;
   const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
   const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
-  await redis().lpush(GHOST_TRIPS, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: await withLens(p.ctx, p.mint) } satisfies TripMeta);
+  await redis().lpush(GHOST_TRIPS, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: p.ctx } satisfies TripMeta);
   await redis().ltrim(GHOST_TRIPS, 0, 999);
   // COACH follows ghost exits too (5m to 7d), and PM hears how a paused strategy would have done
   await follow({ id: `g:${tripId(p.mint, p.openedAt)}`, mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: now, entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
@@ -1422,24 +1390,7 @@ async function entryCtx(rec: Launch, px: number, real: number, how: Pos["how"]):
     solUsd: sol,
     sleeve: sleeveOf(how),
     wire: rec.wire ? { h: rec.wire.h, text: rec.wire.text, how: rec.wire.how, lagSec: rec.wire.lagSec, trust: (await accountOf(rec.wire.h).catch(() => ({ w: 0 }))).w } : null,
-    card: await (async () => {
-      const ln = await lensDossier(rec.mint).catch(() => null);
-      return {
-        plus: rec.call?.why?.plus || [],
-        minus: rec.call?.why?.minus || [],
-        parts: rec.call?.parts ?? null,
-        nc: rec.call?.nc ?? null,
-        lens: ln && ln.done ? { score: ln.score, flags: ln.flags, good: ln.good } : null,
-      };
-    })(),
   };
-}
-/** Attach the LENS dossier to a trade's context when it was not ready at the buy. */
-async function withLens(ctx: EntryCtx | undefined, mint: string) {
-  if (!ctx || ctx.card?.lens) return ctx;
-  const ln = await lensDossier(mint).catch(() => null);
-  if (!ln?.done) return ctx;
-  return { ...ctx, card: { plus: ctx.card?.plus || [], minus: ctx.card?.minus || [], parts: ctx.card?.parts ?? null, nc: ctx.card?.nc ?? null, lens: { score: ln.score, flags: ln.flags, good: ln.good } } };
 }
 type TripMeta = { mint: string; symbol: string; openedAt: number; closedAt: number; king: number; nano: number | null; how: string; entryPx: number; peakPx: number; exitPx: number; series: [number, number][]; ctx?: EntryCtx };
 

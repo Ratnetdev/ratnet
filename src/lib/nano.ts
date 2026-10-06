@@ -1,6 +1,6 @@
 // Rat King nano: a model learned from scratch, live, on what the rats dig.
 // Plain logistic regression trained one sample at a time (online SGD) the moment a launch resolves.
-// No pretrained weights, no outside data. Weights are admin only (/api/king/weights?full=1, or the Strategy tab).
+// No pretrained weights, no outside data. Every weight is public at /api/king/weights.
 
 export const NANO_FEATURES = [
   { key: "bias", label: "bias" },
@@ -180,13 +180,4 @@ export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = PO
   if (bonded) m.pos += 1;
   m.updatedAt = Date.now();
   return m;
-}
-
-/** What pushed one nano score: each feature's pull on the logit (w x), strongest first. For the scorecard. */
-export function contributions(m: NanoModel, x: number[], n = 8): [string, number][] {
-  return x
-    .map((v, i) => [NANO_FEATURES[i]?.label || `f${i}`, Math.round((m.w[i] || 0) * v * 100) / 100] as [string, number])
-    .filter(([l, c], i) => i > 0 && c !== 0)
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-    .slice(0, n);
 }

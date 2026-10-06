@@ -11,8 +11,6 @@ export async function getSettings(): Promise<Settings> {
       // an empty link saved in /admin never hides a default (the X handle is known)
       links: { ...DEFAULT_SETTINGS.links, ...Object.fromEntries(Object.entries(s?.links || {}).filter(([, v]) => !!v)) },
       desk: { ...DEFAULT_SETTINGS.desk, ...(s?.desk || {}) },
-      refs: { ...DEFAULT_SETTINGS.refs, ...(s?.refs || {}) },
-      venueTpl: { ...DEFAULT_SETTINGS.venueTpl, ...(s?.venueTpl || {}) },
       history: { ...DEFAULT_SETTINGS.history, ...(s?.history || {}) },
     };
   } catch {
@@ -27,8 +25,6 @@ export async function saveSettings(patch: Partial<Settings>) {
     ...patch,
     litter: { ...cur.litter, ...(patch.litter || {}) },
     links: { ...cur.links, ...(patch.links || {}) },
-    refs: { ...cur.refs, ...(patch.refs || {}) },
-    venueTpl: { ...cur.venueTpl, ...(patch.venueTpl || {}) },
     desk: { ...cur.desk, ...(patch.desk || {}) },
     history: { ...cur.history, ...(patch.history || {}) },
   };

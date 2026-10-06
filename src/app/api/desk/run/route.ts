@@ -7,7 +7,6 @@ import { tgFlush } from "@/lib/tg";
 import { curate, ingest, syncRules } from "@/lib/wire";
 import { j7Accounts, j7Session } from "@/lib/j7";
 import { pulseTick } from "@/lib/pulse";
-import { lensSession } from "@/lib/lens";
 import { agentLog } from "@/lib/agents";
 import { redis } from "@/lib/redis";
 import { X_SEED } from "@/config/x-accounts";
@@ -45,8 +44,6 @@ async function session() {
   })();
   // J7 live feed for the whole minute run: posts land in WIRE within moments
   const j7 = j7Session(52_000, (t) => ingest(t)).catch((e) => ({ on: true, error: String(e?.message || e) }));
-  // LENS: hands-on looks at the coins that matter (website, X, who is talking, Telegram), streamed to the LensCam
-  const lens = lensSession(52_000).catch((e) => ({ lens: "error", error: String(e?.message || e) }));
   const [desk, history, receipts, telegram, x] = await Promise.all([
     deskSession(55_000, () => dig()),
     historianSession(45_000).catch((e) => ({ history: "error", error: String(e?.message || e) })),
@@ -54,7 +51,7 @@ async function session() {
     tg,
     wire,
   ]);
-  return { desk, history, receipts, telegram, wire: x, j7: await j7, lens: await lens };
+  return { desk, history, receipts, telegram, wire: x, j7: await j7 };
 }
 
 // Ping every minute (cron-job.org). The ping gets an answer right away, and the work keeps running in the

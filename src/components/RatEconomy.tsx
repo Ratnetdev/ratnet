@@ -3,8 +3,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePoll } from "./usePoll";
 import { useLive } from "./Live";
-import { countdown, num } from "./fmt";
-import { Logo, useVenues } from "./venues";
+import { countdown, num, pumpCoin } from "./fmt";
 import Info from "./Info";
 import type { Econ } from "./Money";
 
@@ -35,9 +34,8 @@ function useBoard() {
 }
 
 function BuyBtn({ mint, className = "btn dim" }: { mint: string | null; className?: string }) {
-  const url = useVenues();
   return mint ? (
-    <a className={className} href={url("pump", mint)} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Logo v="pump" size={16} />Buy $RAT</a>
+    <a className={className} href={pumpCoin(mint)} target="_blank" rel="noreferrer">Buy $RAT</a>
   ) : (
     <span className={`${className} is-off`} title="The $RAT contract address is posted here and on X at launch">Buy $RAT · at launch</span>
   );

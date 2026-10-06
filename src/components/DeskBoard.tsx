@@ -9,8 +9,6 @@ import DeskNow, { type DeskNowData } from "./DeskNow";
 import TrackRecord from "./TrackRecord";
 import AgentPanel from "./AgentPanel";
 import { useState } from "react";
-import LensCam from "./LensCam";
-import { fullUrl, useAdmin } from "./useAdmin";
 
 type Ev = { agent: string; at: number; mint?: string; symbol?: string; text: string; tone: string };
 type Sample = [number, number, number];
@@ -96,7 +94,6 @@ const ROLES: [string, string][] = [
   ["WIRE", "X posts that spawn coins"],
   ["PM", "splits capital across strategies"],
   ["PULSE", "what X is talking about now"],
-  ["LENS", "opens the site, X and TG by hand"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
 const pct = (a: number, b: number) => (b ? ((a - b) / b) * 100 : 0);
@@ -147,9 +144,7 @@ function EquityChart({ pts, start }: { pts: Desk["equity"]; start: number }) {
 }
 
 export default function DeskBoard() {
-  const admin = useAdmin();
-  const { data: d, error } = usePoll<Desk>(fullUrl("/api/desk", admin), 2500);
-  const full = !!(d as any)?.full; // admin view: the playbook and what the agents learned
+  const { data: d, error } = usePoll<Desk>("/api/desk", 2500);
   const now = Date.now();
   const st = d?.state;
   const eq = st?.equity ?? 0;
@@ -232,8 +227,6 @@ export default function DeskBoard() {
         })}
       </section>
 
-      <LensCam />
-
       <section className="panel mt" style={{ overflow: "hidden" }}>
         <div className="ph">
           <span><b>the den</b> · <Info k="den">agents at work</Info></span>
@@ -248,10 +241,9 @@ export default function DeskBoard() {
           <div className="pb"><EquityChart pts={d?.equity || []} start={base} /></div>
         </div>
         <div className="panel">
-          <div className="ph"><span><b>desk.config.ts</b> · <Info k="thresholds">{full ? "every number the desk believes" : "private"}</Info></span>{full ? <span className="tiny green">admin view</span> : null}</div>
+          <div className="ph"><span><b>desk.config.ts</b> · <Info k="thresholds">every number the desk believes</Info></span></div>
           <pre className="code">
-            {d && !full ? <div className="mute2" style={{ whiteSpace: "pre-wrap" }}>{"// the playbook is private: thresholds, priors and what the agents learned.\n// every trade still shows why it was taken. click one in the track record."}</div> : null}
-            {d && full
+            {d
               ? [
                   ["enter_on", d.cfg.needNano ? "King + nano BOND" : "King or nano BOND (early read once earned)"],
                   ["curve_window", `${d.cfg.minCurve}% .. ${d.cfg.maxCurve}%`],
@@ -277,14 +269,14 @@ export default function DeskBoard() {
                     <span className="green">{String(v)}</span>
                   </div>
                 ))
-              : d ? null : "loading…"}
+              : "loading…"}
             {d?.vet && (
               <>
                 <div className="mute2" style={{ marginTop: 10 }}>// last check: ${d.vet.symbol}, {ago(d.vet.at)} ago</div>
                 {d.vet.checks.map((c) => (
                   <div key={c.rule} className="row between">
                     <span style={{ color: c.ok ? "var(--rat)" : "var(--dust)" }}>{c.ok ? "✓" : "✗"} {c.rule}</span>
-                    {c.v ? <span className="muted">{c.v}</span> : null}
+                    <span className="muted">{c.v}</span>
                   </div>
                 ))}
               </>
@@ -346,8 +338,7 @@ export default function DeskBoard() {
         <div className="panel">
           <div className="ph"><span><b>what the desk learned</b> · <Info k="learn">from its own trades</Info></span><span className="tiny muted">{d?.learn ? `${d.learn.shadows} in shadow · ${d.learn.reviewing} exits under review` : ""}</span></div>
           <pre className="code">
-            {d?.learn && !full ? <div className="mute2" style={{ whiteSpace: "pre-wrap" }}>{`// ${d.learn.reviews ?? 0} exits reviewed, ${d.learn.shadows} signals followed in shadow.\n// what the desk learned from them is private.`}</div> : null}
-            {d?.learn && full ? (
+            {d?.learn ? (
               <>
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>trail_scale</span></span><span className="green">{d.learn.trailK.toFixed(2)}x</span></div>
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>exit_reviews</span></span><span className="green">{d.learn.reviews} · {d.learn.early} too early · {d.learn.late} too late · {d.learn.good} right</span></div>
@@ -355,14 +346,13 @@ export default function DeskBoard() {
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>early_entries</span></span><span style={{ color: d.learn.earlyOn ? "var(--rat)" : "var(--mute)" }}>{d.learn.earlyOn ? "on" : `locked: ${d.learn.earlyStat.n}/${d.learn.rules.earlyMin} reads, ${d.learn.earlyStat.n ? Math.round((d.learn.earlyStat.hit / d.learn.earlyStat.n) * 100) : 0}% vs King ${d.learn.earlyStat.mainN ? Math.round((d.learn.earlyStat.mainHit / d.learn.earlyStat.mainN) * 100) : 0}%`}</span></div>
                 <div className="row between"><span><span className="mute2">prior </span><Info k="prior"><span style={{ color: "var(--watch)" }}>holding_floor</span></Info></span><span style={{ color: d.learn.floorOn !== false ? "var(--rat)" : "var(--mute)" }}>{d.learn.floorOn !== false ? `on: skips coins ${d.learn.rules.floorMax}%+ under their high` : "overruled by COACH"} · {d.learn.floor?.n ?? 0}/{d.learn.rules.floorMin} skipped coins reviewed{d.learn.floor?.n ? `, avg ${(Math.exp(d.learn.floor.sum / d.learn.floor.n) * 100 - 100).toFixed(0)}% in 30m` : ""}</span></div>
                 <div className="row between"><span><span className="mute2">prior </span><Info k="prior"><span style={{ color: "var(--watch)" }}>dev_exit</span></Info></span><span style={{ color: d.learn.devExitOn ? "var(--rat)" : "var(--mute)" }}>{d.learn.devExitOn ? "on: sells with the dev" : `off: holds through dev sells (${d.learn.devStat?.saved ?? 0}/${d.learn.devStat?.n ?? 0} cases favour selling, needs ${d.learn.rules.devMin}+ at ${Math.round(d.learn.rules.devSaved * 100)}%)`}</span></div>
-                <div className="row between"><span><span className="mute2">prior </span><Info k="prior"><span style={{ color: "var(--watch)" }}>has_socials</span></Info></span><span style={{ color: (d.learn as any).socialsOn !== false ? "var(--rat)" : "var(--mute)" }}>{(d.learn as any).socialsOn !== false ? "on: skips coins with no X, website or Telegram (tweet coins pass)" : "overruled by COACH"} · {(d.learn as any).socials?.n ?? 0}/{(d.learn.rules as any).socialsMin ?? 30} skipped coins reviewed</span></div>
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>x_mentions</span></span><span className="muted">{d.learn.xConnected ? "connected" : "not connected"}</span></div>
               </>
-            ) : d ? null : "loading…"}
+            ) : "loading…"}
           </pre>
           <div className="scroll">
             <table className="tbl">
-              {full ? <thead><tr><th><Info k="arms">Entry</Info></th><th>Signals</th><th>Filled</th><th>Mean after {d?.learn?.rules?.shadowMins ?? 30}m</th></tr></thead> : null}
+              <thead><tr><th><Info k="arms">Entry</Info></th><th>Signals</th><th>Filled</th><th>Mean after {d?.learn?.rules.shadowMins ?? 30}m</th></tr></thead>
               <tbody>
                 {(d?.learn?.arms || []).map((a) => (
                   <tr key={a.arm}>
@@ -489,7 +479,7 @@ export default function DeskBoard() {
                       <td style={{ color: r.verdict === "costing" ? "var(--dust)" : r.verdict === "saving" ? "var(--rat)" : "var(--dim)" }}>{r.verdict}</td>
                     </tr>
                   ))}
-                  {!d?.film?.rules?.length && <tr><td colSpan={6} className="muted">{d && !full ? "Rule by rule grades are private. The calls, graded, are on the right." : null}{d && !full ? null : "Every skip is checked 30 minutes, 2 hours and 24 hours later. First reviews land 30 minutes after the first skip."}</td></tr>}
+                  {!d?.film?.rules?.length && <tr><td colSpan={6} className="muted">Every skip is checked 30 minutes, 2 hours and 24 hours later. First reviews land 30 minutes after the first skip.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -497,7 +487,7 @@ export default function DeskBoard() {
             {(d?.film?.against || []).map((a) => (
               <div key={a.reason} className="film-row"><span>{a.reason.replace(/#/g, "N")}</span><span style={{ color: a.rate >= 5 ? "var(--dust)" : "var(--dim)" }}>{a.wrong}/{a.n} bonded anyway</span></div>
             ))}
-            {!d?.film?.against?.length && <div className="tiny mute2">{d && !full ? "Private." : "Fills in as calls resolve (24 hours after launch, or at the bond)."}</div>}
+            {!d?.film?.against?.length && <div className="tiny mute2">Fills in as calls resolve (24 hours after launch, or at the bond).</div>}
           </div>
           <div>
             <div className="film-k">The King&apos;s calls, graded</div>

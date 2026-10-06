@@ -1,6 +1,5 @@
 "use client";
 import CoinDesk from "./CoinDesk";
-import TradeLinks from "./venues";
 import Link from "next/link";
 import { usePoll } from "./usePoll";
 import { Outcome, VerdictTag, hitOf, Mark } from "./Calls";
@@ -98,7 +97,8 @@ export default function CoinView({ mint }: { mint: string }) {
         </div>
         <div className="row wrapx mt" style={{ gap: 10 }}>
           <a className="btn" href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(tweet)}&url=${encodeURIComponent(url)}`} target="_blank" rel="noreferrer">Share call</a>
-          <TradeLinks ca={mint} />
+          <a className="btn dim" href={`https://pump.fun/coin/${mint}`} target="_blank" rel="noreferrer">pump.fun</a>
+          <a className="btn dim" href={`https://dexscreener.com/solana/${mint}`} target="_blank" rel="noreferrer">chart</a>
           <button className="btn dim" onClick={() => { navigator.clipboard?.writeText(mint); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "copied" : "copy CA"}</button>
         </div>
       </section>

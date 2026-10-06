@@ -59,7 +59,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <TabBar />
           <footer>
             <div className="wrap row between wrapx">
-              <span>RATNET · $RAT · rats dig, the king learns, every trade is on the record.</span>
+              <span>RATNET · $RAT · rats dig, the king learns, the weights go public.</span>
               <span>
                 <Link href="/docs">docs</Link> · <Link href="/ledger">ledger</Link> · <Link href="/dataset">dataset</Link>
               </span>

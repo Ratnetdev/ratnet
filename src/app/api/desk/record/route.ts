@@ -1,6 +1,5 @@
 import { getRecord } from "@/lib/desk";
-import { fail } from "@/lib/http";
-import { publicTrip, serve } from "@/lib/private";
+import { cached, fail } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   try {
     const book = new URL(req.url).searchParams.get("book") === "ghost" ? "ghost" : "real";
-    return serve(req, await getRecord(undefined, book), (d: any) => ({ ...d, trips: d.trips.map(publicTrip) }), 5);
+    return cached(await getRecord(undefined, book), 5);
   } catch (e) {
     return fail(e, 500);
   }

@@ -1,6 +1,5 @@
 "use client";
 import { usePoll } from "./usePoll";
-import { fullUrl, useAdmin } from "./useAdmin";
 import { num } from "./fmt";
 import type { Stats } from "./LiveBoard";
 import Info from "./Info";
@@ -81,8 +80,7 @@ function WeightBars({ weights }: { weights: Weights["weights"] }) {
 }
 
 export default function LabBoard() {
-  const admin = useAdmin();
-  const { data } = usePoll<Weights>(fullUrl("/api/king/weights", admin), 15000);
+  const { data } = usePoll<Weights>("/api/king/weights", 15000);
   const { data: king } = usePoll<{ stats: Stats }>("/api/king", 15000);
   const s = king?.stats;
   const ready = (data?.samples ?? 0) >= (data?.counted_calls_from ?? 200);
@@ -124,9 +122,9 @@ export default function LabBoard() {
 
       <section className="grid g2 mt">
         <div className="panel">
-          <div className="ph"><span><Info k="t_weights"><b>weights</b></Info> · what it has learned</span>{admin ? <a href="/api/king/weights?full=1" target="_blank">json →</a> : null}</div>
+          <div className="ph"><span><Info k="t_weights"><b>weights</b></Info> · what it has learned</span><a href="/api/king/weights" target="_blank">json →</a></div>
           <div className="pb">
-            {data ? (data.weights?.length ? <WeightBars weights={data.weights} /> : <span className="muted small">The weights are private. The loss curve and the head to head with v0 stay public.</span>) : <span className="muted small">loading…</span>}
+            {data ? <WeightBars weights={data.weights} /> : <span className="muted small">loading…</span>}
             <p className="tiny muted" style={{ marginBottom: 0 }}>Green pushes a launch toward BOND, red toward DUST. All start at zero. Nothing is hand-tuned.</p>
           </div>
         </div>

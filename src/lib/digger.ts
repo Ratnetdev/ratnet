@@ -5,7 +5,7 @@ import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, l
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
-import { contributions, emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
+import { emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
 import { readTape, Tape } from "./tape";
 import { whyOf, type Why } from "./why";
 import { noteCall } from "./receipts";
@@ -20,7 +20,6 @@ import { migrated, poolUsd, readPools } from "./pool";
 import { ensureEpoch } from "./epoch";
 import { trackFees, trackWeights } from "./fees";
 import { agentLog } from "./agents";
-import { enqueueLens } from "./lens";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
@@ -102,8 +101,6 @@ export type Call = {
   px?: number; // curve price (SOL) at the call, so the desk knows when it would be chasing
   farm?: string; // why the tape flagged it as a farm (never sent to the desk)
   why?: Why; // the reasons behind the score, in plain words
-  parts?: Record<string, number>; // v0 points per rule (admin scorecard)
-  nc?: [string, number][]; // nano: strongest feature pulls on the logit (admin scorecard)
   tp?: { n: number; uniq: number; spb: number; bs: number; sn: number; sm: number; cl: number; ds: number } | null; // tape + graph summary
 };
 
@@ -868,8 +865,6 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     version: KING_VERSION,
     nano,
     x,
-    parts: sc.parts,
-    nc: c.model.n >= 50 ? contributions(c.model, x) : undefined,
     outcome: null,
     devN: rec.devN ?? 0,
     devB: rec.devB ?? 0,
@@ -887,9 +882,6 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
-  // LENS takes a hands-on look at BOND calls and at launches named after a rising narrative
-  if (counted && !farm && (sc.verdict === "BOND" || nano?.verdict === "BOND")) enqueueLens(c.p, rec.mint, "bond");
-  else if (counted && !farm && rec.pulse && curveNow >= 10) enqueueLens(c.p, rec.mint, "pulse");
   if (counted && sc.verdict === "BOND" && !farm) queueCall(c.p, { mint: rec.mint, symbol: rec.symbol, name: rec.name, score: sc.score, nano, progress: curveNow, mc: CURVE_USD[rec.mint] ? Math.round(CURVE_USD[rec.mint]) : null, plus: rec.call.why?.plus || [], minus: rec.call.why?.minus || [] });
   if (counted && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
     // every counted BOND call (King or nano) is listed on the homepage, farms included so nothing is hidden
@@ -985,7 +977,6 @@ async function wirePicks() {
     const p = r.pipeline();
     const send = w >= (s.desk.wireMinW ?? 0.2);
     if (send) p.zadd(K.deskQ, { score: Date.now(), member: `w:${rec.mint}` });
-    enqueueLens(p, rec.mint, "wire");
     agentLog(p, [{ agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `picked $${rec.symbol} for @${rec.wire.h}'s post: ${d.mints.length} coin${d.mints.length > 1 ? "s" : ""} launched on it, leader at ${lead!.cv!.progress}% curve, ${rec.tape!.uniq} traders. trust in @${rec.wire.h} ${w}${send ? ", sent to the desk" : ", below the trust line: learning only"}`, tone: send ? "ok" : "info" }]);
     if (send) p.lpush(K.deskEv, { agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} from @${rec.wire.h}'s post, sent to the desk`, tone: "ok" });
     await p.exec();

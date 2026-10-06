@@ -46,15 +46,6 @@ export const DEFAULT_SETTINGS = {
   minWork: 50,
   freeSniff: true, // free sniffs while no CA is set (pre-launch preview)
   links: { x: "https://x.com/Ratnetdev", tg: "", pump: "", dex: "" },
-  // trade buttons on every coin: your referral code per venue, and the link formats ({ca} = coin, {ref} = your code)
-  refs: { pump: "", gmgn: "", axiom: "", fomo: "" },
-  venueTpl: {
-    pump: { ref: "https://pump.fun/coin/{ca}?ref={ref}", plain: "https://pump.fun/coin/{ca}" },
-    dex: { ref: "https://dexscreener.com/solana/{ca}", plain: "https://dexscreener.com/solana/{ca}" },
-    gmgn: { ref: "https://gmgn.ai/sol/token/{ref}_{ca}", plain: "https://gmgn.ai/sol/token/{ca}" }, // format from GMGN's docs
-    axiom: { ref: "https://axiom.trade/t/{ca}/@{ref}", plain: "https://axiom.trade/t/{ca}" },
-    fomo: { ref: "https://fomo.family/r/{ref}", plain: "https://fomo.family" }, // FOMO codes only count at signup
-  },
   // HISTORIAN: replays past pump.fun launches so the models start trained (see src/lib/historian.ts)
   history: {
     on: true,

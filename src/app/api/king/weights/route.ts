@@ -2,17 +2,15 @@ import { getNano } from "@/lib/stats";
 import { loadModel } from "@/lib/digger";
 import { K } from "@/lib/redis";
 import { NANO_FEATURES } from "@/lib/nano";
-import { fail } from "@/lib/http";
-import { serve } from "@/lib/private";
+import { cached, fail } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
-// Rat King nano. Public: samples, loss and the training log. The weights themselves are admin only (?full=1).
-export async function GET(req: Request) {
+// Public weights of the Rat King nano. Anyone can run it: p = sigmoid(sum(w_i * x_i)).
+export async function GET() {
   try {
     const [{ model, log, min }, early] = await Promise.all([getNano(), loadModel(K.nano1)]);
-    return serve(
-      req,
+    return cached(
       {
         model: "rat-king-nano",
         kind: "logistic regression, online SGD, trained from scratch on RATNET outcomes",
@@ -33,7 +31,6 @@ export async function GET(req: Request) {
           weights: NANO_FEATURES.map((f, i) => ({ feature: f.key, w: early.w[i] ?? 0 })),
         },
       },
-      (d: any) => ({ ...d, weights: [], early_model: { ...d.early_model, weights: [] }, private: "weights are private" }),
       15
     );
   } catch (e) {
