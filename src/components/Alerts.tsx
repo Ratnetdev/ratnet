@@ -281,6 +281,7 @@ export default function Alerts() {
             onClose={() => close(t.id)}
             onPin={() => patch(t.id, { pinned: !t.pinned })}
             onHover={(h) => patch(t.id, { hover: h })}
+            onRaise={() => setToasts((x) => [t, ...x.filter((y) => y.id !== t.id)])}
           />
         ))}
         {toasts.length > 3 && (

@@ -5,6 +5,7 @@
 import bs58 from "bs58";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { MockRedis } from "./mockredis";
+import { canonicalPool } from "../src/lib/pool";
 
 let NOW = Date.UTC(2026, 9, 6, 12, 0, 0);
 Date.now = () => NOW;
@@ -32,11 +33,14 @@ type Coin = {
   i: number; mint: string; curve: string; sig: string; t: number; slot0: number; creator: string;
   bondAt: number | null; peak: number; peakAt: number; socials: boolean; desc: boolean; dev: number;
   rug: boolean; rugAt: number; bundled: boolean; smartIn: number; postPeakUsd: number; postPeakAt: number; symbol: string; farm: boolean;
+  ghost: boolean; pool: string; bv: string; qv: string; // ghost: curve hits 100% but never migrates (the v0.1.4 false graduations)
 };
 const coins: Coin[] = [];
 const bySig = new Map<string, Coin>();
 const byCurve = new Map<string, Coin>();
 const byMint = new Map<string, Coin>();
+const byPool = new Map<string, Coin>();
+const byVault = new Map<string, { c: Coin; q: boolean }>();
 const accs = new Map<string, { coin: Coin; w: string; role: string; amt: number }>(); // token account -> holder
 const accOf = new Map<string, string>(); // wallet|mint -> token account
 let slot = 1000;
@@ -54,7 +58,8 @@ function spawnCoin() {
   const desc = rand() < 0.4;
   const bondP = (fac ? 0.002 : pro ? 0.18 : 0.008) + (socials ? 0.015 : 0) + (desc ? 0.006 : 0);
   const farm = rand() < 0.04; // block-0 farm: bundle pumps the curve, 5 bot wallets trade uniform sizes, fake bond, dump
-  const bonds = farm || rand() < bondP;
+  const ghost = !farm && rand() < 0.03;
+  const bonds = farm || ghost || rand() < bondP;
   // power law after bond: most die near $70K, a few run to $1M-$50M
   const u = Math.max(1e-6, rand());
   const postPeakUsd = bonds ? Math.min(5e7, 70_000 * Math.pow(1 / u, pro ? 1.4 : 1.0)) : 0;
@@ -64,6 +69,7 @@ function spawnCoin() {
     socials, desc, dev: Math.round(rand() * 30) / 10, rug: fac ? rand() < 0.7 : rand() < 0.15, rugAt: NOW + (4 + rand() * 30) * 60_000,
     bundled: fac ? rand() < 0.8 : rand() < 0.2, smartIn: bonds ? (rand() < 0.6 ? 1 + Math.floor(rand() * 4) : 0) : rand() < 0.04 ? 1 : 0,
     postPeakUsd: farm ? 80_000 : postPeakUsd, postPeakAt: 0, symbol: `C${coins.length}`, farm,
+    ghost, pool: canonicalPool(mint), bv: pk(), qv: pk(),
   };
   if (farm) {
     c.bondAt = NOW + (3 + rand() * 5) * 60_000;
@@ -77,6 +83,9 @@ function spawnCoin() {
   bySig.set(c.sig, c);
   byCurve.set(c.curve, c);
   byMint.set(c.mint, c);
+  byPool.set(c.pool, c);
+  byVault.set(c.bv, { c, q: false });
+  byVault.set(c.qv, { c, q: true });
 }
 
 function progressOf(c: Coin) {
@@ -88,7 +97,7 @@ function progressOf(c: Coin) {
   return Math.max(0, p * (1 + 0.15 * Math.sin(NOW / 47_000 + c.i)));
 }
 function postUsd(c: Coin) {
-  if (!c.bondAt || NOW < c.bondAt) return 0;
+  if (!c.bondAt || NOW < c.bondAt || c.ghost) return 0;
   const start = 69_000;
   if (NOW <= c.postPeakAt) return start * Math.pow(c.postPeakUsd / start, (NOW - c.bondAt) / Math.max(1, c.postPeakAt - c.bondAt));
   return Math.max(5000, c.postPeakUsd * Math.exp(-(NOW - c.postPeakAt) / (6 * 3600_000)));
@@ -242,6 +251,28 @@ let rpc = 0;
       const a = p.toBase58();
       const c = byCurve.get(a);
       if (c) return { data: curveData(c) };
+      const pc = byPool.get(a);
+      if (pc) {
+        // the canonical pool exists only after a real migration (a few seconds after the curve completes)
+        if (pc.ghost || !pc.bondAt || NOW < pc.bondAt + 15_000) return null;
+        const d = Buffer.alloc(261);
+        Buffer.from([241, 154, 109, 4, 17, 177, 109, 188]).copy(d, 0);
+        new PublicKey(pc.mint).toBuffer().copy(d, 43);
+        new PublicKey("So11111111111111111111111111111111111111112").toBuffer().copy(d, 75);
+        new PublicKey(pc.bv).toBuffer().copy(d, 139);
+        new PublicKey(pc.qv).toBuffer().copy(d, 171);
+        return { data: d };
+      }
+      const v = byVault.get(a);
+      if (v) {
+        const mc = postUsd(v.c);
+        if (!mc) return null;
+        const pxSol = mc / SOL_USD / 1e9;
+        const sol = 85;
+        const d = Buffer.alloc(165);
+        d.writeBigUInt64LE(BigInt(Math.floor(v.q ? sol * 1e9 : (sol / pxSol) * 1e6)), 64);
+        return { data: d };
+      }
       const h = accs.get(a);
       if (h) {
         // insiders dump at the rug; others hold
@@ -264,9 +295,11 @@ let rpc = 0;
     const pairs = mints
       .map((m) => byMint.get(m))
       .filter((c): c is Coin => !!c && !!c.bondAt && NOW >= c.bondAt)
-      .map((c) => {
+      .flatMap((c) => {
         const mc = postUsd(c);
-        return { baseToken: { address: c.mint }, quoteToken: { symbol: "SOL" }, marketCap: mc, priceNative: mc / 1e9 / SOL_USD, liquidity: { usd: mc / 10 }, volume: { h1: mc / 5 }, txns: { h1: { buys: 60, sells: 40 } }, dexId: "pumpswap" };
+        const junk = { baseToken: { address: c.mint }, quoteToken: { symbol: "SOL" }, pairAddress: c.bv, marketCap: 10, priceNative: 1e-11, liquidity: { usd: 4 }, volume: { h1: 900, h24: 5e6 }, txns: { h1: { buys: 99, sells: 85 } }, dexId: "pumpswap" };
+        if (!mc) return [junk];
+        return [junk, { baseToken: { address: c.mint }, quoteToken: { symbol: "SOL" }, pairAddress: c.pool, marketCap: mc, priceNative: mc / 1e9 / SOL_USD, liquidity: { usd: mc / 10 }, volume: { h1: mc / 5 }, txns: { h1: { buys: 60, sells: 40 } }, dexId: "pumpswap" }];
       });
     return { ok: true, json: async () => pairs };
   }
@@ -314,7 +347,14 @@ async function main() {
   const cl = R.kv.get("rn:g:n") || {};
   const clb = R.kv.get("rn:g:b") || {};
   console.log("\n=== summary");
-  console.log("coins", coins.length, "bonded truth", coins.filter((c) => c.bondAt && c.bondAt <= NOW).length, "detected", st.bonded, "taped", st.tape_n, "taped bonded", st.tape_b);
+  const ghosts = coins.filter((c) => c.ghost && c.bondAt && c.bondAt <= NOW - 31 * 60_000);
+  const ghostBonded = ghosts.filter((c) => (R.kv.get(`rn:launch:${c.mint}`) as any)?.outcome === "BONDED").length;
+  const realDone = coins.filter((c) => !c.ghost && c.bondAt && c.bondAt <= NOW - 60_000);
+  const realMissed = realDone.filter((c) => { const l = R.kv.get(`rn:launch:${c.mint}`) as any; return l && l.outcome && l.outcome !== "BONDED"; }).length;
+  const runs = [...R.kv.entries()].filter(([k]) => String(k).startsWith("rn:run:") && (R.kv.get(k) as any)?.pk != null).map(([, v]) => v as any);
+  const badPk = runs.filter((x) => x.bondedAt && x.pk > 0 && x.pk < 5000).length;
+  console.log(`ghosts (curve full, never migrated): ${ghosts.length}, counted as BONDED: ${ghostBonded}, stuck stat ${st.stuck || 0} · real bonds resolved as not bonded: ${realMissed} · runner peaks under $5K after bond: ${badPk}/${runs.length}`);
+  console.log("coins", coins.length, "bonded truth", coins.filter((c) => !c.ghost && c.bondAt && c.bondAt <= NOW).length, "detected", st.bonded, "taped", st.tape_n, "taped bonded", st.tape_b);
   console.log("calls BOND hit", `${st.bond_hit}/${st.bond_res}`, "label-window: King BOND", `${st.lbond_hit}/${st.lbond_n}`, "early BOND", `${st.lebond_hit}/${st.lebond_n}`);
   console.log("smart wallets credited with a bond:", smartHits, "/", SMART.length);
   const farmCoins = coins.filter((c) => c.farm && c.t <= NOW - 6 * 60_000);

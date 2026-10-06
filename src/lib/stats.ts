@@ -3,7 +3,8 @@ import type { Call, FeedItem, Grad, Launch } from "./digger";
 import { loadModel } from "./digger";
 import { NANO_MIN } from "./nano";
 import { getMarket, type Mkt } from "./market";
-import { solUsd } from "./solana";
+import { getCurves, solUsd } from "./solana";
+import { poolUsd, readPools } from "./pool";
 import { runViews, RunView } from "./runner";
 import { getSettings } from "./settings";
 import { allRats, isActive, roundOf, roundStart } from "./rats";
@@ -122,7 +123,7 @@ export async function getRadar(limit = 15): Promise<RadarRow[]> {
   const [recs, peaks] = await Promise.all([r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m))), r.zmscore(K.peak, mints)]);
   const peakOf: Record<string, number> = {};
   mints.forEach((m, i) => (peakOf[m] = Number(peaks?.[i] ?? 0)));
-  const [mkt, sol] = await Promise.all([getMarket(mints).catch(() => ({} as Record<string, Mkt | null>)), solUsd()]);
+  const [mkt, sol, cv] = await Promise.all([getMarket(mints).catch(() => ({} as Record<string, Mkt | null>)), solUsd(), getCurves(mints).catch(() => ({} as Record<string, any>))]);
   return recs
     .filter((l): l is Launch => !!l && !l.outcome)
     .map((l) => ({
@@ -139,7 +140,8 @@ export async function getRadar(limit = 15): Promise<RadarRow[]> {
       socials: [l.twitter, l.telegram, l.website].filter(Boolean).length,
       call: l.call ? { score: l.call.score, verdict: l.call.verdict, nano: l.call.nano } : null,
       mkt: mkt[l.mint] ?? null,
-      mcUsd: mkt[l.mint]?.mc ?? (sol && l.mcapNow ? Math.round(l.mcapNow * sol) : null),
+      // the curve itself is the truth for coins still on it (one RPC call for the whole radar)
+      mcUsd: sol && cv[l.mint]?.mcapSol ? Math.round(cv[l.mint].mcapSol * sol) : mkt[l.mint]?.mc ?? (sol && l.mcapNow ? Math.round(l.mcapNow * sol) : null),
     }));
 }
 
@@ -161,8 +163,18 @@ export async function getCoin(mint: string) {
     if (live != null) launch.pNow = Number(live);
     if (peak != null) launch.peak = Math.max(launch.peak ?? 0, Number(peak));
   }
-  const [mktAll, runs] = await Promise.all([getMarket([mint]).catch(() => ({} as Record<string, Mkt | null>)), runViews([mint]).catch(() => ({} as Record<string, RunView>))]);
-  const mkt = mktAll[mint] ?? null;
+  // market cap straight from the chain (curve or canonical pool); DexScreener only adds volume and flow
+  const onPool = !!launch && (launch.outcome === "BONDED" || !!launch.completeAt);
+  const [mktAll, runs, chain, sol] = await Promise.all([
+    getMarket([mint]).catch(() => ({} as Record<string, Mkt | null>)),
+    runViews([mint]).catch(() => ({} as Record<string, RunView>)),
+    (onPool ? readPools([mint]).then((x) => ({ pool: x[mint] ?? null, curve: null })) : getCurves([mint]).then((x) => ({ pool: null, curve: x[mint] ?? null }))).catch(() => ({ pool: null, curve: null })),
+    solUsd().catch(() => null),
+  ]);
+  let mkt = mktAll[mint] ?? null;
+  const supply = launch?.supply || 1e9;
+  const mcChain = sol ? (chain.pool ? poolUsd(chain.pool, sol, supply) : chain.curve && !chain.curve.complete ? chain.curve.mcapSol * sol : 0) : 0;
+  if (mcChain > 0) mkt = { ...(mkt || { v5: 0, v1: 0, v24: 0, c5: null, c1: null, liq: null, b1: 0, s1: 0, dex: onPool ? "pumpswap" : "pumpfun", url: `https://dexscreener.com/solana/${mint}`, pn: null, bo: 0, pf: false }), mc: Math.round(mcChain), ...(chain.pool ? { liq: Math.round(chain.pool.sol * 2 * (sol || 0)) } : {}) };
   if (launch) {
     // the desk-only bits stay private: insider token accounts are not needed on the page
     if (launch.tape) launch.tape = { ...launch.tape, insiders: [], early: [] };

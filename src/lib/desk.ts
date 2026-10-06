@@ -15,11 +15,14 @@ import bs58 from "bs58";
 import { K, dayKey, redis } from "./redis";
 import { conn, getCurves, safeErr, CurveView, solUsd } from "./solana";
 import { getMarket } from "./market";
+import { readPools, type PoolRead } from "./pool";
 import { getSettings } from "./settings";
 import { tokenAmounts } from "./tape";
 import { xMentions } from "./buzz";
 import { levelOf, loadRunner, MILESTONES, pNext, RK, Run } from "./runner";
-import type { NanoModel } from "./nano";
+import { NANO_MIN, type NanoModel } from "./nano";
+import { getHistory } from "./historian";
+import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER";
@@ -63,6 +66,7 @@ export type Pos = {
   how?: "direct" | "stalk" | "early";
   msHi?: number; // highest milestone the ladder has acted on
   pn?: number; // P(next milestone) at the last check
+  noPxSince?: number; // first beat with no price (curve complete, not migrated yet)
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
   watch?: Watch[]; // insider token accounts and their balance at entry
@@ -340,12 +344,13 @@ type Px = { px: number; real: number; curve: CurveView | null; grad: boolean };
 async function priceOf(mints: string[]) {
   const curves = mints.length ? await getCurves(mints) : {};
   const done = mints.filter((m) => !curves[m] || curves[m]!.complete);
-  const mkt = done.length ? await getMarket(done).catch(() => ({} as Record<string, any>)) : {};
+  // migrated coins: the canonical pool's own reserves (exact, one RPC call). Never a random side pool.
+  const pools = done.length ? await readPools(done).catch(() => ({} as Record<string, PoolRead | null>)) : {};
   const px: Record<string, Px> = {};
   for (const m of mints) {
     const c = curves[m];
     if (c && !c.complete && c.priceSol > 0) px[m] = { px: c.priceSol, real: c.realSol, curve: c, grad: false };
-    else if (mkt[m]?.pn) px[m] = { px: mkt[m].pn, real: 0, curve: c, grad: true };
+    else if (pools[m]?.px) px[m] = { px: pools[m]!.px, real: pools[m]!.sol, curve: c, grad: true };
   }
   return px;
 }
@@ -461,6 +466,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     state = await syncWallet(state, kp0, ws0 == null ? null : ws0 / 1e9, cfg.minSol, b);
     const learnS = await loadLearn();
     await earlyStats(learnS);
+    await r.set(K.deskLearn, learnS); // saved right away so the page never shows stale gates
     let learnDirty = false;
     const kp = wallet();
     let lastBeat = 0;
@@ -471,16 +477,21 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let lastRunsAt = 0;
     const recent: Record<string, Sample[]> = {}; // 2s samples kept in memory for the flow read
 
+    let lastErrAt = 0;
     while (Date.now() - t0 < budgetMs) {
       loops++;
       const now = Date.now();
+      try {
       if (onBeat && now - lastBeat > 10_000) {
         lastBeat = now;
         await onBeat().catch(() => {});
       }
       const posMap = (await r.hgetall<Record<string, Pos>>(K.deskPos)) || {};
       const positions = Object.values(posMap);
-      const queued = (await r.zrange<string[]>(K.deskQ, 0, 9)) || [];
+      // signals older than 3 minutes are stale by the desk's own rule: drop them quietly, newest calls first
+      const stale = Number((await r.zremrangebyscore(K.deskQ, 0, now - 180_000)) || 0);
+      if (stale) log(b, "VET", `dropped ${stale} stale signal${stale > 1 ? "s" : ""} (older than 3 minutes)`, "info");
+      const queued = ((await r.zrange<string[]>(K.deskQ, 0, 9, { rev: true })) || []) as string[];
       const slow = loops % 3 === 1; // shadows, stalks and coach every ~6s
       const shadows = slow ? (await r.hgetall<Record<string, Shadow>>(K.deskShadow)) || {} : {};
       const afters = slow ? (await r.hgetall<Record<string, After>>(K.deskAfter)) || {} : {};
@@ -538,7 +549,16 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       // --- exits (RISK)
       for (const p of positions) {
         const q = px[p.mint];
-        if (!q) continue;
+        if (!q) {
+          // no price: the curve completed but the coin has not (or never) migrated. after 30 minutes it is written off
+          p.noPxSince ||= now;
+          if (now - p.noPxSince > 30 * 60_000) {
+            const ok = await sell(b, state, p, 1, 0, "curve full but never migrated: written off", cfg.slippageBps, kp);
+            if (ok) await r.hdel(K.deskPos, p.mint);
+          } else await r.hset(K.deskPos, { [p.mint]: p });
+          continue;
+        }
+        p.noPxSince = undefined;
         p.lastPx = q.px;
         p.peakPx = Math.max(p.peakPx, q.px);
         const rs = (recent[p.mint] ||= []);
@@ -648,8 +668,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         ];
         const fail = checks.find((c) => !c.ok);
         await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
+        // daily tally for the "right now" panel: how many signals were checked, and what stopped them
+        const dk = DAY_KEY(now);
+        await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
+        await r.hincrby(dk, "seen", 1);
+        await r.expire(dk, 3 * 86400);
         if (fail) {
-          log(b, "VET", `passed on $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "bad", coin);
+          log(b, "VET", `skipped $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
           continue;
         }
         // every clean signal is followed in shadow: buy-now vs three pullback depths, scored after 30 minutes
@@ -673,7 +698,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const tot = (mk?.b1 || 0) + (mk?.s1 || 0);
         const buyShare = tot ? mk.b1 / tot : null;
         if (delta <= -5 || (buyShare != null && tot >= 8 && buyShare < cfg.minFlow)) {
-          log(b, "FLOW", `$${rec.symbol} selling: curve ${delta.toFixed(1)}% in 3s${buyShare != null ? `, buys ${(buyShare * 100).toFixed(0)}% of flow` : ""}`, "bad", coin);
+          log(b, "FLOW", `$${rec.symbol} selling: curve ${delta.toFixed(1)}% in 3s${buyShare != null ? `, buys ${(buyShare * 100).toFixed(0)}% of flow` : ""}`, "info", coin);
           continue;
         }
         log(b, "FLOW", `$${rec.symbol} bid: curve ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}% in 3s${buyShare != null ? `, buys ${(buyShare * 100).toFixed(0)}%` : ""}`, "ok", coin);
@@ -688,7 +713,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           if (learnS.stalkOn) {
             await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: nowPx, depth: learnS.stalkArm || 30, hi: nowPx, lo: nowPx, armed: false, early } satisfies Stalk });
             log(b, "SIZE", `$${rec.symbol}: stalking a -${learnS.stalkArm || 30}% pullback for up to ${cfg.stalkMins}m`, "info", coin);
-          } else log(b, "VET", `$${rec.symbol} already ${fmtPct(chase)} above the call. not chasing (pullback entries still locked)`, "bad", coin);
+          } else log(b, "VET", `$${rec.symbol} already ${fmtPct(chase)} above the call. not chasing (pullback entries still locked)`, "info", coin);
           continue;
         }
         await enter(b, state, rec, nowPx, again?.realSol ?? 0, eq.value, walletSol, kp, cfg, early ? "early" : "direct", xm);
@@ -776,7 +801,20 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         await r.ltrim(K.deskEq, -3000, -1);
       }
       await r.set(K.deskState, state);
+      await r.set(BEAT_KEY, now);
       await flushLog(b);
+      } catch (e) {
+        // one bad beat (usually the RPC rate limit) never ends the session: back off and try again
+        const msg = safeErr(e);
+        const busy = /429|too many/i.test(msg);
+        if (now - lastErrAt > 30_000) {
+          lastErrAt = now;
+          log(b, "LEDGER", busy ? "RPC busy (rate limit). backing off, next beat in a few seconds" : `beat failed, retrying: ${msg}`, busy ? "info" : "bad");
+          await flushLog(b).catch(() => {});
+        }
+        await new Promise((res) => setTimeout(res, busy ? 4000 : 2000));
+        continue;
+      }
       const wait = LOOP_MS - (Date.now() - now);
       if (wait > 0) await new Promise((res) => setTimeout(res, wait));
     }
@@ -804,7 +842,7 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   const avail = state.live ? (walletSol ?? 0) - 0.02 : state.cash;
   const size = Math.min(cfg.maxSol, Math.max(cfg.minSol, (eqValue * cfg.sizePct) / 100), avail * 0.95);
   if (size < cfg.minSol * 0.99) {
-    log(b, "SIZE", `no room for $${rec.symbol}: ${avail.toFixed(3)} SOL free`, "bad", coin);
+    log(b, "SIZE", `no room for $${rec.symbol}: ${avail.toFixed(3)} SOL free`, "info", coin);
     return;
   }
   log(b, "SIZE", `${size.toFixed(3)} SOL on $${rec.symbol} (${cfg.sizePct}% of desk, ${how} entry)`, "info", coin);
@@ -921,6 +959,38 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
 
 // ---------------------------------------------------------------- read side
 
+const BEAT_KEY = "rn:desk:beat"; // last time a desk beat finished
+const DAY_KEY = (t: number) => `rn:desk:day:${new Date(t).toISOString().slice(0, 10)}`;
+
+/** What the desk is doing right now, what it is waiting for, and what unlocks next. */
+async function rightNow(learnS: Learn) {
+  const r = redis();
+  const now = Date.now();
+  const [beat, day, hist, nano, st] = await Promise.all([
+    r.get<number>(BEAT_KEY),
+    r.hgetall<Record<string, number>>(DAY_KEY(now)),
+    getHistory().catch(() => null as any),
+    loadModel(K.nano),
+    r.hmget<Record<string, number>>(K.stat, "bond_n"),
+  ]);
+  const d = (day || {}) as Record<string, number>;
+  const fails = Object.entries(d)
+    .filter(([k]) => k.startsWith("f:"))
+    .map(([k, v]) => ({ rule: k.slice(2), n: Number(v) }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 4);
+  return {
+    beatAt: beat ? Number(beat) : null,
+    running: !!beat && now - Number(beat) < 90_000,
+    today: { seen: Number(d.seen || 0), passed: Number(d.passed || 0), fails },
+    kingBond: Number((st as any)?.bond_n || 0),
+    nano: { n: nano.n, min: NANO_MIN },
+    early: { n: learnS.earlyStat.n, min: LEARN_RULES.earlyMin, on: learnS.earlyOn },
+    stalkOn: learnS.stalkOn,
+    history: hist ? { phase: hist.phase, done: hist.done ?? 0, lessons: hist.lessons ?? 0, clock: hist.clock ?? null } : null,
+  };
+}
+
 export async function getDesk() {
   const r = redis();
   const s = await getSettings();
@@ -962,5 +1032,6 @@ export async function getDesk() {
     vet: vet || null,
     stalks: Object.values(stalks || {}),
     learn: { ...learnS, arms, shadows: nShadow || 0, reviewing: nAfter || 0, rules: LEARN_RULES, xConnected: !!process.env.X_BEARER_TOKEN },
+    now: await rightNow(learnS).catch(() => null),
   };
 }

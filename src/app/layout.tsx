@@ -12,6 +12,7 @@ import Heartbeat from "@/components/Heartbeat";
 import RatCam from "@/components/RatCam";
 import { LiveProvider } from "@/components/Live";
 import Alerts from "@/components/Alerts";
+import TabBar from "@/components/TabBar";
 import CmdK, { SearchButton } from "@/components/CmdK";
 import { WalletProvider, WalletButton } from "@/components/Wallet";
 import { SITE } from "@/config/site";
@@ -55,6 +56,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <main>
             <div className="wrap">{children}</div>
           </main>
+          <TabBar />
           <footer>
             <div className="wrap row between wrapx">
               <span>RATNET · $RAT · rats dig, the king learns, the weights go public.</span>

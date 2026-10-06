@@ -3,6 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export const GLOSSARY: Record<string, string> = {
+  poolsofar: "40% of the $RAT creator fees earned so far this round, read live from pump.fun's fee vault. Per rat at ×1 = pool divided by the payout weights of all rats in the round.",
+  earn: "Estimate for one more rat joining this round at each bag size, from the pool so far and the pace of fees. Real payouts depend on fees until the close.",
+  byclose: "Expected SOL for one rat when this round closes, if fees keep coming at the current pace.",
+  perday: "Two rounds a day: the per-round estimate times two.",
+  payback: "Days until the SOL earned covers what the rat cost (the $RAT burned, at today's price).",
+  flow: "Where every SOL of $RAT creator fees goes: 60% to compute (digging, training, calls), 40% to rat owners every 12 hours.",
   bond: "Graduating: the coin fills its bonding curve and moves to a real pool. About 1 in 100 make it.",
   curve: "The pump.fun meter. Buys fill it, sells drain it. 100% = graduation.",
   verdicts: "Scored 0 to 100 at minute 5. BOND 60+, WATCH 30 to 59, DUST under 30.",

@@ -17,6 +17,7 @@ export default function Developers() {
   return (
     <div className="doc">
       <section className="hero" style={{ paddingTop: 6 }}>
+        <div className="prompt">~/ratnet ❯ <span>api --free</span></div>
         <h1 style={{ fontSize: "clamp(36px,6vw,64px)" }}>BUILD ON THE RATS</h1>
         <p>Everything the rats dig and everything the King says is open. Free JSON, no key, built for bots, dashboards and sniping tools. Please cache on your side and keep it under one request per second.</p>
       </section>

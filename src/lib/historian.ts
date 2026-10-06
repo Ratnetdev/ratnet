@@ -19,6 +19,9 @@
 import { PublicKey } from "@solana/web3.js";
 import { CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, hourKey, redis } from "./redis";
+import { canonicalPool, readPools } from "./pool";
+import { lowLane } from "./solana";
+import { epochReady } from "./epoch";
 import { bondingCurvePda, conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr } from "./solana";
 import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "./tape";
 import { creditMillion, creditResolve, funderOf, GK } from "./graph";
@@ -216,9 +219,8 @@ async function postRun(mint: string): Promise<{ t: number; mc: number }[] | null
       clearTimeout(t);
       return res.ok ? res.json() : null;
     };
-    const pools: any = await get(`https://api.geckoterminal.com/api/v2/networks/solana/tokens/${mint}/pools?page=1`);
-    const pool = pools?.data?.[0]?.attributes?.address;
-    if (!pool) return null;
+    // candles of the canonical migration pool only (never a side pool someone opened with a few dollars)
+    const pool = canonicalPool(mint);
     const o: any = await get(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}/ohlcv/hour?limit=1000&currency=usd&token=${mint}`);
     const list: number[][] = o?.data?.attributes?.ohlcv_list || [];
     return list.map((c) => ({ t: c[0] * 1000, mc: Number(c[2]) * 1e9 })).sort((a, b) => a.t - b.t);
@@ -227,10 +229,14 @@ async function postRun(mint: string): Promise<{ t: number; mc: number }[] | null
   }
 }
 
-/** One historian session (run next to the desk inside the minute cron). */
-
 /** One historian session (runs next to the desk inside the minute cron). */
 export async function historianSession(budgetMs = 45_000) {
+  // spare RPC capacity only: the desk and the rats always go first (see lowLane in lib/solana.ts)
+  if (!(await epochReady())) return { history: "waiting for the data reset" };
+  return lowLane.run(true, () => historianInner(budgetMs));
+}
+
+async function historianInner(budgetMs: number) {
   const r = redis();
   const s = await getSettings();
   const cfg = s.history;
@@ -278,7 +284,7 @@ export async function historianSession(budgetMs = 45_000) {
         }
         const chunk = st.sigs.slice(st.pos, st.pos + cfg.scanPerRun);
         st.pos += chunk.length;
-        const parsed = await pmap(chunk, 8, async (sig) => {
+        const parsed = await pmap(chunk, 4, async (sig) => {
           try {
             return parseCreateTx(sig, await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }));
           } catch {
@@ -288,9 +294,12 @@ export async function historianSession(budgetMs = 45_000) {
         const launches = parsed.filter((x): x is NonNullable<typeof x> => !!x);
         if (launches.length) {
           const curves = await getCurves(launches.map((l) => l.mint));
+          // a full curve only counts if the coin really migrated into its canonical pool (see lib/pool.ts)
+          const full = launches.filter((l) => curves[l.mint]?.complete).map((l) => l.mint);
+          const pools = full.length ? await readPools(full) : {};
           const p = r.pipeline();
           for (const l of launches) {
-            const bondedNow = !!curves[l.mint]?.complete;
+            const bondedNow = !!curves[l.mint]?.complete && !!pools[l.mint] && pools[l.mint]!.sol > 0.5;
             st.scanned++;
             st.clock = Math.min(st.clock, l.createdAt);
             const day = new Date(l.createdAt).toISOString().slice(0, 10);

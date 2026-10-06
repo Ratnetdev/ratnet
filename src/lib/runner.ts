@@ -6,6 +6,7 @@
 
 import { redis } from "./redis";
 import { getMarket } from "./market";
+import { poolUsd, readPools } from "./pool";
 import { emptyModel, learn, NanoModel, predict } from "./nano";
 import { creditMillion } from "./graph";
 
@@ -83,6 +84,7 @@ export type Run = {
   verdict?: string | null; // the King's call
   now?: number; // latest market cap seen
   pkAt?: number; // when the peak was seen
+  supply?: number; // token supply (1B on standard pump.fun)
 };
 
 export type RunView = { mint: string; symbol: string; pk: number; pkAt?: number; now?: number; cUsd?: number | null; x: number | null; verdict?: string | null; bondedAt: number | null; createdAt: number };
@@ -215,7 +217,7 @@ function close(c: Ctx, p: any, run: Run) {
  * One runner pass, run from the dig loop.
  * `curveUsd` holds USD market caps the rats just read off the curves (free), bonds/deaths are reported by the digger.
  */
-export async function runnerPass(curveUsd: Record<string, number>, events: { bonded: string[]; died: string[] } = { bonded: [], died: [] }) {
+export async function runnerPass(curveUsd: Record<string, number>, events: { bonded: string[]; died: string[]; stuck?: string[] } = { bonded: [], died: [] }, solUsd = 0) {
   const r = redis();
   const now = Date.now();
   const preMints = Object.keys(curveUsd);
@@ -231,11 +233,16 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
   }
   const all = Array.from(new Set([...followPre, ...postMints, ...events.bonded, ...events.died]));
   if (!all.length) return { followed: 0 };
-  const [runs, model, emp, mkt] = await Promise.all([
+  // post-bond market caps come straight from each coin's canonical pool: one RPC call, no API lag.
+  // DexScreener is asked only for the paid boost/profile flag, and never allowed to hold the pass up.
+  const postSet = Array.from(new Set([...postMints, ...events.bonded]));
+  const quick = <T,>(p: Promise<T>, ms: number, d: T) => Promise.race([p.catch(() => d), new Promise<T>((res) => setTimeout(() => res(d), ms))]);
+  const [runs, model, emp, pools, mkt] = await Promise.all([
     r.mget<(Run | null)[]>(...all.map(RK.run)),
     loadRunner(),
     r.hgetall<Record<string, number>>(RK.emp),
-    postMints.length ? getMarket(postMints).catch(() => ({} as Record<string, any>)) : Promise.resolve({} as Record<string, any>),
+    postSet.length && solUsd ? readPools(postSet).catch(() => ({} as Record<string, any>)) : Promise.resolve({} as Record<string, any>),
+    postMints.length ? quick(getMarket(postMints), 1500, {} as Record<string, any>) : Promise.resolve({} as Record<string, any>),
   ]);
   const c: Ctx = { model, dirty: false, emp: emp || {}, log: [] };
   const p = r.pipeline();
@@ -247,13 +254,21 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
       p.zrem(RK.post, m);
       return;
     }
+    if (events.stuck?.includes(m)) {
+      // curve full but never migrated: its numbers say nothing about real runners, drop it unlearned
+      p.del(RK.run(m));
+      p.zrem(RK.pre, m);
+      p.zrem(RK.post, m);
+      p.zrem(RK.best, m);
+      return;
+    }
     if (events.died.includes(m)) return close(c, p, run);
     if (events.bonded.includes(m) && !run.bondedAt) {
       run.bondedAt = now;
       p.zrem(RK.pre, m);
       p.zadd(RK.post, { score: now, member: m });
     }
-    const usd = curveUsd[m] ?? mkt[m]?.mc ?? 0;
+    const usd = curveUsd[m] ?? (pools[m] ? poolUsd(pools[m], solUsd, run.supply) : 0);
     if (mkt[m]) run.paid = !!(mkt[m].bo || mkt[m].pf);
     step(c, p, run, usd, now);
     expire(c, p, run, now);

@@ -5,6 +5,7 @@ import DenScene, { AGENT_COLOR } from "./DenScene";
 import Info from "./Info";
 import CountUp from "./CountUp";
 import { ago, short, solscanAcc, solscanTx } from "./fmt";
+import DeskNow, { type DeskNowData } from "./DeskNow";
 
 type Ev = { agent: string; at: number; mint?: string; symbol?: string; text: string; tone: string };
 type Sample = [number, number, number];
@@ -28,6 +29,7 @@ type Learn = {
 type Stalk = { mint: string; symbol: string; at: number; depth: number; hi: number; lo: number; armed: boolean };
 type Trade = { id: string; mint: string; symbol: string; side: string; at: number; sol: number; reason: string; pnlSol?: number; pnlPct?: number; live: boolean; sig?: string };
 type Desk = {
+  now?: DeskNowData | null;
   mode: string;
   live: boolean;
   wallet: string | null;
@@ -123,7 +125,9 @@ export default function DeskBoard() {
 
   return (
     <>
-      <section className="desk-top">
+      <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam.checks || []} />
+
+      <section className="desk-top mt">
         <div>
           <div className="row" style={{ gap: 10 }}>
             <span className={`tag ${d?.live ? "v-BOND" : "v-WATCH"}`}>{d ? (d.mode === "off" ? "OFF" : d.live ? "LIVE" : "PAPER") : "…"}</span>

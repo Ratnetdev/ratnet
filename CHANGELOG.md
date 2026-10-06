@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.5 · Clean track
+- Graduation proof: a coin counts as BONDED only when it migrated into its canonical PumpSwap pool (the pool only pump.fun's migration can create). Full curves that never migrate are resolved as not bonded after 30 minutes and are never learned. This removes the false graduations of v0.1.4 (coins showing a $10 market cap as "bonded").
+- Market caps straight from the chain: curve account for coins on the curve, canonical pool vaults for graduated coins (one RPC call per 50 coins). Runner peaks, coin pages, radar and the desk all use it. DexScreener only adds volume and flow, fetched in parallel with a 2.5s cap, and junk side pools are filtered out.
+- Real numbers: a market cap under $1,000 is shown as it is ($10), never rounded up to "$1K".
+- Clean data reset (runs once on deploy): scoreboard, models, wallet and cluster records, runner and historian state are wiped and relearned with the migration proof. Stored coin records with a false graduation are relabelled in the background. Rats, litters, burns, rounds, sniffs, settings and the desk wallet are untouched.
+- Historian: same proof for past launches, post-bond candles from the canonical pool only.
+- RPC rate limiter shared by the desk, the rats and the historian (RPC_RPS, default 10). Desk and dig first, historian on spare capacity, automatic backoff on 429. A failed beat no longer ends the desk session, which was why the early-read counters and the desk stayed at 0.
+- Desk: signals older than 3 minutes are dropped quietly and the newest calls are vetted first. Normal skips are shown as neutral "skipped" lines instead of red errors.
+- Desk "right now" panel: the three steps (paper trading, exam, own wallet), what the desk is doing this moment, today's checked and passed signals with the top reasons for skipping, what is still needed to pass the exam, and the background learning (historian replay, nano, minute-1 entries, pullback entries).
+- Positions in a coin whose curve completed but never migrated are written off after 30 minutes instead of hanging.
+- Alerts: the newest alert shows in full, older ones collapse to one line (click to bring back), and the stack always fits inside the screen.
+- Homepage: space between the burn bar and the stats.
+- Live fee pool: $RAT creator fees are read straight from pump.fun's fee vaults (curve vault before bond, PumpSwap vault after), every 30s. "This round's pool so far" and an estimate per rat show on the homepage, Spawn and Ledger while the round fills. Claims mid-round are carried, fees from before the round never count.
+- Spawn page: "what a rat earns this round" table per bag size (multiplier, SOL by close, SOL a day, days to pay back the spawn) and the rules in one list (price, work, bag, cap, share, pool, sniff).
+- Ledger: money flow from creator fees to the 60/40 split, this round's pool, owners paid (wallets, rounds) and a spawn entry.
+- Phones: app-style bottom tab bar (feed, coins with a live count, king, desk with its live/paper dot, spawn).
+- Every page opens with its terminal command line (~/ratnet ❯ radar --live, desk status --live, ...), matching the homepage.
+- Fee tracker test (sim/fees.ts): accrual, a claim that empties the vault, more fees after bond.
+- Simulators: ghost coins (full curve, no migration), canonical pools with vaults, and junk side pools; desk sim confirms 0 of 107 ghosts counted and 286 of 286 real graduations detected; historian sim confirms 0 of 33 ghosts learned with a clean leak check.
+
 ## v0.1.4 · The learning desk
 - HISTORIAN: replays past pump.fun launches in time order (default 14 days) and trains every model before live data piles up. Rebuilds minute 1 and minute 5 from on-chain history only, credits records only when the replay clock reaches them, scores each launch before learning it (honest backtest in the Lab).
 - TAPE: reads the trades on every coin that is moving: trade speed, unique traders, SOL per buy, buy share, bundle wallets, snipers, top-5 concentration, dev sells.

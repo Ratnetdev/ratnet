@@ -5,6 +5,7 @@ import { usePoll } from "./usePoll";
 import { useLive } from "./Live";
 import { countdown, num, pumpCoin } from "./fmt";
 import Info from "./Info";
+import type { Econ } from "./Money";
 
 type Board = {
   round: { id: number; startsAt: number; endsAt: number };
@@ -15,6 +16,7 @@ type Board = {
   mint: string | null;
   lastRound: { id: number; ownersSol: number; eligible: number; perRat: number; status: string } | null;
   paidTotal: number;
+  econ?: Econ | null;
 };
 
 const sol = (n: number | null | undefined, d = 3) => (n == null ? "–" : `◎${n.toFixed(d)}`);
@@ -54,7 +56,9 @@ export function BurnStrip() {
         <span>round #{b?.round.id ?? "…"} pays in <b>{b ? countdown(b.round.endsAt) : "--:--:--"}</b></span>
         <span className="bs-sep">·</span>
         <span>
-          {lr ? (
+          {b?.econ?.live && b.econ.fees.soFar > 0 ? (
+            <Info k="poolsofar">this round&apos;s pool so far <b>{sol(b.econ.fees.owners)}</b>{b.econ.perRatX1 != null ? <>, ≈ <b>{sol(b.econ.perRatX1, 4)}</b> per rat at ×1</> : null}</Info>
+          ) : lr ? (
             <>last round <b>{sol(lr.ownersSol)}</b> ({sol(lr.perRat, 4)} per rat)</>
           ) : (
             <>first payout after launch</>
@@ -131,8 +135,8 @@ export function RatSection() {
               <b>{b ? countdown(b.round.endsAt) : "--:--:--"}</b>
             </div>
             <div>
-              <span className="k"><Info k="paidowners">Paid to owners</Info></span>
-              <b>{sol(b?.paidTotal)}</b>
+              <span className="k"><Info k="poolsofar">This round&apos;s pool</Info></span>
+              <b>{b?.econ?.live ? sol(b.econ.fees.owners) : "at launch"}</b>
             </div>
             <div>
               <span className="k"><Info k="ratsalive">Rats alive</Info></span>

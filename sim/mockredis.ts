@@ -38,6 +38,7 @@ export class MockRedis {
   async zscore(k: string, m: string) { this.calls++; const z = this.z(k); return z.has(m) ? z.get(m)! : null; }
   async zrem(k: string, ...ms: string[]) { this.calls++; const z = this.z(k); ms.forEach((m) => z.delete(m)); return 1; }
   async zcard(k: string) { this.calls++; return this.z(k).size; }
+  async scan(cur: any, o: any = {}) { this.calls++; const re = new RegExp("^" + String(o.match || "*").replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"); const keys = [...this.kv.keys()].filter((k) => re.test(k)); const i = Number(cur) || 0; const c = o.count || 10; const sl = keys.slice(i, i + c); return [i + c >= keys.length ? "0" : String(i + c), sl]; }
   async zrange(k: string, a: number, b: number, o: any = {}) {
     this.calls++;
     let arr = [...this.z(k).entries()].sort((x, y) => x[1] - y[1]);
@@ -47,7 +48,7 @@ export class MockRedis {
     const sl = arr.slice(a, end + 1);
     return o.withScores ? sl.flatMap((x) => [x[0], x[1]]) : sl.map((x) => x[0]);
   }
-  async zremrangebyscore(k: string, a: number, b: number) { this.calls++; const z = this.z(k); for (const [m, sc] of [...z.entries()]) if (sc >= a && sc <= b) z.delete(m); return 1; }
+  async zremrangebyscore(k: string, a: number, b: number) { this.calls++; const z = this.z(k); let n = 0; for (const [m, sc] of [...z.entries()]) if (sc >= a && sc <= b) { z.delete(m); n++; } return n; }
   async hscan(k: string, _c: any) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; return ["0", Object.entries(h).flat()]; }
   async zremrangebyrank(k: string, a: number, b: number) { const arr = [...this.z(k).entries()].sort((x, y) => x[1] - y[1]); const end = b < 0 ? arr.length + b : b; arr.slice(a, end + 1).forEach(([m]) => this.z(k).delete(m)); return 1; }
   private l(k: string): any[] { if (!this.live(k)) this.kv.set(k, []); return this.kv.get(k); }

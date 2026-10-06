@@ -1,4 +1,6 @@
 import { redis } from "./redis";
+import { canonicalPool } from "./pool";
+import { bondingCurvePda } from "./solana";
 
 // Market cap, volume and flow from DexScreener (free, covers pump.fun curves and PumpSwap pools).
 // Cached per coin for 30s in Redis so every viewer shares one lookup.
@@ -23,7 +25,24 @@ export type Mkt = {
 const KEY = (m: string) => `rn:mkt:${m}`;
 const TTL = 30;
 
-function pick(pairs: any[]): Mkt | null {
+// pump.fun coins: only the bonding curve and the canonical migration pool are the coin's real market. Anyone can open
+// extra PumpSwap pools with a few dollars in them; their prices are noise and must never set the market cap.
+function realPairs(mint: string, pairs: any[]) {
+  const pump = pairs.some((p) => p?.dexId === "pumpfun" || p?.dexId === "pumpswap") || mint.endsWith("pump");
+  if (!pump) return pairs;
+  let canon = "";
+  let curve = "";
+  try {
+    canon = canonicalPool(mint);
+    curve = bondingCurvePda(mint);
+  } catch {}
+  const pool = pairs.filter((p) => p?.pairAddress === canon);
+  if (pool.length) return pool;
+  return pairs.filter((p) => p?.pairAddress === curve || p?.dexId === "pumpfun");
+}
+
+function pick(all: any[], mint = ""): Mkt | null {
+  const pairs = all?.length ? realPairs(mint, all) : [];
   if (!pairs?.length) return null;
   const best = [...pairs].sort((a, b) => (b.liquidity?.usd ?? 0) + (b.volume?.h24 ?? 0) - ((a.liquidity?.usd ?? 0) + (a.volume?.h24 ?? 0)))[0];
   const vol = (k: string) => pairs.reduce((s, p) => s + Number(p.volume?.[k] ?? 0), 0);
@@ -59,11 +78,12 @@ export async function getMarket(mints: string[]): Promise<Record<string, Mkt | n
     if (c == null) missing.push(m);
     else out[m] = "none" in c ? null : (c as Mkt);
   });
-  for (let i = 0; i < missing.length; i += 30) {
-    const chunk = missing.slice(i, i + 30);
+  const chunks: string[][] = [];
+  for (let i = 0; i < missing.length; i += 30) chunks.push(missing.slice(i, i + 30));
+  await Promise.all(chunks.map(async (chunk) => {
     try {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 3500);
+      const t = setTimeout(() => ctrl.abort(), 2500);
       const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${chunk.join(",")}`, { signal: ctrl.signal, cache: "no-store" });
       clearTimeout(t);
       const arr: any[] = res.ok ? await res.json() : [];
@@ -74,7 +94,7 @@ export async function getMarket(mints: string[]): Promise<Record<string, Mkt | n
       }
       const p = r.pipeline();
       for (const m of chunk) {
-        const v = pick(by[m] || []);
+        const v = pick(by[m] || [], m);
         out[m] = v;
         p.set(KEY(m), v ?? { none: true }, { ex: v ? TTL : 60 });
       }
@@ -82,7 +102,7 @@ export async function getMarket(mints: string[]): Promise<Record<string, Mkt | n
     } catch {
       for (const m of chunk) out[m] = null;
     }
-  }
+  }));
   return out;
 }
 

@@ -68,6 +68,8 @@ export const K = {
   deskExam: "rn:desk:exam", // exam summary for the homepage
   deskLearn: "rn:desk:learn", // what the desk has learned (trail scale, pullback arms, early gate)
   nanoLog: "rn:nanolog",
+  migr: "rn:migr", // zset: curves that hit 100%, waiting for proof they migrated (score = when complete)
+  epoch: "rn:epoch", // data version; a new epoch wipes polluted labels and relearns (see lib/epoch.ts)
   workAll: "rn:workall",
   solPrice: "rn:solusd",
   ratPrice: "rn:ratsol",

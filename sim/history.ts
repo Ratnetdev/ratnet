@@ -5,6 +5,7 @@
 import bs58 from "bs58";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { MockRedis } from "./mockredis";
+import { canonicalPool } from "../src/lib/pool";
 
 const NOW0 = Date.UTC(2026, 9, 6, 12, 0, 0);
 let NOW = NOW0;
@@ -25,8 +26,9 @@ facDevs.forEach((d) => funder.set(d, FACTORY));
 proDevs.forEach((d) => funder.set(d, PRO));
 
 type Tr = { sig: string; t: number; slot: number; w: string; sol: number; real: number };
-type C = { i: number; mint: string; curve: string; sig: string; t: number; slot: number; creator: string; bondAt: number | null; trades: Tr[]; symbol: string; peakUsd: number };
+type C = { i: number; mint: string; curve: string; sig: string; t: number; slot: number; creator: string; bondAt: number | null; trades: Tr[]; symbol: string; peakUsd: number; ghost: boolean; pool: string; bv: string; qv: string };
 const coins: C[] = [];
+const byPool = new Map<string, C>(), byVault = new Map<string, C>();
 const byCurve = new Map<string, C>(), bySig = new Map<string, { c: C; tr?: Tr }>(), byMint = new Map<string, C>();
 let slot = 5000;
 const START = NOW0 - 3 * 86400_000;
@@ -35,10 +37,11 @@ for (let t = START; t < NOW0 - 2 * 3600_000; t += 40_000 + rand() * 40_000) {
   const creator = k < 0.3 ? facDevs[Math.floor(rand() * facDevs.length)] : k < 0.34 ? proDevs[Math.floor(rand() * proDevs.length)] : pk();
   if (!funder.has(creator)) funder.set(creator, CEX);
   const f = funder.get(creator);
-  const bonds = rand() < (f === FACTORY ? 0.003 : f === PRO ? 0.25 : 0.012);
+  const ghost = rand() < 0.01; // curve completes, never migrates: must NOT be learned as a graduation
+  const bonds = ghost || rand() < (f === FACTORY ? 0.003 : f === PRO ? 0.25 : 0.012);
   const kp = Keypair.generate().publicKey;
   const [pda] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), kp.toBuffer()], PUMP);
-  const c: C = { i: coins.length, mint: kp.toBase58(), curve: pda.toBase58(), sig: bs58.encode(Keypair.generate().secretKey.slice(0, 64)), t, slot: (slot += 5), creator, bondAt: bonds ? t + (3 + rand() * 50) * 60_000 : null, trades: [], symbol: `H${coins.length}`, peakUsd: bonds ? 70_000 / Math.max(0.01, rand()) : 0 };
+  const c: C = { i: coins.length, mint: kp.toBase58(), curve: pda.toBase58(), sig: bs58.encode(Keypair.generate().secretKey.slice(0, 64)), t, slot: (slot += 5), creator, bondAt: bonds ? t + (3 + rand() * 50) * 60_000 : null, trades: [], symbol: `H${coins.length}`, peakUsd: bonds ? 70_000 / Math.max(0.01, rand()) : 0, ghost, pool: canonicalPool(kp.toBase58()), bv: pk(), qv: pk() };
   // trades: SOL in builds toward 85 for bonders, fizzles otherwise; smart wallets early on bonders
   let real = 0.5;
   const n = bonds ? 160 : 10 + Math.floor(rand() * 40);
@@ -58,6 +61,9 @@ for (let t = START; t < NOW0 - 2 * 3600_000; t += 40_000 + rand() * 40_000) {
   bySig.set(`h${c.i}mig`, { c, tr: c.trades[c.trades.length - 1] });
   coins.push(c);
   byCurve.set(c.curve, c);
+  byPool.set(c.pool, c);
+  byVault.set(c.bv, c);
+  byVault.set(c.qv, c);
   byMint.set(c.mint, c);
 }
 
@@ -105,7 +111,25 @@ const page = <T extends { t: number; sig: string }>(list: T[], o: { before?: str
   async getParsedTransactions(sigs: string[]) { return Promise.all(sigs.map((s) => (globalThis as any).__rnConn.getParsedTransaction(s))); },
   async getMultipleAccountsInfo(pks: PublicKey[]) {
     return pks.map((p) => {
-      const c = byCurve.get(p.toBase58());
+      const a = p.toBase58();
+      const pc = byPool.get(a);
+      if (pc) {
+        if (pc.ghost || !pc.bondAt) return null;
+        const d = Buffer.alloc(261);
+        Buffer.from([241, 154, 109, 4, 17, 177, 109, 188]).copy(d, 0);
+        new PublicKey(pc.mint).toBuffer().copy(d, 43);
+        new PublicKey("So11111111111111111111111111111111111111112").toBuffer().copy(d, 75);
+        new PublicKey(pc.bv).toBuffer().copy(d, 139);
+        new PublicKey(pc.qv).toBuffer().copy(d, 171);
+        return { data: d };
+      }
+      const vc = byVault.get(a);
+      if (vc) {
+        const d = Buffer.alloc(165);
+        d.writeBigUInt64LE(vc.qv === a ? 85_000_000_000n : 206_000_000_000_000n, 64);
+        return { data: d };
+      }
+      const c = byCurve.get(a);
       if (!c) return null;
       const b = Buffer.alloc(151);
       b.writeBigUInt64LE(1n, 8); b.writeBigUInt64LE(1n, 16); b.writeBigUInt64LE(1n, 24); b.writeBigUInt64LE(1n, 32); b.writeBigUInt64LE(1n, 40);
@@ -135,6 +159,8 @@ async function main() {
   await R.hincrby(`rn:day:${new Date(NOW0).toISOString().slice(0, 10)}`, "dug", 1);
   await R.set("rn:settings", { history: { on: true, days: 3, scanPerRun: 150, deepPerRun: 8, sample: 10, runner: true } });
   const { historianSession, getHistory } = await import("../src/lib/historian");
+  const { EPOCH } = await import("../src/lib/epoch");
+  R.kv.set("rn:epoch", EPOCH);
   const jobs: any[] = [];
   const orig = R.rpush.bind(R);
   (R as any).rpush = async (k: string, ...v: any[]) => { if (k === "rn:h:q2") jobs.push(...v); return orig(k, ...v); };
@@ -145,7 +171,7 @@ async function main() {
     NOW += 60_000; // a minute between cron pings
   }
   const h: any = await getHistory();
-  console.log("phase", h.phase, "scanned", h.scanned, "/", coins.length, "bonded found", h.bonded, "/", coins.filter((c) => c.bondAt).length, "lessons", h.lessons, "runner lessons", h.runnerLessons);
+  console.log("phase", h.phase, "scanned", h.scanned, "/", coins.length, "bonded found", h.bonded, "/", coins.filter((c) => c.bondAt && !c.ghost).length, `(+${coins.filter((c) => c.ghost).length} ghosts that must not count)`, "lessons", h.lessons, "runner lessons", h.runnerLessons);
   console.log("days (newest first):", (h.days || []).map((d: any) => `${d.day} ${d.scanned}/${d.bonded}`).join(" · "));
   console.log("backtest", h.backtest);
   // order: today first, then back in time

@@ -1,7 +1,57 @@
 import { Connection, PublicKey, ParsedTransactionWithMeta } from "@solana/web3.js";
 import bs58 from "bs58";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { INITIAL_REAL_TOKEN_RESERVES, PUMP_PROGRAM } from "@/config/site";
 import { K, redis } from "./redis";
+
+// ---------- RPC rate limiter ----------
+// The desk, the rats and the HISTORIAN share one process (and one RPC plan) every minute. One token bucket keeps
+// every call under the plan's limit (RPC_RPS, default 10 = Helius free). The desk and the dig always go first; the
+// historian only gets spare capacity (at most 40%). A 429 empties the bucket so everyone slows down, then retries.
+export const lowLane = new AsyncLocalStorage<boolean>();
+const RPS = Math.max(1, Number(process.env.RPC_RPS || 10));
+const hiQ: (() => void)[] = [];
+const loQ: (() => void)[] = [];
+let tokens = RPS;
+let lastFill = Date.now();
+let loLast = 0;
+let timer: ReturnType<typeof setTimeout> | null = null;
+function pump() {
+  timer = null;
+  const now = Date.now();
+  tokens = Math.min(RPS, tokens + ((now - lastFill) / 1000) * RPS);
+  lastFill = now;
+  while (tokens >= 1 && (hiQ.length || loQ.length)) {
+    if (hiQ.length) {
+      tokens--;
+      hiQ.shift()!();
+    } else {
+      if (Date.now() - loLast < 1000 / (RPS * 0.4)) break;
+      loLast = Date.now();
+      tokens--;
+      loQ.shift()!();
+    }
+  }
+  if ((hiQ.length || loQ.length) && !timer) timer = setTimeout(pump, Math.ceil(1000 / RPS / 2));
+}
+const slot = (lo: boolean) =>
+  new Promise<void>((res) => {
+    (lo ? loQ : hiQ).push(res);
+    pump();
+  });
+export const rpcStats = { calls: 0, throttled: 0 };
+async function limitedFetch(input: any, init?: any): Promise<Response> {
+  const lo = !!lowLane.getStore();
+  for (let i = 0; ; i++) {
+    await slot(lo);
+    rpcStats.calls++;
+    const res = await fetch(input, init);
+    if (res.status !== 429 || i >= 4) return res;
+    rpcStats.throttled++;
+    tokens = 0; // everyone backs off
+    await new Promise((r) => setTimeout(r, 400 * 2 ** i + Math.random() * 250));
+  }
+}
 
 let _c: Connection | null = null;
 export function conn(): Connection {
@@ -10,7 +60,7 @@ export function conn(): Connection {
   if (_c) return _c;
   const url = process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL;
   if (!url) throw new Error("RPC is not configured");
-  _c = new Connection(url, { commitment: "confirmed" });
+  _c = new Connection(url, { commitment: "confirmed", fetch: limitedFetch as any, disableRetryOnRateLimit: true });
   return _c;
 }
 
@@ -72,7 +122,7 @@ function isSolQuote(k: Buffer) {
   }
 }
 
-export type CurveView = { progress: number; mcapSol: number; realSol: number; complete: boolean; priceSol: number };
+export type CurveView = { progress: number; mcapSol: number; realSol: number; complete: boolean; priceSol: number; supply: number };
 
 export function viewCurve(c: Curve): CurveView {
   const progress = c.complete
@@ -89,6 +139,7 @@ export function viewCurve(c: Curve): CurveView {
     realSol: c.solQuote ? round2(Number(c.rSol) / 1e9) : 0,
     complete: c.complete,
     priceSol: c.solQuote ? price : 0, // SOL per whole token
+    supply: Number(c.supply) / 1e6, // whole tokens
   };
 }
 

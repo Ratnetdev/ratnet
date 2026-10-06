@@ -11,6 +11,7 @@ export default function Docs() {
   return (
     <div className="doc">
       <section className="hero" style={{ paddingTop: 6 }}>
+        <div className="prompt">~/ratnet ❯ <span>man ratnet</span></div>
         <h1 style={{ fontSize: "clamp(36px,6vw,64px)" }}>DOCS</h1>
         <p>Pretraining the first model raised in the trenches. From scratch. On nothing but what its rats dig up.</p>
       </section>

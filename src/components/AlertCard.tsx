@@ -89,7 +89,7 @@ const Ring = ({ v, label, color }: { v: number | null | undefined; label: string
   );
 };
 
-export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHover, life }: { t: AlertT; term: Term; top: boolean; pinned: boolean; onClose: () => void; onPin: () => void; onHover: (h: boolean) => void; life: number }) {
+export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHover, onRaise, life }: { t: AlertT; term: Term; top: boolean; pinned: boolean; onClose: () => void; onPin: () => void; onHover: (h: boolean) => void; onRaise?: () => void; life: number }) {
   const d = useCoin(t.mint);
   const age = useAge(t.at);
   const [copied, setCopied] = useState(false);
@@ -159,6 +159,7 @@ export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHove
     >
       <div className="ac-head">
         <span className="ac-kind">{k.label}</span>
+        {!top && <button className="ac-hsym" onClick={onRaise} title="Show this alert">${t.symbol}</button>}
         {t.who && <span className="ac-who">{t.who}</span>}
         <span className="ac-age">{age}</span>
         <button className={`ac-ico ${pinned ? "on" : ""}`} onClick={onPin} title="Pin (P)" aria-label="Pin">

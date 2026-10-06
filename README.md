@@ -126,6 +126,12 @@ For each launch the rats:
 
 **Hot watch.** Every curve above 2% is re-read on every run (the top 200 by curve plus a rotating slice of the rest). Graduations are detected within seconds instead of at the next checkpoint. The watch reads only curve accounts and two sorted sets, so it stays cheap at full pump.fun volume.
 
+**Graduation proof.** A full curve is not a graduation. A coin counts as BONDED only when it sits in its canonical PumpSwap pool: the pool address only pump.fun's own migration can create (seeds `pool-authority` + `pool` from the official pump SDK), holding the migrated curve. Curves that complete but never migrate are resolved as not bonded after 30 minutes and never teach the models anything. Side pools anyone can open (often holding a few dollars) are ignored everywhere.
+
+**Market caps from the chain.** Coins on the curve: price from the curve account. Graduated coins: price from the canonical pool's two vaults, one RPC call for up to 50 coins. DexScreener is only used for volume and buy/sell flow, never for the market cap, so post-bond peaks are exact and instant.
+
+**RPC budget.** The desk, the rats and the historian share one rate limiter (`RPC_RPS`). The desk and the dig always go first; the historian only uses spare capacity. A rate-limit answer slows everyone down and retries instead of failing.
+
 **TAPE (trades).** For every coin moving at its read (curve 5%+ at minute 5, 3%+ at minute 1) the rats read the curve's transactions: trade count and speed, unique traders, SOL per buy, buy share, bundle wallets in the create slot, snipers in the next two slots, top-5 early concentration and whether the dev has sold. The token accounts of the dev, bundle wallets, snipers and top buyers are kept, so the desk can watch those bags while it holds.
 
 **GRAPH (wallets).** The dev wallet is traced to the wallet that first funded it. Launches are grouped by that funder, so a factory that launches hundreds of coins from fresh wallets is recognised on sight, and so is a team that ships winners. Every early buyer is put on record: wallets that keep getting in early on coins that bond or reach $1M become smart wallets, learned from scratch out of RATNET's own data.
@@ -465,6 +471,7 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | Variable | Description |
 |---|---|
 | `HELIUS_RPC_URL` | Helius mainnet RPC URL with key. |
+| `RPC_RPS` | Optional. Requests per second your RPC plan allows (default `10`, Helius free). Raise it on a paid plan (e.g. `50`). |
 | `ADMIN_PASSWORD` | Password for `/admin`. |
 | `CRON_SECRET` | Random string. Also the key for the scheduler ping. |
 | `PAYOUT_WALLET_SECRET` | Base58 secret of the wallet that pays rat owners. |

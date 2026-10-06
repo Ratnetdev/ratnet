@@ -10,6 +10,9 @@ import { readTape, Tape } from "./tape";
 import { creditResolve, Graph, readGraph } from "./graph";
 import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
 import { enroll, Run, runnerPass } from "./runner";
+import { migrated, poolUsd, readPools } from "./pool";
+import { ensureEpoch } from "./epoch";
+import { trackFees, trackWeights } from "./fees";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
@@ -62,6 +65,9 @@ export type Launch = {
   outcome?: Outcome;
   resolvedAt?: number;
   bondSecs?: number;
+  completeAt?: number; // curve hit 100%: waiting for proof it migrated into its canonical pool
+  stuck?: boolean; // curve completed but never migrated: not a graduation
+  supply?: number; // token supply from the curve (1B on standard pump.fun)
 };
 
 export type Call = {
@@ -196,7 +202,7 @@ type Ctx = {
 // Models are loaded once per dig() and shared by every step of the run.
 let M1: NanoModel = emptyModel();
 // Coins that bonded or stopped during this run, for the runner model; USD market caps the rats read off the curves.
-let RUN_EV: { bonded: string[]; died: string[] } = { bonded: [], died: [] };
+let RUN_EV: { bonded: string[]; died: string[]; stuck: string[] } = { bonded: [], died: [], stuck: [] };
 let CURVE_USD: Record<string, number> = {};
 let SOL_USD = 0;
 
@@ -233,9 +239,10 @@ export async function dig(): Promise<Record<string, unknown>> {
   if (!got) return { skipped: "busy" };
   const started = Date.now();
   try {
+    const ep = await ensureEpoch().catch((e) => ({ epochError: safeErr(e) }));
     const model = await loadModel();
     M1 = await loadModel(K.nano1);
-    RUN_EV = { bonded: [], died: [] };
+    RUN_EV = { bonded: [], died: [], stuck: [] };
     CURVE_USD = {};
     SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
     await recordSol(SOL_USD).catch(() => {});
@@ -243,9 +250,12 @@ export async function dig(): Promise<Record<string, unknown>> {
     const dug = await digNew(model);
     const due = await processDue(model);
     const hot = await hotWatch(model);
+    const mig = await migrations(model).catch((e) => ({ migError: safeErr(e) }));
     const les = await lessons(model);
-    const run = await runnerPass(CURVE_USD, RUN_EV).catch((e) => ({ runnerError: safeErr(e) }));
-    return { ok: true, ...dug, ...due, ...hot, ...les, ...run, ms: Date.now() - started };
+    const run = await runnerPass(CURVE_USD, RUN_EV, SOL_USD).catch((e) => ({ runnerError: safeErr(e) }));
+    // live $RAT fee pool and payout weights for the money pages (each throttled, cheap when fresh)
+    await Promise.all([trackFees().catch(() => null), trackWeights().catch(() => null)]);
+    return { ok: true, ...(ep || {}), ...dug, ...due, ...hot, ...mig, ...les, ...run, ms: Date.now() - started };
   } catch (e) {
     return { ok: false, error: safeErr(e) };
   } finally {
@@ -342,7 +352,7 @@ async function digNew(model: NanoModel) {
     last[work.names[i]] = { mint: l.mint, symbol: l.symbol, at: c.now, kind: "dig" };
 
     if (cv?.complete) {
-      resolve(c, rec, "BONDED");
+      completed(c, rec, LAUNCH_TTL);
       return;
     }
     p.set(K.launch(l.mint), rec, { ex: LAUNCH_TTL });
@@ -412,7 +422,7 @@ function compactRow(l: Launch) {
   };
 }
 
-function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
+function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
   const p = c.p;
   rec.outcome = outcome;
   rec.resolvedAt = c.now;
@@ -429,7 +439,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
   // wallet, cluster and early-read records are credited at the label window (see lessons()), never here
 
   if (outcome === "BONDED") {
-    rec.bondSecs = Math.max(0, Math.round((c.now - rec.createdAt) / 1000));
+    rec.bondSecs = Math.max(0, Math.round((at - rec.createdAt) / 1000));
     rec.peak = 100;
     rec.pNow = 100;
     if (rec.creator) p.hincrby(K.devB, rec.creator, 1);
@@ -625,8 +635,9 @@ export async function processDue(model: NanoModel) {
     touched.add(it.mint);
     last[rat] = { mint: rec.mint, symbol: rec.symbol, at: c.now, kind: it.stage };
 
-    if (cv?.complete) {
-      resolve(c, rec, "BONDED");
+    if (cv?.supply) rec.supply = cv.supply;
+    if (cv?.complete || rec.completeAt) {
+      completed(c, rec);
       touched.delete(it.mint);
       return;
     }
@@ -700,6 +711,7 @@ function featIn(rec: Launch, curveNow: number, ex: Extra): FeatureInput {
 export function runOf(rec: Launch, bondedAt: number | null): Run {
   return {
     mint: rec.mint,
+    supply: rec.supply,
     symbol: rec.symbol,
     createdAt: rec.createdAt,
     bondedAt,
@@ -843,6 +855,57 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   });
 }
 
+// ---------------------------------------------------------------- graduation proof
+
+// A complete curve is not a graduation until the coin sits in its canonical PumpSwap pool (see lib/pool.ts).
+// pump.fun migrates within seconds; after MIGRATE_GRACE with no pool the coin is resolved as not bonded.
+export const MIGRATE_GRACE = 30 * 60_000;
+
+function completed(c: Ctx, rec: Launch, ttl?: number) {
+  if (!rec.completeAt) {
+    rec.completeAt = c.now;
+    rec.pNow = 100;
+    rec.peak = 100;
+    c.p.zadd(K.migr, { score: c.now, member: rec.mint });
+    c.feed.push({ kind: "resolve", rat: "LEDGER", mint: rec.mint, symbol: rec.symbol, name: rec.name, at: c.now, text: "curve full · checking the migration pool" });
+  }
+  c.p.set(K.launch(rec.mint), rec, ttl ? { ex: ttl } : { keepTtl: true });
+}
+
+async function migrations(model: NanoModel) {
+  const r = redis();
+  const mints = ((await r.zrange<string[]>(K.migr, 0, 199)) || []) as string[];
+  if (!mints.length) return { migrating: 0 };
+  const [recs, pools] = await Promise.all([r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m))), readPools(mints)]);
+  const c = newCtx(model);
+  let ok = 0;
+  let stuck = 0;
+  mints.forEach((m, i) => {
+    const rec = recs[i];
+    if (!rec || rec.outcome) {
+      c.p.zrem(K.migr, m);
+      return;
+    }
+    const at = rec.completeAt || c.now;
+    if (migrated(pools[m])) {
+      resolve(c, rec, "BONDED", at);
+      if (SOL_USD) CURVE_USD[m] = poolUsd(pools[m], SOL_USD, rec.supply);
+      c.p.zrem(K.migr, m);
+      ok++;
+    } else if (c.now - at > MIGRATE_GRACE) {
+      rec.stuck = true;
+      RUN_EV.stuck.push(m);
+      inc(c, "stuck");
+      c.feed.push({ kind: "resolve", rat: "LEDGER", mint: rec.mint, symbol: rec.symbol, name: rec.name, at: c.now, text: "curve full but never migrated · not counted as a graduation" });
+      resolve(c, rec, "DIED");
+      c.p.zrem(K.migr, m);
+      stuck++;
+    }
+  });
+  await flush(c);
+  return { migrating: mints.length - ok - stuck, migrated: ok, stuck };
+}
+
 // ---------------------------------------------------------------- lessons (label window reached)
 
 async function lessons(model: NanoModel) {
@@ -854,9 +917,15 @@ async function lessons(model: NanoModel) {
   const c = newCtx(model);
   let n = 0;
   const fresh: Lesson[] = [];
+  const wait: string[] = [];
   due.forEach((m, i) => {
     const rec = recs[i];
     if (!rec || rec.learned) return;
+    if (rec.completeAt && !rec.outcome) {
+      // curve full, migration not proven yet: learn it once we know
+      wait.push(m);
+      return;
+    }
     // label: bonded within the window (a bond after 2h is rare; it still counts on the scoreboard, not in training)
     const bonded = rec.outcome === "BONDED" && (rec.bondSecs ?? Infinity) * 1000 <= LABEL_MS;
     const x = rec.call?.x?.length ? rec.call.x : rec.xpre;
@@ -890,6 +959,7 @@ async function lessons(model: NanoModel) {
     if (x?.length || x1?.length) fresh.push({ x: x?.length ? x : null, x1: x1?.length ? x1 : null, y: bonded ? 1 : 0 });
   });
   c.p.zrem(K.lessons, ...due);
+  for (const m of wait) c.p.zadd(K.lessons, { score: now + 60_000, member: m });
   if (fresh.length) {
     c.p.lpush(REPLAY_KEY, ...fresh);
     c.p.ltrim(REPLAY_KEY, 0, REPLAY_MAX - 1);
@@ -993,7 +1063,7 @@ export async function hotWatch(model: NanoModel) {
       }
       if (rec.outcome) return;
       if (bondedMints.includes(m)) {
-        resolve(c, rec, "BONDED");
+        completed(c, rec);
       } else {
         const prog = curves[m]?.progress ?? 0;
         c.feed.push({
