@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 
 const LINKS = [
   ["/", "Feed"],
+  ["/desk", "Desk"],
   ["/radar", "Radar"],
   ["/explore", "Explore"],
   ["/king", "Rat King"],
@@ -11,7 +12,6 @@ const LINKS = [
   ["/rats", "Rats"],
   ["/sniff", "Sniff"],
   ["/ledger", "Ledger"],
-  ["/dataset", "Dataset"],
   ["/docs", "Docs"],
 ];
 

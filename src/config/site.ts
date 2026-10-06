@@ -39,6 +39,28 @@ export const DEFAULT_SETTINGS = {
   minWork: 50,
   freeSniff: true, // free sniffs while no CA is set (pre-launch preview)
   links: { x: "", tg: "", pump: "", dex: "" },
+  desk: {
+    mode: "auto" as "off" | "paper" | "auto" | "live", // auto = paper until the exam is passed, then live
+    start: 1, // paper starting balance in SOL
+    sizePct: 5, // % of equity per trade
+    minSol: 0.05,
+    maxSol: 0.5,
+    maxOpen: 5,
+    minCurve: 8, // only enter between these curve %
+    maxCurve: 70,
+    maxDevBuy: 5, // SOL
+    serialDev: 5, // reject devs with this many launches and 0 bonds
+    needNano: false, // require nano BOND too
+    minFlow: 0.55, // share of 1h trades that are buys
+    tp1: 60, // % gain: sell tp1Frac
+    tp1Frac: 0.5,
+    tp2: 150, // % gain: sell the rest
+    sl: -35, // % loss: sell all
+    timeStop: 60, // minutes
+    sellOnGrad: true,
+    dailyLoss: 25, // % from day start: stop opening
+    slippageBps: 1500,
+  },
 };
 export type Settings = typeof DEFAULT_SETTINGS;
 

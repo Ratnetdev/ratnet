@@ -72,7 +72,7 @@ function isSolQuote(k: Buffer) {
   }
 }
 
-export type CurveView = { progress: number; mcapSol: number; realSol: number; complete: boolean };
+export type CurveView = { progress: number; mcapSol: number; realSol: number; complete: boolean; priceSol: number };
 
 export function viewCurve(c: Curve): CurveView {
   const progress = c.complete
@@ -83,7 +83,13 @@ export function viewCurve(c: Curve): CurveView {
   const price = vTok > 0 ? vSol / vTok : 0;
   // Curves quoted in another token (e.g. USDC pairs) have no SOL market cap.
   const mcapSol = c.solQuote ? price * (Number(c.supply) / 1e6) : 0;
-  return { progress: round2(progress), mcapSol: round2(mcapSol), realSol: c.solQuote ? round2(Number(c.rSol) / 1e9) : 0, complete: c.complete };
+  return {
+    progress: round2(progress),
+    mcapSol: round2(mcapSol),
+    realSol: c.solQuote ? round2(Number(c.rSol) / 1e9) : 0,
+    complete: c.complete,
+    priceSol: c.solQuote ? price : 0, // SOL per whole token
+  };
 }
 
 export function round2(n: number) {

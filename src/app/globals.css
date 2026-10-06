@@ -304,3 +304,17 @@ footer a { color: var(--dim); }
 .hero-split h1 { font-size: clamp(38px, 4.8vw, 70px); }
 .ratcam-h .info-pop, .chip:last-child .info-pop { left: auto; right: 0; }
 @media (max-width: 600px) { .cam-stats { display: none; } }
+
+/* desk */
+.desk-top { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; align-items: end; }
+.desk-bal { margin: 8px 0 6px; }
+.exam .pb { padding: 10px 14px; }
+.agents { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.agent { position: relative; border: 1px solid var(--line); background: var(--panel); padding: 10px 12px 12px; min-height: 92px; overflow: hidden; transition: border-color 0.3s, box-shadow 0.3s; }
+.agent.hot { border-color: var(--ac); box-shadow: 0 0 18px color-mix(in srgb, var(--ac) 25%, transparent); }
+.agent-last { font-size: 11.5px; margin-top: 6px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.agent-bar { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--ac); opacity: 0.25; }
+.agent.hot .agent-bar { opacity: 1; animation: agentbar 1.2s ease-in-out infinite; }
+@keyframes agentbar { 50% { opacity: 0.35; } }
+.code { margin: 0; padding: 12px 14px; font-size: 12px; line-height: 1.7; background: var(--bg2); overflow-x: auto; }
+@media (max-width: 900px) { .desk-top { grid-template-columns: 1fr; } .agents { grid-template-columns: 1fr 1fr; } }

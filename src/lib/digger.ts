@@ -327,6 +327,8 @@ async function digNew(model: NanoModel) {
   for (const [h, n] of Object.entries(perHour)) hrInc(c, Number(h), "d", n);
   p.hincrby(K.day(dayKey()), "dug", launches.length);
   p.expire(K.day(dayKey()), 60 * 60 * 24 * 40);
+  const lastL = launches[launches.length - 1];
+  p.hset(K.deskAgent, { SCOUT: { agent: "SCOUT", at: c.now, mint: lastL.mint, symbol: lastL.symbol, text: `dug ${launches.length} new launch${launches.length > 1 ? "es" : ""}, latest $${lastL.symbol}`, tone: "info" } });
   p.set(K.cursor, newCursor);
   await flush(c);
   await recordWork(work.counts, last, work.real);
@@ -645,6 +647,13 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number) {
   indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
+  if (counted && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+    // hand the coin to the desk; the desk loop picks it up within 2 seconds
+    c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
+    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${sc.verdict} ${sc.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok" };
+    c.p.lpush(K.deskEv, ev);
+    c.p.hset(K.deskAgent, { KING: ev });
+  }
   if (counted) {
     c.p.hincrby(K.calib, `v${bucket(sc.score)}n`, 1);
     if (nano) c.p.hincrby(K.calib, `n${bucket(nano.score)}n`, 1);

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.3 · The Desk
+- The Desk (/desk): eight agents (Scout, King, Vet, Flow, Size, Exec, Risk, Ledger) turn King BOND calls into trades, every step shown live.
+- Agent cards with each agent's last move, the Den scene where the rats work, speech bubbles and a coin rolling down the pipeline on every buy.
+- Fast loop: positions re-read from the bonding curve every 2 seconds; exits on take profit, stop loss, graduation, time stop, or when sellers drain the curve.
+- Flow check before every buy: live curve pressure over 3 seconds plus the last hour of buys vs sells.
+- Paper first, then the live exam: the desk promotes itself to the funded wallet once it passes every check, and demotes itself back to paper at -40%.
+- Balance chart, open positions with live mini charts, trade log (Solscan links when live), and desk.config.ts showing every rule plus how the last coin scored on each.
+- One cron (/api/desk/run every minute) now runs both the desk and the rats.
+- Admin: desk config, close all, reset.
+- New README: full public documentation of the project (architecture, rats, launch lifecycle, Rat King v0 and nano, public metrics, the Desk and its exam, economy, tokenomics, dataset schema, open API, roadmap, self-hosting) with diagrams in docs/assets.
+- New Rat King pixel mark as the site icon.
+
 ## v0.1.2 · Rat Cam hero, alerts, market data
 - Home hero rebuilt: headline on the left, a large live Rat Cam on the right with a bigger tunnel, a longer terminal and a colour legend.
 - Two live proof numbers under the headline: how many times more often King BOND calls graduate than random, and the average head start before graduation.

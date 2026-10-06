@@ -15,6 +15,7 @@ export type Mkt = {
   s1: number; // sells last 1h
   dex: string;
   url: string;
+  pn: number | null; // price in SOL per token (SOL-quoted pairs)
 };
 
 const KEY = (m: string) => `rn:mkt:${m}`;
@@ -38,6 +39,7 @@ function pick(pairs: any[]): Mkt | null {
     s1: tx("h1", "sells"),
     dex: String(best.dexId || ""),
     url: String(best.url || ""),
+    pn: best.quoteToken?.symbol === "SOL" || best.quoteToken?.address === "So11111111111111111111111111111111111111112" ? num(best.priceNative) : null,
   };
 }
 

@@ -48,6 +48,8 @@ function linesFor(f: FeedItem): Line[] {
       return [{ t: `!! ${sym} ${parts[0]}`, c: "#ffb547", href }, ...parts.slice(1, 3).map((p) => ({ t: `  ${p}`, c: "#ffb547" }))];
     case "near":
       return [{ t: `>> ${sym} ${parts[0]}`, c: "#7fd1ff", href }, ...parts.slice(1, 3).map((p) => ({ t: `  ${p}` }))];
+    case "desk":
+      return [{ t: `$ ${f.rat.toLowerCase()} ${f.text}`, c: /bought/.test(f.text) ? "#ff7ab6" : /closed|sold/.test(f.text) ? "#ffb547" : "#c8d3cc", href }];
     case "h1":
       return [{ t: `> recheck ${sym} at 1h`, c: "#8cff5a", href }, { t: `  ${parts.slice(1).join(" · ")}` }];
     case "resolve":

@@ -9,6 +9,7 @@ export async function getSettings(): Promise<Settings> {
       ...(s || {}),
       litter: { ...DEFAULT_SETTINGS.litter, ...(s?.litter || {}) },
       links: { ...DEFAULT_SETTINGS.links, ...(s?.links || {}) },
+      desk: { ...DEFAULT_SETTINGS.desk, ...(s?.desk || {}) },
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -22,6 +23,7 @@ export async function saveSettings(patch: Partial<Settings>) {
     ...patch,
     litter: { ...cur.litter, ...(patch.litter || {}) },
     links: { ...cur.links, ...(patch.links || {}) },
+    desk: { ...cur.desk, ...(patch.desk || {}) },
   };
   await redis().set(K.settings, next);
   return next;

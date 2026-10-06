@@ -10,6 +10,7 @@ type Settings = {
   minWork: number;
   freeSniff: boolean;
   links: { x: string; tg: string; pump: string; dex: string };
+  desk: Record<string, any>;
 };
 type Round = { id: number; feesSol: number; ownersSol: number; computeSol: number; cappedSol: number; eligible: number; status: string; payouts: { owner: string; sol: number; sig?: string; error?: string }[] };
 
@@ -33,6 +34,7 @@ export default function Admin() {
   const [fees, setFees] = useState("");
   const [day, setDay] = useState("");
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
+  const [deskJson, setDeskJson] = useState("");
 
   const load = useCallback(async () => {
     const r = await fetch("/api/admin", { cache: "no-store" });
@@ -40,6 +42,7 @@ export default function Admin() {
     const j = await r.json();
     setAuthed(true);
     setS(j.settings);
+    setDeskJson(JSON.stringify(j.settings.desk, null, 2));
     setRounds(j.rounds);
     setCur(j.currentRound);
     setSniffers(j.sniffers);
@@ -175,6 +178,19 @@ export default function Admin() {
                 <button className="btn dim" onClick={() => run("Export", () => call({ action: "export", day }))}>Export</button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph"><span><b>desk</b> · mode off | paper | auto | live</span></div>
+        <div className="pb">
+          <p className="muted small" style={{ marginTop: 0 }}>auto = paper until the exam passes and DESK_WALLET_SECRET holds 0.5+ SOL, then it goes live on its own. live = skip the exam (only if you are sure).</p>
+          <textarea className="input" style={{ minHeight: 260, fontSize: 12 }} value={deskJson} onChange={(e) => setDeskJson(e.target.value)} spellCheck={false} />
+          <div className="row wrapx mt">
+            <button className="btn" onClick={() => run("Save desk", () => call({ action: "settings", settings: { desk: JSON.parse(deskJson) } }))}>Save desk</button>
+            <button className="btn dim" onClick={() => run("Close all", () => call({ action: "desk-closeall" }))}>Close all positions</button>
+            <button className="btn dim" onClick={() => confirm("Reset the paper desk and its history?") && run("Reset desk", () => call({ action: "desk-reset" }))}>Reset desk</button>
           </div>
         </div>
       </div>

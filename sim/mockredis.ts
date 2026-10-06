@@ -9,7 +9,7 @@ export class MockRedis {
   private clone(v: any) { return v === undefined ? null : JSON.parse(JSON.stringify(v)); }
   async get(k: string) { this.calls++; return this.live(k) ? this.clone(this.kv.get(k)) : null; }
   async set(k: string, v: any, o: any = {}) { this.calls++; if (o.nx && this.live(k)) return null; const keep = o.keepTtl ? this.exp.get(k) : undefined; this.kv.set(k, this.clone(v)); if (o.ex) this.exp.set(k, this.now() + o.ex * 1000); else if (keep) this.exp.set(k, keep); else this.exp.delete(k); return "OK"; }
-  async del(k: string) { this.calls++; this.kv.delete(k); return 1; }
+  async del(...ks: string[]) { this.calls++; ks.forEach((k) => this.kv.delete(k)); return 1; }
   async incr(k: string) { return this.incrby(k, 1); }
   async incrby(k: string, n: number) { this.calls++; const v = Number(this.live(k) ? this.kv.get(k) : 0) + n; this.kv.set(k, v); return v; }
   async expire(k: string, s: number) { this.exp.set(k, this.now() + s * 1000); return 1; }
@@ -17,6 +17,7 @@ export class MockRedis {
   async hincrby(k: string, f: string, n: number) { this.calls++; const h = this.h(k); h[f] = Number(h[f] || 0) + n; return h[f]; }
   async hgetall(k: string) { this.calls++; return this.live(k) && Object.keys(this.kv.get(k)).length ? this.clone(this.kv.get(k)) : null; }
   async hmget(k: string, ...f: string[]) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; const o: any = {}; f.forEach((x) => (o[x] = h[x] ?? null)); return o; }
+  async hlen(k: string) { this.calls++; return this.live(k) ? Object.keys(this.kv.get(k)).length : 0; }
   async hdel(k: string, ...f: string[]) { this.calls++; const h = this.h(k); f.forEach((x) => delete h[x]); return 1; }
   async hset(k: string, obj: any) { this.calls++; Object.assign(this.h(k), this.clone(obj)); return 1; }
   async mget(...ks: string[]) { this.calls++; return ks.map((k) => (this.live(k) ? this.clone(this.kv.get(k)) : null)); }

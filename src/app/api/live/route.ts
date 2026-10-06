@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [stats, feed, calls, s, burns, radar, grads] = await Promise.all([
+    const [stats, feed, calls, s, burns, radar, grads, desk] = await Promise.all([
       getStats(),
       getFeed(40),
       getCalls(12),
@@ -15,8 +15,9 @@ export async function GET() {
       redis().lrange(K.burns, 0, 9),
       getRadar(10),
       getGrads(8),
+      redis().get<{ equity: number; start: number; live: boolean; liveStart: number | null; dayStart: number }>(K.deskState),
     ]);
-    return cached({ stats, feed, calls, burns, radar, grads, live: { mint: s.mint, links: s.links, litter: s.litter }, now: Date.now() }, 3);
+    return cached({ stats, feed, calls, burns, radar, grads, desk: desk ? { eq: desk.equity, base: desk.live ? desk.liveStart ?? desk.start : desk.start, live: desk.live, day: desk.dayStart } : null, live: { mint: s.mint, links: s.links, litter: s.litter }, now: Date.now() }, 3);
   } catch (e) {
     return fail(e, 500);
   }

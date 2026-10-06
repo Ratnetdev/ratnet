@@ -17,6 +17,10 @@ export const GLOSSARY: Record<string, string> = {
   grads: "Coins that just graduated, how fast, and what the King said at minute 5.",
   radar: "Live coins filling their curve, closest to graduating on top.",
   feed: "Everything the rats do, as it happens.",
+  desk: "Paper: real curve prices, simulated fills with fees and slippage. Live: a real wallet, every fill on Solscan.",
+  exam: "The desk trades on paper until it passes every line here. Then it goes live by itself with the funded wallet.",
+  den: "Each rat is one agent. It hops and talks when it acts. A coin rolls down the line when the desk buys.",
+  thresholds: "The exact rules the desk trades by, and how the last candidate scored on each one.",
 };
 
 export default function Info({ k, children }: { k: keyof typeof GLOSSARY | string; children?: React.ReactNode }) {

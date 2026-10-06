@@ -7,6 +7,7 @@ import { dig } from "@/lib/digger";
 import { isPubkey } from "@/lib/solana";
 import { K, redis } from "@/lib/redis";
 import { roundOf } from "@/lib/rats";
+import { resetDesk } from "@/lib/desk";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -31,6 +32,12 @@ export async function POST(req: Request) {
         if (p.freeSniff !== undefined) clean.freeSniff = !!p.freeSniff;
         if (p.litter) clean.litter = { n: Math.max(1, Number(p.litter.n)), size: Math.max(1, Number(p.litter.size)), open: !!p.litter.open };
         if (p.links) clean.links = p.links;
+        if (p.desk && typeof p.desk === "object") {
+          const d: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(p.desk)) d[k] = k === "mode" ? String(v) : typeof v === "boolean" ? v : Number(v);
+          if (!["off", "paper", "auto", "live"].includes(String(d.mode ?? "auto"))) return fail("Bad desk mode");
+          clean.desk = d;
+        }
         if (clean.mint !== (await getSettings()).mint) await redis().del(K.ratPrice);
         return json({ settings: await saveSettings(clean) });
       }
@@ -42,6 +49,12 @@ export async function POST(req: Request) {
         return json({ export: await exportDay(String(body.day)) });
       case "dig":
         return json(await dig());
+      case "desk-reset":
+        await resetDesk();
+        return json({ ok: true });
+      case "desk-closeall":
+        await redis().set("rn:desk:closeall", 1, { ex: 300 });
+        return json({ ok: true });
       case "airdrop": {
         const [sniffers, rats] = await Promise.all([redis().smembers(K.sniffers), redis().hgetall<Record<string, { owner: string }>>(K.rats)]);
         const owners = Object.values(rats || {}).map((r) => r.owner);
