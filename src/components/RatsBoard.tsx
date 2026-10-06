@@ -24,9 +24,12 @@ type Board = {
   litter: { n: number; size: number; open: boolean; spawned: number };
   rats: RatView[];
   scouts: { name: string; last: { symbol: string; at: number; kind: string } }[];
-  costs: { spawn: number; sniff: number; minWork: number };
+  costs: { spawn: number; repeat: number; pup: number; pupMax: number; sniff: number; minWork: number };
   live: boolean;
   mine: RatView[];
+  myPrice: number | null;
+  pups: { name: string; owner: string; parent: string; spawnedAt: number; earnedSol: number }[];
+  minePups: { name: string; parent: string; spawnedAt: number; earnedSol: number; sig: string }[];
 };
 
 function useTick(ms = 1000) {
@@ -43,12 +46,20 @@ export default function RatsBoard() {
   const [step, setStep] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [kind, setKind] = useState<"spawn" | "pup">("spawn");
+  const [parent, setParent] = useState("");
   useTick();
 
   const spawn = async () => {
     setErr("");
     setBusy(true);
     try {
+      if (kind === "pup") {
+        const r = await burnFlow({ wallet: address, kind: "pup", signAndSend, verifyUrl: "/api/rats/pup", verifyBody: { parent: parent || undefined }, onStep: setStep });
+        setStep(`${r.pup.name} is born, riding with ${r.pup.parent}.`);
+        reload();
+        return;
+      }
       const r = await burnFlow({ wallet: address, kind: "spawn", signAndSend, verifyUrl: "/api/rats/spawn", verifyBody: {}, onStep: setStep });
       setStep(r.queued ? `${r.rat.name} is queued for the next litter.` : `${r.rat.name} is born and digging.`);
       reload();
@@ -63,6 +74,11 @@ export default function RatsBoard() {
   const l = data?.litter;
   const cells = l ? Array.from({ length: Math.min(l.size, 400) }, (_, i) => i < l.spawned) : [];
   const realRats = data?.rats || [];
+  const ratPrice = data?.myPrice ?? data?.costs.spawn ?? 100000;
+  const price = kind === "pup" ? data?.costs.pup ?? 25000 : ratPrice;
+  const discounted = kind === "spawn" && data && ratPrice < data.costs.spawn;
+  const adults = realRats.filter((r) => r.active);
+  const pupsLeft = data ? data.costs.pupMax - data.pups.length : null;
 
   return (
     <>
@@ -81,28 +97,56 @@ export default function RatsBoard() {
         </div>
 
         <div className="panel">
-          <div className="ph"><span><Info k="t_spawn"><b>spawn</b></Info> · burn {num(data?.costs.spawn ?? 100000)} $RAT</span></div>
+          <div className="ph"><span><Info k="t_spawn"><b>spawn</b></Info> · burn {num(price)} $RAT{discounted ? <span className="tiny muted"> (30% off your next rat)</span> : null}</span></div>
+          <div className="spawn-tabs">
+            <button className={kind === "spawn" ? "on" : ""} onClick={() => setKind("spawn")}>
+              <b>rat</b> <span>{num(data?.costs.spawn ?? 100000)}</span>
+            </button>
+            <button className={kind === "pup" ? "on" : ""} onClick={() => setKind("pup")}>
+              <b><Info k="pup">pup</Info></b> <span>{num(data?.costs.pup ?? 25000)}</span>
+            </button>
+          </div>
           <div className="pb">
             {!data?.live ? (
               <p className="muted small" style={{ marginTop: 0 }}>Spawning opens the moment $RAT is live. Litter 1: {l?.size ?? 100} rats.</p>
             ) : (
               <>
+                {kind === "pup" && (
+                  <label className="pup-pick">
+                    <span className="tiny muted">rides with</span>
+                    <select className="input" value={parent} onChange={(e) => setParent(e.target.value)}>
+                      <option value="">any rat (the one with the fewest pups)</option>
+                      {adults.map((r) => (
+                        <option key={r.name} value={r.name}>{r.name} · owner {short(r.owner)}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <div className="row between">
                   <WalletButton />
-                  <button className="btn" disabled={!address || busy || !l?.open} onClick={spawn}>
-                    {busy ? "Spawning…" : "Burn & spawn"}
+                  <button className="btn" disabled={!address || busy || (kind === "spawn" ? !l?.open : !adults.length || (pupsLeft ?? 1) <= 0)} onClick={spawn}>
+                    {busy ? "Spawning…" : kind === "pup" ? "Burn & spawn pup" : "Burn & spawn"}
                   </button>
                 </div>
                 {step && <div className="ok">{step}</div>}
                 {err && <div className="err">{err}</div>}
               </>
             )}
-            <div className="small muted mt">
-              <div>· Burned for good, verified on chain.</div>
-              <div>· 40% of $RAT fees go to rat owners every 12h.</div>
-              <div>· A rat must do {data?.costs.minWork ?? 50}+ digs in a round to earn.</div>
-              <div>· Hold 100K+ $RAT per rat to lift the 2x earn cap and unlock the bag multiplier.</div>
-            </div>
+            {kind === "spawn" ? (
+              <div className="small muted mt">
+                <div>· Burned for good, verified on chain.</div>
+                <div>· 40% of $RAT fees go to rat owners every 12h.</div>
+                <div>· A rat must do {data?.costs.minWork ?? 50}+ digs in a round to earn.</div>
+                <div>· Every next rat from the same wallet: {num(data?.costs.repeat ?? 70000)} $RAT (30% off).</div>
+                <div>· Hold 100K+ $RAT per rat to lift the 2x earn cap. The lowest bag you hold in a round is the one that counts.</div>
+              </div>
+            ) : (
+              <div className="small muted mt">
+                <div>· A pup rides with an adult rat and earns when its rat earns.</div>
+                <div>· It weighs ×0.25 of a rat. 80% of its share is yours, 20% goes to its rat&apos;s owner.</div>
+                <div>· {pupsLeft != null ? `${num(pupsLeft)} of ${num(data!.costs.pupMax)} pups left.` : "1,000 pups in total."}</div>
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -130,6 +174,7 @@ export default function RatsBoard() {
               <br />
               1M → 1.5x · 2.5M → 2x
             </div>
+            <div className="s">Linear in between. The lowest bag held during the round counts.</div>
           </div>
         </div>
       </section>
@@ -162,6 +207,18 @@ export default function RatsBoard() {
               </div>
             ) : (
               <span className="muted small">No rats yet.</span>
+            )}
+            {!!data?.minePups.length && (
+              <div className="scroll mt">
+                <table className="tbl">
+                  <thead><tr><th><Info k="pup">Pup</Info></th><th>Rides with</th><th><Info k="earned">Earned</Info></th><th>Born</th></tr></thead>
+                  <tbody>
+                    {data.minePups.map((x) => (
+                      <tr key={x.name}><td>{x.name}</td><td className="muted">{x.parent}</td><td>{x.earnedSol} ◎</td><td className="muted">{ago(x.spawnedAt)} ago</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </section>

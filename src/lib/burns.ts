@@ -7,14 +7,13 @@ import {
 } from "@solana/spl-token";
 import { conn } from "./solana";
 import { K, redis } from "./redis";
-import { Settings } from "@/config/site";
+import { ROUND_MS, Settings } from "@/config/site";
+import { priceFor } from "./rats";
 
 const MEMO = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
-export type BurnKind = "spawn" | "sniff";
-
-export function burnAmount(kind: BurnKind, s: Settings) {
-  return kind === "spawn" ? s.spawnCost : s.sniffCost;
-}
+export type BurnKind = "spawn" | "sniff" | "pup";
+/** Burns per wallet per round: a burn is not a sale, so the bag snapshot adds it back (see lib/bags.ts). */
+export const BURNW = (round: number) => `rn:burnw:${round}`;
 
 async function tokenProgramOf(mint: PublicKey) {
   const info = await conn().getAccountInfo(mint);
@@ -35,7 +34,7 @@ export async function buildBurnTx(wallet: string, kind: BurnKind, s: Settings, n
   const mint = new PublicKey(s.mint);
   const program = await tokenProgramOf(mint);
   const ata = getAssociatedTokenAddressSync(mint, owner, false, program);
-  const amount = burnAmount(kind, s);
+  const amount = await priceFor(kind, wallet, s);
   const bal = await ratBalance(wallet, s);
   if (bal < amount) throw new Error(`You hold ${Math.floor(bal).toLocaleString()} $RAT, you need ${amount.toLocaleString()}`);
   const raw = BigInt(amount) * 10n ** BigInt(s.decimals);
@@ -74,8 +73,9 @@ export async function checkBurn(sig: string, wallet: string, kind: BurnKind, s: 
     if (auth !== wallet) continue;
     raw += BigInt(info.amount ?? info.tokenAmount?.amount ?? 0);
   }
-  const need = BigInt(burnAmount(kind, s)) * 10n ** BigInt(s.decimals);
-  if (raw < need) return { ok: false, error: `Burn too small: needs ${burnAmount(kind, s).toLocaleString()} $RAT` };
+  const price = await priceFor(kind, wallet, s);
+  const need = BigInt(price) * 10n ** BigInt(s.decimals);
+  if (raw < need) return { ok: false, error: `Burn too small: needs ${price.toLocaleString()} $RAT` };
   return { ok: true, amount: Number(raw / 10n ** BigInt(s.decimals)), wallet, at: (tx.blockTime || 0) * 1000 };
 }
 
@@ -87,6 +87,11 @@ export async function claimBurn(sig: string, entry: Record<string, unknown>) {
   p.lpush(K.burns, { sig, ...entry, at: Date.now() });
   p.ltrim(K.burns, 0, 999);
   p.hincrby(K.stat, "burned", Number(entry.amount || 0));
+  if (entry.wallet) {
+    const k = BURNW(Math.floor(Date.now() / ROUND_MS));
+    p.hincrby(k, String(entry.wallet), Number(entry.amount || 0));
+    p.expire(k, 3 * 86400);
+  }
   await p.exec();
   return true;
 }

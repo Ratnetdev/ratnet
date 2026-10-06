@@ -342,7 +342,9 @@ All of it is public: `/lab` (models, ladder, historian), `/desk` (what the desk 
   <img src="docs/assets/economy.png" alt="Economy" width="100%">
 </p>
 
-**Rats.** Burn 100,000 $RAT to spawn a rat. Rats come in weekly litters of 100. Every burn is verified on chain and each transaction signature can only be used once. Rats that do not fit in the current litter queue for the next one.
+**Rats.** Burn 100,000 $RAT to spawn a rat. Every next rat from the same wallet costs 70,000 (30% off). Rats come in weekly litters of 100. Every burn is verified on chain and each transaction signature can only be used once. Rats that do not fit in the current litter queue for the next one.
+
+**Pups.** Burn 25,000 $RAT for a pup: the cheaper way in. A pup rides with an adult rat (pick one, or it joins the rat with the fewest pups) and is paid in every round its rat is paid, at ×0.25 of a rat's weight. 80% of a pup's share goes to its owner, 20% to the owner of the rat it rides with. 1,000 pups in total.
 
 **Sniff orders.** Burn 10,000 $RAT to have the Rat King score any CA, with the dev's history, nano's read and a short report of what helps and what hurts.
 
@@ -353,7 +355,7 @@ All of it is public: `/lab` (models, ladder, historian), `/desk` (what the desk 
 | 60% | Compute: digging, training and calls. |
 | 40% | Rat owners. |
 
-A rat must dig at least 50 launches in a round to earn. The owner share is weighted by each rat's work and the owner's bag per rat:
+A rat must dig at least 50 launches in a round to earn. The owner share is weighted by each rat's work and the owner's bag per rat (the bag is split over the wallet's rats and pups, one each):
 
 | $RAT held per rat | Multiplier |
 |---|---|
@@ -362,7 +364,11 @@ A rat must dig at least 50 launches in a round to earn. The owner share is weigh
 | 1,000,000 | 1.5x |
 | 2,500,000 | 2x |
 
-Owners holding less than 100,000 $RAT per rat earn up to 2x their rat's cost. Every payout is published on the Ledger with a Solscan link.
+Multipliers are linear between the rows, so there is no cliff to game.
+
+**The bag that counts is the lowest one held during the round.** The rats sample every wallet's $RAT every few minutes; the payout uses the minimum. Buying right before the close adds nothing, and selling right after a payout costs the next one. Burning for a rat, a pup or a sniff is not selling: burns are added back.
+
+Owners holding less than 100,000 $RAT per rat earn up to 2x their rat's cost. Every payout is published on the Ledger with a Solscan link. While a round fills, the pool so far is read live from pump.fun's creator-fee vault and shown on the homepage, Spawn and Ledger.
 
 ---
 

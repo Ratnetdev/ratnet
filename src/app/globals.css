@@ -549,3 +549,16 @@ th .info, .k .info { gap: 4px; }
 .flow-box.add:hover { border-color: var(--rat); text-decoration: none; }
 .flow-box.add .flow-k { color: var(--rat); }
 @media (max-width: 600px) { .rules > div { grid-template-columns: 1fr; gap: 4px; } }
+
+.burnstrip + * { margin-top: 16px !important; }
+.xbtn { width: 38px; justify-content: center; padding-left: 0; padding-right: 0; }
+
+.spawn-tabs { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--line); }
+.spawn-tabs button { all: unset; cursor: pointer; padding: 11px 16px; color: var(--dim); font-size: 12.5px; display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid transparent; margin-bottom: -1px; }
+.spawn-tabs button + button { border-left: 1px solid var(--line); }
+.spawn-tabs button.on { color: var(--text); border-bottom-color: rgba(255, 255, 255, 0.75); background: rgba(255, 255, 255, 0.02); }
+.spawn-tabs b { font-weight: 500; text-transform: uppercase; letter-spacing: 1px; }
+.pup-pick { display: grid; gap: 6px; margin-bottom: 12px; }
+.pup-pick .input { margin: 0; }
+
+.agent-earlier { color: var(--mute); }

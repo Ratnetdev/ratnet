@@ -5,50 +5,60 @@ import { INITIAL_REAL_TOKEN_RESERVES, PUMP_PROGRAM } from "@/config/site";
 import { K, redis } from "./redis";
 
 // ---------- RPC rate limiter ----------
-// The desk, the rats and the HISTORIAN share one process (and one RPC plan) every minute. One token bucket keeps
-// every call under the plan's limit (RPC_RPS, default 10 = Helius free). The desk and the dig always go first; the
-// historian only gets spare capacity (at most 40%). A 429 empties the bucket so everyone slows down, then retries.
-export const lowLane = new AsyncLocalStorage<boolean>();
-const RPS = Math.max(1, Number(process.env.RPC_RPS || 10));
-const hiQ: (() => void)[] = [];
-const loQ: (() => void)[] = [];
-let tokens = RPS;
-let lastFill = Date.now();
-let loLast = 0;
+// The desk, the rats and the HISTORIAN share one process (and one RPC plan) every minute. One token bucket keeps every
+// call under the plan's limit (RPC_RPS, default 10 = Helius free). Three lanes: the desk first (positions, exits),
+// then the dig, then the historian on spare capacity only (at most 40%). A batched request costs one token per call
+// inside it (that is how Helius counts). A 429 empties the bucket so everyone slows down, then retries.
+export const RPS = Math.max(1, Number(process.env.RPC_RPS || 10));
+export const lane = new AsyncLocalStorage<number>(); // 0 desk (default), 1 dig, 2 historian
+export const lowLane = { run: <T,>(_: boolean, fn: () => T) => lane.run(2, fn) };
+const queues: { cost: number; go: () => void }[][] = [[], [], []];
+// strict rolling 1-second window (never a burst over the plan), 10% headroom
+const CAP = Math.max(1, Math.floor(RPS * 0.9));
+const sent: [number, number][] = []; // [time, calls]
+const hist: [number, number][] = []; // historian share of the window
 let timer: ReturnType<typeof setTimeout> | null = null;
+const used = (w: [number, number][], now: number) => {
+  while (w.length && now - w[0][0] >= 1100) w.shift(); // 1.1s: absorbs network jitter
+  return w.reduce((a, x) => a + x[1], 0);
+};
 function pump() {
   timer = null;
-  const now = Date.now();
-  tokens = Math.min(RPS, tokens + ((now - lastFill) / 1000) * RPS);
-  lastFill = now;
-  while (tokens >= 1 && (hiQ.length || loQ.length)) {
-    if (hiQ.length) {
-      tokens--;
-      hiQ.shift()!();
-    } else {
-      if (Date.now() - loLast < 1000 / (RPS * 0.4)) break;
-      loLast = Date.now();
-      tokens--;
-      loQ.shift()!();
-    }
+  for (;;) {
+    const now = Date.now();
+    const q = queues.find((x) => x.length);
+    if (!q) break;
+    const job = q[0];
+    const need = Math.min(job.cost, CAP);
+    if (used(sent, now) + need > CAP) break;
+    if (q === queues[2] && used(hist, now) + need > Math.max(1, Math.floor(CAP * 0.4))) break;
+    sent.push([now, need]);
+    if (q === queues[2]) hist.push([now, need]);
+    q.shift();
+    job.go();
   }
-  if ((hiQ.length || loQ.length) && !timer) timer = setTimeout(pump, Math.ceil(1000 / RPS / 2));
+  if (queues.some((x) => x.length) && !timer) timer = setTimeout(pump, sent.length ? Math.max(15, 1100 - (Date.now() - sent[0][0]) + 2) : 20);
 }
-const slot = (lo: boolean) =>
-  new Promise<void>((res) => {
-    (lo ? loQ : hiQ).push(res);
+const slot = (l: number, cost: number) =>
+  new Promise<void>((go) => {
+    queues[Math.max(0, Math.min(2, l))].push({ cost, go });
     pump();
   });
 export const rpcStats = { calls: 0, throttled: 0 };
 async function limitedFetch(input: any, init?: any): Promise<Response> {
-  const lo = !!lowLane.getStore();
+  const l = lane.getStore() ?? 0;
+  let cost = 1;
+  try {
+    const b = typeof init?.body === "string" ? init.body : "";
+    if (b.startsWith("[")) cost = Math.max(1, (JSON.parse(b) as unknown[]).length);
+  } catch {}
   for (let i = 0; ; i++) {
-    await slot(lo);
-    rpcStats.calls++;
+    await slot(l, cost);
+    rpcStats.calls += cost;
     const res = await fetch(input, init);
     if (res.status !== 429 || i >= 4) return res;
     rpcStats.throttled++;
-    tokens = 0; // everyone backs off
+    sent.push([Date.now(), CAP]); // everyone backs off for a second
     await new Promise((r) => setTimeout(r, 400 * 2 ** i + Math.random() * 250));
   }
 }

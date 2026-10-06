@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export const GLOSSARY: Record<string, string> = {
+  pup: "A cheaper way in: 25,000 $RAT. A pup rides with an adult rat and is paid in every round its rat is paid, at a quarter of a rat's weight. 80% of its share goes to you, 20% to the rat's owner.",
   poolsofar: "40% of the $RAT creator fees earned so far this round, read live from pump.fun's fee vault. Per rat at ×1 = pool divided by the payout weights of all rats in the round.",
   earn: "Estimate for one more rat joining this round at each bag size, from the pool so far and the pace of fees. Real payouts depend on fees until the close.",
   byclose: "Expected SOL for one rat when this round closes, if fees keep coming at the current pace.",
@@ -97,7 +98,7 @@ export const GLOSSARY: Record<string, string> = {
   amount: "$RAT burned in that transaction.",
   what: "What the burn bought: a rat spawn or a sniff order.",
   ratsalive: "Rats currently digging. Rats burned after a litter closes wait for the next one.",
-  bagmult: "Holding more $RAT per rat raises its share of the payout. Earnings are capped at 2x the rat's cost unless you hold 100K+ per rat.",
+  bagmult: "Your $RAT bag, split over your rats and pups, sets the multiplier: 100K ×1, 500K ×1.25, 1M ×1.5, 2.5M ×2, linear in between. The lowest bag you held during the round counts, so buying just before the close adds nothing. Burns are not selling. Under 100K per rat, a rat stops earning at 2x its cost.",
   litter: "Rats are born in litters of 100. The litter number your rat belongs to.",
   digs: "Launches this rat read in the current 12h round. It needs the minimum digs to get paid.",
   earned: "SOL this rat has earned from payouts.",

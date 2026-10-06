@@ -11,7 +11,7 @@ export type Econ = {
   perRatX1: number | null;
   weights: { sum: number; n: number; capped: number } | null;
   paid: { sol: number | null; wallets: number; rounds: number };
-  spawn: { rat: number; sol: number | null };
+  spawn: { rat: number; sol: number | null; repeat?: number; pup?: number; pupSol?: number | null };
   capX: number;
   capFree: number;
   tiers: { bag: number; label: string; mult: number; capped: boolean; byClose: number | null; perDay: number | null; payback: number | null }[];
@@ -44,7 +44,7 @@ export function EarnTable({ e }: { e: Econ | null | undefined }) {
               <tr key={t.label}>
                 <td>
                   <span className="earn-bag">{t.label}</span>
-                  <span className={`earn-cap ${t.capped ? "c" : ""}`}>{t.capped ? `stops at ${e?.capX ?? 2}x cost` : "no cap"}</span>
+                  <span className={`earn-cap ${t.capped ? "c" : ""}`}>{t.label === "pup" ? `${num(e?.spawn.pup ?? 25000)} $RAT, rides with a rat` : t.capped ? `stops at ${e?.capX ?? 2}x cost` : "no cap"}</span>
                 </td>
                 <td>×{t.mult}</td>
                 <td>{live ? s3(t.byClose) : "–"}</td>
@@ -70,13 +70,14 @@ export function EarnTable({ e }: { e: Econ | null | undefined }) {
 }
 
 /** The rules in one place, plain. */
-export function RulesList({ minWork, spawn, sniff }: { minWork: number; spawn: number; sniff: number }) {
+export function RulesList({ minWork, spawn, sniff, repeat = 70000, pup = 25000, pupMax = 1000 }: { minWork: number; spawn: number; sniff: number; repeat?: number; pup?: number; pupMax?: number }) {
   const rows: [string, React.ReactNode][] = [
-    ["price", <><b>{num(spawn)} $RAT</b> per rat, burned. Gone from the supply for good.</>],
+    ["price", <><b>{num(spawn)} $RAT</b> per rat, burned for good. Every next rat from the same wallet: <b>{num(repeat)}</b> (30% off).</>],
+    ["pup", <><b>{num(pup)} $RAT</b>. A pup rides with an adult rat and is paid whenever its rat is paid, at <b>×0.25</b> of its weight. <b>80%</b> of its share to you, <b>20%</b> to the rat&apos;s owner. {num(pupMax)} pups in total.</>],
     ["work", <>a rat needs <b>{minWork} digs</b> in a round to be paid for it. Rats dig on their own, nothing to run.</>],
-    ["bag", <>$RAT held by the owner&apos;s wallet, split over its rats. More per rat = a bigger share: <b>100K ×1 → 500K ×1.25 → 1M ×1.5 → 2.5M ×2</b>.</>],
+    ["bag", <>the <b>lowest</b> $RAT your wallet held during the round, split over your rats and pups. Buying right before the close adds nothing; burning for a rat, pup or sniff is not selling. <b>100K ×1 → 500K ×1.25 → 1M ×1.5 → 2.5M ×2</b>, linear in between.</>],
     ["cap", <>under <b>100K per rat</b>: a rat earns up to <b>2x</b> what it cost, then stops. 100K+ per rat: <b>no cap</b>.</>],
-    ["share", <>pool × the rat&apos;s multiplier ÷ the sum of all multipliers in the round.</>],
+    ["share", <>pool × the multiplier ÷ the sum of all multipliers in the round (pups count ×0.25).</>],
     ["pool", <><b>40%</b> of every $RAT creator fee, paid in SOL every 12 hours (00:00 and 12:00 UTC). The other 60% pays for the digging, training and calls.</>],
     ["sniff", <>or burn <b>{num(sniff)} $RAT</b> to have the rats read any coin you paste.</>],
   ];
@@ -142,13 +143,13 @@ export function MoneyFlow({ e }: { e: Econ | null | undefined }) {
 }
 
 /** Self-loading wrappers for the server pages. */
-type RatsApi = { econ: Econ | null; costs: { spawn: number; sniff: number; minWork: number } };
+type RatsApi = { econ: Econ | null; costs: { spawn: number; repeat: number; pup: number; pupMax: number; sniff: number; minWork: number } };
 export function RatsMoney() {
   const d = usePoll<RatsApi>("/api/rats", 15000).data;
   return (
     <>
       <EarnTable e={d?.econ} />
-      <RulesList minWork={d?.costs.minWork ?? 50} spawn={d?.costs.spawn ?? 100000} sniff={d?.costs.sniff ?? 10000} />
+      <RulesList minWork={d?.costs.minWork ?? 50} spawn={d?.costs.spawn ?? 100000} sniff={d?.costs.sniff ?? 10000} repeat={d?.costs.repeat} pup={d?.costs.pup} pupMax={d?.costs.pupMax} />
     </>
   );
 }

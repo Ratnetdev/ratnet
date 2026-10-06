@@ -478,13 +478,18 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     const recent: Record<string, Sample[]> = {}; // 2s samples kept in memory for the flow read
 
     let lastErrAt = 0;
+    let hadErr = false;
+    let digging: Promise<unknown> | null = null;
+    let walletAt = 0;
+    let walletSolC: number | null = null;
     while (Date.now() - t0 < budgetMs) {
       loops++;
       const now = Date.now();
       try {
-      if (onBeat && now - lastBeat > 10_000) {
+      // the dig runs next to the desk, never in front of it: positions keep their 2s beat while the rats dig
+      if (onBeat && !digging && now - lastBeat > 10_000) {
         lastBeat = now;
-        await onBeat().catch(() => {});
+        digging = onBeat().catch(() => null).finally(() => (digging = null));
       }
       const posMap = (await r.hgetall<Record<string, Pos>>(K.deskPos)) || {};
       const positions = Object.values(posMap);
@@ -498,7 +503,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const stalks = (await r.hgetall<Record<string, Stalk>>(K.deskStalk)) || {};
 
       // --- promotion / demotion
-      const walletSol = kp ? (await conn().getBalance(kp.publicKey).catch(() => 0)) / 1e9 : null;
+      if (kp && now - walletAt > 15_000) {
+        walletAt = now;
+        walletSolC = (await conn().getBalance(kp.publicKey).catch(() => 0)) / 1e9;
+      }
+      const walletSol = kp ? walletSolC : null;
       if (!state.live && (cfg.mode === "live" || cfg.mode === "auto") && kp && !positions.length) {
         const ex = cfg.mode === "live" ? { passed: walletSol != null && walletSol >= EXAM.minWallet } : await exam(state, walletSol);
         if (ex.passed) {
@@ -802,8 +811,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       }
       await r.set(K.deskState, state);
       await r.set(BEAT_KEY, now);
+      if (hadErr) {
+        hadErr = false;
+        log(b, "LEDGER", "back to normal, every beat on time", "ok");
+      }
       await flushLog(b);
       } catch (e) {
+        hadErr = true;
         // one bad beat (usually the RPC rate limit) never ends the session: back off and try again
         const msg = safeErr(e);
         const busy = /429|too many/i.test(msg);
@@ -818,6 +832,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const wait = LOOP_MS - (Date.now() - now);
       if (wait > 0) await new Promise((res) => setTimeout(res, wait));
     }
+    if (digging) await digging;
     await r.set(K.deskLearn, learnS);
     return { loops };
   } catch (e) {

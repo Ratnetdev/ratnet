@@ -4,7 +4,7 @@
 // Cost: one getSignaturesForAddress (up to 1000 sigs) + one batch of parsed transactions (~40) per coin.
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
-import { bondingCurvePda, conn, pmap } from "./solana";
+import { bondingCurvePda, conn, pmap, RPS } from "./solana";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
 const JITO = new Set([
@@ -122,7 +122,10 @@ async function parsedMany(sigs: string[]) {
 }
 
 /** Read the tape of one launch. Returns null when nothing could be read (never throws). */
-export async function readTape(mint: string, creator: string, createdAt: number, sample = { early: 28, recent: 14 }): Promise<Tape | null> {
+// Fewer sampled trades on a small RPC plan (Helius free = 10 calls/s); the full sample from 20/s up.
+const SAMPLE = RPS >= 20 ? { early: 28, recent: 14 } : { early: 20, recent: 10 };
+
+export async function readTape(mint: string, creator: string, createdAt: number, sample = SAMPLE): Promise<Tape | null> {
   try {
     const curve = bondingCurvePda(mint);
     const sigs = await conn().getSignaturesForAddress(new PublicKey(curve), { limit: 1000 });

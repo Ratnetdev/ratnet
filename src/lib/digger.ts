@@ -1,7 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { CALL_MAX_AGE_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd } from "./solana";
+import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, RPS } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
@@ -20,7 +20,8 @@ type Extra = { tape: Tape | null; g: Graph | null; meta: Meta | null; px: number
 const REPLAY_KEY = "rn:replay"; // recent lessons, replayed in small batches so the models learn faster
 const REPLAY_MAX = 4000;
 const REPLAY_PER_RUN = 64;
-const MAX_TAPES_PER_RUN = 12;
+// Tapes are the expensive read (~30 RPC calls each). Scaled to the RPC plan: 2 per run on Helius free (10/s), 12 at 50/s.
+const MAX_TAPES_PER_RUN = Math.max(2, Math.min(12, Math.floor(RPS / 4)));
 // Every lesson waits for the same label window: "bonded within 2h". Without it, winners (which bond in minutes) would be
 // learned long before losers (which take up to 24h to resolve), and the models would learn that everything bonds.
 // Research: 85% of graduates bond within an hour (pumpfundata, Apr 2026), so 2h keeps label noise and lag small.
@@ -233,7 +234,12 @@ export async function loadModel(key: string = K.nano): Promise<NanoModel> {
   return m && Array.isArray(m.w) ? m : emptyModel();
 }
 
+/** One dig, on the RPC's middle lane: the desk's own calls always go first (see lib/solana.ts). */
 export async function dig(): Promise<Record<string, unknown>> {
+  return lane.run(1, digInner);
+}
+
+async function digInner(): Promise<Record<string, unknown>> {
   const r = redis();
   const got = await r.set(K.digLock, Date.now(), { nx: true, ex: 40 });
   if (!got) return { skipped: "busy" };

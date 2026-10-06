@@ -7,11 +7,12 @@
 // A claim empties the vault; the claimed amount is carried so "this round so far" never drops.
 import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { BAG_TIERS, CAP_FREE_BAG, EARN_CAP_X, FEE_SPLIT, ROUND_MS } from "@/config/site";
+import { BAG_TIERS, CAP_FREE_BAG, EARN_CAP_X, FEE_SPLIT, PUP_ROYALTY, PUP_WEIGHT, ROUND_MS } from "@/config/site";
 import { K, redis } from "./redis";
 import { bondingCurvePda, conn, pmap, ratPriceSol } from "./solana";
 import { getSettings } from "./settings";
-import { allRats, isActive, roundOf, roundStart } from "./rats";
+import { allPups, allRats, isActive, roundOf, roundStart } from "./rats";
+import { bagFor, sampleBags } from "./bags";
 import { ratBalance } from "./burns";
 import { getRounds, multFor } from "./rounds";
 
@@ -24,7 +25,7 @@ const RK = (id: number) => `rn:fees:r:${id}`;
 const WKEY = "rn:fees:w";
 
 export type FeesLive = { round: number; soFar: number; vault: number; at: number; creator: string | null };
-export type Weights = { sum: number; n: number; capped: number; at: number };
+export type Weights = { sum: number; n: number; pups?: number; capped: number; at: number };
 
 async function creatorOf(mint: string): Promise<string | null> {
   const cached = await redis().get<string>("rn:fees:creator");
@@ -76,26 +77,36 @@ export async function trackFees(): Promise<FeesLive | null> {
   return live;
 }
 
-/** Sum of payout weights of the rats in this round (bag multipliers), refreshed every 5 minutes. */
+/** Sum of payout weights in this round (rats ×bag multiplier, pups ×0.25 of that), refreshed every 5 minutes.
+ *  Each refresh is also a bag snapshot sample: the round pays on the lowest bag held (lib/bags.ts). */
 export async function trackWeights(): Promise<Weights | null> {
   const r = redis();
   const prev = await r.get<Weights>(WKEY);
   if (prev && Date.now() - prev.at < 5 * 60_000) return prev;
   const s = await getSettings();
   if (!s.mint) return null;
-  const rats = (await allRats()).filter((x) => isActive(x, s));
-  const byOwner: Record<string, number> = {};
-  for (const x of rats) byOwner[x.owner] = (byOwner[x.owner] || 0) + 1;
-  const owners = Object.keys(byOwner);
-  const bags = await pmap(owners, 4, (o) => ratBalance(o, s).catch(() => 0));
+  const [ratsAll, pupsAll] = await Promise.all([allRats(), allPups()]);
+  const rats = ratsAll.filter((x) => isActive(x, s));
+  const alive = new Set(rats.map((x) => x.name));
+  const pups = pupsAll.filter((x) => alive.has(x.parent));
+  const units: Record<string, { rats: number; pups: number }> = {};
+  for (const x of rats) (units[x.owner] ||= { rats: 0, pups: 0 }).rats++;
+  for (const x of pups) (units[x.owner] ||= { rats: 0, pups: 0 }).pups++;
+  const owners = Object.keys(units);
+  const bal = await pmap(owners, 4, (o) => ratBalance(o, s).catch(() => 0));
+  const round = roundOf();
+  await sampleBags(round, Object.fromEntries(owners.map((o, i) => [o, bal[i]])));
+  const bags = await Promise.all(owners.map((o, i) => bagFor(round, o, bal[i])));
   let sum = 0;
   let capped = 0;
   owners.forEach((o, i) => {
-    const per = bags[i] / byOwner[o];
-    sum += multFor(per) * byOwner[o];
-    if (per < CAP_FREE_BAG) capped += byOwner[o];
+    const u = units[o];
+    const per = bags[i] / (u.rats + u.pups);
+    const m = multFor(per);
+    sum += m * u.rats + m * PUP_WEIGHT * u.pups;
+    if (per < CAP_FREE_BAG) capped += u.rats + u.pups;
   });
-  const w: Weights = { sum: Math.round(sum * 100) / 100, n: rats.length, capped, at: Date.now() };
+  const w: Weights = { sum: Math.round(sum * 100) / 100, n: rats.length, pups: pups.length, capped, at: Date.now() };
   await r.set(WKEY, w, { ex: 1800 });
   return w;
 }
@@ -114,12 +125,20 @@ export async function getEcon() {
   const pool = (projected ?? soFar) * FEE_SPLIT.owners;
   const sumW = w?.sum || 0;
   const spawnSol = priceSol ? priceSol * s.spawnCost : null;
+  const pupSol = priceSol ? priceSol * s.pupCost : null;
   // what one more rat would earn at each bag tier (it joins the weights itself)
   const tiers = [{ bag: 0, label: "no bag", mult: 1, capped: true }, ...[...BAG_TIERS].sort((a, b) => a.min - b.min).map((t) => ({ bag: t.min, label: fmtBag(t.min), mult: t.mult, capped: false }))].map((t) => {
     const byClose = sumW + t.mult > 0 && pool > 0 ? (pool * t.mult) / (sumW + t.mult) : null;
     const perDay = byClose != null ? byClose * (86400_000 / ROUND_MS) : null;
     return { ...t, byClose: r4(byClose), perDay: r4(perDay), payback: perDay && spawnSol ? Math.round((spawnSol / perDay) * 10) / 10 : null };
   });
+  // a pup at the 100K tier: a quarter of a rat's weight, 80% of its share (20% goes to its rat's owner)
+  {
+    const m = 1 * PUP_WEIGHT;
+    const byClose = sumW + m > 0 && pool > 0 ? ((pool * m) / (sumW + m)) * (1 - PUP_ROYALTY) : null;
+    const perDay = byClose != null ? byClose * (86400_000 / ROUND_MS) : null;
+    tiers.push({ bag: -1, label: "pup", mult: m, capped: false, byClose: r4(byClose), perDay: r4(perDay), payback: perDay && pupSol ? Math.round((pupSol / perDay) * 10) / 10 : null });
+  }
   const paid = rounds.filter((x) => x.status === "paid" || x.status === "partial");
   const wallets = new Set<string>();
   for (const x of paid) for (const p of x.payouts || []) if (p.sig) wallets.add(p.owner);
@@ -130,7 +149,8 @@ export async function getEcon() {
     perRatX1: sumW > 0 ? r4((soFar * FEE_SPLIT.owners) / sumW) : null,
     weights: w ? { sum: w.sum, n: w.n, capped: w.capped } : null,
     paid: { sol: r4(paid.reduce((a, x) => a + (x.ownersSol || 0), 0)), wallets: wallets.size, rounds: paid.length },
-    spawn: { rat: s.spawnCost, sol: spawnSol != null ? r4(spawnSol) : null },
+    spawn: { rat: s.spawnCost, sol: spawnSol != null ? r4(spawnSol) : null, repeat: Math.round(s.spawnCost * (1 - (s.repeatOff ?? 0))), pup: s.pupCost, pupSol: pupSol != null ? r4(pupSol) : null },
+    pups: { n: w?.pups ?? 0, max: s.pupMax, weight: PUP_WEIGHT, royalty: PUP_ROYALTY },
     capX: EARN_CAP_X,
     capFree: CAP_FREE_BAG,
     tiers,

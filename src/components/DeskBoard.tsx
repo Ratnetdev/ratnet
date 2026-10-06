@@ -168,6 +168,8 @@ export default function DeskBoard() {
         {ROLES.map(([a, role]) => {
           const e = d?.agents?.[a];
           const hot = e && now - e.at < 6000;
+          // an error the desk has moved past does not stay red: after 10 minutes it fades to a muted "earlier" note
+          const stale = !!e && (e.tone === "bad" || e.tone === "loss") && now - e.at > 10 * 60_000;
           return (
             <div key={a} className={`agent ${hot ? "hot" : ""}`} style={{ ["--ac" as any]: AGENT_COLOR[a] }}>
               <div className="row between">
@@ -175,7 +177,8 @@ export default function DeskBoard() {
                 <span className="tiny mute2">{e ? ago(e.at) : "idle"}</span>
               </div>
               <div className="tiny muted">{role}</div>
-              <div className="agent-last" style={{ color: e ? TONE[e.tone] : "var(--mute)" }}>
+              <div className="agent-last" style={{ color: e && !stale ? TONE[e.tone] : "var(--mute)" }}>
+                {stale && <span className="agent-earlier">earlier · </span>}
                 {e?.mint ? <Link href={`/c/${e.mint}`} style={{ color: "inherit" }}>{e.text}</Link> : e?.text || "waiting for the first call"}
               </div>
               <i className="agent-bar" />

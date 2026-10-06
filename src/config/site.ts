@@ -39,6 +39,9 @@ export const DEFAULT_SETTINGS = {
   decimals: 6,
   litter: { n: 1, size: 100, open: true },
   spawnCost: 100_000,
+  repeatOff: 0.3, // every next rat from a wallet that already owns one costs 30% less
+  pupCost: 25_000, // a pup rides with an adult rat: cheap entry, earns at PUP_WEIGHT when its rat earns
+  pupMax: 1_000,
   sniffCost: 10_000,
   minWork: 50,
   freeSniff: true, // free sniffs while no CA is set (pre-launch preview)
@@ -97,7 +100,9 @@ export const BAG_TIERS = [
   { min: 500_000, mult: 1.25 },
   { min: 100_000, mult: 1.0 },
 ];
-export const CAP_FREE_BAG = 100_000; // per rat; below this, earnings cap at 2x cost
+export const CAP_FREE_BAG = 100_000; // per rat or pup; below this, earnings cap at 2x cost
+export const PUP_WEIGHT = 0.25; // a pup weighs a quarter of its rat in the payout
+export const PUP_ROYALTY = 0.2; // 20% of a pup's share goes to the owner of the rat it rides with
 export const EARN_CAP_X = 2;
 
 export const SCOUTS = ["SCOUT-1", "SCOUT-2", "SCOUT-3", "SCOUT-4", "SCOUT-5", "SCOUT-6", "SCOUT-7", "SCOUT-8"];

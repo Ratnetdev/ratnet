@@ -9,8 +9,38 @@ export type Rat = {
   sig: string;
   spawnedAt: number;
   costSol: number | null;
+  costRat?: number; // $RAT burned for it (repeat spawns cost less)
   earnedSol: number;
 };
+
+/** A pup rides with an adult rat: 25K $RAT, weighs PUP_WEIGHT, paid only in rounds its rat is paid. */
+export type Pup = {
+  id: number;
+  name: string;
+  owner: string;
+  parent: string; // rat name
+  sig: string;
+  spawnedAt: number;
+  costSol: number | null;
+  costRat: number;
+  earnedSol: number;
+};
+export const pupName = (id: number) => `PUP-${String(id).padStart(3, "0")}`;
+export const PUPS_KEY = "rn:pups";
+export const PUP_SEQ = "rn:pupseq";
+
+export async function allPups(): Promise<Pup[]> {
+  const h = (await redis().hgetall<Record<string, Pup>>(PUPS_KEY)) || {};
+  return Object.values(h).sort((a, b) => a.id - b.id);
+}
+
+/** What a wallet pays for its next rat or pup. */
+export async function priceFor(kind: "spawn" | "pup" | "sniff", wallet: string, s: Settings) {
+  if (kind === "sniff") return s.sniffCost;
+  if (kind === "pup") return s.pupCost;
+  const owned = wallet ? Number((await redis().scard(K.ratsOf(wallet))) || 0) : 0;
+  return owned > 0 ? Math.round(s.spawnCost * (1 - (s.repeatOff ?? 0))) : s.spawnCost;
+}
 
 export const ratName = (id: number) => `RAT-${String(id).padStart(3, "0")}`;
 export const roundOf = (ms = Date.now()) => Math.floor(ms / ROUND_MS);

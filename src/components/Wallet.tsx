@@ -166,7 +166,7 @@ export function WalletButton() {
 /** Build a burn tx on the server, sign + send in the wallet, then poll `verifyUrl` until the server accepts it. */
 export async function burnFlow(opts: {
   wallet: string;
-  kind: "spawn" | "sniff";
+  kind: "spawn" | "sniff" | "pup";
   ca?: string;
   signAndSend: (b64: string) => Promise<string>;
   verifyUrl: string;

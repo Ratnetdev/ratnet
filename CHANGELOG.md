@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.6 · Fair rounds, steady desk
+- Earning rules (Crawlnet-proven): the bag that counts is the LOWEST $RAT held during the round (sampled every 5 minutes, burns added back), so buying right before the close adds nothing. Multipliers are linear between the tiers (no cliffs). Every next rat from the same wallet costs 30% less (70,000).
+- Pups: 25,000 $RAT, ride with an adult rat (pick one or auto), paid whenever their rat is paid at ×0.25 weight; 80% to the pup's owner, 20% to the rat's owner. 1,000 in total. Spawn page has rat/pup tabs, the earnings table has a pup row, rules and README updated.
+- Payouts credit every rat and pup with exactly what it earned (used for the 2x cap), instead of an even split per owner.
+- RPC limiter rebuilt: strict rolling 1-second window with headroom (never a burst over the plan), batched requests counted per call (how Helius counts), three lanes: desk, then dig, then historian (max 40%).
+- The desk no longer waits for the dig: positions keep their 2-second beat while the rats dig next to it. Wallet balance read every 15s instead of every beat.
+- Trade reads scaled to the RPC plan: 2 coins per dig with a smaller sample on Helius free (10/s), up to 12 with the full sample from 50/s.
+- Desk cards: an error older than 10 minutes fades to a muted "earlier" note instead of staying red, and LEDGER logs "back to normal" when the desk recovers from an error.
+- Header: X button shows only the X logo.
+- Homepage: guaranteed gap under the burn bar.
+- Tests: sim/payout.ts (all earning rules), sim/limiter.ts (rate, lanes).
+
 ## v0.1.5 · Clean track
 - Graduation proof: a coin counts as BONDED only when it migrated into its canonical PumpSwap pool (the pool only pump.fun's migration can create). Full curves that never migrate are resolved as not bonded after 30 minutes and are never learned. This removes the false graduations of v0.1.4 (coins showing a $10 market cap as "bonded").
 - Market caps straight from the chain: curve account for coins on the curve, canonical pool vaults for graduated coins (one RPC call per 50 coins). Runner peaks, coin pages, radar and the desk all use it. DexScreener only adds volume and flow, fetched in parallel with a 2.5s cap, and junk side pools are filtered out.

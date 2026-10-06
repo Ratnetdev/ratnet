@@ -20,7 +20,7 @@ import { PublicKey } from "@solana/web3.js";
 import { CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, hourKey, redis } from "./redis";
 import { canonicalPool, readPools } from "./pool";
-import { lowLane } from "./solana";
+import { lane } from "./solana";
 import { epochReady } from "./epoch";
 import { bondingCurvePda, conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr } from "./solana";
 import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "./tape";
@@ -233,7 +233,7 @@ async function postRun(mint: string): Promise<{ t: number; mc: number }[] | null
 export async function historianSession(budgetMs = 45_000) {
   // spare RPC capacity only: the desk and the rats always go first (see lowLane in lib/solana.ts)
   if (!(await epochReady())) return { history: "waiting for the data reset" };
-  return lowLane.run(true, () => historianInner(budgetMs));
+  return lane.run(2, () => historianInner(budgetMs));
 }
 
 async function historianInner(budgetMs: number) {

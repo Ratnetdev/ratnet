@@ -173,7 +173,6 @@ export function XButton() {
   return (
     <a className="xbtn" href={SITE.x} target="_blank" rel="noreferrer" aria-label={`RATNET on X (${SITE.handle})`} title={`Follow ${SITE.handle}`}>
       <span className="xg">𝕏</span>
-      <span className="xlbl">{SITE.handle}</span>
     </a>
   );
 }

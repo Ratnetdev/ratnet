@@ -39,6 +39,7 @@ export class MockRedis {
   async zrem(k: string, ...ms: string[]) { this.calls++; const z = this.z(k); ms.forEach((m) => z.delete(m)); return 1; }
   async zcard(k: string) { this.calls++; return this.z(k).size; }
   async scan(cur: any, o: any = {}) { this.calls++; const re = new RegExp("^" + String(o.match || "*").replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"); const keys = [...this.kv.keys()].filter((k) => re.test(k)); const i = Number(cur) || 0; const c = o.count || 10; const sl = keys.slice(i, i + c); return [i + c >= keys.length ? "0" : String(i + c), sl]; }
+  async scard(k: string) { this.calls++; const v = this.kv.get(k); return v instanceof Set ? v.size : Array.isArray(v) ? v.length : 0; }
   async zrange(k: string, a: number, b: number, o: any = {}) {
     this.calls++;
     let arr = [...this.z(k).entries()].sort((x, y) => x[1] - y[1]);

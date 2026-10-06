@@ -30,7 +30,8 @@ export async function POST(req: Request) {
       litter,
       sig: signature,
       spawnedAt: Date.now(),
-      costSol: price ? Math.round(price * s.spawnCost * 1e6) / 1e6 : null,
+      costSol: price ? Math.round(price * check.amount * 1e6) / 1e6 : null,
+      costRat: check.amount,
       earnedSol: 0,
     };
     const p = r.pipeline();
