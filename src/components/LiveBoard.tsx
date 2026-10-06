@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useState } from "react";
 import { useLive } from "./Live";
 import Feed, { FeedItem } from "./Feed";
 import { Call, CallList } from "./Calls";
@@ -10,6 +11,7 @@ import RadarTable, { RadarRow } from "./Radar";
 import GradList, { Grad } from "./Grads";
 
 export type Stats = {
+  callsMissed?: number;
   dug: number;
   dugToday: number;
   tracking: number;
@@ -34,6 +36,7 @@ type Live = { stats: Stats; feed: FeedItem[]; calls: Call[]; radar: RadarRow[]; 
 export default function LiveBoard() {
   const { data: d, error } = useLive();
   const data = d as Live | null;
+  const [callTab, setCallTab] = useState<"bond" | "all">("bond");
   const s = data?.stats;
   const lift = s?.bond.rate != null && s?.baseRate ? Math.round((s.bond.rate / s.baseRate) * 10) / 10 : null;
 
@@ -52,7 +55,7 @@ export default function LiveBoard() {
             <div className="k"><Info k="hit">King hit rate (BOND calls)</Info></div>
             <div className="big" style={{ color: "var(--bond)" }}>{s?.bond.rate != null ? `${s.bond.rate}%` : "–"}</div>
             <div className="s">
-              {s ? `${num(s.bond.hit)} of ${num(s.bond.n)} BOND calls bonded` : "warming up"}
+              {s ? `${num(s.bond.hit)} of ${num(s.bond.n)} BOND calls bonded${s.callsMissed ? ` · ${num(s.callsMissed)} missed (rats behind)` : ""}` : "warming up"}
               {lift ? ` · ${lift}x base rate` : ""}
             </div>
           </div>
@@ -112,12 +115,20 @@ export default function LiveBoard() {
       <section className="grid g-main mt">
         <div className="panel">
           <div className="ph">
-            <span>
-              <Info k="t_king"><b>rat king</b></Info> · latest calls
+            <span className="row" style={{ gap: 10 }}>
+              <Info k="t_king"><b>rat king</b></Info>
+              <span className="rec-tabs">
+                <button className={callTab === "bond" ? "on" : ""} onClick={() => setCallTab("bond")}>BOND calls{(data as any)?.bondCalls?.length ? ` ${(data as any).bondCalls.length}` : ""}</button>
+                <button className={callTab === "all" ? "on" : ""} onClick={() => setCallTab("all")}>all calls</button>
+              </span>
             </span>
             <Link href="/king">all calls →</Link>
           </div>
-          <CallList calls={(data?.calls || []).slice(0, 8)} />
+          {callTab === "bond" && !((data as any)?.bondCalls || []).length ? (
+            <div className="pb small muted">No BOND calls since the reset yet. The King calls BOND on roughly 1 in 60 launches at minute 5; the newest shows here the second it lands.</div>
+          ) : (
+            <CallList calls={(callTab === "bond" ? (data as any)?.bondCalls || [] : data?.calls || []).slice(0, 8)} />
+          )}
         </div>
         <div className="grid" style={{ alignContent: "start" }}>
           <div className="panel">

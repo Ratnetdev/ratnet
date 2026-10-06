@@ -11,6 +11,11 @@
 - Header: X button shows only the X logo.
 - Homepage: guaranteed gap under the burn bar.
 - Tests: sim/payout.ts (all earning rules), sim/limiter.ts (rate, lanes).
+- Calls fixed (why the King hit rate and BOND calls stayed at 0): the minute-5 checkpoints were read oldest first, so with a backlog every call landed far past the 15-minute window and none counted. Checkpoints are now read freshest first; anything too old to count is skipped and shown as "missed (rats behind)" next to the hit rate instead of clogging the queue.
+- Homepage: Rat King panel with a "BOND calls" tab (default) next to "all calls". Every counted BOND call shows the second it lands.
+- Track record: every paper (and later live) trade as a round trip on the homepage and /desk: return, trades closed, win rate, realized SOL, best/worst, average hold. Click a trade on /desk for the call behind it, entry type, peak while held, exit, what was left on the table, a price chart with the entry line, sells and peak, and every fill with its reason (Solscan link when live).
+- Agents: click any of the 13 desk agents for its own panel: what it does and the rules it works by, what it is doing right now, actions today and all time, good vs bad outcomes, a 24-hour activity chart and its full history with links to the coins.
+- Alerts: moved to the top right, under the header, with padding on every side and safe-area insets, on every screen size. Root cause of the glitch: the newest alert used the same class name as the sticky header, so it was pinned behind it.
 
 ## v0.1.5 · Clean track
 - Graduation proof: a coin counts as BONDED only when it migrated into its canonical PumpSwap pool (the pool only pump.fun's migration can create). Full curves that never migrate are resolved as not bonded after 30 minutes and are never learned. This removes the false graduations of v0.1.4 (coins showing a $10 market cap as "bonded").

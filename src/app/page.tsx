@@ -4,6 +4,7 @@ import { RatCamHero } from "@/components/RatCam";
 import HeroProof from "@/components/HeroProof";
 import DeskStatus from "@/components/DeskStatus";
 import { BurnStrip, RatSection } from "@/components/RatEconomy";
+import TrackRecord from "@/components/TrackRecord";
 
 export default function Home() {
   return (
@@ -33,6 +34,8 @@ export default function Home() {
       <BurnStrip />
 
       <LiveBoard />
+
+      <TrackRecord compact />
 
       <RatSection />
     </>

@@ -21,6 +21,7 @@ import { tokenAmounts } from "./tape";
 import { xMentions } from "./buzz";
 import { levelOf, loadRunner, MILESTONES, pNext, RK, Run } from "./runner";
 import { NANO_MIN, type NanoModel } from "./nano";
+import { agentLog, type AgentEv } from "./agents";
 import { getHistory } from "./historian";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
@@ -290,9 +291,7 @@ async function flushLog(b: Batch) {
   if (b.ev.length) {
     p.lpush(K.deskEv, ...b.ev);
     p.ltrim(K.deskEv, 0, 299);
-    const last: Record<string, DeskEv> = {};
-    for (const e of b.ev) last[e.agent] = e;
-    p.hset(K.deskAgent, last);
+    agentLog(p, b.ev as AgentEv[]);
     // the Rat Cam and the main feed show desk moves too
     const feed = b.ev
       .filter((e) => e.agent === "EXEC" || e.agent === "RISK" || e.agent === "COACH" || (e.agent === "LEDGER" && e.tone !== "info"))
@@ -304,7 +303,7 @@ async function flushLog(b: Batch) {
   }
   if (b.trades.length) {
     p.lpush(K.deskTrades, ...b.trades);
-    p.ltrim(K.deskTrades, 0, 499);
+    p.ltrim(K.deskTrades, 0, 1999); // the full public track record
   }
   await p.exec();
   b.ev = [];
@@ -964,6 +963,11 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   log(b, "RISK", `${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, pnl >= 0 ? "win" : "loss", coin);
   if (p.tokens <= 1e-9) {
     p.tokens = 0;
+    // keep the whole trade for the public track record: chart, the call behind it, peak while held
+    const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
+    const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
+    await redis().lpush(TRIPS_KEY, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series } satisfies TripMeta);
+    await redis().ltrim(TRIPS_KEY, 0, 999);
     state.closed++;
     const total = p.soldSol - p.costSol;
     if (total > 0) state.wins++;
@@ -1048,5 +1052,125 @@ export async function getDesk() {
     stalks: Object.values(stalks || {}),
     learn: { ...learnS, arms, shadows: nShadow || 0, reviewing: nAfter || 0, rules: LEARN_RULES, xConnected: !!process.env.X_BEARER_TOKEN },
     now: await rightNow(learnS).catch(() => null),
+  };
+}
+
+
+// ---------------------------------------------------------------- track record (public)
+
+const TRIPS_KEY = "rn:desk:trips"; // closed trades with their chart and context
+type TripMeta = { mint: string; symbol: string; openedAt: number; closedAt: number; king: number; nano: number | null; how: string; entryPx: number; peakPx: number; exitPx: number; series: [number, number][] };
+
+export type Trip = {
+  mint: string;
+  symbol: string;
+  openedAt: number;
+  closedAt: number | null;
+  open: boolean;
+  live: boolean;
+  costSol: number;
+  backSol: number; // SOL received from sells so far
+  valueSol: number; // what is still held, at the live price (open trips)
+  pnlSol: number; // realized + unrealized
+  pnlPct: number;
+  why: string; // why it bought
+  exits: { at: number; sol: number; reason: string; pnlPct: number | null; sig?: string; px?: number }[];
+  buySig?: string;
+  holdMs: number;
+  // context for the detail view
+  king?: number;
+  nano?: number | null;
+  how?: string;
+  entryPx?: number;
+  peakPct?: number | null; // best price seen while held, vs entry
+  exitPct?: number | null; // last sell price vs entry
+  series?: [number, number][];
+};
+
+/** Every trade the desk made, grouped into round trips: entry, each exit, result. Open trips at the live price. */
+export async function getRecord() {
+  const r = redis();
+  const [trades, posMap, st, metas] = await Promise.all([
+    r.lrange<Trade>(K.deskTrades, 0, 1999),
+    r.hgetall<Record<string, Pos>>(K.deskPos),
+    r.get<DeskState>(K.deskState),
+    r.lrange<TripMeta>(TRIPS_KEY, 0, 999),
+  ]);
+  const metaBy: Record<string, TripMeta> = {};
+  for (const m of (metas || []) as TripMeta[]) metaBy[`${m.mint}|${m.openedAt}`] = m;
+  const list = ((trades || []) as Trade[]).slice().reverse(); // oldest first
+  const pos = (posMap || {}) as Record<string, Pos>;
+  const trips: Trip[] = [];
+  const openBy: Record<string, Trip> = {};
+  for (const t of list) {
+    if (t.side === "buy") {
+      const prev = openBy[t.mint];
+      if (prev) {
+        prev.open = false;
+        prev.closedAt = prev.exits.length ? prev.exits[prev.exits.length - 1].at : t.at;
+      }
+      const trip: Trip = { mint: t.mint, symbol: t.symbol, openedAt: t.at, closedAt: null, open: true, live: t.live, costSol: t.sol, backSol: 0, valueSol: 0, pnlSol: 0, pnlPct: 0, why: t.reason, exits: [], buySig: t.sig, holdMs: 0 };
+      trips.push(trip);
+      openBy[t.mint] = trip;
+    } else {
+      const trip = openBy[t.mint];
+      if (!trip) continue;
+      trip.backSol += t.sol;
+      trip.exits.push({ at: t.at, sol: t.sol, reason: t.reason, pnlPct: t.pnlPct ?? null, sig: t.sig, px: t.px });
+    }
+  }
+  const now = Date.now();
+  for (const trip of trips) {
+    const p = pos[trip.mint];
+    const isOpen = trip.open && !!p && openBy[trip.mint] === trip;
+    trip.open = isOpen;
+    if (!isOpen && trip.closedAt == null) trip.closedAt = trip.exits.length ? trip.exits[trip.exits.length - 1].at : trip.openedAt;
+    trip.valueSol = isOpen && p ? Math.max(0, p.tokens * (p.lastPx || 0)) : 0;
+    trip.pnlSol = r4(trip.backSol + trip.valueSol - trip.costSol);
+    trip.pnlPct = trip.costSol ? Math.round(((trip.backSol + trip.valueSol) / trip.costSol - 1) * 1000) / 10 : 0;
+    trip.backSol = r4(trip.backSol);
+    trip.valueSol = r4(trip.valueSol);
+    trip.holdMs = (trip.closedAt ?? now) - trip.openedAt;
+    // context: live position while open, the saved record once closed
+    const m = metaBy[`${trip.mint}|${trip.openedAt}`];
+    const src = isOpen && p ? { king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, p.lastPx || 0), series: (p.series || []).map(([t, x]) => [t, x] as [number, number]) } : m;
+    if (src) {
+      trip.king = src.king;
+      trip.nano = src.nano;
+      trip.how = src.how;
+      trip.entryPx = src.entryPx;
+      trip.peakPct = src.entryPx ? Math.round((src.peakPx / src.entryPx - 1) * 1000) / 10 : null;
+      const step = Math.max(1, Math.ceil(src.series.length / 90));
+      trip.series = src.series.filter((_, i, a) => i % step === 0 || i === a.length - 1);
+    }
+    const lastExit = trip.exits[trip.exits.length - 1];
+    trip.exitPct = trip.entryPx && lastExit?.px ? Math.round((lastExit.px / trip.entryPx - 1) * 1000) / 10 : null;
+  }
+  const closed = trips.filter((t) => !t.open);
+  const wins = closed.filter((t) => t.pnlSol > 0);
+  const sum = (a: Trip[], f: (t: Trip) => number) => a.reduce((x, t) => x + f(t), 0);
+  const best = closed.reduce<Trip | null>((b, t) => (!b || t.pnlPct > b.pnlPct ? t : b), null);
+  const worst = closed.reduce<Trip | null>((b, t) => (!b || t.pnlPct < b.pnlPct ? t : b), null);
+  const start = st?.live ? st.liveStart ?? st.start : st?.start ?? 0;
+  return {
+    live: !!st?.live,
+    summary: {
+      trips: trips.length,
+      open: trips.filter((t) => t.open).length,
+      closed: closed.length,
+      wins: wins.length,
+      winRate: closed.length ? Math.round((wins.length / closed.length) * 1000) / 10 : null,
+      realizedSol: r4(sum(closed, (t) => t.pnlSol)),
+      openSol: r4(sum(trips.filter((t) => t.open), (t) => t.pnlSol)),
+      start: r4(start),
+      equity: r4(st?.equity ?? start),
+      returnPct: start ? Math.round((((st?.equity ?? start) / start) - 1) * 1000) / 10 : null,
+      best: best ? { symbol: best.symbol, mint: best.mint, pnlPct: best.pnlPct } : null,
+      worst: worst ? { symbol: worst.symbol, mint: worst.mint, pnlPct: worst.pnlPct } : null,
+      avgHoldMs: closed.length ? Math.round(sum(closed, (t) => t.holdMs) / closed.length) : null,
+      since: st?.startedAt ?? null,
+    },
+    // charts only for the newest 60 trades, so the record stays light
+    trips: trips.reverse().slice(0, 300).map((t, i) => (i < 60 ? t : { ...t, series: undefined })),
   };
 }

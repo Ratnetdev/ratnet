@@ -6,6 +6,9 @@ import Info from "./Info";
 import CountUp from "./CountUp";
 import { ago, short, solscanAcc, solscanTx } from "./fmt";
 import DeskNow, { type DeskNowData } from "./DeskNow";
+import TrackRecord from "./TrackRecord";
+import AgentPanel from "./AgentPanel";
+import { useState } from "react";
 
 type Ev = { agent: string; at: number; mint?: string; symbol?: string; text: string; tone: string };
 type Sample = [number, number, number];
@@ -122,10 +125,13 @@ export default function DeskBoard() {
   const today = st ? pct(eq, st.dayStart) : 0;
   const winRate = st?.closed ? (st.wins / st.closed) * 100 : null;
   const passed = d?.exam.checks.filter((c) => c.ok).length ?? 0;
+  const [agent, setAgent] = useState<string | null>(null);
 
   return (
     <>
       <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam.checks || []} />
+
+      <TrackRecord />
 
       <section className="desk-top mt">
         <div>
@@ -164,6 +170,7 @@ export default function DeskBoard() {
         </div>
       </section>
 
+      {agent && <AgentPanel name={agent} role={ROLES.find(([x]) => x === agent)?.[1] || ""} color={AGENT_COLOR[agent]} onClose={() => setAgent(null)} />}
       <section className="agents mt">
         {ROLES.map(([a, role]) => {
           const e = d?.agents?.[a];
@@ -171,7 +178,7 @@ export default function DeskBoard() {
           // an error the desk has moved past does not stay red: after 10 minutes it fades to a muted "earlier" note
           const stale = !!e && (e.tone === "bad" || e.tone === "loss") && now - e.at > 10 * 60_000;
           return (
-            <div key={a} className={`agent ${hot ? "hot" : ""}`} style={{ ["--ac" as any]: AGENT_COLOR[a] }}>
+            <div key={a} className={`agent click ${hot ? "hot" : ""}`} style={{ ["--ac" as any]: AGENT_COLOR[a] }} onClick={() => setAgent(a)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && setAgent(a)} title={`Open ${a}`}>
               <div className="row between">
                 <b style={{ color: AGENT_COLOR[a] }}>{a}</b>
                 <span className="tiny mute2">{e ? ago(e.at) : "idle"}</span>

@@ -74,6 +74,21 @@ export default function Alerts() {
   const [s, setS] = useState<Settings>(DEF);
   const [open, setOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // keep the alert stack just under the header on every screen (header height differs per device and wraps)
+  useEffect(() => {
+    const set = () => {
+      const h = document.querySelector("header.top") as HTMLElement | null;
+      const b = h ? Math.max(0, Math.round(h.getBoundingClientRect().bottom)) : 64;
+      document.documentElement.style.setProperty("--hdr", `${b}px`);
+    };
+    set();
+    window.addEventListener("resize", set);
+    window.addEventListener("scroll", set, { passive: true });
+    return () => {
+      window.removeEventListener("resize", set);
+      window.removeEventListener("scroll", set);
+    };
+  }, []);
   const [unread, setUnread] = useState(0);
   const seen = useRef<Set<string>>(new Set());
   const primed = useRef(false);

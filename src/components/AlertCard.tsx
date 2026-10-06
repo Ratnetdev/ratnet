@@ -145,7 +145,7 @@ export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHove
   return (
     <div
       ref={ref}
-      className={`acard ${top ? "top" : ""}`}
+      className={`acard ${top ? "ac-first" : ""}`}
       style={{ ["--ac" as any]: k.color, ["--glow" as any]: k.glow }}
       onMouseEnter={() => {
         setHover(true);

@@ -13,6 +13,7 @@ import { enroll, Run, runnerPass } from "./runner";
 import { migrated, poolUsd, readPools } from "./pool";
 import { ensureEpoch } from "./epoch";
 import { trackFees, trackWeights } from "./fees";
+import { agentLog } from "./agents";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
@@ -180,7 +181,10 @@ const DEAD_TTL = 60 * 60 * 6;
 const BONDED_TTL = 60 * 60 * 24 * 7;
 const CALL_TTL = 60 * 60 * 24 * 2;
 const MAX_TX_PER_RUN = 60;
+export const BOND_CALLS = "rn:bondcalls"; // newest counted BOND calls (mints)
 const MAX_DUE_PER_RUN = 300;
+const FRESH_MS = 10 * 60_000;
+const EARLY_MAX_AGE_MS = 3 * 60_000; // a minute-1 read later than 3 minutes is skipped, not made late
 const MAX_HOT_PER_RUN = 300;
 const HOT_MIN = 2; // curve % that puts a launch on the hot watch
 const HOT_TOP = 200; // highest curves checked every run
@@ -388,7 +392,7 @@ async function digNew(model: NanoModel) {
   p.hincrby(K.day(dayKey()), "dug", launches.length);
   p.expire(K.day(dayKey()), 60 * 60 * 24 * 40);
   const lastL = launches[launches.length - 1];
-  p.hset(K.deskAgent, { SCOUT: { agent: "SCOUT", at: c.now, mint: lastL.mint, symbol: lastL.symbol, text: `dug ${launches.length} new launch${launches.length > 1 ? "es" : ""}, latest $${lastL.symbol}`, tone: "info" } });
+  agentLog(p, [{ agent: "SCOUT", at: c.now, mint: lastL.mint, symbol: lastL.symbol, text: `dug ${launches.length} new launch${launches.length > 1 ? "es" : ""}, latest $${lastL.symbol}`, tone: "info" }]);
   p.set(K.cursor, newCursor);
   await flush(c);
   await recordWork(work.counts, last, work.real);
@@ -569,7 +573,11 @@ export async function processDue(model: NanoModel) {
   const r = redis();
   const now = Date.now();
   await pruneIndex();
-  const members = (await r.zrange<string[]>(K.due, 0, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN })) || [];
+  // Fresh checkpoints first (the minute-1 reads and minute-5 calls are only worth anything on time), then the backlog.
+  // Oldest-first alone let a backlog push every call past its 15-minute window.
+  const fresh = ((await r.zrange<string[]>(K.due, now - FRESH_MS, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN })) || []) as string[];
+  const old = fresh.length < MAX_DUE_PER_RUN ? (((await r.zrange<string[]>(K.due, 0, now - FRESH_MS - 1, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN - fresh.length })) || []) as string[]) : [];
+  const members = [...fresh, ...old];
   if (!members.length) return { checked: 0 };
 
   const items = members.map((m) => {
@@ -594,7 +602,8 @@ export async function processDue(model: NanoModel) {
     const rec = recs[it.mint];
     const cv = curves[it.mint];
     if (!rec || rec.outcome || !cv || cv.complete) return false;
-    return (it.stage === "t5" && !rec.call) || (it.stage === "t1" && !rec.early);
+    const age = now - rec.createdAt;
+    return (it.stage === "t5" && !rec.call && age <= CALL_MAX_AGE_MS) || (it.stage === "t1" && !rec.early && age <= EARLY_MAX_AGE_MS);
   });
   const tapeable = reading
     .filter((it) => (curves[it.mint]?.progress ?? 0) >= (it.stage === "t5" ? s.desk.tapeMinCurve : s.desk.earlyMinCurve))
@@ -648,8 +657,14 @@ export async function processDue(model: NanoModel) {
       return;
     }
 
+    const age = c.now - rec.createdAt;
     if (it.stage === "t1") {
-      if (!rec.early && !rec.call) makeEarly(c, rec, cp.p, extras[it.m] || { tape: null, g: null, meta: null, px: cv?.priceSol || 0 });
+      // a late minute-1 read would be scored on data from much later: skip it rather than teach the model wrong
+      if (!rec.early && !rec.call && age <= EARLY_MAX_AGE_MS) makeEarly(c, rec, cp.p, extras[it.m] || { tape: null, g: null, meta: null, px: cv?.priceSol || 0 });
+      else if (!rec.early) inc(c, "early_missed");
+    } else if (it.stage === "t5" && !rec.call && age > CALL_MAX_AGE_MS) {
+      // too late to count, and its features would describe the coin long after minute 5: no call, no lesson
+      inc(c, "calls_missed");
     } else if (it.stage === "t5" && !rec.call) {
       makeCall(c, rec, cp.p, extras[it.m] || { tape: null, g: null, meta: null, px: cv?.priceSol || 0 });
     } else if (it.stage === "h1") {
@@ -769,6 +784,7 @@ function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
     const ev = { agent: "SCOUT", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} early read BOND ${sc} at minute 1, curve ${curveNow}%`, tone: "ok" };
     c.p.lpush(K.deskEv, ev);
+    agentLog(c.p, [ev]);
   }
   c.feed.push({ kind: "t1", rat: "RAT KING", mint: rec.mint, symbol: rec.symbol, name: rec.name, at: c.now, text: `early read ${verdict} ${sc} · curve ${curveNow}%${ex.tape ? ` · ${ex.tape.n} trades` : ""}` });
 }
@@ -831,6 +847,11 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
+  if (counted && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+    // every counted BOND call (King or nano) is listed on the homepage, farms included so nothing is hidden
+    c.p.lpush(BOND_CALLS, rec.mint);
+    c.p.ltrim(BOND_CALLS, 0, 99);
+  }
   if (counted && !farm && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
     // hand the coin to the desk; the desk loop picks it up within 2 seconds
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
@@ -839,7 +860,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     if (rec.tape) evs.push({ agent: "TAPE", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${tapeLine(rec.tape)}`, tone: rec.tape.devSold > 0 || rec.tape.bundleShare > 0.5 ? "bad" : "info" });
     if (rec.g) evs.push({ agent: "GRAPH", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${graphLine(rec.g, rec.meta ?? null)}`, tone: rec.g.clRatio < 0.5 ? "bad" : rec.g.smartN || rec.g.clRatio > 2 ? "ok" : "info" });
     c.p.lpush(K.deskEv, ...evs);
-    c.p.hset(K.deskAgent, Object.fromEntries(evs.map((e) => [e.agent, e])));
+    agentLog(c.p, evs);
   }
   if (counted) {
     c.p.hincrby(K.calib, `v${bucket(sc.score)}n`, 1);

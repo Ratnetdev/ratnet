@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export const GLOSSARY: Record<string, string> = {
+  record: "Every trade the desk made, entry to exit: why it bought, every sell and why, and the result. Open trades are valued at the live price. Paper until the desk passes its exam, then its own wallet with every fill on Solscan.",
   pup: "A cheaper way in: 25,000 $RAT. A pup rides with an adult rat and is paid in every round its rat is paid, at a quarter of a rat's weight. 80% of its share goes to you, 20% to the rat's owner.",
   poolsofar: "40% of the $RAT creator fees earned so far this round, read live from pump.fun's fee vault. Per rat at ×1 = pool divided by the payout weights of all rats in the round.",
   earn: "Estimate for one more rat joining this round at each bag size, from the pool so far and the pace of fees. Real payouts depend on fees until the close.",

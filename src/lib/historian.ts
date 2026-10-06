@@ -22,6 +22,7 @@ import { K, hourKey, redis } from "./redis";
 import { canonicalPool, readPools } from "./pool";
 import { lane } from "./solana";
 import { epochReady } from "./epoch";
+import { agentLog } from "./agents";
 import { bondingCurvePda, conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr } from "./solana";
 import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "./tape";
 import { creditMillion, creditResolve, funderOf, GK } from "./graph";
@@ -397,7 +398,11 @@ async function historianInner(budgetMs: number) {
     for (const l of log.slice(0, 10)) await r.lpush(HK.log, { at: Date.now(), text: l });
     await r.ltrim(HK.log, 0, 49);
     if (log.length) await r.lpush(K.deskEv, ...log.slice(0, 5).map((text) => ({ agent: "HISTORIAN", at: Date.now(), text, tone: "info" })));
-    if (st.scanned) await r.hset(K.deskAgent, { HISTORIAN: { agent: "HISTORIAN", at: Date.now(), text: `replayed back to ${new Date(st.clock).toISOString().slice(0, 16).replace("T", " ")}: ${st.deep} lessons, ${st.bonded} bonds found`, tone: "info" } });
+    if (st.scanned) {
+      const hp = r.pipeline();
+      agentLog(hp, [{ agent: "HISTORIAN", at: Date.now(), text: `replayed back to ${new Date(st.clock).toISOString().slice(0, 16).replace("T", " ")}: ${st.deep} lessons, ${st.bonded} bonds found`, tone: "info" }]);
+      await hp.exec();
+    }
     return { history: st.phase, scanned: st.scanned, deep: st.deep };
   } catch (e) {
     st.errors++;

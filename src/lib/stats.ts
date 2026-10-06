@@ -34,6 +34,7 @@ export async function getStats() {
     baseRate: pct(bonded, n(s.dug)),
     calls: n(s.calls),
     callsLate: n(s.calls_late),
+    callsMissed: n(s.calls_missed),
     callsToday: n(today?.calls),
     // BOND rate = bonded so far / all counted BOND calls. Pending calls count as misses until they bond,
     // so the number can only go up as calls resolve. No early 100% from bonds resolving first.
@@ -58,6 +59,15 @@ export async function getFeed(limit = 40) {
 export async function getCalls(limit = 60, offset = 0): Promise<Call[]> {
   const r = redis();
   const mints = (await r.zrange<string[]>(K.calls, offset, offset + limit - 1, { rev: true })) || [];
+  if (!mints.length) return [];
+  const calls = await r.mget<(Call | null)[]>(...mints.map((m) => K.call(m)));
+  return calls.filter((c): c is Call => !!c);
+}
+
+/** The latest counted BOND calls (King or nano), newest first. */
+export async function getBondCalls(limit = 8): Promise<Call[]> {
+  const r = redis();
+  const mints = ((await r.lrange<string>("rn:bondcalls", 0, limit - 1)) || []) as string[];
   if (!mints.length) return [];
   const calls = await r.mget<(Call | null)[]>(...mints.map((m) => K.call(m)));
   return calls.filter((c): c is Call => !!c);
