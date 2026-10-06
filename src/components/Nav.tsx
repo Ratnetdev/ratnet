@@ -26,6 +26,8 @@ const GROUPS: Group[] = [
     label: "Rat King",
     items: [
       { href: "/king", label: "Calls", desc: "Every call, hit rate, graduations, calibration" },
+      { href: "/king?tab=fame", label: "Hall of fame", desc: "The BOND calls that ran furthest from the call" },
+      { href: "/receipts", label: "Receipts", desc: "Every call sealed on-chain each hour. Verify it yourself" },
       { href: "/lab", label: "Lab", desc: "Models learning live, historian, season, weights" },
     ],
   },

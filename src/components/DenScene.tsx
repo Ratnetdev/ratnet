@@ -1,11 +1,11 @@
 "use client";
 import { useEffect, useRef } from "react";
 
-// The Rat Den: eight agent rats at their desks. When an agent acts, its rat hops, its screen flashes
+// The Rat Den: the desk's agent rats at their desks. When an agent acts, its rat hops, its screen flashes
 // and a speech bubble shows what it did. A coin token walks the pipeline when the desk buys.
 
 type Ev = { agent: string; at: number; symbol?: string; text: string; tone: string };
-const ORDER = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER"];
+const ORDER = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM"];
 export const AGENT_COLOR: Record<string, string> = {
   SCOUT: "#8cff5a",
   KING: "#ffb547",
@@ -20,6 +20,7 @@ export const AGENT_COLOR: Record<string, string> = {
   EXEC: "#ff7ab6",
   RISK: "#ff5c5c",
   LEDGER: "#e8e8e8",
+  FILM: "#d4c5ff",
 };
 const TONE: Record<string, string> = { ok: "#8cff5a", bad: "#ff5c5c", info: "#c8d3cc", win: "#ffb547", loss: "#ff5c5c" };
 const RAT = [

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.7 · The film room
+- Bot coins (King v0.2): 3 or fewer wallets trading, wash loops and micro-buys now count as farms (45-point penalty, never sent to the desk). Tape reads go to minute-5 calls first, and no coin reaches the desk without its trades read. Sim: every bot coin that was read was flagged, 0 of 66 real bonds wrongly flagged, 0 bot coins or farms bought.
+- Track record in full: every trade shows entry and exit market cap, change, peak while held, coin age at the buy, curve at the buy, market cap at the call, call-to-buy time, price vs the call, every VET check with its value, what the rats saw (trades, traders, bundle, snipers, dev, funder, smart wallets, socials), FLOW and BUZZ at entry, the chart and every fill with its market cap.
+- Coin pages: "the desk on this coin" with every trade in full, the last VET verdict with every check, and every line the agents wrote about the coin.
+- Why this call: the strongest reasons for and against every call, on coin pages and call lists.
+- COACH follows every closed trade 5m, 15m, 1h, 2h, 6h, 1d and 7d after the exit, and when a coin ran 50%+ past the exit it records what was behind it (migration, a big single buy, a volume wave, paid DexScreener promotion, X posts). Shown per trade and as a table on /desk.
+- FILM, the 14th agent: the film room. Every King call meets its outcome (bonds the King didn't call are logged as misses, BOND calls that died as false BONDs) and every reason the King gave is scored. Every VET, FLOW and never-chase skip is followed 30m, 2h and 24h later and graded per rule: right, missed a run, average move, verdict.
+- Priors (starting hints, not laws): holding_floor skips coins 40%+ under their high since launch; dev_exit is off on memes, so the desk holds through dev sells. Every case is followed in shadow and COACH switches each prior by itself when the data disagrees.
+- SIZE caps every buy by the coin's liquidity (max 6% price impact on the curve), so the desk scales without aping into tiny coins.
+- On-chain receipts: every hour the SHA-256 of all counted calls is written on-chain in a memo. /receipts verifies it in the browser; each call links to its receipt.
+- Hall of fame: the BOND calls that ran furthest from the call, on the homepage and the King page; share cards show the call-to-peak multiple.
+- Telegram call channel (optional): every counted King BOND call posted the moment it lands, and again when it bonds.
+- Pre-launch: "$RAT is not live, the CA will only be posted on @Ratnetdev" on every page. The hit rate shows the date the clean record started.
+
 ## v0.1.6 · Fair rounds, steady desk
 - Earning rules (Crawlnet-proven): the bag that counts is the LOWEST $RAT held during the round (sampled every 5 minutes, burns added back), so buying right before the close adds nothing. Multipliers are linear between the tiers (no cliffs). Every next rat from the same wallet costs 30% less (70,000).
 - Pups: 25,000 $RAT, ride with an adult rat (pick one or auto), paid whenever their rat is paid at ×0.25 weight; 80% to the pup's owner, 20% to the rat's owner. 1,000 in total. Spawn page has rat/pup tabs, the earnings table has a pup row, rules and README updated.

@@ -1,7 +1,7 @@
 // Rat King v0: a transparent baseline scorer. Every weight is public on /king.
 // v1 replaces this with a model trained from scratch on the dug dataset.
 
-export const KING_VERSION = "v0.1"; // v0.1: farm penalty
+export const KING_VERSION = "v0.2"; // v0.1: farm penalty. v0.2: bot coins (few wallets, wash loops, micro-buys) count as farms
 
 export type ScoreInput = {
   progress: number | null; // bonding curve % at call time
@@ -26,7 +26,7 @@ export const WEIGHTS = [
   { key: "dev", label: "Dev buy between 0.5 and 5 SOL (over 5 SOL: 2 pts)", max: 5 },
   { key: "ticker", label: "Clean ticker (2 to 8 letters or digits)", max: 4 },
   { key: "name", label: "Name of 24 characters or less, not a test", max: 3 },
-  { key: "farm", label: "Block-0 farm: curve pumped in block 0-2 with no organic buyers, or bundle-run, or volume bots (penalty)", max: -45 },
+  { key: "farm", label: "Farm or bot coin: curve pumped in block 0-2 with no organic buyers, bundle-run, volume bots, 3 or fewer wallets trading, wash loops or micro-buys (penalty)", max: -45 },
 ] as const;
 
 const MAX_RAW = WEIGHTS.reduce((a, w) => a + Math.max(0, w.max), 0); // 95

@@ -1,4 +1,6 @@
 "use client";
+import CoinDesk from "./CoinDesk";
+import Link from "next/link";
 import { usePoll } from "./usePoll";
 import { Outcome, VerdictTag, hitOf, Mark } from "./Calls";
 import { CurveBar, DevTag, FlowBar } from "./Radar";
@@ -36,7 +38,7 @@ type Launch = {
   bondSecs?: number;
   resolvedAt?: number;
 };
-type Call = { score: number; verdict: string; counted: boolean; progress: number; nano?: { score: number; verdict: string } | null; outcome: string | null; at: number; symbol: string; name: string };
+type Call = { score: number; verdict: string; counted: boolean; progress: number; nano?: { score: number; verdict: string } | null; outcome: string | null; at: number; symbol: string; name: string; version?: string; why?: { plus: string[]; minus: string[] } };
 
 function socialLinks(l: Launch) {
   const links = [
@@ -54,7 +56,7 @@ function socialLinks(l: Launch) {
 }
 
 export default function CoinView({ mint }: { mint: string }) {
-  const { data, error } = usePoll<{ launch: Launch | null; call: Call | null; mkt?: Mkt | null; run?: { pk: number; cUsd?: number | null; x: number | null; pkAt?: number } | null }>(`/api/coin/${mint}`, 6000);
+  const { data, error } = usePoll<{ launch: Launch | null; call: Call | null; mkt?: Mkt | null; run?: { pk: number; cUsd?: number | null; x: number | null; pkAt?: number } | null; seal?: { hour: string; sig: string | null; sha: string; n: number } | null }>(`/api/coin/${mint}`, 6000);
   const run = data?.run;
   const [copied, setCopied] = useState(false);
   const l = data?.launch;
@@ -106,6 +108,12 @@ export default function CoinView({ mint }: { mint: string }) {
           <div className="pb">
             <div className="big" style={{ color: c ? `var(--${c.verdict === "BOND" ? "bond" : c.verdict === "WATCH" ? "watch" : "dust"})` : undefined }}>{c?.score ?? "–"}</div>
             <div className="s small muted mt">{c ? `called ${ago(c.at)} ago at curve ${c.progress}%${c.counted ? "" : " · late, not counted"}` : "the call lands 5 minutes after launch"}<Mark h={c ? hitOf(c.verdict, outcome, c.counted) : null} /></div>
+            {c?.counted && (
+              <div className="tiny mt seal-line">
+                <Info k="sealed">{data?.seal?.sig ? "sealed on-chain" : "seals on-chain after this hour"}</Info>
+                {data?.seal?.sig ? <> · <a href={`https://solscan.io/tx/${data.seal.sig}`} target="_blank" rel="noreferrer">memo</a> · <Link href="/receipts">verify</Link></> : null}
+              </div>
+            )}
           </div>
         </div>
         <div className="panel">
@@ -127,6 +135,22 @@ export default function CoinView({ mint }: { mint: string }) {
           </div>
         </div>
       </section>
+
+      {c?.why && (c.why.plus.length > 0 || c.why.minus.length > 0) && (
+        <section className="panel mt">
+          <div className="ph"><span><Info k="whycall"><b>why this call</b></Info> · the numbers behind the score</span><span className="muted">King {c.version}</span></div>
+          <div className="why-grid">
+            <div>
+              <div className="why-k">For</div>
+              {c.why.plus.length ? c.why.plus.map((x) => <div key={x} className="why-l plus">+ {x}</div>) : <div className="why-l muted">nothing stood out</div>}
+            </div>
+            <div>
+              <div className="why-k">Against</div>
+              {c.why.minus.length ? c.why.minus.map((x) => <div key={x} className="why-l minus">− {x}</div>) : <div className="why-l muted">nothing stood out</div>}
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="panel mt">
         <div className="ph">
@@ -151,6 +175,8 @@ export default function CoinView({ mint }: { mint: string }) {
           <div className="pb small muted">{data ? "No market data yet. Very fresh coins can take a minute to show up." : "loading…"}</div>
         )}
       </section>
+
+      <CoinDesk mint={mint} />
 
       {l?.tape && (
         <section className="grid g2 mt">

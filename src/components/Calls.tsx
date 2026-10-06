@@ -18,6 +18,8 @@ export type Call = {
   version: string;
   nano?: { score: number; verdict: Verdict } | null;
   outcome: "BONDED" | "ALIVE" | "DIED" | null;
+  why?: { plus: string[]; minus: string[] };
+  farm?: string;
 };
 
 export function VerdictTag({ v }: { v: string }) {
@@ -69,6 +71,7 @@ export function CallList({ calls, compact = false }: { calls: Call[]; compact?: 
             <tr key={c.mint}>
               <td>
                 <CoinLink mint={c.mint} symbol={c.symbol} /> {!compact && <span className="muted small">{(c.name || "").slice(0, 20)}</span>}
+                {c.farm ? <div className="call-why minus">farm: {c.farm}</div> : c.why?.plus[0] ? <div className="call-why">{c.why.plus[0]}</div> : null}
               </td>
               <td>
                 <span className="row" style={{ gap: 8 }}>

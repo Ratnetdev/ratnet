@@ -64,7 +64,7 @@ A swarm of crawler **rats** indexes every pump.fun launch in real time: metadata
 
 The **Rat King** is a model trained from scratch on that dataset alone. It scores each launch at minute 5 on one target: **will this coin bond?** Every call is frozen the moment it is made, then graded by the chain. Hits and misses stay on the board forever.
 
-The **Desk** is an autonomous team of thirteen agents that turns the King's calls into trades with its own wallet, on chain, in public. It reads every trade on the curve, traces who funded the dev, recognises smart wallets, never chases, takes its cost back at 2x and lets the rest run with a trail that widens as the coin climbs. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
+The **Desk** is an autonomous team of fourteen agents that turns the King's calls into trades with its own wallet, on chain, in public. It reads every trade on the curve, traces who funded the dev, recognises smart wallets, never chases, takes its cost back at 2x and lets the rest run with a trail that widens as the coin climbs. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
 
 The **HISTORIAN** replays pump.fun's past, launch by launch and in time order, so the models start trained instead of waiting weeks for live data. Every bond is then followed for 7 days, so the King learns not just which coins bond, but which ones run to $1M, $10M and beyond.
 
@@ -235,7 +235,12 @@ Every number on the site is computed from frozen calls and on-chain outcomes.
 | **Runners** | Every coin followed after the call: market cap at the King's call, peak seen after bond, and the multiple between them. On graduations, coin pages and the Runners board. |
 | **Backtest** | The HISTORIAN scores every past launch before learning it (prequential), so the historic hit rate is out of sample. |
 
+| **Hall of fame** | The BOND calls that ran furthest from the market cap at the call, last 7 days. |
+| **Why this call** | The strongest reasons for and against each call, from the same numbers the score used. |
+
 Calls are never deleted, edited or re-scored. If the King is wrong, the board says so.
+
+**On-chain receipts.** Every counted call goes into an hourly list (`mint,King verdict,score,nano verdict,score,call time`, one per line). Minutes after the hour ends, the SHA-256 of that list is written on-chain in a memo transaction: `RATNET calls <hour> n=<calls> sha256=<hash>`. Join the lines with a newline, hash them, compare with the memo. Same hash, same calls: nothing can be added, changed or deleted once the outcome is known. `/receipts` does the check in your browser.
 
 ---
 
@@ -245,7 +250,7 @@ Calls are never deleted, edited or re-scored. If the King is wrong, the board sa
   <img src="docs/assets/desk.png" alt="The Desk" width="100%">
 </p>
 
-The Desk is a team of thirteen agents that turns calls into trades and learns from every one. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions (market cap, P(next milestone), trail, insider bags), the trade log, the full rule set and what the desk has learned.
+The Desk is a team of fourteen agents that turns calls into trades and learns from every one. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions (market cap, P(next milestone), trail, insider bags), the trade log, the full rule set and what the desk has learned.
 
 | Agent | Role |
 |---|---|
@@ -254,14 +259,17 @@ The Desk is a team of thirteen agents that turns calls into trades and learns fr
 | KING | Calls it at minute 5. |
 | TAPE | Reads every trade on the curve. |
 | GRAPH | Traces the dev's funder and spots smart wallets. |
-| VET | Checks dev, bundles, cluster, copycats, curve. |
+| VET | Checks dev, bundles, cluster, copycats, curve, that the trades were read, and that the coin holds its floor. |
 | FLOW | Reads live buy and sell pressure. |
 | BUZZ | X mentions of the CA (optional) and paid dex signals. Context, never a buy trigger alone. |
-| SIZE | Small, equal bets. |
+| SIZE | Small, equal bets, capped by the coin's liquidity (max 6% price impact on the curve), so a big desk never apes 10 SOL into a 5K coin. |
 | EXEC | Buys and sells. |
-| RISK | Initials, milestone ladder, trailing stop, insider exits. |
-| COACH | Reviews every exit and every entry, and retunes the desk. |
+| RISK | Initials, milestone ladder, trailing stop, insider exits. Holds through dev sells on memes (a prior COACH can overturn). |
+| COACH | Reviews every exit and every entry, follows each coin 5m, 15m, 1h, 2h, 6h, 1d and 7d after the exit with what moved it, and retunes the desk. |
 | LEDGER | Keeps the books. |
+| FILM | The film room: goes back over every decision (King calls, VET, FLOW and never-chase skips) and scores it against what the coin did next. |
+
+Every trade on `/desk` opens to its full story: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart, every fill with its market cap, and COACH's follow-ups after the exit. Every coin page shows the desk's trades on that coin and every line the agents wrote about it.
 
 ### Entry: every rule must pass
 
@@ -327,8 +335,11 @@ Live swaps are routed through Jupiter with a `veryHigh` priority fee and 15% max
 | **Live models** | Nano and the early model learn every launch at its 2-hour label. | Winners and losers are learned at the same delay. |
 | **Runner model** | P(next milestone), from $25K to $50M, learned from every bond followed for 7 days and from historic post-bond candles. | A milestone counts as reached only if the next one came within 6 hours; every snapshot is settled at the same horizon. |
 | **COACH: exits** | After every exit it keeps watching the coin. If the coin ran 2x+ after a trail or ladder sale, trails widen 6%. If the desk gave back 40%+ from the peak before selling, trails tighten 3%. | Hard exits (dev or insider dumps, stops) are never tuned away. |
+| **COACH: after the exit** | Every closed trade is checked again 5m, 15m, 1h, 2h, 6h, 1d and 7d later: price vs our exit and, when it ran 50%+, what was behind it (migration, a big single buy, a volume wave, paid DexScreener promotion, X posts). | Tallied per horizon on `/desk`; every check is written to the trade. |
+| **FILM: the film room** | Every King call meets its outcome: bonds the King didn't call are logged as misses, BOND calls that died as false BONDs, and every reason the King gave is scored on how often it was wrong. Every skip by VET, FLOW or never-chase is followed 30m, 2h and 24h later. | A skip counts as wrong when the coin ran 30%+ or bonded. Per rule: right, missed a run, average move, and a verdict (saving, neutral, costing). |
+| **Priors** | Starting hints from the dev, not laws. `holding_floor`: skip a coin already 40%+ under its high since launch. `dev_exit`: off on memes, the desk holds through dev sells. | Every case a prior affects is followed in shadow. COACH switches `holding_floor` off when the coins it skipped do better than the ones bought (30+ cases), and switches `dev_exit` on only if selling with the dev beats holding in 60%+ of 15+ cases. |
 | **COACH: entries** | Every clean signal is followed in shadow four ways: buy now, or wait for a 20, 30 or 45% pullback and a bounce. Each is scored 30 minutes later. | Pullback entries switch on only after 30+ signals show a pullback beating buying now by 10%+. |
-| **FARM detector** | Block-0 bundles that pump the curve with no organic buyers after, bundle-run coins, volume bots. | Transparent rules in `tape.ts`; real block-0 launches followed by organic buyers pass. Farms get a 45-point King penalty and never reach the desk. |
+| **FARM detector** | Block-0 bundles that pump the curve with no organic buyers after, bundle-run coins, volume bots, and (v0.2) bot coins: 3 or fewer wallets trading, wash loops (3+ trades per wallet among under 12 wallets) and micro-buys (median buy under 0.01 SOL). No coin reaches the desk without its trades read. | Transparent rules in `tape.ts`; real block-0 launches followed by organic buyers pass. Farms get a 45-point King penalty and never reach the desk. |
 | **Seasons** | SOL trend and pump.fun's launch rate at the moment of every lesson. | Live and replayed lessons carry the same regime features; the Lab shows the season now. |
 | **Early gate** | Whether minute-1 calls can be traded. | Unlocks only after 50+ early BOND reads whose 2-hour record matches or beats the minute-5 King. |
 
@@ -429,7 +440,11 @@ All read endpoints are public, JSON, and cached at the edge for a few seconds.
 | `GET /api/runners` | Best runs since the King's call (market cap at the call, peak, multiple) and the runner model's ladder. |
 | `GET /api/history` | HISTORIAN progress and its out-of-sample backtest. |
 | `GET /api/ledger` | Rounds and payouts. |
-| `GET /api/og/{CA}` | 1200x630 share card for any coin. |
+| `GET /api/og/{CA}` | 1200x630 share card for any coin (with the call-to-peak multiple once it runs). |
+| `GET /api/receipts` | Sealed hours. `?hour=2026-10-06T19` returns that hour's call list and seal; add `&chain=1` to read the memo back from the chain. |
+| `GET /api/desk/record` | The track record: every round trip with its full entry context, fills and COACH follow-ups. |
+| `GET /api/desk/coin?mint={CA}` | The desk on one coin: its trades, the last VET verdict, every agent line about it. |
+| `GET /api/desk/agent?name=FILM` | One agent's history and counters. |
 
 Full documentation with examples lives at `/developers`.
 
@@ -439,7 +454,8 @@ Full documentation with examples lives at `/developers`.
 
 | Page | What it shows |
 |---|---|
-| `/` | Live Rat Cam, proof numbers, live feed, radar, graduations and calls. |
+| `/` | Live Rat Cam, proof numbers, live feed, radar, graduations, BOND calls, track record and hall of fame. |
+| `/receipts` | Hourly on-chain call receipts with a verify button that hashes the list in your browser. |
 | `/desk` | The Desk: agents, the Den, exam, balance, positions and trades. |
 | `/radar` | Every live launch sorted by curve, with filters. |
 | `/explore` | Filter and sort every rated coin of the last 24h. Filters live in the URL. |
@@ -449,7 +465,7 @@ Full documentation with examples lives at `/developers`.
 | `/sniff` | Score any CA. |
 | `/ledger` | Rounds and payouts with Solscan links. |
 | `/dataset` | Schema, tunnels and daily drops. |
-| `/c/{CA}` | Coin page with market strip and share card. |
+| `/c/{CA}` | Coin page: the call, why the King scored it that way, its on-chain receipt, the desk's trades on the coin and every agent line about it. |
 
 Also built in: sound and desktop alerts for BOND calls, near-graduations and graduations; `/` or Cmd+K search; and hover explanations on every key term.
 
@@ -486,6 +502,8 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `BLOB_READ_WRITE_TOKEN` | Set automatically by the Blob integration. |
 | `DESK_WALLET_SECRET` | Optional. Base58 secret of the desk wallet. Without it the desk stays on paper. With it, the paper desk mirrors the wallet's real balance as its start (deposits move the start, not the P&L), and the wallet is shown on `/desk`. |
 | `JUPITER_API_KEY` | Optional. Key from portal.jup.ag for live swaps. |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional. Bot token from @BotFather and the channel (e.g. `@yourchannel`, the bot an admin of it). Every counted King BOND call is posted the moment it lands, and again when it bonds. |
+| `RECEIPT_WALLET_SECRET` | Optional. Base58 secret of a small wallet (0.02 SOL lasts months) that writes the hourly call receipts on-chain. Falls back to `DESK_WALLET_SECRET`. Without either, receipts are not sealed. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 
 Ping `GET /api/desk/run?key=<CRON_SECRET>` every minute with any external scheduler. Each ping runs the rats, the desk and the HISTORIAN for ~55 seconds. The historian's pace (and RPC cost) is set on `/admin`.

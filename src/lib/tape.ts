@@ -48,6 +48,8 @@ export type Tape = {
   organic?: number; // unique traders that are not the dev, bundle wallets or snipers
   wash?: number; // trades per trader in the sample (volume bots trade the same wallets over and over)
   sizeCv?: number; // spread of buy sizes (bots buy the same size every time; low = uniform)
+  maxBuy?: number; // biggest single buy in the sample (SOL)
+  maxBuyAt?: number; // when it happened
   farm?: Farm;
 };
 
@@ -65,7 +67,7 @@ export function progressFromSol(realSol: number) {
  * A farm: block 0 takes the curve far up at once, then almost nobody but its own wallets and volume bots trades.
  * Transparent rules; the same signals also go to nano as features so it learns the pattern itself.
  */
-export function farmCheck(t: Pick<Tape, "instant" | "organic" | "wash" | "sizeCv" | "bundleShare" | "uniq">): Farm {
+export function farmCheck(t: Pick<Tape, "instant" | "organic" | "wash" | "sizeCv" | "bundleShare" | "uniq"> & { spb?: number; buys?: number; trades?: number }): Farm {
   const instant = t.instant ?? 0;
   const organic = t.organic ?? 0;
   const wash = t.wash ?? 1;
@@ -88,9 +90,25 @@ export function farmCheck(t: Pick<Tape, "instant" | "organic" | "wash" | "sizeCv
     score += 0.3;
     why.push("volume-bot trading");
   }
+  // v0.2 bot rules: a coin traded by a handful of wallets, or by micro-buys, is a bot, not a launch
+  const fewWallets = (t.trades ?? 0) >= 6 && t.uniq <= 3;
+  const washLoop = wash >= 3 && t.uniq < 12;
+  const microBuys = (t.buys ?? 0) >= 8 && (t.spb ?? 1) < 0.01; // spb here = median buy size
+  if (fewWallets) {
+    score += 0.5;
+    why.push(`only ${t.uniq} wallet${t.uniq === 1 ? "" : "s"} trading`);
+  }
+  if (washLoop && !(wash >= 3 && cv < 0.3)) {
+    score += 0.3;
+    why.push(`${wash} trades per wallet`);
+  }
+  if (microBuys) {
+    score += 0.4;
+    why.push(`micro-buys (median ${t.spb} SOL)`);
+  }
   // a big block 0 is fine when real buyers follow it
   if (organic >= 25) score -= 0.35;
-  const farm = (instant >= 25 && organic < 15) || (t.bundleShare >= 0.6 && organic < 20) || (wash >= 3 && cv < 0.3 && t.uniq < 25);
+  const farm = (instant >= 25 && organic < 15) || (t.bundleShare >= 0.6 && organic < 20) || (wash >= 3 && cv < 0.3 && t.uniq < 25) || fewWallets || washLoop || microBuys;
   return { farm, score: Math.max(0, Math.min(1, Math.round(score * 100) / 100)), why: farm ? why.join(", ") : "" };
 }
 
@@ -206,9 +224,15 @@ export function buildTape(trades: Trade[], nSigs: number, createSlot: number | n
       bundleShare: solIn ? r3(bundleSol / solIn) : 0,
       uniq: uniqAll,
     };
+    // median buy size: a few big insider buys can't hide hundreds of 0.001 SOL bot buys
+    const bs = buys.map((t) => t.sol).sort((a, b) => a - b);
+    const med = bs.length ? bs[Math.floor(bs.length / 2)] : 0;
+    const extra = { spb: r3(med * 1000) / 1000, buys: buys.length, trades: trades.length };
     return {
       ...f,
-      farm: farmCheck(f),
+      farm: farmCheck({ ...f, ...extra }),
+      maxBuy: buys.length ? r3(Math.max(...buys.map((t) => t.sol))) : 0,
+      maxBuyAt: buys.length ? buys.reduce((a, t) => (t.sol > a.sol ? t : a), buys[0]).t : undefined,
       at,
       n: nSigs,
       vel: Math.round((nSigs / mins) * 10) / 10,

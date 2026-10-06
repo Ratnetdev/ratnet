@@ -11,6 +11,7 @@ import RadarTable, { RadarRow } from "./Radar";
 import GradList, { Grad } from "./Grads";
 
 export type Stats = {
+  since?: number | null;
   callsMissed?: number;
   dug: number;
   dugToday: number;
@@ -52,7 +53,7 @@ export default function LiveBoard() {
         </div>
         <div className="panel">
           <div className="pb stat">
-            <div className="k"><Info k="hit">King hit rate (BOND calls)</Info></div>
+            <div className="k"><Info k="hit">King hit rate (BOND calls)</Info>{s?.since ? <span className="since"> · since {new Date(s.since).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span> : null}</div>
             <div className="big" style={{ color: "var(--bond)" }}>{s?.bond.rate != null ? `${s.bond.rate}%` : "–"}</div>
             <div className="s">
               {s ? `${num(s.bond.hit)} of ${num(s.bond.n)} BOND calls bonded${s.callsMissed ? ` · ${num(s.callsMissed)} missed (rats behind)` : ""}` : "warming up"}

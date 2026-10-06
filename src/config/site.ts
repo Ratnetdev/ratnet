@@ -61,7 +61,8 @@ export const DEFAULT_SETTINGS = {
     start: 1, // paper starting balance in SOL
     sizePct: 5, // % of equity per trade
     minSol: 0.05,
-    maxSol: 0.5,
+    maxSol: 0.5, // safety cap per trade; raise it as the wallet grows (the liquidity cap below still applies)
+    maxImpact: 6, // % price impact a buy may cause on the curve: caps size by the coin's liquidity, so a big desk never apes 10 SOL into a 5K coin
     maxOpen: 5,
     minCurve: 8, // only enter between these curve %
     maxCurve: 70,

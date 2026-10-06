@@ -5,6 +5,7 @@ export type AgentEv = { agent: string; at: number; text: string; tone: string; m
 const EVK = (a: string) => `rn:ag:ev:${a}`; // newest first, last 200 per agent
 const STATK = "rn:ag:stat"; // {agent}:n, {agent}:{tone}
 const DAYK = (d: string) => `rn:ag:day:${d}`; // {agent} -> actions today
+export const COINK = (m: string) => `rn:ag:coin:${m}`; // every agent line about one coin, newest first (7 days)
 
 /** Queue agent events on a pipeline: last line per agent, its own history, and counters. */
 export function agentLog(p: { lpush: Function; ltrim: Function; hset: Function; hincrby: Function; expire: Function }, evs: AgentEv[]) {
@@ -25,6 +26,18 @@ export function agentLog(p: { lpush: Function; ltrim: Function; hset: Function; 
     p.hincrby(day, a, list.length);
   }
   p.expire(day, 3 * 86400);
+  const byCoin: Record<string, AgentEv[]> = {};
+  for (const e of evs) if (e.mint) (byCoin[e.mint] ||= []).push(e);
+  for (const [m, list] of Object.entries(byCoin)) {
+    p.lpush(COINK(m), ...list.slice().reverse());
+    p.ltrim(COINK(m), 0, 149);
+    p.expire(COINK(m), 7 * 86400);
+  }
+}
+
+/** Everything the agents said about one coin, newest first. */
+export async function coinLog(mint: string, limit = 150) {
+  return ((await redis().lrange<AgentEv>(COINK(mint), 0, limit - 1)) || []) as AgentEv[];
 }
 
 export async function getAgent(name: string, limit = 120) {

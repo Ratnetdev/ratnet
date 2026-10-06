@@ -26,8 +26,8 @@ export default function CaBar() {
             </button>
           </span>
         ) : (
-          <span>
-            $RAT CA <code>drops at launch</code>
+          <span className="ca-wait">
+            $RAT is not live. The CA will only be posted on <a href="https://x.com/Ratnetdev" target="_blank" rel="noreferrer">@Ratnetdev</a>. Anything else is a scam.
           </span>
         )}
         <span style={{ flex: 1 }} />

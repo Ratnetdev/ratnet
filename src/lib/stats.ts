@@ -1,3 +1,5 @@
+import { sealFor } from "./receipts";
+import { whyOf } from "./why";
 import { K, dayKey, redis } from "./redis";
 import type { Call, FeedItem, Grad, Launch } from "./digger";
 import { loadModel } from "./digger";
@@ -15,15 +17,17 @@ const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 :
 
 export async function getStats() {
   const r = redis();
-  const [st, today, dueCount] = await Promise.all([
+  const [st, today, dueCount, since] = await Promise.all([
     r.hgetall<Record<string, number>>(K.stat),
     r.hgetall<Record<string, number>>(K.day(dayKey())),
     r.zcard(K.due),
+    r.get<number>("rn:epoch:at"),
   ]);
   const s = st || {};
   const resolved = n(s.resolved);
   const bonded = n(s.bonded);
   return {
+    since: since ? Number(since) : null, // the clean public record starts here
     dug: n(s.dug),
     dugToday: n(today?.dug),
     tracking: n(dueCount),
@@ -189,7 +193,10 @@ export async function getCoin(mint: string) {
     // the desk-only bits stay private: insider token accounts are not needed on the page
     if (launch.tape) launch.tape = { ...launch.tape, insiders: [], early: [] };
   }
-  return { launch, call: call || launch?.call || null, mkt, run: runs[mint] ?? null };
+  const c = call || launch?.call || null;
+  if (c && !c.why && launch) c.why = whyOf({ ...launch, progress: c.progress, progress0: launch.p0, twitter: !!launch.twitter, telegram: !!launch.telegram, website: !!launch.website, tape: launch.tape ?? null, g: launch.g ?? null, meta: launch.meta ?? null });
+  const seal = c?.counted ? await sealFor(c.at).catch(() => null) : null;
+  return { launch, call: c, mkt, run: runs[mint] ?? null, seal: seal ? { hour: seal.hour, sig: seal.sig, sha: seal.sha, n: seal.n } : null };
 }
 
 export async function getNano() {

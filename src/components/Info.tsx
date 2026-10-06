@@ -3,6 +3,17 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export const GLOSSARY: Record<string, string> = {
+  fame: "The King's BOND calls that ran furthest: market cap at the moment of the call vs the highest market cap after it, last 7 days. Every call is sealed on-chain before it runs.",
+  coachafter: "COACH keeps checking every coin after the desk sells it: 5 minutes, 15 minutes, 1 hour, 2 hours, 6 hours, 1 day and 7 days later. Red averages mean coins kept running after we sold. When a coin runs 50%+ past our exit, COACH records what was behind it.",
+  film: "FILM goes back over every decision: each coin VET, FLOW or never-chase skipped is checked 30 minutes, 2 hours and 24 hours later, and every King call is graded at its outcome. Rules whose skips keep missing runs show as costing; the King's reasons are scored on how often they were wrong.",
+  prior: "A prior is a starting hint from the dev, not a fixed rule. The desk starts with it, follows every case it affects in shadow, and COACH switches it off by itself if the data says it costs money.",
+  receipts: "Each hour's counted calls are hashed (SHA-256) and the hash is written on-chain in a memo transaction. Press verify to hash the list in your own browser and compare it with the memo read from the chain.",
+  sealed: "This call is part of an hourly list whose hash was written on-chain right after the hour ended, before the outcome was known.",
+  whycall: "The strongest reasons for and against, taken from the same numbers the King scored: the curve, socials, the dev's record, the tape and who funded the dev.",
+  entrymc: "Market cap (USD) at the moment the desk bought: price x 1B tokens.",
+  exitmc: "Market cap at the last sell, or right now while the trade is open.",
+  move: "How far the market cap moved from the buy to the exit (or to now).",
+  coindesk: "What the trading desk did on this coin: every trade in full, the VET verdict with every check, and every line the agents wrote about it.",
   record: "Every trade the desk made, entry to exit: why it bought, every sell and why, and the result. Open trades are valued at the live price. Paper until the desk passes its exam, then its own wallet with every fill on Solscan.",
   pup: "A cheaper way in: 25,000 $RAT. A pup rides with an adult rat and is paid in every round its rat is paid, at a quarter of a rat's weight. 80% of its share goes to you, 20% to the rat's owner.",
   poolsofar: "40% of the $RAT creator fees earned so far this round, read live from pump.fun's fee vault. Per rat at ×1 = pool divided by the payout weights of all rats in the round.",

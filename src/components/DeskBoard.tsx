@@ -26,12 +26,28 @@ type Learn = {
   earlyStat: { n: number; hit: number; mainN: number; mainHit: number };
   shadows: number;
   reviewing: number;
-  rules: { stalkMin: number; stalkEdge: number; earlyMin: number; shadowMins: number; coachHours: number };
+  rules: { stalkMin: number; stalkEdge: number; earlyMin: number; shadowMins: number; coachHours: number; devMin: number; devSaved: number; floorMax: number; floorMin: number; floorEdge: number };
   xConnected: boolean;
+  devExitOn?: boolean;
+  floorOn?: boolean;
+  floor?: { n: number; sum: number };
+  devStat?: { n: number; saved: number; cost: number };
 };
 type Stalk = { mint: string; symbol: string; at: number; depth: number; hi: number; lo: number; armed: boolean };
 type Trade = { id: string; mint: string; symbol: string; side: string; at: number; sol: number; reason: string; pnlSol?: number; pnlPct?: number; live: boolean; sig?: string };
+type Coach = { pending: number; horizons: { k: string; n: number; avg: number | null; up2: number; dn50: number }[]; reasons: { why: string; n: number }[] };
+type FH = { n: number; right: number; wrong: number; avg: number | null };
+type Film = {
+  pending: number;
+  rules: { rule: string; m30: FH; h2: FH; d1: FH; verdict: string }[];
+  against: { reason: string; n: number; wrong: number; rate: number }[];
+  forR: { reason: string; n: number; held: number; rate: number }[];
+  calls: Record<string, { bonded: number; died: number }>;
+  misses: { mint: string; symbol: string; verdict: string; score: number; nano: { verdict: string; score: number } | null; minus: string[]; curve: number; bondSecs: number | null; at: number }[];
+};
 type Desk = {
+  film?: Film | null;
+  coach?: Coach | null;
   now?: DeskNowData | null;
   mode: string;
   live: boolean;
@@ -66,6 +82,7 @@ const ROLES: [string, string][] = [
   ["RISK", "initials, ladder, trail"],
   ["COACH", "reviews every exit, entry"],
   ["LEDGER", "keeps the books"],
+  ["FILM", "reviews every decision later"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
 const pct = (a: number, b: number) => (b ? ((a - b) / b) * 100 : 0);
@@ -311,6 +328,8 @@ export default function DeskBoard() {
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>exit_reviews</span></span><span className="green">{d.learn.reviews} · {d.learn.early} too early · {d.learn.late} too late · {d.learn.good} right</span></div>
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>pullback_entries</span></span><span style={{ color: d.learn.stalkOn ? "var(--rat)" : "var(--mute)" }}>{d.learn.stalkOn ? `on, -${d.learn.stalkArm}%` : `locked (need ${d.learn.rules.stalkMin} shadows, +${Math.round(d.learn.rules.stalkEdge * 100)}% edge)`}</span></div>
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>early_entries</span></span><span style={{ color: d.learn.earlyOn ? "var(--rat)" : "var(--mute)" }}>{d.learn.earlyOn ? "on" : `locked: ${d.learn.earlyStat.n}/${d.learn.rules.earlyMin} reads, ${d.learn.earlyStat.n ? Math.round((d.learn.earlyStat.hit / d.learn.earlyStat.n) * 100) : 0}% vs King ${d.learn.earlyStat.mainN ? Math.round((d.learn.earlyStat.mainHit / d.learn.earlyStat.mainN) * 100) : 0}%`}</span></div>
+                <div className="row between"><span><span className="mute2">prior </span><Info k="prior"><span style={{ color: "var(--watch)" }}>holding_floor</span></Info></span><span style={{ color: d.learn.floorOn !== false ? "var(--rat)" : "var(--mute)" }}>{d.learn.floorOn !== false ? `on: skips coins ${d.learn.rules.floorMax}%+ under their high` : "overruled by COACH"} · {d.learn.floor?.n ?? 0}/{d.learn.rules.floorMin} skipped coins reviewed{d.learn.floor?.n ? `, avg ${(Math.exp(d.learn.floor.sum / d.learn.floor.n) * 100 - 100).toFixed(0)}% in 30m` : ""}</span></div>
+                <div className="row between"><span><span className="mute2">prior </span><Info k="prior"><span style={{ color: "var(--watch)" }}>dev_exit</span></Info></span><span style={{ color: d.learn.devExitOn ? "var(--rat)" : "var(--mute)" }}>{d.learn.devExitOn ? "on: sells with the dev" : `off: holds through dev sells (${d.learn.devStat?.saved ?? 0}/${d.learn.devStat?.n ?? 0} cases favour selling, needs ${d.learn.rules.devMin}+ at ${Math.round(d.learn.rules.devSaved * 100)}%)`}</span></div>
                 <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>x_mentions</span></span><span className="muted">{d.learn.xConnected ? "connected" : "not connected"}</span></div>
               </>
             ) : "loading…"}
@@ -331,6 +350,88 @@ export default function DeskBoard() {
             </table>
           </div>
         </div>
+        <div className="panel">
+          <div className="ph"><span><Info k="coachafter"><b>coach · after we sell</b></Info></span><span className="tiny muted">{d?.coach ? `${d.coach.pending} checks queued` : ""}</span></div>
+          <div className="scroll">
+            <table className="tbl">
+              <thead><tr><th>After the exit</th><th>Checked</th><th>Avg vs our sell</th><th>Ran 2x+</th><th>Fell 50%+</th></tr></thead>
+              <tbody>
+                {(d?.coach?.horizons || []).map((h) => (
+                  <tr key={h.k}>
+                    <td>{h.k}</td>
+                    <td className="muted">{h.n}</td>
+                    <td style={{ color: (h.avg ?? 0) > 0 ? "var(--dust)" : "var(--rat)" }}>{h.avg != null ? `${sign(h.avg)}%` : "–"}</td>
+                    <td className="muted">{h.n ? `${h.up2} (${Math.round((h.up2 / h.n) * 100)}%)` : "–"}</td>
+                    <td className="muted">{h.n ? `${h.dn50} (${Math.round((h.dn50 / h.n) * 100)}%)` : "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="pb small">
+            <div className="muted tiny" style={{ marginBottom: 6 }}>What was behind the runs we sold too early</div>
+            {d?.coach?.reasons?.length ? d.coach.reasons.map((r) => <div key={r.why} className="row between tiny"><span>{r.why.replace(/#/g, "N")}</span><span className="muted">{r.n}x</span></div>) : <div className="tiny mute2">Nothing yet. Every closed trade is checked at 5m, 15m, 1h, 2h, 6h, 1d and 7d.</div>}
+          </div>
+        </div>
+      </section>
+      <section className="panel mt film">
+        <div className="ph"><span><Info k="film"><b>film room</b></Info> · every decision, reviewed against what happened next</span><span className="tiny muted">{d?.film ? `${d.film.pending} reviews queued` : ""}</span></div>
+        <div className="film-grid">
+          <div>
+            <div className="film-k">Skips: was passing on the coin right?</div>
+            <div className="scroll">
+              <table className="tbl">
+                <thead><tr><th>Rule</th><th>Reviewed</th><th>Right</th><th>Missed a run</th><th>Avg 2h later</th><th>Verdict</th></tr></thead>
+                <tbody>
+                  {(d?.film?.rules || []).map((r) => (
+                    <tr key={r.rule}>
+                      <td>{r.rule.replace(/_/g, " ")}</td>
+                      <td className="muted">{r.h2.n || r.m30.n}</td>
+                      <td className="muted">{r.h2.n ? `${Math.round((r.h2.right / r.h2.n) * 100)}%` : "–"}</td>
+                      <td className="muted">{r.h2.n ? `${Math.round((r.h2.wrong / r.h2.n) * 100)}%` : "–"}</td>
+                      <td style={{ color: (r.h2.avg ?? 0) > 0 ? "var(--dust)" : "var(--rat)" }}>{r.h2.avg != null ? `${sign(r.h2.avg)}%` : "–"}</td>
+                      <td style={{ color: r.verdict === "costing" ? "var(--dust)" : r.verdict === "saving" ? "var(--rat)" : "var(--dim)" }}>{r.verdict}</td>
+                    </tr>
+                  ))}
+                  {!d?.film?.rules?.length && <tr><td colSpan={6} className="muted">Every skip is checked 30 minutes, 2 hours and 24 hours later. First reviews land 30 minutes after the first skip.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div className="film-k mt">Reasons the King gives against a coin, and how often they were wrong</div>
+            {(d?.film?.against || []).map((a) => (
+              <div key={a.reason} className="film-row"><span>{a.reason.replace(/#/g, "N")}</span><span style={{ color: a.rate >= 5 ? "var(--dust)" : "var(--dim)" }}>{a.wrong}/{a.n} bonded anyway</span></div>
+            ))}
+            {!d?.film?.against?.length && <div className="tiny mute2">Fills in as calls resolve (24 hours after launch, or at the bond).</div>}
+          </div>
+          <div>
+            <div className="film-k">The King&apos;s calls, graded</div>
+            <div className="film-calls">
+              {(["BOND", "WATCH", "DUST"] as const).map((v) => {
+                const c = d?.film?.calls?.[v];
+                const n = (c?.bonded ?? 0) + (c?.died ?? 0);
+                return (
+                  <div key={v}>
+                    <span className={`tag v-${v}`}>{v}</span>
+                    <b>{n ? `${Math.round(((c?.bonded ?? 0) / n) * 1000) / 10}%` : "–"}</b>
+                    <em>{n ? `${c?.bonded} of ${n} bonded` : "no resolved calls yet"}</em>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="film-k mt">Bonds the King didn&apos;t call</div>
+            {(d?.film?.misses || []).slice(0, 8).map((m) => (
+              <div key={m.mint + m.at} className="film-miss">
+                <Link href={`/c/${m.mint}`}>${m.symbol}</Link>
+                <span className={`tag v-${m.verdict}`}>{m.verdict} {m.score}</span>
+                {m.nano ? <span className="tiny" style={{ color: m.nano.verdict === "BOND" ? "var(--bond)" : "var(--mute)" }}>nano {m.nano.verdict} {m.nano.score}</span> : null}
+                <span className="film-why">{m.minus[0] || "no reason against recorded"}</span>
+              </div>
+            ))}
+            {!d?.film?.misses?.length && <div className="tiny mute2">None yet.</div>}
+          </div>
+        </div>
+      </section>
+      <section className="grid g2 mt">
         <div className="panel">
           <div className="ph"><span><Info k="t_stalk"><b>stalking</b></Info> · waiting for a pullback</span><span className="tiny muted">{d?.stalks?.length ?? 0}</span></div>
           <div className="scroll">

@@ -5,6 +5,7 @@ import HeroProof from "@/components/HeroProof";
 import DeskStatus from "@/components/DeskStatus";
 import { BurnStrip, RatSection } from "@/components/RatEconomy";
 import TrackRecord from "@/components/TrackRecord";
+import HallOfFame from "@/components/HallOfFame";
 
 export default function Home() {
   return (
@@ -36,6 +37,7 @@ export default function Home() {
       <LiveBoard />
 
       <TrackRecord compact />
+      <HallOfFame />
 
       <RatSection />
     </>

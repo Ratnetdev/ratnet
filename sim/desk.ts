@@ -32,7 +32,7 @@ proDevs.forEach((d) => funderOf.set(d, PRO));
 type Coin = {
   i: number; mint: string; curve: string; sig: string; t: number; slot0: number; creator: string;
   bondAt: number | null; peak: number; peakAt: number; socials: boolean; desc: boolean; dev: number;
-  rug: boolean; rugAt: number; bundled: boolean; smartIn: number; postPeakUsd: number; postPeakAt: number; symbol: string; farm: boolean;
+  rug: boolean; rugAt: number; bundled: boolean; smartIn: number; postPeakUsd: number; postPeakAt: number; symbol: string; farm: boolean; wash?: boolean;
   ghost: boolean; pool: string; bv: string; qv: string; // ghost: curve hits 100% but never migrates (the v0.1.4 false graduations)
 };
 const coins: Coin[] = [];
@@ -59,7 +59,8 @@ function spawnCoin() {
   const bondP = (fac ? 0.002 : pro ? 0.18 : 0.008) + (socials ? 0.015 : 0) + (desc ? 0.006 : 0);
   const farm = rand() < 0.04; // block-0 farm: bundle pumps the curve, 5 bot wallets trade uniform sizes, fake bond, dump
   const ghost = !farm && rand() < 0.03;
-  const bonds = farm || ghost || rand() < bondP;
+  const wash = !farm && !ghost && rand() < 0.05; // bot coin: a handful of wallets loop micro-buys, curve pumped by the dev, never bonds
+  const bonds = !wash && (farm || ghost || rand() < bondP);
   // power law after bond: most die near $70K, a few run to $1M-$50M
   const u = Math.max(1e-6, rand());
   const postPeakUsd = bonds ? Math.min(5e7, 70_000 * Math.pow(1 / u, pro ? 1.4 : 1.0)) : 0;
@@ -69,8 +70,14 @@ function spawnCoin() {
     socials, desc, dev: Math.round(rand() * 30) / 10, rug: fac ? rand() < 0.7 : rand() < 0.15, rugAt: NOW + (4 + rand() * 30) * 60_000,
     bundled: fac ? rand() < 0.8 : rand() < 0.2, smartIn: bonds ? (rand() < 0.6 ? 1 + Math.floor(rand() * 4) : 0) : rand() < 0.04 ? 1 : 0,
     postPeakUsd: farm ? 80_000 : postPeakUsd, postPeakAt: 0, symbol: `C${coins.length}`, farm,
-    ghost, pool: canonicalPool(mint), bv: pk(), qv: pk(),
+    ghost, pool: canonicalPool(mint), bv: pk(), qv: pk(), wash,
   };
+  if (wash) {
+    c.peak = 40 + rand() * 20;
+    c.peakAt = NOW + (6 + rand() * 10) * 60_000;
+    c.socials = true;
+    c.desc = true;
+  }
   if (farm) {
     c.bondAt = NOW + (3 + rand() * 5) * 60_000;
     c.bundled = true;
@@ -138,6 +145,11 @@ function tradesOf(c: Coin): T[] {
     else if (c.bundled) for (let j = 0; j < 4 + Math.floor(rr() * 6); j++) add(k++, `b${c.i}w${j}`, 0.5 + rr() * 2, "bundle", 0, c.slot0);
     for (let j = 0; j < 2 + Math.floor(rr() * 4); j++) add(k++, `s${c.i}w${j}`, 0.3 + rr(), "sniper", 400, c.slot0 + 1 + Math.floor(rr() * 2));
     for (let j = 0; j < c.smartIn; j++) add(k++, SMART[Math.floor(rr() * SMART.length)], 1 + rr() * 2, "smart", 2000 + j * 3000, c.slot0 + 5 + j * 7);
+    if (c.wash) {
+      // bot coin: 1 to 9 wallets, 0.001 SOL buys and sells over and over
+      const nw = 1 + Math.floor(rr() * 9);
+      for (; k < n; k++) add(k, `wb${c.i}w${k % nw}`, (k % 3 ? 1 : -1) * 0.001, "bot", k * 700, c.slot0 + 10 + k * 2);
+    }
     if (c.farm) {
       // volume bots: the same 5 wallets, the same size, buy and sell
       for (; k < n; k++) add(k, `bot${c.i}w${k % 5}`, (k % 2 ? 1 : -1) * 0.5, "bot", k * 1500, c.slot0 + 10 + k * 4);
@@ -366,6 +378,14 @@ async function main() {
     if (call.farm) fFlag++;
     if (call.verdict === "BOND") fBond++;
   }
+  const washCoins = coins.filter((c) => c.wash && c.t <= NOW - 6 * 60_000);
+  let wCalled = 0, wFlag = 0, wBond = 0, wTaped = 0;
+  for (const c of washCoins) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; wCalled++; if (call.farm) wFlag++; if (call.verdict === "BOND") wBond++; if (!call.farm && call.tp) wTaped++; }
+  const realBonds = coins.filter((c) => !c.farm && !c.wash && !c.ghost && c.bondAt && c.t <= NOW - 6 * 60_000);
+  let rbCalled = 0, rbFlag = 0;
+  for (const c of realBonds) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; rbCalled++; if (call.farm) rbFlag++; }
+  console.log(`bot coins: ${washCoins.length} launched, ${wCalled} called, ${wFlag} flagged FARM, ${wBond} still called BOND, ${wTaped} read and not flagged · desk bought bot coins: ${(d.trades as any[]).filter((t) => t.side === "buy" && byMint.get(t.mint)?.wash).length} · real bonds wrongly flagged: ${rbFlag} of ${rbCalled}`);
+  for (const t of (d.trades as any[]).filter((t) => t.side === "buy" && (byMint.get(t.mint)?.farm || byMint.get(t.mint)?.wash))) { const L = R.kv.get(`rn:launch:${t.mint}`) as any; console.log("BOUGHT BAD", t.symbol, t.reason, "early tape farm", L?.tape?.farm?.farm, "call farm", (R.kv.get(`rn:call:${t.mint}`) as any)?.farm, "ctx checks", JSON.stringify(t.ctx?.checks?.find((c: any) => c.rule === "not_a_farm"))); }
   const realBundled = coins.filter((c) => !c.farm && c.bundled && c.bondAt);
   let rFlag = 0, rCalled = 0;
   for (const c of realBundled) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; rCalled++; if (call.farm) rFlag++; }

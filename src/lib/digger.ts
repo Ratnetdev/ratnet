@@ -7,6 +7,10 @@ import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
 import { emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
 import { readTape, Tape } from "./tape";
+import { whyOf, type Why } from "./why";
+import { noteCall } from "./receipts";
+import { queueBonded, queueCall } from "./tg";
+import { reviewCall } from "./film";
 import { creditResolve, Graph, readGraph } from "./graph";
 import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
 import { enroll, Run, runnerPass } from "./runner";
@@ -92,6 +96,7 @@ export type Call = {
   soc?: number;
   px?: number; // curve price (SOL) at the call, so the desk knows when it would be chasing
   farm?: string; // why the tape flagged it as a farm (never sent to the desk)
+  why?: Why; // the reasons behind the score, in plain words
   tp?: { n: number; uniq: number; spb: number; bs: number; sn: number; sm: number; cl: number; ds: number } | null; // tape + graph summary
 };
 
@@ -460,6 +465,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
       p.hincrby(K.calib, `v${bucket(call0.score)}b`, 1);
       if (call0.nano) p.hincrby(K.calib, `n${bucket(call0.nano.score)}b`, 1);
       if (call0.verdict === "BOND") {
+        queueBonded(p, { mint: rec.mint, symbol: rec.symbol, score: call0.score, bondSecs: rec.bondSecs ?? 0, leadSecs: lead });
         hrInc(c, rec.createdAt, "bh");
         inc(c, "lead_sum", lead || 0);
         inc(c, "lead_n");
@@ -533,6 +539,12 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
     inc(c, "learn_precall");
   }
 
+  // FILM: the call meets its outcome. Misses and false BONDs go to the film room with the reasons behind them.
+  if (rec.call) {
+    const why = rec.call.why || whyOf({ ...rec, progress: rec.call.progress, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null });
+    const fr = reviewCall(p, { ...rec.call, why }, outcome === "BONDED", rec.bondSecs ?? null);
+    if (fr) agentLog(p, [{ agent: "FILM", at: c.now, mint: rec.mint, symbol: rec.symbol, text: fr.text, tone: fr.tone }]);
+  }
   p.rpush(K.resolvedHour(hourKey(rec.createdAt)), compactRow(rec));
   p.expire(K.resolvedHour(hourKey(rec.createdAt)), 60 * 60 * 24 * 4);
   p.set(K.launch(rec.mint), rec, { ex: outcome === "BONDED" ? BONDED_TTL : DEAD_TTL });
@@ -607,7 +619,8 @@ export async function processDue(model: NanoModel) {
   });
   const tapeable = reading
     .filter((it) => (curves[it.mint]?.progress ?? 0) >= (it.stage === "t5" ? s.desk.tapeMinCurve : s.desk.earlyMinCurve))
-    .sort((a, b) => (curves[b.mint]?.progress ?? 0) - (curves[a.mint]?.progress ?? 0))
+    // minute-5 calls first (they go to the desk), then the fullest curves
+    .sort((a, b) => (a.stage === b.stage ? 0 : a.stage === "t5" ? -1 : 1) || (curves[b.mint]?.progress ?? 0) - (curves[a.mint]?.progress ?? 0))
     .slice(0, MAX_TAPES_PER_RUN);
   const [metaMap, st] = await Promise.all([
     readMeta(reading.map((it) => ({ mint: it.mint, name: recs[it.mint].name, symbol: recs[it.mint].symbol }))).catch(() => ({} as Record<string, Meta>)),
@@ -780,7 +793,7 @@ function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   }
   rec.meta = ex.meta;
   inc(c, `e${verdict.toLowerCase()}_n`);
-  if (verdict === "BOND" && !ex.tape?.farm?.farm) {
+  if (verdict === "BOND" && ex.tape && !ex.tape.farm?.farm) {
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
     const ev = { agent: "SCOUT", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} early read BOND ${sc} at minute 1, curve ${curveNow}%`, tone: "ok" };
     c.p.lpush(K.deskEv, ev);
@@ -837,6 +850,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     soc: [rec.twitter, rec.telegram, rec.website].filter(Boolean).length,
     px: ex.px || undefined,
     farm: farm?.why || undefined,
+    why: whyOf({ ...rec, progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null }),
     tp: rec.tape
       ? { n: rec.tape.n, uniq: rec.tape.uniq, spb: rec.tape.solPerBuy, bs: rec.tape.bundleShare, sn: rec.tape.sniperN, sm: rec.g?.smartN ?? 0, cl: rec.g?.clRatio ?? 1, ds: rec.tape.devSold }
       : null,
@@ -847,12 +861,19 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
+  if (counted && sc.verdict === "BOND" && !farm) queueCall(c.p, { mint: rec.mint, symbol: rec.symbol, name: rec.name, score: sc.score, nano, progress: curveNow, mc: CURVE_USD[rec.mint] ? Math.round(CURVE_USD[rec.mint]) : null, plus: rec.call.why?.plus || [], minus: rec.call.why?.minus || [] });
   if (counted && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
     // every counted BOND call (King or nano) is listed on the homepage, farms included so nothing is hidden
     c.p.lpush(BOND_CALLS, rec.mint);
     c.p.ltrim(BOND_CALLS, 0, 99);
   }
-  if (counted && !farm && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+  if (counted && !farm && !rec.tape && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
+    // never hand the desk a coin nobody has read the trades of
+    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${sc.verdict} ${sc.score}, kept from the desk: no tape read in time`, tone: "info" };
+    c.p.lpush(K.deskEv, ev);
+    agentLog(c.p, [ev]);
+  }
+  if (counted && !farm && rec.tape && (sc.verdict === "BOND" || nano?.verdict === "BOND")) {
     // hand the coin to the desk; the desk loop picks it up within 2 seconds
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
     const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${sc.verdict} ${sc.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok" };
@@ -863,6 +884,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     agentLog(c.p, evs);
   }
   if (counted) {
+    noteCall(c.p, rec.call); // hashed into the hourly on-chain receipt (see lib/receipts.ts)
     c.p.hincrby(K.calib, `v${bucket(sc.score)}n`, 1);
     if (nano) c.p.hincrby(K.calib, `n${bucket(nano.score)}n`, 1);
     if (sc.verdict === "BOND") hrInc(c, rec.createdAt, "bn");

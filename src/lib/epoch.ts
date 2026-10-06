@@ -9,6 +9,7 @@ import type { Launch } from "./digger";
 
 export const EPOCH = "v0.1.5";
 const LOCK = "rn:lock:epoch";
+export const EPOCH_AT = "rn:epoch:at"; // when the current clean record started
 const SCAN = "rn:epoch:scan"; // cursor of the background relabel of stored coin records
 
 const RUNNER = ["rn:runner", "rn:run:pre", "rn:run:post", "rn:run:postcur", "rn:run:emp", "rn:run:log", "rn:run:best", "rn:run:fin"];
@@ -23,7 +24,10 @@ export async function epochReady() {
 export async function ensureEpoch(): Promise<Record<string, unknown> | null> {
   const r = redis();
   const cur = await r.get<string>(K.epoch);
-  if (cur === EPOCH) return relabelStep();
+  if (cur === EPOCH) {
+    await r.set(EPOCH_AT, Date.now(), { nx: true }); // the public record counts from here
+    return relabelStep();
+  }
   const got = await r.set(LOCK, Date.now(), { nx: true, ex: 120 });
   if (!got) return { epoch: "resetting" };
   const now = Date.now();
@@ -48,6 +52,7 @@ export async function ensureEpoch(): Promise<Record<string, unknown> | null> {
   if (Object.keys(kept).length) p.hset(K.stat, kept);
   p.set(SCAN, "0");
   p.set(K.epoch, EPOCH);
+  p.set(EPOCH_AT, now);
   p.lpush(K.feed, { kind: "resolve", rat: "LEDGER", mint: "", symbol: "", name: "", at: now, text: `${EPOCH}: graduations now need proof of migration. scoreboard and models restarted on clean data, the historian is replaying the past` });
   await p.exec();
   await r.del(LOCK);

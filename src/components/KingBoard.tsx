@@ -1,4 +1,5 @@
 "use client";
+import HallOfFame from "./HallOfFame";
 import { useEffect, useState } from "react";
 import GradList, { Grad } from "./Grads";
 import { usePoll } from "./usePoll";
@@ -20,10 +21,10 @@ type King = {
 
 export default function KingBoard() {
   const [page, setPage] = useState(0);
-  const [tab, setTab] = useState<"latest" | "bond" | "grads" | "resolved">("latest");
+  const [tab, setTab] = useState<"latest" | "bond" | "grads" | "resolved" | "fame">("latest");
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get("tab");
-    if (t === "grads" || t === "bond" || t === "resolved") setTab(t);
+    if (t === "grads" || t === "bond" || t === "resolved" || t === "fame") setTab(t);
   }, []);
   const { data } = usePoll<King>(`/api/king?page=${page}${tab === "bond" ? "&verdict=BOND" : ""}`, 8000);
   const s = data?.stats;
@@ -62,6 +63,7 @@ export default function KingBoard() {
                   ["bond", "BOND calls"],
                   ["grads", "graduations"],
                   ["resolved", "just resolved"],
+                  ["fame", "hall of fame"],
                 ] as const
               ).map(([k, label]) => (
                 <a key={k} onClick={() => { setTab(k); setPage(0); }} style={{ cursor: "pointer", color: tab === k ? "var(--rat)" : undefined }}>
@@ -77,7 +79,7 @@ export default function KingBoard() {
               </span>
             )}
           </div>
-          {tab === "grads" ? <GradList grads={data?.grads || []} full /> : <CallList calls={(tab === "resolved" ? data?.resolved : data?.calls) || []} />}
+          {tab === "fame" ? <div className="fame-wrap"><HallOfFame limit={24} full /></div> : tab === "grads" ? <GradList grads={data?.grads || []} full /> : <CallList calls={(tab === "resolved" ? data?.resolved : data?.calls) || []} />}
         </div>
 
         <div className="grid" style={{ alignContent: "start" }}>

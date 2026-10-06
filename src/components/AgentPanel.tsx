@@ -34,7 +34,7 @@ export const PROFILE: Record<string, { what: string; how: string[] }> = {
   },
   VET: {
     what: "The gatekeeper. Every BOND call runs through every check before the desk may buy.",
-    how: ["Curve inside the buy window, dev not a serial launcher, sane dev buy, dev not selling", "Bundle share, funder cluster record, not a copycat, not a farm", "Signal fresh (under 3 minutes), a free slot, daily loss limit not hit", "One failed check = skipped, with the reason logged"],
+    how: ["Curve inside the buy window, dev not a serial launcher, sane dev buy (a dev sell is info only on memes)", "Bundle share, funder cluster record, not a copycat, not a farm", "Signal fresh (under 3 minutes), a free slot, daily loss limit not hit", "Prior: skips a coin that already dumped 40%+ from its high. Every skip is followed in shadow; COACH drops the prior if those coins do better", "One failed check = skipped, with the reason logged"],
   },
   FLOW: {
     what: "Watches buying and selling pressure right before a buy.",
@@ -54,11 +54,15 @@ export const PROFILE: Record<string, { what: string; how: string[] }> = {
   },
   RISK: {
     what: "Manages every open position, every 2 seconds.",
-    how: ["Stop loss until the cost is back", "Takes the cost back at 2x, the rest rides", "Sells slices at market cap milestones only when the next one looks unlikely", "A trailing stop that widens as the coin runs", "Out instantly if the dev or the insiders dump"],
+    how: ["Stop loss until the cost is back", "Takes the cost back at 2x, the rest rides", "Sells slices at market cap milestones only when the next one looks unlikely", "A trailing stop that widens as the coin runs", "Out instantly if the insiders (bundle, snipers, top buyers) dump", "Dev sells are normal on memes: it holds through them and COACH scores the call"],
   },
   COACH: {
     what: "Reviews every trade after it ends and retunes the desk.",
-    how: ["Keeps watching a coin after the desk sells", "If it ran 2x+ after the exit, trails get wider; if the desk gave back 40%+ before selling, trails get tighter", "Tests entries in shadow (buy now vs wait for a dip) and unlocks the better one once proven"],
+    how: ["Keeps watching a coin after the desk sells", "If it ran 2x+ after the exit, trails get wider; if the desk gave back 40%+ before selling, trails get tighter", "Scores every dev sell the desk held through; the dev exit only switches on if selling with the dev proves better", "Reviews every coin a prior skipped and overrules the prior when it costs money", "Tests entries in shadow (buy now vs wait for a dip) and unlocks the better one once proven"],
+  },
+  FILM: {
+    what: "The film room. Goes back over every decision the agents made and scores it against what the coin did next, like a fighter watching tape of his own fights.",
+    how: ["Every King call meets its outcome: bonds the King didn't like are logged as misses, BOND calls that died as false BONDs", "Scores each reason the King gave: how often \"against\" reasons were wrong, how often \"for\" reasons held up", "Follows every coin VET, FLOW or never-chase skipped: 30 minutes, 2 hours and 24 hours later", "Per rule: how often the skip was right, how often it cost a run, and the average move after the skip", "nano learns from every outcome; priors switch off when the tape shows they cost money"],
   },
   LEDGER: {
     what: "Keeps the books.",
