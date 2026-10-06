@@ -64,7 +64,7 @@ A swarm of crawler **rats** indexes every pump.fun launch in real time: metadata
 
 The **Rat King** is a model trained from scratch on that dataset alone. It scores each launch at minute 5 on one target: **will this coin bond?** Every call is frozen the moment it is made, then graded by the chain. Hits and misses stay on the board forever.
 
-The **Desk** is an autonomous team of fourteen agents that turns the King's calls into trades with its own wallet, on chain, in public. It reads every trade on the curve, traces who funded the dev, recognises smart wallets, never chases, takes its cost back at 2x and lets the rest run with a trail that widens as the coin climbs. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
+The **Desk** is an autonomous team of seventeen agents that turns the King's calls into trades with its own wallet, on chain, in public. It reads every trade on the curve, traces who funded the dev, recognises smart wallets, never chases, takes its cost back at 2x and lets the rest run with a trail that widens as the coin climbs. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
 
 The **HISTORIAN** replays pump.fun's past, launch by launch and in time order, so the models start trained instead of waiting weeks for live data. Every bond is then followed for 7 days, so the King learns not just which coins bond, but which ones run to $1M, $10M and beyond.
 
@@ -250,7 +250,7 @@ Calls are never deleted, edited or re-scored. If the King is wrong, the board sa
   <img src="docs/assets/desk.png" alt="The Desk" width="100%">
 </p>
 
-The Desk is a team of fourteen agents that turns calls into trades and learns from every one. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions (market cap, P(next milestone), trail, insider bags), the trade log, the full rule set and what the desk has learned.
+The Desk is a team of seventeen agents that turns calls and posts into trades and learns from every one. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions (market cap, P(next milestone), trail, insider bags), the trade log, the full rule set and what the desk has learned.
 
 | Agent | Role |
 |---|---|
@@ -267,6 +267,9 @@ The Desk is a team of fourteen agents that turns calls into trades and learns fr
 | RISK | Initials, milestone ladder, trailing stop, insider exits. Holds through dev sells on memes (a prior COACH can overturn). |
 | COACH | Reviews every exit and every entry, follows each coin 5m, 15m, 1h, 2h, 6h, 1d and 7d after the exit with what moved it, and retunes the desk. |
 | LEDGER | Keeps the books. |
+| WIRE | The social monitor: tracks X accounts whose posts spawn coins, matches every launch against the last hour of posts, picks the real coin among the copies 30 seconds in, and hands it to the desk. Learns trust per account from results and grows its own account list. |
+| PULSE | Reads the room: counts what every tracked post is about in 5-minute and hourly windows, weighted by reach, and flags narratives running at 3x+ their usual pace, with a mood. Launches named after one get +5 from the King. |
+| PM | The portfolio manager: runs King calls, early reads and tweet coins as separate sleeves and sizes each by its risk-adjusted record, so no single strategy decides the curve. |
 | FILM | The film room: goes back over every decision (King calls, VET, FLOW and never-chase skips) and scores it against what the coin did next. |
 
 Every trade on `/desk` opens to its full story: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart, every fill with its market cap, and COACH's follow-ups after the exit. Every coin page shows the desk's trades on that coin and every line the agents wrote about it.
@@ -337,6 +340,9 @@ Live swaps are routed through Jupiter with a `veryHigh` priority fee and 15% max
 | **COACH: exits** | After every exit it keeps watching the coin. If the coin ran 2x+ after a trail or ladder sale, trails widen 6%. If the desk gave back 40%+ from the peak before selling, trails tighten 3%. | Hard exits (dev or insider dumps, stops) are never tuned away. |
 | **COACH: after the exit** | Every closed trade is checked again 5m, 15m, 1h, 2h, 6h, 1d and 7d later: price vs our exit and, when it ran 50%+, what was behind it (migration, a big single buy, a volume wave, paid DexScreener promotion, X posts). | Tallied per horizon on `/desk`; every check is written to the trade. |
 | **FILM: the film room** | Every King call meets its outcome: bonds the King didn't call are logged as misses, BOND calls that died as false BONDs, and every reason the King gave is scored on how often it was wrong. Every skip by VET, FLOW or never-chase is followed 30m, 2h and 24h later. | A skip counts as wrong when the coin ran 30%+ or bonded. Per rule: right, missed a run, average move, and a verdict (saving, neutral, costing). |
+| **PULSE: narratives** | Term counts per 5 minutes and per hour from every tracked post, weighted by the author's reach; rising = 3x+ the 24-hour pace; mood from trench words. | Narratives are context: +5 on a launch named after one, never a buy on their own. |
+| **WIRE: X posts** | Per account: posts, coins sparked, picks, bonds and desk P&L. Trust starts from a prior (leaders and celebrities 0.5, other seeds 0.3, found accounts 0.15) and moves with 4 picks of evidence. Accounts whose posts bonded coins link to, or that tracked accounts keep mentioning, join the list; found accounts with 300 posts and no coin sparked are muted. | Only accounts above the trust line send coins to the desk; every pick is still recorded so trust can grow. The King adds 8 points to a coin born from a tracked post. |
+| **PM: sleeves** | Each strategy's size follows its own record: average log return over its spread, last 30 trades, shrunk toward a starting weight until 30 trades. | A sleeve that lost 60% of a stake over its last 6 trades sits out 2 hours. Tweet coins have their own 2 slots. |
 | **Priors** | Starting hints from the dev, not laws. `holding_floor`: skip a coin already 40%+ under its high since launch. `dev_exit`: off on memes, the desk holds through dev sells. | Every case a prior affects is followed in shadow. COACH switches `holding_floor` off when the coins it skipped do better than the ones bought (30+ cases), and switches `dev_exit` on only if selling with the dev beats holding in 60%+ of 15+ cases. |
 | **COACH: entries** | Every clean signal is followed in shadow four ways: buy now, or wait for a 20, 30 or 45% pullback and a bounce. Each is scored 30 minutes later. | Pullback entries switch on only after 30+ signals show a pullback beating buying now by 10%+. |
 | **FARM detector** | Block-0 bundles that pump the curve with no organic buyers after, bundle-run coins, volume bots, and (v0.2) bot coins: 3 or fewer wallets trading, wash loops (3+ trades per wallet among under 12 wallets) and micro-buys (median buy under 0.01 SOL). No coin reaches the desk without its trades read. | Transparent rules in `tape.ts`; real block-0 launches followed by organic buyers pass. Farms get a 45-point King penalty and never reach the desk. |
@@ -445,6 +451,7 @@ All read endpoints are public, JSON, and cached at the edge for a few seconds.
 | `GET /api/desk/record` | The track record: every round trip with its full entry context, fills and COACH follow-ups. |
 | `GET /api/desk/coin?mint={CA}` | The desk on one coin: its trades, the last VET verdict, every agent line about it. |
 | `GET /api/desk/agent?name=FILM` | One agent's history and counters. |
+| `GET /api/x` | WIRE: latest tracked posts with the coin picked for each, the account board with trust, and discovery candidates. |
 
 Full documentation with examples lives at `/developers`.
 
@@ -504,6 +511,10 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `JUPITER_API_KEY` | Optional. Key from portal.jup.ag for live swaps. |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional. Bot token from @BotFather and the channel (e.g. `@yourchannel`, the bot an admin of it). Every counted King BOND call is posted the moment it lands, and again when it bonds. |
 | `RECEIPT_WALLET_SECRET` | Optional. Base58 secret of a small wallet (0.02 SOL lasts months) that writes the hourly call receipts on-chain. Falls back to `DESK_WALLET_SECRET`. Without either, receipts are not sealed. |
+| `J7_JWT` | Optional, recommended. Your J7Tracker session token. WIRE listens to the J7 feed (its main account list, its free shared pool, Truth Social, Instagram, TikTok, YouTube, contract addresses in posts) during every minute run, and adds the whole free pool to your feed hourly. |
+| `J7_HOST` | Optional. `https://nyc.j7tracker.io` (default) or `https://dfw.j7tracker.io`. |
+| `X_API_KEY` | Optional. twitterapi.io key for WIRE. Set the webhook URL in the twitterapi.io dashboard to `https://<your site>/api/x/hook?key=<CRON_SECRET>`; WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `/api/x/sync?key=<CRON_SECRET>`). |
+| `X_RULE_INTERVAL` | Optional. Seconds between twitterapi.io rule checks (default `1`). Higher is cheaper and slower. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 
 Ping `GET /api/desk/run?key=<CRON_SECRET>` every minute with any external scheduler. Each ping runs the rats, the desk and the HISTORIAN for ~55 seconds. The historian's pace (and RPC cost) is set on `/admin`.

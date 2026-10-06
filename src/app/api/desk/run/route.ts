@@ -4,6 +4,12 @@ import { dig } from "@/lib/digger";
 import { historianSession } from "@/lib/historian";
 import { sealDue } from "@/lib/receipts";
 import { tgFlush } from "@/lib/tg";
+import { curate, ingest, syncRules } from "@/lib/wire";
+import { j7Accounts, j7Session } from "@/lib/j7";
+import { pulseTick } from "@/lib/pulse";
+import { agentLog } from "@/lib/agents";
+import { redis } from "@/lib/redis";
+import { X_SEED } from "@/config/x-accounts";
 import { isCron } from "@/lib/admin";
 import { fail, json } from "@/lib/http";
 
@@ -20,13 +26,32 @@ async function session() {
     }
     return { sent };
   })();
-  const [desk, history, receipts, telegram] = await Promise.all([
+  // WIRE: grow and prune the account list, push it to twitterapi.io when it changed (at most every 10 minutes)
+  const wire = (async () => {
+    const changes = await curate().catch(() => []);
+    const mins = new Date().getUTCMinutes();
+    // J7: make sure it watches its whole free pool and our list (hourly), then twitterapi.io pays only for the rest
+    const j7acc = await j7Accounts(X_SEED.map((x) => x.h)).catch((e) => ({ error: String(e?.message || e) }));
+    const synced = mins % 10 === 0 ? await syncRules().catch((e) => ({ synced: false, error: String(e?.message || e) })) : null;
+    // PULSE: rebuild the rising narratives and announce new ones
+    const fresh = await pulseTick().catch(() => []);
+    if (fresh.length) {
+      const p = redis().pipeline();
+      agentLog(p, fresh.map((x) => ({ agent: "PULSE", at: Date.now(), text: `rising on X: "${x.term}" at ${x.x}x its usual pace (${x.posts15} weighted posts in 15m), mood ${x.mood}`, tone: x.mood === "bearish" ? "bad" : "ok" })));
+      await p.exec();
+    }
+    return { changes, j7acc, synced, rising: fresh.map((x) => x.term) };
+  })();
+  // J7 live feed for the whole minute run: posts land in WIRE within moments
+  const j7 = j7Session(52_000, (t) => ingest(t)).catch((e) => ({ on: true, error: String(e?.message || e) }));
+  const [desk, history, receipts, telegram, x] = await Promise.all([
     deskSession(55_000, () => dig()),
     historianSession(45_000).catch((e) => ({ history: "error", error: String(e?.message || e) })),
     sealDue().catch((e) => ({ sealed: 0, error: String(e?.message || e) })),
     tg,
+    wire,
   ]);
-  return { desk, history, receipts, telegram };
+  return { desk, history, receipts, telegram, wire: x, j7: await j7 };
 }
 
 // Ping every minute (cron-job.org). The ping gets an answer right away, and the work keeps running in the

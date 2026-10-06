@@ -64,6 +64,18 @@ export const PROFILE: Record<string, { what: string; how: string[] }> = {
     what: "The film room. Goes back over every decision the agents made and scores it against what the coin did next, like a fighter watching tape of his own fights.",
     how: ["Every King call meets its outcome: bonds the King didn't like are logged as misses, BOND calls that died as false BONDs", "Scores each reason the King gave: how often \"against\" reasons were wrong, how often \"for\" reasons held up", "Follows every coin VET, FLOW or never-chase skipped: 30 minutes, 2 hours and 24 hours later", "Per rule: how often the skip was right, how often it cost a run, and the average move after the skip", "nano learns from every outcome; priors switch off when the tape shows they cost money"],
   },
+  WIRE: {
+    what: "The social monitor. Tracks X accounts whose posts spawn coins (world leaders, Elon, founders, KOLs, news) and finds the pump.fun launches born from each post, within seconds.",
+    how: ["Every tracked post is read for the names a coin would take: tickers, hashtags, names, phrases", "Every new launch is matched against the last hour of posts: a coin that links the post is a sure match, a ticker or name match is strong", "30 seconds after the first match it picks the leader among the copies (most real SOL in), reads its trades and drops farms", "Hands the leader to the desk as its own strategy, only for accounts it trusts", "Learns per account: posts, coins sparked, picks, bonds, desk P&L. Trust grows or shrinks with results", "Grows its own list: authors of posts that bonded coins link to, and accounts the tracked ones keep mentioning. Mutes accounts that never spark a coin", "Tells the King: a coin born from a tracked post gets +8"],
+  },
+  PULSE: {
+    what: "Reads the room. Counts what every tracked post on X is about, minute by minute, and spots the narratives taking off right now.",
+    how: ["Every post from the J7 feed and WIRE's own accounts is split into the words a coin would be named after", "Counted in 5-minute and hourly windows, weighted by the author's reach", "Rising = running at 3x+ its usual pace over the last 24 hours", "Mood per narrative from trench words (send, ape, rug, dump...)", "Tells the King (+5 for a launch named after a rising narrative) and logs every new one"],
+  },
+  PM: {
+    what: "The portfolio manager. Runs the desk as several strategies side by side and gives more capital to whatever is earning, so the curve climbs steadily instead of spiking and crashing.",
+    how: ["Sleeves: King calls, early reads, tweet coins (WIRE), each with its own record", "Size per sleeve = its average return over its spread, last 30 trades, shrunk toward a starting weight while the record is short", "A sleeve that loses 60% of a stake over its last 6 trades sits out for 2 hours", "Every buy is still capped by the coin's liquidity"],
+  },
   LEDGER: {
     what: "Keeps the books.",
     how: ["Balance, every fill, the exam", "Promotes the desk to its own wallet when it passes, demotes it back to paper at -40%", "Logs errors and recoveries"],

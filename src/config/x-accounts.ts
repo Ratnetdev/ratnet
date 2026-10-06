@@ -1,0 +1,63 @@
+// WIRE seed list: X accounts whose posts are known to spawn pump.fun coins. WIRE starts here, then adds accounts by
+// itself (the authors of tweets that coins link to and that bond, and accounts the tracked ones keep amplifying) and
+// mutes accounts that never spark a coin. Edit freely; handles only, no @.
+export const X_SEED: { h: string; cat: "leader" | "celeb" | "founder" | "kol" | "news" | "brand" }[] = [
+  // world leaders and politics
+  { h: "realDonaldTrump", cat: "leader" },
+  { h: "POTUS", cat: "leader" },
+  { h: "WhiteHouse", cat: "leader" },
+  { h: "JDVance", cat: "leader" },
+  { h: "elonmusk", cat: "celeb" },
+  // Musk orbit and big culture accounts
+  { h: "DogeDesigner", cat: "celeb" },
+  { h: "cb_doge", cat: "celeb" },
+  { h: "MarioNawfal", cat: "news" },
+  { h: "Tesla", cat: "brand" },
+  { h: "SpaceX", cat: "brand" },
+  { h: "xai", cat: "brand" },
+  { h: "grok", cat: "brand" },
+  { h: "MrBeast", cat: "celeb" },
+  { h: "kanyewest", cat: "celeb" },
+  { h: "Drake", cat: "celeb" },
+  { h: "snoopdogg", cat: "celeb" },
+  // AI
+  { h: "OpenAI", cat: "brand" },
+  { h: "sama", cat: "founder" },
+  { h: "AnthropicAI", cat: "brand" },
+  { h: "karpathy", cat: "founder" },
+  // crypto founders and chains
+  { h: "pumpdotfun", cat: "founder" },
+  { h: "a1lon9", cat: "founder" },
+  { h: "cz_binance", cat: "founder" },
+  { h: "heyibinance", cat: "founder" },
+  { h: "VitalikButerin", cat: "founder" },
+  { h: "aeyakovenko", cat: "founder" },
+  { h: "rajgokal", cat: "founder" },
+  { h: "solana", cat: "brand" },
+  { h: "brian_armstrong", cat: "founder" },
+  { h: "jessepollak", cat: "founder" },
+  { h: "saylor", cat: "founder" },
+  { h: "binance", cat: "brand" },
+  { h: "coinbase", cat: "brand" },
+  { h: "Polymarket", cat: "brand" },
+  // trench KOLs
+  { h: "blknoiz06", cat: "kol" },
+  { h: "MustStopMurad", cat: "kol" },
+  { h: "notthreadguy", cat: "kol" },
+  { h: "frankdegods", cat: "kol" },
+  { h: "cobie", cat: "kol" },
+  { h: "gainzy222", cat: "kol" },
+  { h: "CryptoKaleo", cat: "kol" },
+  { h: "KookCapitalLLC", cat: "kol" },
+  { h: "zachxbt", cat: "kol" },
+  // breaking news (memes launch off headlines)
+  { h: "WatcherGuru", cat: "news" },
+  { h: "tier10k", cat: "news" },
+  { h: "DegenerateNews", cat: "news" },
+  { h: "BNONews", cat: "news" },
+  { h: "disclosetv", cat: "news" },
+  { h: "unusual_whales", cat: "news" },
+  { h: "Cointelegraph", cat: "news" },
+  { h: "CoinDesk", cat: "news" },
+  { h: "NASA", cat: "brand" },
+];

@@ -24,11 +24,13 @@ import { NANO_MIN, type NanoModel } from "./nano";
 import { agentLog, type AgentEv } from "./agents";
 import { coachStats, coachStep, follow, followsFor, tripId, type Check } from "./coach";
 import { filmStats, filmStep, logSkip } from "./film";
+import { onClose as pmClose, pmView, sleeveOf, sleeveWeight } from "./pm";
+import { accountOf, notePnl, wireView } from "./wire";
 import { getHistory } from "./historian";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 
-export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM";
+export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE";
 export const AGENTS: { id: Agent; role: string }[] = [
   { id: "HISTORIAN", role: "replays past launches to train the models" },
   { id: "SCOUT", role: "digs every launch, early read at minute 1" },
@@ -44,6 +46,9 @@ export const AGENTS: { id: Agent; role: string }[] = [
   { id: "COACH", role: "reviews every exit and entry" },
   { id: "LEDGER", role: "keeps the books" },
   { id: "FILM", role: "reviews every decision against what happened next" },
+  { id: "WIRE", role: "tracks X accounts, finds coins born from their posts" },
+  { id: "PM", role: "splits capital across strategies by results" },
+  { id: "PULSE", role: "what X is talking about right now" },
 ];
 
 export type Tone = "ok" | "bad" | "info" | "win" | "loss";
@@ -67,7 +72,8 @@ export type Pos = {
   nano: number | null;
   live: boolean;
   series: Sample[];
-  how?: "direct" | "stalk" | "early";
+  how?: "direct" | "stalk" | "early" | "wire";
+  wire?: { h: string; tid: string; text: string } | null; // the post a tweet coin was born from
   msHi?: number; // highest milestone the ladder has acted on
   pn?: number; // P(next milestone) at the last check
   noPxSince?: number; // first beat with no price (curve complete, not migrated yet)
@@ -103,6 +109,8 @@ export type EntryCtx = {
   socials: { x: boolean; tg: boolean; web: boolean };
   meta: { hot: string | null; copy: boolean } | null;
   solUsd: number | null;
+  sleeve?: string;
+  wire?: { h: string; text: string; how: string; lagSec: number; trust: number } | null;
 };
 export type Trade = {
   id: string;
@@ -583,7 +591,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       // --- prices for everything we hold, stalk, shadow, review or might buy
       const px = await priceOf(
-        Array.from(new Set([...positions.map((p) => p.mint), ...queued, ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.keys(afters)]))
+        Array.from(new Set([...positions.map((p) => p.mint), ...queued.map((x) => x.replace(/^w:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.keys(afters)]))
       );
       if (now - lastRunsAt > 10_000) {
         lastRunsAt = now;
@@ -719,17 +727,22 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         state.dayKey = eq.dayKey;
         state.dayStart = eq.value;
       }
-      for (const m of queued) {
-        await r.zrem(K.deskQ, m);
+      for (const q0 of queued) {
+        await r.zrem(K.deskQ, q0);
+        const wireSig = q0.startsWith("w:");
+        const m = wireSig ? q0.slice(2) : q0;
         const rec = await r.get<Launch>(K.launch(m));
         if (!rec || rec.outcome) continue;
-        const early = !rec.call && rec.early?.verdict === "BOND";
-        if (!rec.call && !early) continue;
+        const early = !wireSig && !rec.call && rec.early?.verdict === "BOND";
+        if (!wireSig && !rec.call && !early) continue;
+        if (wireSig && !rec.wire?.pick) continue;
         const coin = { mint: m, symbol: rec.symbol };
         const q = px[m];
         if (!q) continue;
         const curve = q.curve?.progress ?? 0;
-        const open = (await r.hlen(K.deskPos)) || 0;
+        // tweet coins have their own slots, so the King's positions never crowd them out (and the reverse)
+        const liveNow = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
+        const open = liveNow.filter((p) => (p.how === "wire") === wireSig).length;
         const t = rec.tape;
         const g = rec.g;
         const callPx = rec.call?.px || 0;
@@ -737,7 +750,21 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         // how far the price sits under the coin's high since launch (curve high from every dig, 10s apart)
         const hiProg = Math.max(rec.peak ?? 0, Number((await r.zscore(K.peak, m)) ?? 0), curve);
         const dd = hiProg > curve ? Math.round((1 - curvePx(curve) / curvePx(hiProg)) * 100) : 0;
-        const checks = [
+        const trust = wireSig ? (await accountOf(rec.wire!.h)).w : 0;
+        const wireOpen = wireSig ? open : 0;
+        const checks = wireSig
+          ? [
+              { rule: "wire_post", ok: trust >= (cfg.wireMinW ?? 0.2), v: `@${rec.wire!.h} · ${rec.wire!.how} · ${rec.wire!.lagSec}s after the post · trust ${trust}` },
+              { rule: "curve_window", ok: curve <= (cfg.wireMaxCurve ?? 85), v: `${curve}%` },
+              { rule: "dev_buy_sane", ok: rec.devBuySol <= cfg.maxDevBuy, v: `${rec.devBuySol} SOL` },
+              { rule: "bundle_ok", ok: !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in, ${t.bundleN} wallets` : "not read" },
+              { rule: "tape_read", ok: !!t, v: t ? `${t.n} trades, ${t.uniq} traders read` : "no tape read in time" },
+              { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders` : "not read" },
+              { rule: "holding_floor", ok: !learnS.floorOn || dd < LEARN_RULES.floorMax, v: `${dd}% under its high${learnS.floorOn ? "" : " (prior overruled)"}` },
+              { rule: "open_slots", ok: wireOpen < (cfg.wireMaxOpen ?? 2) && !posMap[m] && !stalks[m], v: `${wireOpen}/${cfg.wireMaxOpen ?? 2} tweet-coin slots` },
+              { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
+            ]
+          : [
           early
             ? { rule: "early_read_bond", ok: true, v: `BOND ${rec.early!.score} at minute 1` }
             : { rule: "king_or_nano_bond", ok: rec.call!.verdict === "BOND" || rec.call!.nano?.verdict === "BOND", v: `${rec.call!.verdict} ${rec.call!.score}` },
@@ -813,7 +840,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
         // never chase: past maxChase above the call price, or when pullbacks have proven better, stalk instead
         const nowPx = again?.priceSol || q.px;
-        if (learnS.stalkOn || chase > cfg.maxChase) {
+        if (!wireSig && (learnS.stalkOn || chase > cfg.maxChase)) {
           if (learnS.stalkOn) {
             await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: nowPx, depth: learnS.stalkArm || 30, hi: nowPx, lo: nowPx, armed: false, early } satisfies Stalk });
             log(b, "SIZE", `$${rec.symbol}: stalking a -${learnS.stalkArm || 30}% pullback for up to ${cfg.stalkMins}m`, "info", coin);
@@ -823,7 +850,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           }
           continue;
         }
-        await enter(b, state, rec, nowPx, again?.realSol ?? 0, eq.value, walletSol, kp, cfg, early ? "early" : "direct", xm);
+        await enter(b, state, rec, nowPx, again?.realSol ?? 0, eq.value, walletSol, kp, cfg, wireSig ? "wire" : early ? "early" : "direct", xm);
       }
 
       // --- stalks: buy the pullback once it bounces
@@ -952,7 +979,7 @@ function fallbackRun(p: Pos): Run {
 
 type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 
-async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early", xm: number | null) {
+async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire", xm: number | null) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
   // SIZE: research on fat tails says small, equal bets; never size up on conviction
@@ -960,7 +987,15 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   // liquidity cap: on the curve, buying S SOL moves the price by ((vSol + S) / vSol)^2 - 1, vSol = 30 + real SOL
   const vSol = 30 + Math.max(0, real);
   const liqCap = vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
-  const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct) / 100);
+  // PM: each strategy sleeve is sized by its own record; a paused sleeve sits out
+  const sl = sleeveOf(how);
+  const pmw = await sleeveWeight(sl).catch(() => ({ w: 1, paused: false, until: 0 }));
+  if (pmw.paused) {
+    log(b, "PM", `$${rec.symbol}: ${sl} sleeve is paused until ${new Date(pmw.until).toISOString().slice(11, 16)} UTC after a bad run. skipped`, "info", coin);
+    return;
+  }
+  const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct * pmw.w) / 100);
+  if (pmw.w !== 1) log(b, "PM", `$${rec.symbol}: ${sl} sleeve at ${pmw.w}x size`, "info", coin);
   const size = Math.min(cfg.maxSol, want, liqCap, avail * 0.95);
   if (want > liqCap && liqCap < cfg.maxSol) log(b, "SIZE", `$${rec.symbol}: liquidity caps the buy at ${liqCap.toFixed(2)} SOL (max ${cfg.maxImpact ?? 6}% price impact on a ${vSol.toFixed(0)} SOL curve)`, "info", coin);
   if (size < cfg.minSol * 0.99) {
@@ -1011,7 +1046,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     state.cash -= sol;
   }
   const now = Date.now();
-  const why = how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
+  const why = how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? "" : " (paper)"}`, "ok", coin);
@@ -1036,6 +1071,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     msHi: -1,
     ctx,
     creator: rec.creator,
+    wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text } : null,
   };
 }
 
@@ -1083,6 +1119,9 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     // COACH keeps watching the coin after we leave it: 5m, 15m, 1h, 2h, 6h, 1d, 7d
     await follow({ id: tripId(p.mint, p.openedAt), mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: Date.now(), entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
     log(b, "COACH", `following $${p.symbol} after the exit: checks at 5m, 15m, 1h, 2h, 6h, 1d and 7d, and what moved it`, "info", coin);
+    const pmNote = await pmClose(sleeveOf(p.how), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
+    if (pmNote) log(b, "PM", pmNote, "info");
+    if (p.wire?.h) await notePnl(p.wire.h, p.soldSol - p.costSol).catch(() => {});
     state.closed++;
     const total = p.soldSol - p.costSol;
     if (total > 0) state.wins++;
@@ -1167,6 +1206,8 @@ export async function getDesk() {
     stalks: Object.values(stalks || {}),
     coach: await coachStats().catch(() => null),
     film: await filmStats().catch(() => null),
+    pm: await pmView().catch(() => null),
+    wire: await wireView().catch(() => null),
     learn: { ...learnS, arms, shadows: nShadow || 0, reviewing: nAfter || 0, rules: LEARN_RULES, xConnected: !!process.env.X_BEARER_TOKEN },
     now: await rightNow(learnS).catch(() => null),
   };
@@ -1213,6 +1254,8 @@ async function entryCtx(rec: Launch, px: number, real: number, how: Pos["how"]):
     socials: { x: !!rec.twitter, tg: !!rec.telegram, web: !!rec.website },
     meta: rec.meta ? { hot: rec.meta.hot ?? null, copy: !!rec.meta.copy } : null,
     solUsd: sol,
+    sleeve: sleeveOf(how),
+    wire: rec.wire ? { h: rec.wire.h, text: rec.wire.text, how: rec.wire.how, lagSec: rec.wire.lagSec, trust: (await accountOf(rec.wire.h).catch(() => ({ w: 0 }))).w } : null,
   };
 }
 type TripMeta = { mint: string; symbol: string; openedAt: number; closedAt: number; king: number; nano: number | null; how: string; entryPx: number; peakPx: number; exitPx: number; series: [number, number][]; ctx?: EntryCtx };

@@ -749,3 +749,21 @@ th .info, .k .info { gap: 4px; }
 .film-miss { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 5px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.04); min-width: 0; }
 .film-why { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
 @media (max-width: 900px) { .film-grid { grid-template-columns: 1fr; } .film-grid > div + div { border-left: 0; border-top: 1px solid var(--line); } }
+.wire-list { max-height: 620px; overflow-y: auto; }
+.wire-t { padding: 12px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 6px; }
+.wire-h { font-size: 12px; display: flex; gap: 6px; align-items: baseline; }
+.wire-pick { margin-left: auto; color: var(--bond); }
+.wire-x { font-size: 13px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.wire-terms { display: flex; flex-wrap: wrap; gap: 6px; }
+.wire-terms span { font-size: 10.5px; color: var(--dim); border: 1px solid var(--line2); padding: 1px 6px; }
+.td-wire { margin-top: 12px; display: grid; gap: 6px; font-size: 12px; color: var(--dim); border-left: 2px solid #4fd1ff; padding-left: 10px; }
+.td-wire q { color: var(--text); font-size: 12.5px; line-height: 1.5; quotes: "\201C" "\201D"; }
+.grid > .panel, .grid > .grid { min-width: 0; }
+.pulse-list { padding: 6px 0; }
+.pulse-r { display: grid; grid-template-columns: minmax(0, 1fr) 90px 44px 60px; gap: 10px; align-items: center; padding: 6px 18px; font-size: 12px; }
+.pulse-r b { font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pulse-bar { height: 4px; background: rgba(255, 255, 255, 0.06); }
+.pulse-bar i { display: block; height: 100%; background: #ff8fd8; }
+.pulse-r span:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+.pulse-r em { font-style: normal; font-size: 11px; text-align: right; }
+.pulse-list .pb { padding: 8px 18px 12px; }

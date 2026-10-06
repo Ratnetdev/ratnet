@@ -11,6 +11,7 @@ import Info from "./Info";
 
 type Cp = { p: number; mcap: number; at: number };
 type Launch = {
+  wire?: { tid: string; h: string; score: number; how: string; lagSec: number; text: string; pick?: boolean } | null;
   mint: string;
   createdAt: number;
   creator: string;
@@ -135,6 +136,18 @@ export default function CoinView({ mint }: { mint: string }) {
           </div>
         </div>
       </section>
+
+      {l?.wire && (
+        <section className="panel mt">
+          <div className="ph"><span><Info k="wire"><b>born from a post</b></Info> · found by WIRE</span>{l.wire.pick ? <span className="green tiny">picked as the coin for this post</span> : <span className="tiny muted">one of the copies</span>}</div>
+          <div className="pb">
+            <div className="td-wire" style={{ marginTop: 0 }}>
+              <span><a href={`https://x.com/${l.wire.h}/status/${l.wire.tid}`} target="_blank" rel="noreferrer">@{l.wire.h}</a> · {l.wire.how} · launched {l.wire.lagSec}s after the post</span>
+              <q>{l.wire.text}</q>
+            </div>
+          </div>
+        </section>
+      )}
 
       {c?.why && (c.why.plus.length > 0 || c.why.minus.length > 0) && (
         <section className="panel mt">

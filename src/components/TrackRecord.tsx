@@ -24,6 +24,7 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
           <span className="trip-caret">{open ? "▾" : "▸"}</span>
           <Link href={`/c/${t.mint}`} onClick={(e) => e.stopPropagation()}>${t.symbol}</Link>
           {t.open ? <span className="trip-tag open">open</span> : null}
+          {t.how === "wire" ? <span className="trip-tag">tweet</span> : t.how === "early" ? <span className="trip-tag">1m</span> : null}
           {t.live ? <span className="trip-tag live">live</span> : null}
         </td>
         {full && <td className="muted">{ago(t.openedAt)} ago{t.ctx ? <div className="tiny mute2">coin {dur(t.ctx.ageMs)} old</div> : null}</td>}

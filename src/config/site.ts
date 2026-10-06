@@ -89,6 +89,10 @@ export const DEFAULT_SETTINGS = {
     earlyMinCurve: 3, // curve % at minute 1 for the early read
     stalkMins: 15, // how long a stalk waits for its pullback
     dailyLoss: 25, // % from day start: stop opening
+    // WIRE (tweet coins) and PM (strategy sleeves)
+    wireMinW: 0.2, // trust an account's posts must have before WIRE sends its coins to the desk (seeds start at 0.3 to 0.5)
+    wireMaxCurve: 85, // tweet coins move fast: allowed up to this curve %
+    wireMaxOpen: 2, // tweet-coin positions open at once
     slippageBps: 1500,
   },
 };

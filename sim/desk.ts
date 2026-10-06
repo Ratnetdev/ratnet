@@ -32,7 +32,7 @@ proDevs.forEach((d) => funderOf.set(d, PRO));
 type Coin = {
   i: number; mint: string; curve: string; sig: string; t: number; slot0: number; creator: string;
   bondAt: number | null; peak: number; peakAt: number; socials: boolean; desc: boolean; dev: number;
-  rug: boolean; rugAt: number; bundled: boolean; smartIn: number; postPeakUsd: number; postPeakAt: number; symbol: string; farm: boolean; wash?: boolean;
+  rug: boolean; rugAt: number; bundled: boolean; smartIn: number; postPeakUsd: number; postPeakAt: number; symbol: string; farm: boolean; wash?: boolean; tw?: { name: string; sym: string; url: string | null; real: boolean };
   ghost: boolean; pool: string; bv: string; qv: string; // ghost: curve hits 100% but never migrates (the v0.1.4 false graduations)
 };
 const coins: Coin[] = [];
@@ -45,7 +45,7 @@ const accs = new Map<string, { coin: Coin; w: string; role: string; amt: number 
 const accOf = new Map<string, string>(); // wallet|mint -> token account
 let slot = 1000;
 
-function spawnCoin() {
+function spawnCoin(tw?: { name: string; sym: string; url: string | null; real: boolean }) {
   const kp = Keypair.generate().publicKey;
   const mint = kp.toBase58();
   const [pda] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), kp.toBuffer()], PUMP);
@@ -59,7 +59,7 @@ function spawnCoin() {
   const bondP = (fac ? 0.002 : pro ? 0.18 : 0.008) + (socials ? 0.015 : 0) + (desc ? 0.006 : 0);
   const farm = rand() < 0.04; // block-0 farm: bundle pumps the curve, 5 bot wallets trade uniform sizes, fake bond, dump
   const ghost = !farm && rand() < 0.03;
-  const wash = !farm && !ghost && rand() < 0.05; // bot coin: a handful of wallets loop micro-buys, curve pumped by the dev, never bonds
+  const wash = !tw && !farm && !ghost && rand() < 0.05; // bot coin: a handful of wallets loop micro-buys, curve pumped by the dev, never bonds
   const bonds = !wash && (farm || ghost || rand() < bondP);
   // power law after bond: most die near $70K, a few run to $1M-$50M
   const u = Math.max(1e-6, rand());
@@ -72,6 +72,24 @@ function spawnCoin() {
     postPeakUsd: farm ? 80_000 : postPeakUsd, postPeakAt: 0, symbol: `C${coins.length}`, farm,
     ghost, pool: canonicalPool(mint), bv: pk(), qv: pk(), wash,
   };
+  if (tw) {
+    // tweet coins: the real one (first, links the post) often runs; copies die
+    c.tw = tw;
+    c.farm = false;
+    c.ghost = false;
+    c.wash = false;
+    c.socials = true;
+    if (tw.real && rand() < 0.55) {
+      c.bondAt = NOW + (4 + rand() * 12) * 60_000;
+      c.postPeakUsd = 70_000 * Math.pow(1 / Math.max(1e-6, rand()), 1.2);
+      c.postPeakAt = c.bondAt + (10 + rand() * 600) * 60_000;
+      c.rug = false;
+    } else {
+      c.bondAt = null;
+      c.peak = 5 + rand() * 20;
+      c.peakAt = NOW + (2 + rand() * 6) * 60_000;
+    }
+  }
   if (wash) {
     c.peak = 40 + rand() * 20;
     c.peakAt = NOW + (6 + rand() * 10) * 60_000;
@@ -197,7 +215,7 @@ function walletPk(w: string) {
 
 const str = (s: string) => { const x = Buffer.from(s); const l = Buffer.alloc(4); l.writeUInt32LE(x.length); return Buffer.concat([l, x]); };
 function createTx(c: Coin) {
-  const data = Buffer.concat([Buffer.from([214, 144, 76, 236, 95, 1, 2, 3]), str(`Coin ${c.i}`), str(c.symbol), str(`https://meta.test/${c.mint}`), new PublicKey(c.creator).toBuffer(), Buffer.from([0])]);
+  const data = Buffer.concat([Buffer.from([214, 144, 76, 236, 95, 1, 2, 3]), str(c.tw ? c.tw.name : `Coin ${c.i}`), str(c.tw ? c.tw.sym : c.symbol), str(`https://meta.test/${c.mint}`), new PublicKey(c.creator).toBuffer(), Buffer.from([0])]);
   return {
     slot: c.slot0,
     blockTime: Math.floor(c.t / 1000),
@@ -317,7 +335,7 @@ let rpc = 0;
   }
   const mint = u.split("/").pop()!;
   const c = byMint.get(mint);
-  return { ok: true, json: async () => ({ description: c?.desc ? "a real description of this coin and why it exists in the trenches" : "", twitter: c?.socials ? "https://x.com/c" : "", telegram: "", website: c?.socials ? "https://c.fun" : "", image: "" }) };
+  return { ok: true, json: async () => ({ description: c?.desc ? "a real description of this coin and why it exists in the trenches" : "", twitter: c?.tw?.url ? c.tw.url : c?.socials ? "https://x.com/c" : "", telegram: "", website: c?.socials ? "https://c.fun" : "", image: "" }) };
 };
 
 async function main() {
@@ -326,6 +344,12 @@ async function main() {
   const { dig } = await import("../src/lib/digger");
   const { deskSession, getDesk } = await import("../src/lib/desk");
   const { getRunner, topRunners } = await import("../src/lib/runner");
+  const { ingest, parseHook } = await import("../src/lib/wire");
+  const NAMES = [["Kekius Maximus", "KEKIUS"], ["Mars Colony", "MARS"], ["Gork", "GORK"], ["Dogefather", "DOGEFATHER"], ["Tariff Cat", "TARIFF"], ["Grok Imagine", "IMAGINE"], ["Pepe Tesla", "PEPETESLA"], ["Moonshot", "MOONSHOT"]];
+  const AUTH = ["elonmusk", "realDonaldTrump", "cz_binance", "blknoiz06", "WatcherGuru"];
+  let tweetN = 0;
+  let nextTweet = NOW + 10 * 60_000;
+  const pendingCopies: { at: number; tw: { name: string; sym: string; url: string | null; real: boolean } }[] = [];
   const HOURS = Number(process.env.HOURS || 6);
   const PER_MIN = Number(process.env.PER_MIN || 15);
   const end = NOW + HOURS * 3600_000;
@@ -335,6 +359,17 @@ async function main() {
   while (NOW < end) {
     const t = NOW;
     for (let i = 0; i < PER_MIN; i++) spawnCoin();
+    if (NOW >= nextTweet) {
+      nextTweet = NOW + (12 + rand() * 20) * 60_000;
+      const [name, sym] = NAMES[tweetN % NAMES.length];
+      const h = AUTH[tweetN % AUTH.length];
+      const id = String(1900000000000000000n + BigInt(tweetN++));
+      await ingest(parseHook({ tweets: [{ id, url: `https://x.com/${h}/status/${id}`, text: `${name} is coming`, createdAt: new Date(NOW).toISOString(), author: { userName: h, name: h, followers: 1e6 } }] }));
+      // within 2 minutes: the real coin (links the post) and 2 to 5 copies
+      pendingCopies.push({ at: NOW + 20_000, tw: { name, sym, url: `https://x.com/${h}/status/${id}`, real: true } });
+      for (let k = 0; k < 2 + Math.floor(rand() * 4); k++) pendingCopies.push({ at: NOW + 30_000 + k * 20_000, tw: { name: k % 2 ? `${name} Official` : name, sym, url: null, real: false } });
+    }
+    for (let k = pendingCopies.length - 1; k >= 0; k--) if (pendingCopies[k].at <= NOW + 60_000) spawnCoin(pendingCopies.splice(k, 1)[0].tw);
     const res: any = await deskSession(50_000, async () => {
       const d: any = await dig();
       if (d.ok === false && errs++ < 5) console.log("DIG ERR", d.error);
@@ -386,6 +421,10 @@ async function main() {
   for (const c of realBonds) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; rbCalled++; if (call.farm) rbFlag++; }
   console.log(`bot coins: ${washCoins.length} launched, ${wCalled} called, ${wFlag} flagged FARM, ${wBond} still called BOND, ${wTaped} read and not flagged · desk bought bot coins: ${(d.trades as any[]).filter((t) => t.side === "buy" && byMint.get(t.mint)?.wash).length} · real bonds wrongly flagged: ${rbFlag} of ${rbCalled}`);
   for (const t of (d.trades as any[]).filter((t) => t.side === "buy" && (byMint.get(t.mint)?.farm || byMint.get(t.mint)?.wash))) { const L = R.kv.get(`rn:launch:${t.mint}`) as any; console.log("BOUGHT BAD", t.symbol, t.reason, "early tape farm", L?.tape?.farm?.farm, "call farm", (R.kv.get(`rn:call:${t.mint}`) as any)?.farm, "ctx checks", JSON.stringify(t.ctx?.checks?.find((c: any) => c.rule === "not_a_farm"))); }
+  const twCoins = coins.filter((c) => c.tw);
+  const picked = twCoins.filter((c) => (R.kv.get(`rn:launch:${c.mint}`) as any)?.wire?.pick);
+  const boughtTw = (d.trades as any[]).filter((t) => t.side === "buy" && byMint.get(t.mint)?.tw);
+  console.log(`wire: ${tweetN} posts, ${twCoins.length} tweet coins, matched ${twCoins.filter((c) => (R.kv.get(`rn:launch:${c.mint}`) as any)?.wire).length}, picked ${picked.length} (real ${picked.filter((c) => c.tw!.real).length}), desk bought ${boughtTw.length} (real ${boughtTw.filter((t) => byMint.get(t.mint)!.tw!.real).length})`);
   const realBundled = coins.filter((c) => !c.farm && c.bundled && c.bondAt);
   let rFlag = 0, rCalled = 0;
   for (const c of realBundled) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; rCalled++; if (call.farm) rFlag++; }

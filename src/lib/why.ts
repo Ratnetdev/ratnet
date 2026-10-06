@@ -21,10 +21,12 @@ type In = {
   tape?: Tape | null;
   g?: Graph | null;
   meta?: Meta | null;
+  wire?: { h: string; lagSec: number; how: string } | null;
+  pulse?: { term: string; x: number; mood: string } | null;
 };
 
 export function whyOf(i: In): Why {
-  const s = score({ ...i, farm: !!i.tape?.farm?.farm });
+  const s = score({ ...i, farm: !!i.tape?.farm?.farm, wire: !!i.wire, pulse: !!i.pulse && !i.wire });
   const plus: [number, string][] = [];
   const minus: [number, string][] = [];
   const p = s.parts;
@@ -54,6 +56,8 @@ export function whyOf(i: In): Why {
     else if (g.clRatio >= 2) plus.push([14, `dev's funder bonds ${g.clRatio}x more often than average`]);
   }
   if (i.meta?.copy) minus.push([8, "copies a recent winner"]);
+  if (i.wire) plus.push([22, `launched ${i.wire.lagSec}s after @${i.wire.h} posted (${i.wire.how})`]);
+  if (i.pulse && !i.wire) plus.push([14, `"${i.pulse.term}" is rising on X right now (${i.pulse.x}x its usual pace, mood ${i.pulse.mood})`]);
   if (i.meta?.hot) plus.push([6, `rides the hot meta "${i.meta.hot}"`]);
   const top = (a: [number, string][], n: number) => a.sort((x, y) => y[0] - x[0]).slice(0, n).map((x) => x[1]);
   return { plus: top(plus, 3), minus: top(minus, 2) };

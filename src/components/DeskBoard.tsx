@@ -45,7 +45,14 @@ type Film = {
   calls: Record<string, { bonded: number; died: number }>;
   misses: { mint: string; symbol: string; verdict: string; score: number; nano: { verdict: string; score: number } | null; minus: string[]; curve: number; bondSecs: number | null; at: number }[];
 };
+type WireT = { id: string; h: string; at: number; text: string; terms: string[]; url: string; kind: string; picked: string | null };
+type WireA = { h: string; cat: string; tier: string; tweets: number; matches: number; sparks: number; picks: number; runs: number; pnl: number; w: number };
+type Rising = { term: string; now: number; usual: number; x: number; mood: string; posts15: number };
+type Wire = { on: boolean; j7?: { on: boolean; last: { at: number; got: number; error: string | null } | null; covered: number } | null; pulse?: { at: number; rising: Rising[] } | null; tweets: (WireT & { src?: string; ca?: string })[]; accounts: WireA[]; candidates: { h: string; pts: number }[] };
+type PmRow = { sleeve: string; trades: number; wins: number; winRate: number | null; avg: number | null; w: number; paused: number | null };
 type Desk = {
+  wire?: Wire | null;
+  pm?: PmRow[] | null;
   film?: Film | null;
   coach?: Coach | null;
   now?: DeskNowData | null;
@@ -83,6 +90,9 @@ const ROLES: [string, string][] = [
   ["COACH", "reviews every exit, entry"],
   ["LEDGER", "keeps the books"],
   ["FILM", "reviews every decision later"],
+  ["WIRE", "X posts that spawn coins"],
+  ["PM", "splits capital across strategies"],
+  ["PULSE", "what X is talking about now"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
 const pct = (a: number, b: number) => (b ? ((a - b) / b) * 100 : 0);
@@ -374,6 +384,76 @@ export default function DeskBoard() {
           </div>
         </div>
       </section>
+      <section className="grid g-main mt">
+        <div className="panel">
+          <div className="ph"><span><Info k="wire"><b>wire</b></Info> · X posts that spawn coins</span><span className="tiny muted">{d?.wire ? (d.wire.on ? `${Math.max(d.wire.j7?.covered ?? 0, d.wire.accounts.filter((a) => a.tier !== "muted").length).toLocaleString("en-US")} accounts${d.wire.j7?.on ? ` · J7 ${d.wire.j7.last?.error ? "error" : "live"}` : ""}` : "waiting for J7_JWT or X_API_KEY") : ""}</span></div>
+          <div className="wire-list">
+            {(d?.wire?.tweets || []).slice(0, 10).map((t) => (
+              <div key={t.id} className="wire-t">
+                <div className="wire-h"><a href={t.url} target="_blank" rel="noreferrer">@{t.h}</a><span className="muted"> · {ago(t.at)} ago{t.kind !== "post" ? ` · ${t.kind}` : ""}{t.src && !["j7", "tapi"].includes(t.src) ? ` · ${t.src}` : ""}{t.ca ? " · CA" : ""}</span>{t.picked ? <Link href={`/c/${t.picked}`} className="wire-pick">coin picked →</Link> : null}</div>
+                <div className="wire-x">{t.text}</div>
+                {t.terms.length ? <div className="wire-terms">{t.terms.slice(0, 6).map((x) => <span key={x}>{x}</span>)}</div> : null}
+              </div>
+            ))}
+            {!d?.wire?.tweets?.length && <div className="pb small muted">{d?.wire?.on ? "No tracked posts yet. They land here within seconds of being posted." : "WIRE starts once the X data key is set. It already holds the seed list of accounts."}</div>}
+          </div>
+        </div>
+        <div className="grid" style={{ alignContent: "start" }}>
+          <div className="panel">
+            <div className="ph"><span><Info k="pulse"><b>pulse</b></Info> · rising on X now</span><span className="tiny muted">{d?.wire?.pulse ? `${ago(d.wire.pulse.at)} ago` : ""}</span></div>
+            <div className="pulse-list">
+              {(d?.wire?.pulse?.rising || []).slice(0, 8).map((x) => (
+                <div key={x.term} className="pulse-r">
+                  <b>{x.term}</b>
+                  <span className="pulse-bar"><i style={{ width: `${Math.min(100, (x.x / Math.max(...(d?.wire?.pulse?.rising || []).map((y) => y.x), 1)) * 100)}%` }} /></span>
+                  <span>{x.x}x</span>
+                  <em style={{ color: x.mood === "bullish" ? "var(--rat)" : x.mood === "bearish" ? "var(--dust)" : "var(--mute)" }}>{x.mood}</em>
+                </div>
+              ))}
+              {!d?.wire?.pulse?.rising?.length && <div className="pb tiny muted">Nothing running at 3x its usual pace right now. Rising narratives show here within a minute.</div>}
+            </div>
+          </div>
+          <div className="panel">
+            <div className="ph"><span><Info k="pm"><b>pm</b></Info> · strategy sleeves</span></div>
+            <div className="scroll">
+              <table className="tbl">
+                <thead><tr><th>Sleeve</th><th>Trades</th><th>Win</th><th>Avg</th><th>Size</th></tr></thead>
+                <tbody>
+                  {(d?.pm || []).map((x) => (
+                    <tr key={x.sleeve}>
+                      <td>{x.sleeve === "king" ? "King calls" : x.sleeve === "early" ? "Early reads" : "Tweet coins"}</td>
+                      <td className="muted">{x.trades}</td>
+                      <td className="muted">{x.winRate != null ? `${x.winRate}%` : "–"}</td>
+                      <td style={{ color: (x.avg ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{x.avg != null ? `${sign(x.avg)}%` : "–"}</td>
+                      <td style={{ color: x.paused ? "var(--dust)" : x.w > 1 ? "var(--rat)" : "var(--text)" }}>{x.paused ? `paused to ${new Date(x.paused).toISOString().slice(11, 16)} UTC` : `${x.w}x`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="panel">
+            <div className="ph"><span><b>accounts</b> · trust earned by results</span><span className="tiny muted">{d?.wire?.candidates?.length ? `${d.wire.candidates.length} candidates` : ""}</span></div>
+            <div className="scroll" style={{ maxHeight: 320 }}>
+              <table className="tbl">
+                <thead><tr><th>Account</th><th>Posts</th><th>Sparked</th><th>Bonded</th><th>Trust</th></tr></thead>
+                <tbody>
+                  {(d?.wire?.accounts || []).filter((a) => a.tier !== "muted").slice(0, 25).map((a) => (
+                    <tr key={a.h}>
+                      <td><a href={`https://x.com/${a.h}`} target="_blank" rel="noreferrer">@{a.h}</a>{a.tier === "found" ? <span className="trip-tag">found</span> : null}</td>
+                      <td className="muted">{a.tweets}</td>
+                      <td className="muted">{a.sparks}</td>
+                      <td className="muted">{a.runs}</td>
+                      <td style={{ color: a.w >= 0.4 ? "var(--rat)" : a.w >= 0.2 ? "var(--text)" : "var(--mute)" }}>{a.w}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="panel mt film">
         <div className="ph"><span><Info k="film"><b>film room</b></Info> · every decision, reviewed against what happened next</span><span className="tiny muted">{d?.film ? `${d.film.pending} reviews queued` : ""}</span></div>
         <div className="film-grid">

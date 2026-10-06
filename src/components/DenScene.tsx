@@ -5,7 +5,7 @@ import { useEffect, useRef } from "react";
 // and a speech bubble shows what it did. A coin token walks the pipeline when the desk buys.
 
 type Ev = { agent: string; at: number; symbol?: string; text: string; tone: string };
-const ORDER = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM"];
+const ORDER = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "WIRE", "PM", "PULSE"];
 export const AGENT_COLOR: Record<string, string> = {
   SCOUT: "#8cff5a",
   KING: "#ffb547",
@@ -21,6 +21,9 @@ export const AGENT_COLOR: Record<string, string> = {
   RISK: "#ff5c5c",
   LEDGER: "#e8e8e8",
   FILM: "#d4c5ff",
+  WIRE: "#4fd1ff",
+  PM: "#f2d27a",
+  PULSE: "#ff8fd8",
 };
 const TONE: Record<string, string> = { ok: "#8cff5a", bad: "#ff5c5c", info: "#c8d3cc", win: "#ffb547", loss: "#ff5c5c" };
 const RAT = [
@@ -72,7 +75,7 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
     let H = 440;
     const resize = () => {
       W = el.clientWidth;
-      H = W < 640 ? 540 : 560;
+      H = W < 640 ? 680 : 680;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       c.width = W * dpr;
       c.height = H * dpr;

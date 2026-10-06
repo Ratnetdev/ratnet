@@ -74,7 +74,6 @@ export async function coachStep(solUsd: number | null, max = 8) {
     const m = mkt[f.mint];
     // what is behind a move: only looked for when the coin ran 50%+ past our exit
     const why: string[] = [];
-    if (!px) why.push("no price: dead or never migrated");
     if (vsExit >= 50) {
       if (!onCurve && pool && !f.exitGrad) why.push("migrated after we sold");
       if (m) {
@@ -101,6 +100,7 @@ export async function coachStep(solUsd: number | null, max = 8) {
     p.hincrbyfloat(STAT, `${k}:sum`, Math.log(Math.max(0.01, px / f.exitPx)));
     if (vsExit >= 100) p.hincrby(STAT, `${k}:up2`, 1);
     if (vsExit <= -50) p.hincrby(STAT, `${k}:dn50`, 1);
+    if (!px) p.hincrby(STAT, `${k}:dead`, 1);
     for (const w of why) if (w !== "no clear trigger found") p.hincrby(STAT, `why:${w.replace(/[0-9$.,]+/g, "#").replace(/\s+/g, " ").trim()}`, 1);
     const big = vsExit >= 100 || vsExit <= -50 || k === "1h" || k === "1d";
     if (big || vsExit >= 50)

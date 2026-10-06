@@ -22,6 +22,8 @@ export type Ctx = {
   socials: { x: boolean; tg: boolean; web: boolean };
   meta: { hot: string | null; copy: boolean } | null;
   solUsd: number | null;
+  sleeve?: string;
+  wire?: { h: string; text: string; how: string; lagSec: number; trust: number } | null;
 };
 export type Exit = { at: number; sol: number; reason: string; pnlPct: number | null; sig?: string; px?: number; mc?: number | null; tokens?: number };
 export type Trip = {
@@ -194,9 +196,15 @@ export default function TripDetail({ t, coinLink = true }: { t: Trip; coinLink?:
             <KV k="The call" v={call} sub={c?.nano ? `nano ${c.nano.verdict} ${c.nano.score}` : t.nano != null ? `nano ${t.nano}` : "nano learning"} />
             <KV k="Market cap at call" v={usd(c?.callMc)} sub={c?.callCurve != null ? `curve ${c.callCurve}%` : ""} />
             <KV k="Call to buy" v={c?.callAt ? dur(t.openedAt - c.callAt) : "–"} sub={c?.chasePct != null ? `price ${sgn(c.chasePct)}% vs call` : ""} />
-            <KV k="Entry type" v={t.how === "stalk" ? "pullback" : t.how === "early" ? "minute 1" : "on the call"} sub={t.live ? "live wallet" : "paper"} />
+            <KV k="Strategy" v={t.how === "wire" ? "tweet coin" : t.how === "stalk" ? "pullback" : t.how === "early" ? "minute 1" : "on the call"} sub={t.live ? "live wallet" : "paper"} />
             <KV k="Size" v={`${t.costSol.toFixed(3)} ◎`} sub={t.tokens ? `${Math.round(t.tokens).toLocaleString("en-US")} tokens` : ""} />
           </div>
+          {c?.wire ? (
+            <div className="td-wire">
+              <span>born from a post by <a href={`https://x.com/${c.wire.h}`} target="_blank" rel="noreferrer">@{c.wire.h}</a> · {c.wire.how} · {c.wire.lagSec}s after it · trust {c.wire.trust}</span>
+              <q>{c.wire.text}</q>
+            </div>
+          ) : null}
           {c?.flow || c?.buzz ? (
             <div className="td-note">
               {c.flow ? <div><span>FLOW</span>{c.flow}</div> : null}

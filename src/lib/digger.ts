@@ -11,6 +11,8 @@ import { whyOf, type Why } from "./why";
 import { noteCall } from "./receipts";
 import { queueBonded, queueCall } from "./tg";
 import { reviewCall } from "./film";
+import { pulseMatch, pulseView } from "./pulse";
+import { closeTweet, dueTweets, matchOne, noteBondLink, noteMatch, noteOutcome, recentTweets, accountOf, type WireMatch, type XTweet } from "./wire";
 import { creditResolve, Graph, readGraph } from "./graph";
 import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
 import { enroll, Run, runnerPass } from "./runner";
@@ -71,6 +73,8 @@ export type Launch = {
   outcome?: Outcome;
   resolvedAt?: number;
   bondSecs?: number;
+  wire?: WireMatch | null; // born from a tracked X post (see lib/wire.ts)
+  pulse?: { term: string; x: number; mood: string } | null; // named after a narrative rising on X right now (see lib/pulse.ts)
   completeAt?: number; // curve hit 100%: waiting for proof it migrated into its canonical pool
   stuck?: boolean; // curve completed but never migrated: not a graduation
   supply?: number; // token supply from the curve (1B on standard pump.fun)
@@ -263,6 +267,7 @@ async function digInner(): Promise<Record<string, unknown>> {
     await recordSol(SOL_USD).catch(() => {});
     ensureSolHistory().catch(() => {});
     const dug = await digNew(model);
+    const wire = await wirePicks().catch((e) => ({ wireError: safeErr(e) }));
     const due = await processDue(model);
     const hot = await hotWatch(model);
     const mig = await migrations(model).catch((e) => ({ migError: safeErr(e) }));
@@ -270,7 +275,7 @@ async function digInner(): Promise<Record<string, unknown>> {
     const run = await runnerPass(CURVE_USD, RUN_EV, SOL_USD).catch((e) => ({ runnerError: safeErr(e) }));
     // live $RAT fee pool and payout weights for the money pages (each throttled, cheap when fresh)
     await Promise.all([trackFees().catch(() => null), trackWeights().catch(() => null)]);
-    return { ok: true, ...(ep || {}), ...dug, ...due, ...hot, ...mig, ...les, ...run, ms: Date.now() - started };
+    return { ok: true, ...(ep || {}), ...dug, ...wire, ...due, ...hot, ...mig, ...les, ...run, ms: Date.now() - started };
   } catch (e) {
     return { ok: false, error: safeErr(e) };
   } finally {
@@ -325,6 +330,8 @@ async function digNew(model: NanoModel) {
   const p = c.p;
   const last: Record<string, unknown> = {};
   const seenDev: Record<string, number> = {};
+  const posts: XTweet[] = await recentTweets().catch(() => []);
+  const rising = (await pulseView().catch(() => null))?.rising || [];
   const dueAdds: { score: number; member: string }[] = [];
   const hotAdds: { score: number; member: string }[] = [];
   const radarAdds: { score: number; member: string }[] = [];
@@ -353,6 +360,15 @@ async function digNew(model: NanoModel) {
     };
     if (l.creator) p.hincrby(K.devN, l.creator, 1);
     metaLaunch(p, l.name, l.symbol);
+    // WIRE: was this coin born from a tracked post?
+    const wm = posts.length ? matchOne({ ...l, description: rec.description, twitter: rec.twitter }, posts) : null;
+    const pm = !wm && rising.length ? pulseMatch(l, rising) : null;
+    if (pm) rec.pulse = pm;
+    if (wm) {
+      rec.wire = wm;
+      noteMatch(p, l.mint, l.createdAt, wm);
+      agentLog(p, [{ agent: "WIRE", at: c.now, mint: l.mint, symbol: l.symbol, text: `$${l.symbol} launched ${wm.lagSec}s after @${wm.h} posted (${wm.how})`, tone: "info" }]);
+    }
     const socials = [rec.twitter && "x", rec.telegram && "tg", rec.website && "web"].filter(Boolean).join(" ");
     const devTxt = prior > 0 ? ` · dev ${prior} prior${rec.devB ? `, ${rec.devB} bonded` : ""}` : "";
     c.feed.push({
@@ -539,6 +555,9 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
     inc(c, "learn_precall");
   }
 
+  // WIRE learns which accounts' posts make coins that bond; bonded coins that link a post point at new accounts
+  if (rec.wire) noteOutcome(p, rec.wire.h, outcome === "BONDED");
+  if (outcome === "BONDED") noteBondLink(p, rec.twitter);
   // FILM: the call meets its outcome. Misses and false BONDs go to the film room with the reasons behind them.
   if (rec.call) {
     const why = rec.call.why || whyOf({ ...rec, progress: rec.call.progress, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null });
@@ -782,7 +801,7 @@ function graphLine(g: Graph, meta: Meta | null) {
 /** Minute-1 read: its own model, its own scoreboard. The desk may act on it only after the early record earns it. */
 function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   const x = features(featIn(rec, curveNow, ex));
-  const v0 = score({ progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, description: rec.description, symbol: rec.symbol, name: rec.name, devBuySol: rec.devBuySol, farm: !!ex.tape?.farm?.farm });
+  const v0 = score({ progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, description: rec.description, symbol: rec.symbol, name: rec.name, devBuySol: rec.devBuySol, farm: !!ex.tape?.farm?.farm, wire: !!rec.wire, pulse: !rec.wire && !!rec.pulse });
   const sc = c.model1.n >= NANO_MIN ? nanoScore(c.model1, x) : v0.score;
   const verdict = verdictOf(sc);
   rec.early = { at: c.now, score: sc, verdict, curve: curveNow, x };
@@ -820,6 +839,8 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     name: rec.name,
     devBuySol: rec.devBuySol,
     farm: !!farm,
+    wire: !!rec.wire,
+    pulse: !rec.wire && !!rec.pulse,
   });
   const x = features(featIn(rec, curveNow, { ...ex, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null }));
   const nano =
@@ -902,6 +923,65 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     at: c.now,
     text: `${sc.verdict} ${sc.score}/100${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""} · curve ${curveNow}%${farm ? ` · FARM (${farm.why})` : ""}${counted ? "" : " · late, not counted"}`,
   });
+}
+
+// ---------------------------------------------------------------- WIRE picks
+
+const WIRE_MIN_CURVE = 2; // % before a tweet coin counts as a real candidate
+const WIRE_WAIT_MS = 10 * 60_000; // give up on a post after this long without a real candidate
+
+/** 30s after the first launch on a post: pick the leader among the copies, read its tape, hand it to the desk. */
+async function wirePicks() {
+  const r = redis();
+  const due = await dueTweets();
+  if (!due.length) return { wirePicked: 0 };
+  let picked = 0;
+  const s = await getSettings();
+  for (const d of due) {
+    const mints = d.mints.map((x) => x.mint);
+    const recs = mints.length ? (((await r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m)))) || []) as (Launch | null)[]) : [];
+    const curves = mints.length ? await getCurves(mints) : {};
+    const ranked = d.mints
+      .map((x, i) => ({ ...x, rec: recs[i], cv: curves[x.mint] }))
+      .filter((x) => x.rec && !x.rec.outcome && x.cv && !x.cv.complete && x.cv.progress >= WIRE_MIN_CURVE)
+      // the coin that links the post (or was posted) beats a same-named copy; the first one out gets an edge too
+      .map((x) => ({ ...x, rank: x.cv!.progress * x.score * x.score }))
+      .sort((a, b) => b.rank - a.rank);
+    const firstAt = Math.min(...ranked.map((x) => x.rec!.createdAt));
+    for (const x of ranked) if (x.rec!.createdAt === firstAt) x.rank *= 1.3;
+    ranked.sort((a, b) => b.rank - a.rank);
+    const wm = recs.find((x) => x?.wire)?.wire;
+    if (!ranked.length) {
+      if (d.age > WIRE_WAIT_MS) await closeTweet(d.tid, null, wm?.h || "?");
+      continue;
+    }
+    // the leader: most real SOL in among the best matches. Copies are noise.
+    let lead: (typeof ranked)[number] | null = null;
+    for (const cand of ranked.slice(0, 2)) {
+      const tape = await readTape(cand.mint, cand.rec!.creator, cand.rec!.createdAt).catch(() => null);
+      if (!tape || tape.farm?.farm) continue;
+      cand.rec!.tape = tape;
+      lead = cand;
+      break;
+    }
+    const rec = lead?.rec;
+    if (!rec || !rec.wire) {
+      if (d.age > WIRE_WAIT_MS) await closeTweet(d.tid, null, wm?.h || "?");
+      continue;
+    }
+    rec.wire = { ...rec.wire, pick: true };
+    await r.set(K.launch(rec.mint), rec, { keepTtl: true });
+    await closeTweet(d.tid, rec.mint, rec.wire.h);
+    picked++;
+    const { w } = await accountOf(rec.wire.h);
+    const p = r.pipeline();
+    const send = w >= (s.desk.wireMinW ?? 0.2);
+    if (send) p.zadd(K.deskQ, { score: Date.now(), member: `w:${rec.mint}` });
+    agentLog(p, [{ agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `picked $${rec.symbol} for @${rec.wire.h}'s post: ${d.mints.length} coin${d.mints.length > 1 ? "s" : ""} launched on it, leader at ${lead!.cv!.progress}% curve, ${rec.tape!.uniq} traders. trust in @${rec.wire.h} ${w}${send ? ", sent to the desk" : ", below the trust line: learning only"}`, tone: send ? "ok" : "info" }]);
+    if (send) p.lpush(K.deskEv, { agent: "WIRE", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} from @${rec.wire.h}'s post, sent to the desk`, tone: "ok" });
+    await p.exec();
+  }
+  return { wirePicked: picked };
 }
 
 // ---------------------------------------------------------------- graduation proof
