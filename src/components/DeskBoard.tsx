@@ -48,7 +48,7 @@ type Film = {
 type WireT = { id: string; h: string; at: number; text: string; terms: string[]; url: string; kind: string; picked: string | null };
 type WireA = { h: string; cat: string; tier: string; tweets: number; matches: number; sparks: number; picks: number; runs: number; pnl: number; w: number };
 type Rising = { term: string; now: number; usual: number; x: number; mood: string; posts15: number };
-type Wire = { on: boolean; j7?: { on: boolean; last: { at: number; got: number; error: string | null } | null; covered: number } | null; pulse?: { at: number; rising: Rising[] } | null; tweets: (WireT & { src?: string; ca?: string })[]; accounts: WireA[]; candidates: { h: string; pts: number }[] };
+type Wire = { on: boolean; j7?: { on: boolean; last: { at: number; got: number; error: string | null } | null; covered: number } | null; pulse?: { at: number; rising: Rising[]; warming?: number } | null; tweets: (WireT & { src?: string; ca?: string })[]; accounts: WireA[]; candidates: { h: string; pts: number }[] };
 type PmRow = { sleeve: string; trades: number; wins: number; winRate: number | null; avg: number | null; w: number; paused: number | null };
 type Desk = {
   wire?: Wire | null;
@@ -410,7 +410,7 @@ export default function DeskBoard() {
                   <em style={{ color: x.mood === "bullish" ? "var(--rat)" : x.mood === "bearish" ? "var(--dust)" : "var(--mute)" }}>{x.mood}</em>
                 </div>
               ))}
-              {!d?.wire?.pulse?.rising?.length && <div className="pb tiny muted">Nothing running at 3x its usual pace right now. Rising narratives show here within a minute.</div>}
+              {!d?.wire?.pulse?.rising?.length && <div className="pb tiny muted">{d?.wire?.pulse?.warming ? `Learning the usual pace of every topic first: ready in about ${d.wire.pulse.warming} hour${d.wire.pulse.warming > 1 ? "s" : ""}.` : "Nothing running at 3x its usual pace right now. Rising narratives show here within a minute."}</div>}
             </div>
           </div>
           <div className="panel">

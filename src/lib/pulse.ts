@@ -8,6 +8,7 @@ import type { XTweet } from "./wire";
 const B5 = (t: number) => `rn:pl:5:${Math.floor(t / 300_000)}`;
 const BH = (t: number) => `rn:pl:h:${Math.floor(t / 3600_000)}`;
 const VIEW = "rn:pl:view";
+const WARM_HOURS = 3; // hours of history before PULSE calls anything rising
 const SEEN = "rn:pl:top"; // terms already announced as rising (6h)
 const BULL = /\b(moon|send|sending|pump|bull|bullish|ath|ape|aped|buy|buying|lfg|huge|massive|launch|launching|gem|100x|10x|win|winning|up only)\b/gi;
 const BEAR = /\b(rug|rugged|dump|dumping|scam|bear|bearish|sell|selling|dead|crash|down|rekt|honeypot|exploit|hack|hacked)\b/gi;
@@ -56,13 +57,18 @@ export async function pulseTick() {
     for (const h of [curH, ...hours.slice(0, 2)]) m += Number((h || {})[`${term}~m`] || 0);
     return m > 1 ? "bullish" : m < -1 ? "bearish" : "mixed";
   };
+  // warm-up: without a few hours of history every term looks like it is rising
+  if (hoursSeen < WARM_HOURS) {
+    await r.set(VIEW, { at: now, rising: [], warming: WARM_HOURS - hoursSeen }, { ex: 900 });
+    return [];
+  }
   const per15 = Math.max(1, hoursSeen) * 4; // 15-minute windows in the baseline
   const rising: Rising[] = Object.entries(last15)
     .map(([term, n]) => {
       const usual = (day[term] || 0) / per15;
       return { term, now: Math.round(n * 10) / 10, usual: Math.round(usual * 10) / 10, x: Math.round((n / (usual + 1)) * 10) / 10, mood: moodOf(term) as Rising["mood"], posts15: Math.round(n) };
     })
-    .filter((x) => x.now >= 6 && x.x >= 3)
+    .filter((x) => x.now >= 8 && x.x >= 3)
     .sort((a, b) => b.x * Math.log(1 + b.now) - a.x * Math.log(1 + a.now))
     .slice(0, 12);
   await r.set(VIEW, { at: now, rising }, { ex: 900 });
@@ -71,8 +77,8 @@ export async function pulseTick() {
   return fresh;
 }
 
-export async function pulseView(): Promise<{ at: number; rising: Rising[] } | null> {
-  return (await redis().get<{ at: number; rising: Rising[] }>(VIEW)) || null;
+export async function pulseView(): Promise<{ at: number; rising: Rising[]; warming?: number } | null> {
+  return (await redis().get<{ at: number; rising: Rising[]; warming?: number }>(VIEW)) || null;
 }
 
 /** Is a new launch named after a rising narrative? */
