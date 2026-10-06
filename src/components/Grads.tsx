@@ -42,12 +42,12 @@ export default function GradList({ grads, full = false }: { grads: Grad[]; full?
         <thead>
           <tr>
             <th>Coin</th>
-            <th>Bonded in</th>
-            <th>King said</th>
+            <th><Info k="bondedin">Bonded in</Info></th>
+            <th><Info k="king">King said</Info></th>
             <th><Info k="peak">Peak</Info></th>
             <th><Info k="fromcall">From call</Info></th>
-            {full && <th>Nano said</th>}
-            {full && <th>Dev</th>}
+            {full && <th><Info k="nano">Nano said</Info></th>}
+            {full && <th><Info k="dev">Dev</Info></th>}
             <th>When</th>
           </tr>
         </thead>

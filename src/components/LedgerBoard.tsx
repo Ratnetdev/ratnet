@@ -2,6 +2,7 @@
 import { usePoll } from "./usePoll";
 import { ago, countdown, num, short, solscanAcc, solscanTx } from "./fmt";
 import { Fragment, useEffect, useState } from "react";
+import Info from "./Info";
 
 type Payout = { owner: string; rats: string[]; work: number; mult: number; sol: number; capped: number; sig?: string };
 type Round = { id: number; startsAt: number; endsAt: number; feesSol: number; computeSol: number; ownersSol: number; cappedSol: number; eligible: number; payouts: Payout[]; status: string };
@@ -24,17 +25,17 @@ export default function LedgerBoard() {
   return (
     <>
       <section className="grid g4">
-        <div className="panel glow"><div className="pb stat"><div className="k">$RAT burned</div><div className="big rat">{num(data?.stats.burnedRat ?? 0)}</div><div className="s">spawns + sniff orders</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Paid to rat owners</div><div className="big">{totals.owners.toFixed(3)} ◎</div><div className="s">40% of fees</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">To compute</div><div className="big">{totals.compute.toFixed(3)} ◎</div><div className="s">60%: digging, training, calls</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Round #{data?.current.id ?? "…"} closes in</div><div className="big">{data ? countdown(data.current.endsAt) : "--:--:--"}</div><div className="s">every 12h</div></div></div>
+        <div className="panel glow"><div className="pb stat"><div className="k"><Info k="burned">$RAT burned</Info></div><div className="big rat">{num(data?.stats.burnedRat ?? 0)}</div><div className="s">spawns + sniff orders</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="paidowners">Paid to rat owners</Info></div><div className="big">{totals.owners.toFixed(3)} ◎</div><div className="s">40% of fees</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="compute">To compute</Info></div><div className="big">{totals.compute.toFixed(3)} ◎</div><div className="s">60%: digging, training, calls</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="round">Round #{data?.current.id ?? "…"} closes in</Info></div><div className="big">{data ? countdown(data.current.endsAt) : "--:--:--"}</div><div className="s">every 12h</div></div></div>
       </section>
 
       <section className="panel mt">
-        <div className="ph"><span><b>payout rounds</b> · every transfer on Solscan</span></div>
+        <div className="ph"><span><Info k="t_rounds"><b>payout rounds</b></Info> · every transfer on Solscan</span></div>
         <div className="scroll">
           <table className="tbl">
-            <thead><tr><th>Round</th><th>Window (UTC)</th><th>Fees</th><th>Compute 60%</th><th>Owners 40%</th><th>Eligible rats</th><th>Status</th><th /></tr></thead>
+            <thead><tr><th>Round</th><th><Info k="window">Window (UTC)</Info></th><th><Info k="fees">Fees</Info></th><th><Info k="compute">Compute 60%</Info></th><th><Info k="owners40">Owners 40%</Info></th><th><Info k="eligible">Eligible rats</Info></th><th><Info k="roundstatus">Status</Info></th><th /></tr></thead>
             <tbody>
               {(data?.rounds || []).map((r) => (
                 <Fragment key={r.id}>
@@ -68,10 +69,10 @@ export default function LedgerBoard() {
       </section>
 
       <section className="panel mt">
-        <div className="ph"><span><b>burns</b> · verified on chain</span></div>
+        <div className="ph"><span><Info k="t_burns"><b>burns</b></Info> · verified on chain</span></div>
         <div className="scroll">
           <table className="tbl">
-            <thead><tr><th>What</th><th>Wallet</th><th>Amount</th><th>When</th><th>Tx</th></tr></thead>
+            <thead><tr><th><Info k="what">What</Info></th><th>Wallet</th><th><Info k="amount">Amount</Info></th><th>When</th><th>Tx</th></tr></thead>
             <tbody>
               {(data?.burns || []).map((b) => (
                 <tr key={b.sig}>

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { usePoll } from "./usePoll";
 import { useLive } from "./Live";
 import { num } from "./fmt";
+import Info from "./Info";
 
 type Bucket = { lo: number; n: number; b: number; rate: number | null };
 type HourRow = { h: number; d: number; b: number; bn: number; bh: number; nbn: number; nbh: number };
@@ -28,7 +29,7 @@ export function ScoreChart({ title = true }: { title?: boolean }) {
   return (
     <div className="panel">
       <div className="ph">
-        <span><b>does the score mean anything?</b> · graduation rate by score</span>
+        <span><Info k="t_proof"><b>does the score mean anything?</b></Info> · graduation rate by score</span>
         <span className="row" style={{ gap: 6 }}>
           {(["v0", "nano"] as const).map((m) => (
             <button key={m} className={`btn ${model === m ? "" : "dim"}`} style={{ padding: "2px 10px", fontSize: 11 }} onClick={() => setModel(m)}>{m}</button>
@@ -90,7 +91,7 @@ export function HourlyChart() {
     .join(" L");
   return (
     <div className="panel">
-      <div className="ph"><span><b>last 24 hours</b> · King BOND hit rate per hour vs random</span></div>
+      <div className="ph"><span><Info k="t_24"><b>last 24 hours</b></Info> · King BOND hit rate per hour vs random</span></div>
       <div className="pb">
         <svg viewBox={`0 0 ${W} ${H + 22}`} style={{ width: "100%", height: "auto" }} role="img" aria-label="hourly hit rate">
           {pts.map((p, i) => {

@@ -2,6 +2,7 @@
 import { usePoll } from "./usePoll";
 import { num } from "./fmt";
 import type { Stats } from "./LiveBoard";
+import Info from "./Info";
 
 type Weights = {
   samples: number;
@@ -96,22 +97,22 @@ export default function LabBoard() {
   return (
     <>
       <section className="grid g4">
-        <div className="panel glow"><div className="pb stat"><div className="k">Samples learned</div><div className="big rat">{num(data?.samples ?? 0)}</div><div className="s">every resolved launch is one step</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Bonds seen</div><div className="big" style={{ color: "var(--bond)" }}>{num(data?.bonded_samples ?? 0)}</div><div className="s">the rare positives it learns from</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Loss (EMA)</div><div className="big">{data ? data.loss_ema.toFixed(3) : "–"}</div><div className="s">log loss, lower is better (0.693 = coin flip)</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Status</div><div className="big" style={{ color: ready ? "var(--rat)" : "var(--watch)" }}>{ready ? "CALLING" : "LEARNING"}</div><div className="s">{ready ? "nano calls count on the board" : `${num(data?.samples ?? 0)} / ${data?.counted_calls_from ?? 200} before its calls count`}</div></div></div>
+        <div className="panel glow"><div className="pb stat"><div className="k"><Info k="samples">Samples learned</Info></div><div className="big rat">{num(data?.samples ?? 0)}</div><div className="s">every resolved launch is one step</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="bondsseen">Bonds seen</Info></div><div className="big" style={{ color: "var(--bond)" }}>{num(data?.bonded_samples ?? 0)}</div><div className="s">the rare positives it learns from</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="loss">Loss (EMA)</Info></div><div className="big">{data ? data.loss_ema.toFixed(3) : "–"}</div><div className="s">log loss, lower is better (0.693 = coin flip)</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="labstatus">Status</Info></div><div className="big" style={{ color: ready ? "var(--rat)" : "var(--watch)" }}>{ready ? "CALLING" : "LEARNING"}</div><div className="s">{ready ? "nano calls count on the board" : `${num(data?.samples ?? 0)} / ${data?.counted_calls_from ?? 200} before its calls count`}</div></div></div>
       </section>
 
       <section className="grid g-main mt">
         <div className="panel">
-          <div className="ph"><span><b>training loss</b> · rat king nano · live</span></div>
+          <div className="ph"><span><Info k="t_tloss"><b>training loss</b></Info> · rat king nano · live</span></div>
           <div className="pb"><LossChart log={data?.log || []} /></div>
         </div>
         <div className="panel">
-          <div className="ph"><span><b>v0 vs nano</b> · head to head</span></div>
+          <div className="ph"><span><Info k="t_vs"><b>v0 vs nano</b></Info> · head to head</span></div>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>Counted calls</th><th>v0 rules</th><th>nano</th></tr></thead>
+              <thead><tr><th><Info k="counted">Counted calls</Info></th><th><Info k="v0">v0 rules</Info></th><th><Info k="nano">nano</Info></th></tr></thead>
               <tbody>{rows.map(([a, b, c]) => <tr key={a}><td style={{ whiteSpace: "normal" }}>{a}</td><td>{b}</td><td className="green">{c}</td></tr>)}</tbody>
             </table>
           </div>
@@ -121,14 +122,14 @@ export default function LabBoard() {
 
       <section className="grid g2 mt">
         <div className="panel">
-          <div className="ph"><span><b>weights</b> · what it has learned</span><a href="/api/king/weights" target="_blank">json →</a></div>
+          <div className="ph"><span><Info k="t_weights"><b>weights</b></Info> · what it has learned</span><a href="/api/king/weights" target="_blank">json →</a></div>
           <div className="pb">
             {data ? <WeightBars weights={data.weights} /> : <span className="muted small">loading…</span>}
             <p className="tiny muted" style={{ marginBottom: 0 }}>Green pushes a launch toward BOND, red toward DUST. All start at zero. Nothing is hand-tuned.</p>
           </div>
         </div>
         <div className="panel">
-          <div className="ph"><span><b>how nano learns</b></span></div>
+          <div className="ph"><span><Info k="t_how"><b>how nano learns</b></Info></span></div>
           <div className="pb small muted">
             <div>· Born at zero. No pretrained weights, no outside data.</div>
             <div>· 5 minutes after each launch, the rats freeze 28 features: curve, climb, dev buy, socials, ticker, the dev&apos;s history, time of day, plus what TAPE, GRAPH and META read: trade speed, SOL per buy, unique traders, bundles, snipers, top-5 share, dev sells, smart wallets, the dev&apos;s funder cluster, copycats and the hot meta.</div>

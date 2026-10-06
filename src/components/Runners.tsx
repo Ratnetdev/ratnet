@@ -21,7 +21,7 @@ export default function Runners({ limit = 15 }: { limit?: number }) {
       </div>
       <div className="scroll">
         <table className="tbl">
-          <thead><tr><th>Coin</th><th>King</th><th>At call</th><th><Info k="peak">Peak</Info></th><th><Info k="fromcall">x</Info></th><th>Now</th><th>Bonded</th></tr></thead>
+          <thead><tr><th>Coin</th><th><Info k="king">King</Info></th><th><Info k="atcall">At call</Info></th><th><Info k="peak">Peak</Info></th><th><Info k="fromcall">x</Info></th><th><Info k="now">Now</Info></th><th><Info k="rbonded">Bonded</Info></th></tr></thead>
           <tbody>
             {top.map((v) => (
               <tr key={v.mint}>
@@ -51,7 +51,7 @@ export function Ladder() {
       <div className="ph"><span><b>runner model</b> · <Info k="pnext">P(next milestone)</Info></span><span className="tiny muted">{m ? `${m.n} lessons${m.ready ? "" : ", base rates until 150"}` : "…"}</span></div>
       <div className="scroll">
         <table className="tbl">
-          <thead><tr><th>From</th><th>To</th><th>Reached</th><th>Seen</th></tr></thead>
+          <thead><tr><th><Info k="rfrom">From</Info></th><th><Info k="rto">To</Info></th><th><Info k="reached">Reached</Info></th><th><Info k="seen">Seen</Info></th></tr></thead>
           <tbody>
             {(m?.ladder || []).map((l) => (
               <tr key={l.from}>

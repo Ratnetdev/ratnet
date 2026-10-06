@@ -1,6 +1,7 @@
 "use client";
 import { CoinLink, ScoreBar, VerdictTag } from "./Calls";
 import { ago, chg, usd, type Mkt } from "./fmt";
+import Info from "./Info";
 
 export type RadarRow = {
   mint: string;
@@ -63,13 +64,13 @@ export default function RadarTable({ rows, full = false }: { rows: RadarRow[]; f
         <thead>
           <tr>
             <th>Coin</th>
-            <th>Curve</th>
-            {full && <th>Peak</th>}
-            <th>Mcap</th>
-            {full && <th>Vol 1h</th>}
-            {full && <th>Buys / sells 1h</th>}
-            <th>King</th>
-            {full && <th>Dev</th>}
+            <th><Info k="curve">Curve</Info></th>
+            {full && <th><Info k="peakcurve">Peak</Info></th>}
+            <th><Info k="mcap">Mcap</Info></th>
+            {full && <th><Info k="v1">Vol 1h</Info></th>}
+            {full && <th><Info k="bs">Buys / sells 1h</Info></th>}
+            <th><Info k="king">King</Info></th>
+            {full && <th><Info k="dev">Dev</Info></th>}
             {full && <th>Age</th>}
           </tr>
         </thead>

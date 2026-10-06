@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLive } from "./Live";
 import AlertCard, { AlertT, Kind as CardKind, Term, TERMS } from "./AlertCard";
+import Info from "./Info";
 
 type FeedItem = { kind: string; rat: string; mint: string; symbol: string; name: string; at: number; text: string };
 type Settings = { on: boolean; king: boolean; nano: boolean; agree: boolean; near: boolean; grad: boolean; desk: boolean; sound: boolean; vol: number; push: boolean; term: Term };
@@ -207,7 +208,7 @@ export default function Alerts() {
         </button>
         {open && (
           <div className="panel alerts-pop">
-            <div className="ph"><span><b>alerts</b> · sound + popups</span><button className="x" onClick={() => setOpen(false)}>×</button></div>
+            <div className="ph"><span><Info k="t_alerts"><b>alerts</b></Info> · sound + popups</span><button className="x" onClick={() => setOpen(false)}>×</button></div>
             <div className="pb small">
               {!s.on ? (
                 <>

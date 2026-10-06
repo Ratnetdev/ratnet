@@ -5,6 +5,7 @@ import { usePoll } from "./usePoll";
 import { Call, CallList } from "./Calls";
 import type { Stats } from "./LiveBoard";
 import { num } from "./fmt";
+import Info from "./Info";
 
 type King = {
   calls: Call[];
@@ -36,7 +37,7 @@ export default function KingBoard() {
         ].map(([label, x, color, sub]: any) => (
           <div className="panel" key={label}>
             <div className="pb stat">
-              <div className="k">{label}</div>
+              <div className="k"><Info k={label === "BOND calls that bonded" ? "hit" : label === "DUST calls right" ? "dust" : "watchhit"}>{label}</Info></div>
               <div className="big" style={{ color }}>{x?.rate != null ? `${x.rate}%` : "–"}</div>
               <div className="s">{x ? `${sub(x)} · ${num(x.n)} made` : "–"}</div>
             </div>
@@ -44,7 +45,7 @@ export default function KingBoard() {
         ))}
         <div className="panel">
           <div className="pb stat">
-            <div className="k">Base rate</div>
+            <div className="k"><Info k="base">Base rate</Info></div>
             <div className="big">{s?.baseRate != null ? `${s.baseRate}%` : "–"}</div>
             <div className="s">{s ? `${num(s.bonded)} of ${num(s.dug)} dug launches bonded` : "–"}</div>
           </div>
@@ -82,7 +83,7 @@ export default function KingBoard() {
         <div className="grid" style={{ alignContent: "start" }}>
           <div className="panel">
             <div className="ph">
-              <span><b>scorer {data?.version || "v0"}</b> · fully public</span>
+              <span><Info k="scorer"><b>scorer {data?.version || "v0"}</b></Info> · fully public</span>
             </div>
             <div className="pb small">
               <p className="muted" style={{ marginTop: 0 }}>
@@ -104,7 +105,7 @@ export default function KingBoard() {
             </div>
           </div>
           <div className="panel">
-            <div className="ph"><span><b>the rules</b> · how a call is checked</span></div>
+            <div className="ph"><span><Info k="t_rules"><b>the rules</b></Info> · how a call is checked</span></div>
             <div className="pb small muted">
               <div>· The call is made 5 minutes after the coin is born.</div>
               <div>· Calls made more than 15 minutes after birth are marked late and never count.</div>
@@ -117,7 +118,7 @@ export default function KingBoard() {
             </div>
           </div>
           <div className="panel">
-            <div className="ph"><span><b>nano</b> · learning live</span><a href="/lab">lab →</a></div>
+            <div className="ph"><span><Info k="nano"><b>nano</b></Info> · learning live</span><a href="/lab">lab →</a></div>
             <div className="pb small muted">
               Next to v0, Rat King nano learns from scratch on every outcome the rats record. {data?.nano ? `${data.nano.n} lessons so far, ${data.nano.pos} of them bonds.` : ""} Its calls count once it has {data?.nano?.min ?? 200} lessons. After nano comes v1: a model pretrained from scratch on the full dataset, weights on Hugging Face.
             </div>

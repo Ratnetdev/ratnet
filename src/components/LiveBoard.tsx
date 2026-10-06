@@ -113,7 +113,7 @@ export default function LiveBoard() {
         <div className="panel">
           <div className="ph">
             <span>
-              <b>rat king</b> · latest calls
+              <Info k="t_king"><b>rat king</b></Info> · latest calls
             </span>
             <Link href="/king">all calls →</Link>
           </div>

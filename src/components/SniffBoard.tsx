@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { usePoll } from "./usePoll";
 import { burnFlow, useWallet, WalletButton } from "./Wallet";
 import { ago, num, short } from "./fmt";
+import Info from "./Info";
 
 type Report = {
   id: string;
@@ -105,7 +106,7 @@ export default function SniffBoard() {
       <div className="grid" style={{ alignContent: "start" }}>
         <div className="panel glow">
           <div className="ph">
-            <span><b>sniff order</b> · {isLive ? "burn 10K $RAT" : "free preview until launch"}</span>
+            <span><Info k="t_sniff"><b>sniff order</b></Info> · {isLive ? "burn 10K $RAT" : "free preview until launch"}</span>
             {isLive && <WalletButton />}
           </div>
           <div className="pb">
@@ -124,10 +125,10 @@ export default function SniffBoard() {
       </div>
 
       <div className="panel">
-        <div className="ph"><span><b>recent sniffs</b> · public</span></div>
+        <div className="ph"><span><Info k="t_rsniffs"><b>recent sniffs</b></Info> · public</span></div>
         <div className="scroll">
           <table className="tbl">
-            <thead><tr><th>Coin</th><th>Score</th><th>By</th><th>When</th></tr></thead>
+            <thead><tr><th>Coin</th><th><Info k="score">Score</Info></th><th><Info k="by">By</Info></th><th>When</th></tr></thead>
             <tbody>
               {(recent?.sniffs || []).map((s) => (
                 <tr key={s.id}>

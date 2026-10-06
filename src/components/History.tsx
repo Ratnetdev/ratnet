@@ -43,14 +43,14 @@ export default function History() {
             <i style={{ position: "absolute", inset: 0, width: `${h?.done ?? 0}%`, background: "var(--rat)", boxShadow: "0 0 8px var(--rat)" }} />
           </div>
           <div className="mkt mt" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
-            <div><span className="k">Launches scanned</span><b>{(h?.scanned ?? 0).toLocaleString()}</b></div>
-            <div><span className="k">Bonded found</span><b>{(h?.bonded ?? 0).toLocaleString()}</b></div>
-            <div><span className="k">Lessons</span><b>{(h?.lessons ?? 0).toLocaleString()}</b></div>
-            <div><span className="k">Runner lessons</span><b>{(h?.runnerLessons ?? 0).toLocaleString()}</b></div>
+            <div><span className="k"><Info k="hscanned">Launches scanned</Info></span><b>{(h?.scanned ?? 0).toLocaleString()}</b></div>
+            <div><span className="k"><Info k="hbonded">Bonded found</Info></span><b>{(h?.bonded ?? 0).toLocaleString()}</b></div>
+            <div><span className="k"><Info k="hlessons">Lessons</Info></span><b>{(h?.lessons ?? 0).toLocaleString()}</b></div>
+            <div><span className="k"><Info k="hrunner">Runner lessons</Info></span><b>{(h?.runnerLessons ?? 0).toLocaleString()}</b></div>
             <div><span className="k"><Info k="prequential">Base</Info></span><b>{bt?.base != null ? `${bt.base}%` : "–"}</b></div>
-            <div><span className="k">v0 BOND hit</span><b>{bt?.v0 != null ? `${bt.v0}%` : "–"}</b></div>
-            <div><span className="k">nano BOND hit</span><b style={{ color: "var(--rat)" }}>{bt?.nano != null ? `${bt.nano}%` : "–"}</b></div>
-            <div><span className="k">Queue</span><b>{h?.queue ?? 0}</b></div>
+            <div><span className="k"><Info k="prequential">v0 BOND hit</Info></span><b>{bt?.v0 != null ? `${bt.v0}%` : "–"}</b></div>
+            <div><span className="k"><Info k="prequential">nano BOND hit</Info></span><b style={{ color: "var(--rat)" }}>{bt?.nano != null ? `${bt.nano}%` : "–"}</b></div>
+            <div><span className="k"><Info k="hqueue">Queue</Info></span><b>{h?.queue ?? 0}</b></div>
           </div>
           {!!h?.log?.length && <div className="tiny muted mt">{h.log.slice(0, 3).map((l) => <div key={l.at + l.text}>{ago(l.at)} · {l.text}</div>)}</div>}
         </div>
@@ -61,14 +61,14 @@ export default function History() {
           <span className="tiny muted">{dr?.boost ? <span className="green">shift: learning 2.5x</span> : `${dr?.shifts ?? 0} shifts seen`}</span>
         </div>
         <div className="mkt" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
-          <div><span className="k">SOL 24h</span><b style={{ color: (se?.sol24 ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{sg(se?.sol24)}</b></div>
-          <div><span className="k">SOL 7d</span><b style={{ color: (se?.sol7d ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{sg(se?.sol7d)}</b></div>
-          <div><span className="k">Launches / hour</span><b>{se?.lrate ? se.lrate.toLocaleString() : "–"}</b></div>
-          <div><span className="k">Bond rate 24h</span><b>{se?.gradRate24 != null ? `${se.gradRate24}%` : "–"}</b></div>
+          <div><span className="k"><Info k="sol24">SOL 24h</Info></span><b style={{ color: (se?.sol24 ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{sg(se?.sol24)}</b></div>
+          <div><span className="k"><Info k="sol7d">SOL 7d</Info></span><b style={{ color: (se?.sol7d ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{sg(se?.sol7d)}</b></div>
+          <div><span className="k"><Info k="lrate">Launches / hour</Info></span><b>{se?.lrate ? se.lrate.toLocaleString() : "–"}</b></div>
+          <div><span className="k"><Info k="br24">Bond rate 24h</Info></span><b>{se?.gradRate24 != null ? `${se.gradRate24}%` : "–"}</b></div>
         </div>
         <div className="scroll">
           <table className="tbl">
-            <thead><tr><th>Day</th><th>Scanned</th><th>Bonded</th><th>Bond rate</th></tr></thead>
+            <thead><tr><th>Day</th><th><Info k="hscanned">Scanned</Info></th><th><Info k="hbonded">Bonded</Info></th><th><Info k="br24">Bond rate</Info></th></tr></thead>
             <tbody>
               {(h?.days || []).map((d) => (
                 <tr key={d.day}><td>{d.day}</td><td className="muted">{d.scanned.toLocaleString()}</td><td className="muted">{d.bonded}</td><td>{d.rate != null ? `${d.rate}%` : "–"}</td></tr>

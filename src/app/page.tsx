@@ -3,6 +3,7 @@ import LiveBoard from "@/components/LiveBoard";
 import { RatCamHero } from "@/components/RatCam";
 import HeroProof from "@/components/HeroProof";
 import DeskStatus from "@/components/DeskStatus";
+import { BurnStrip, RatSection } from "@/components/RatEconomy";
 
 export default function Home() {
   return (
@@ -29,7 +30,11 @@ export default function Home() {
         <RatCamHero />
       </section>
 
+      <BurnStrip />
+
       <LiveBoard />
+
+      <RatSection />
     </>
   );
 }

@@ -6,6 +6,7 @@ import { ScoreBar } from "./Calls";
 import { CurveBar } from "./Radar";
 import { fmtSecs } from "./Grads";
 import { ago, chg, num, usd, type Mkt } from "./fmt";
+import Info from "./Info";
 
 type Row = {
   m: string;
@@ -194,15 +195,15 @@ export default function Explorer() {
       </section>
 
       <section className="grid g4 mt">
-        <div className="panel"><div className="pb stat"><div className="k">Matching</div><div className="big rat">{num(rows.length)}</div><div className="s">in the last {f.win}h</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Bonded</div><div className="big" style={{ color: "var(--bond)" }}>{num(bonded)}</div><div className="s">{rows.length ? `${Math.round((bonded / rows.length) * 1000) / 10}% of matches so far` : "–"}</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Died</div><div className="big" style={{ color: "var(--dust)" }}>{num(dead)}</div><div className="s">{num(settled - bonded - dead)} alive at 24h</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Still live</div><div className="big">{num(pending)}</div><div className="s">can still bond</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="matching">Matching</Info></div><div className="big rat">{num(rows.length)}</div><div className="s">in the last {f.win}h</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="bonded">Bonded</Info></div><div className="big" style={{ color: "var(--bond)" }}>{num(bonded)}</div><div className="s">{rows.length ? `${Math.round((bonded / rows.length) * 1000) / 10}% of matches so far` : "–"}</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="died">Died</Info></div><div className="big" style={{ color: "var(--dust)" }}>{num(dead)}</div><div className="s">{num(settled - bonded - dead)} alive at 24h</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="stilllive">Still live</Info></div><div className="big">{num(pending)}</div><div className="s">can still bond</div></div></div>
       </section>
 
       <section className="panel mt">
         <div className="ph">
-          <span><b>coins</b> · page {page + 1} / {pages}</span>
+          <span><Info k="t_coins"><b>coins</b></Info> · page {page + 1} / {pages}</span>
           <span className="row">
             <button className="btn dim" style={{ padding: "3px 10px" }} disabled={page === 0} onClick={() => setPage(page - 1)}>‹</button>
             <button className="btn dim" style={{ padding: "3px 10px" }} disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>›</button>
@@ -211,7 +212,7 @@ export default function Explorer() {
         <div className="scroll">
           <table className="tbl">
             <thead>
-              <tr><th>Coin</th><th>Age</th><th>King</th><th>Nano</th><th>Curve / outcome</th><th>Mcap</th><th>Vol 1h</th><th>Peak</th><th>Dev</th><th>Socials</th></tr>
+              <tr><th>Coin</th><th>Age</th><th><Info k="king">King</Info></th><th><Info k="nano">Nano</Info></th><th><Info k="curveout">Curve / outcome</Info></th><th><Info k="mcap">Mcap</Info></th><th><Info k="v1">Vol 1h</Info></th><th><Info k="peakcurve">Peak</Info></th><th><Info k="dev">Dev</Info></th><th><Info k="socials">Socials</Info></th></tr>
             </thead>
             <tbody>
               {view.map((x) => (

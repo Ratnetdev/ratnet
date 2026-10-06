@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { usePoll } from "./usePoll";
 import { burnFlow, useWallet, WalletButton } from "./Wallet";
 import { ago, countdown, num, short, solscanTx } from "./fmt";
+import Info from "./Info";
 
 type RatView = {
   id: number;
@@ -68,7 +69,7 @@ export default function RatsBoard() {
       <section className="grid g-main">
         <div className="panel glow">
           <div className="ph">
-            <span><b>litter {l?.n ?? 1}</b> · {l ? `${l.spawned} / ${l.size} born` : "…"}</span>
+            <span><Info k="litter"><b>litter {l?.n ?? 1}</b></Info> · {l ? `${l.spawned} / ${l.size} born` : "…"}</span>
             <span>{l?.open ? <span className="green">OPEN</span> : <span style={{ color: "var(--dust)" }}>CLOSED</span>}</span>
           </div>
           <div className="pb">
@@ -80,7 +81,7 @@ export default function RatsBoard() {
         </div>
 
         <div className="panel">
-          <div className="ph"><span><b>spawn</b> · burn {num(data?.costs.spawn ?? 100000)} $RAT</span></div>
+          <div className="ph"><span><Info k="t_spawn"><b>spawn</b></Info> · burn {num(data?.costs.spawn ?? 100000)} $RAT</span></div>
           <div className="pb">
             {!data?.live ? (
               <p className="muted small" style={{ marginTop: 0 }}>Spawning opens the moment $RAT is live. Litter 1: {l?.size ?? 100} rats.</p>
@@ -109,21 +110,21 @@ export default function RatsBoard() {
       <section className="grid g3 mt">
         <div className="panel">
           <div className="pb stat">
-            <div className="k">Round #{data?.round.id ?? "…"} ends in</div>
+            <div className="k"><Info k="round">Round #{data?.round.id ?? "…"} ends in</Info></div>
             <div className="big rat">{data ? countdown(data.round.endsAt) : "--:--:--"}</div>
             <div className="s">Rounds are 12h. Fees split 60% compute, 40% rat owners.</div>
           </div>
         </div>
         <div className="panel">
           <div className="pb stat">
-            <div className="k">Rats alive</div>
+            <div className="k"><Info k="ratsalive">Rats alive</Info></div>
             <div className="big">{num(realRats.filter((r) => r.active).length)}</div>
             <div className="s">{num(realRats.filter((r) => !r.active).length)} queued for the next litter</div>
           </div>
         </div>
         <div className="panel">
           <div className="pb stat">
-            <div className="k">Bag multiplier per rat</div>
+            <div className="k"><Info k="bagmult">Bag multiplier per rat</Info></div>
             <div className="small" style={{ lineHeight: 1.8 }}>
               100K → 1x · 500K → 1.25x
               <br />
@@ -135,13 +136,13 @@ export default function RatsBoard() {
 
       {address && (
         <section className="panel mt">
-          <div className="ph"><span><b>your rats</b> · {short(address)}</span></div>
+          <div className="ph"><span><Info k="t_yours"><b>your rats</b></Info> · {short(address)}</span></div>
           <div className="pb">
             {data?.mine.length ? (
               <div className="scroll">
                 <table className="tbl">
                   <thead>
-                    <tr><th>Rat</th><th>Litter</th><th>Digs this round</th><th>Earned</th><th>Born</th><th>Burn</th></tr>
+                    <tr><th>Rat</th><th><Info k="litter">Litter</Info></th><th><Info k="digs">Digs this round</Info></th><th><Info k="earned">Earned</Info></th><th>Born</th><th><Info k="burntx">Burn</Info></th></tr>
                   </thead>
                   <tbody>
                     {data.mine.map((r) => (
@@ -168,10 +169,10 @@ export default function RatsBoard() {
 
       {realRats.length > 0 && (
         <section className="panel mt">
-          <div className="ph"><span><b>top rats</b> · all time</span></div>
+          <div className="ph"><span><Info k="t_top"><b>top rats</b></Info> · all time</span></div>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>#</th><th>Rat</th><th>Owner</th><th>Digs all time</th><th>This round</th><th>Earned</th></tr></thead>
+              <thead><tr><th>#</th><th>Rat</th><th>Owner</th><th><Info k="digsall">Digs all time</Info></th><th><Info k="digs">This round</Info></th><th><Info k="earned">Earned</Info></th></tr></thead>
               <tbody>
                 {[...realRats].sort((a, b) => b.workAll - a.workAll).slice(0, 10).map((r, i) => (
                   <tr key={r.id}>
@@ -190,7 +191,7 @@ export default function RatsBoard() {
       )}
 
       <section className="panel mt">
-        <div className="ph"><span><b>rat screens</b> · live</span><span>{realRats.length ? `${realRats.length} rats` : "scouts on duty until litter 1"}</span></div>
+        <div className="ph"><span><Info k="t_screens"><b>rat screens</b></Info> · live</span><span>{realRats.length ? `${realRats.length} rats` : "scouts on duty until litter 1"}</span></div>
         <div className="pb">
           <div className="screens">
             {(realRats.length ? realRats : []).map((r) => (

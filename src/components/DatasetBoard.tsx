@@ -1,6 +1,7 @@
 "use client";
 import { usePoll } from "./usePoll";
 import { num } from "./fmt";
+import Info from "./Info";
 
 type D = { exports: { day: string; rows: number; url: string }[]; stats: { dug: number; dugToday: number; resolved: number; bonded: number; tracking: number } };
 
@@ -37,18 +38,18 @@ export default function DatasetBoard() {
   return (
     <>
       <section className="grid g4">
-        <div className="panel glow"><div className="pb stat"><div className="k">Rows dug</div><div className="big rat">{num(s?.dug ?? 0)}</div><div className="s">+{num(s?.dugToday ?? 0)} today</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Labelled</div><div className="big">{num(s?.resolved ?? 0)}</div><div className="s">outcome known</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">In the oven</div><div className="big">{num(s?.tracking ?? 0)}</div><div className="s">checkpoints still to dig</div></div></div>
-        <div className="panel"><div className="pb stat"><div className="k">Bonded rows</div><div className="big" style={{ color: "var(--bond)" }}>{num(s?.bonded ?? 0)}</div><div className="s">the rare positives</div></div></div>
+        <div className="panel glow"><div className="pb stat"><div className="k"><Info k="rowsdug">Rows dug</Info></div><div className="big rat">{num(s?.dug ?? 0)}</div><div className="s">+{num(s?.dugToday ?? 0)} today</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="labelled">Labelled</Info></div><div className="big">{num(s?.resolved ?? 0)}</div><div className="s">outcome known</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="oven">In the oven</Info></div><div className="big">{num(s?.tracking ?? 0)}</div><div className="s">checkpoints still to dig</div></div></div>
+        <div className="panel"><div className="pb stat"><div className="k"><Info k="bondedrows">Bonded rows</Info></div><div className="big" style={{ color: "var(--bond)" }}>{num(s?.bonded ?? 0)}</div><div className="s">the rare positives</div></div></div>
       </section>
 
       <section className="grid g2 mt">
         <div className="panel">
-          <div className="ph"><span><b>daily drops</b> · jsonl · free</span></div>
+          <div className="ph"><span><Info k="t_drops"><b>daily drops</b></Info> · jsonl · free</span></div>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>Day (UTC)</th><th>Rows</th><th>File</th></tr></thead>
+              <thead><tr><th>Day (UTC)</th><th><Info k="rows">Rows</Info></th><th>File</th></tr></thead>
               <tbody>
                 {(data?.exports || []).map((e) => (
                   <tr key={e.day}><td>{e.day}</td><td>{num(e.rows)}</td><td><a href={e.url} target="_blank" rel="noreferrer">download</a></td></tr>
@@ -59,7 +60,7 @@ export default function DatasetBoard() {
           </div>
         </div>
         <div className="panel">
-          <div className="ph"><span><b>schema</b> · one row per launch</span></div>
+          <div className="ph"><span><Info k="t_schema"><b>schema</b></Info> · one row per launch</span></div>
           <div className="scroll">
             <table className="tbl">
               <tbody>{SCHEMA.map(([k, v]) => <tr key={k}><td className="green">{k}</td><td className="muted" style={{ whiteSpace: "normal" }}>{v}</td></tr>)}</tbody>
@@ -69,7 +70,7 @@ export default function DatasetBoard() {
       </section>
 
       <section className="panel mt">
-        <div className="ph"><span><b>tunnels</b> · where the rats dig</span><span>{TUNNELS.filter((t) => t.live).length} / {TUNNELS.length} open</span></div>
+        <div className="ph"><span><Info k="t_tunnels"><b>tunnels</b></Info> · where the rats dig</span><span>{TUNNELS.filter((t) => t.live).length} / {TUNNELS.length} open</span></div>
         <div className="pb">
           <div className="grid g3" style={{ gap: 10 }}>
             {TUNNELS.map((t, i) => (

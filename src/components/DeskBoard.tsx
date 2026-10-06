@@ -190,7 +190,7 @@ export default function DeskBoard() {
 
       <section className="grid g-main mt">
         <div className="panel">
-          <div className="ph"><span><b>balance</b> · {d?.live ? "live wallet" : "paper desk"}</span><span className="tiny muted">start {base.toFixed(3)} SOL</span></div>
+          <div className="ph"><span><Info k="t_balance"><b>balance</b></Info> · {d?.live ? "live wallet" : "paper desk"}</span><span className="tiny muted">start {base.toFixed(3)} SOL</span></div>
           <div className="pb"><EquityChart pts={d?.equity || []} start={base} /></div>
         </div>
         <div className="panel">
@@ -218,7 +218,7 @@ export default function DeskBoard() {
                   ["daily_stop", `-${d.cfg.dailyLoss}%`],
                 ].map(([k, v]) => (
                   <div key={String(k)} className="row between">
-                    <span><span className="mute2">const </span><span style={{ color: "var(--watch)" }}>{k}</span></span>
+                    <span><span className="mute2">const </span><Info k={`cfg_${k}`}><span style={{ color: "var(--watch)" }}>{k}</span></Info></span>
                     <span className="green">{String(v)}</span>
                   </div>
                 ))
@@ -240,10 +240,10 @@ export default function DeskBoard() {
 
       <section className="grid g2 mt">
         <div className="panel">
-          <div className="ph"><span><b>open positions</b></span><span className="tiny muted">re-checked every 2s</span></div>
+          <div className="ph"><span><Info k="t_open"><b>open positions</b></Info></span><span className="tiny muted">re-checked every 2s</span></div>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>Coin</th><th>Chart</th><th>P&amp;L</th><th>Mcap</th><th><Info k="pnext">P(next)</Info></th><th><Info k="trail">Trail</Info></th><th><Info k="insiders">Insiders</Info></th><th>Age</th></tr></thead>
+              <thead><tr><th>Coin</th><th>Chart</th><th>P&amp;L</th><th><Info k="mcap">Mcap</Info></th><th><Info k="pnext">P(next)</Info></th><th><Info k="trail">Trail</Info></th><th><Info k="insiders">Insiders</Info></th><th>Age</th></tr></thead>
               <tbody>
                 {(d?.positions || []).map((p) => {
                   const g = pct(p.lastPx, p.entryPx);
@@ -266,10 +266,10 @@ export default function DeskBoard() {
           </div>
         </div>
         <div className="panel">
-          <div className="ph"><span><b>trades</b></span><span className="tiny muted">{d?.live ? "every fill on Solscan" : "paper fills at the real curve price"}</span></div>
+          <div className="ph"><span><Info k="t_trades"><b>trades</b></Info></span><span className="tiny muted">{d?.live ? "every fill on Solscan" : "paper fills at the real curve price"}</span></div>
           <div className="scroll" style={{ maxHeight: 360 }}>
             <table className="tbl">
-              <thead><tr><th>When</th><th>Side</th><th>Coin</th><th>SOL</th><th>Result</th><th>Why</th></tr></thead>
+              <thead><tr><th>When</th><th><Info k="side">Side</Info></th><th>Coin</th><th><Info k="sol">SOL</Info></th><th><Info k="result">Result</Info></th><th><Info k="why">Why</Info></th></tr></thead>
               <tbody>
                 {(d?.trades || []).slice(0, 40).map((t) => (
                   <tr key={t.id}>
@@ -318,10 +318,10 @@ export default function DeskBoard() {
           </div>
         </div>
         <div className="panel">
-          <div className="ph"><span><b>stalking</b> · waiting for a pullback</span><span className="tiny muted">{d?.stalks?.length ?? 0}</span></div>
+          <div className="ph"><span><Info k="t_stalk"><b>stalking</b></Info> · waiting for a pullback</span><span className="tiny muted">{d?.stalks?.length ?? 0}</span></div>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>Coin</th><th>Wants</th><th>Dip so far</th><th>Since</th></tr></thead>
+              <thead><tr><th>Coin</th><th><Info k="wants">Wants</Info></th><th><Info k="dip">Dip so far</Info></th><th><Info k="since">Since</Info></th></tr></thead>
               <tbody>
                 {(d?.stalks || []).map((k) => (
                   <tr key={k.mint}>

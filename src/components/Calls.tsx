@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { ago } from "./fmt";
+import Info from "./Info";
 
 export type Verdict = "BOND" | "WATCH" | "DUST";
 export type Call = {
@@ -56,10 +57,10 @@ export function CallList({ calls, compact = false }: { calls: Call[]; compact?: 
         <thead>
           <tr>
             <th>Coin</th>
-            <th>v0</th>
-            {!compact && <th>Nano</th>}
-            {!compact && <th>Curve @ call</th>}
-            <th>Outcome</th>
+            <th><Info k="v0">v0</Info></th>
+            {!compact && <th><Info k="nano">Nano</Info></th>}
+            {!compact && <th><Info k="curvecall">Curve @ call</Info></th>}
+            <th><Info k="outcome">Outcome</Info></th>
             {!compact && <th>Age</th>}
           </tr>
         </thead>
