@@ -2,6 +2,8 @@ import { Redis } from "@upstash/redis";
 
 let _r: Redis | null = null;
 export function redis(): Redis {
+  const injected = (globalThis as any).__rnRedis; // test hook
+  if (injected) return injected;
   if (_r) return _r;
   const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
@@ -37,6 +39,17 @@ export const K = {
   sniffRate: (ip: string) => `rn:sniffrate:${ip}`,
   rounds: "rn:rounds",
   exports: "rn:exports",
+  hot: "rn:hot",
+  hotCur: "rn:hotcur",
+  peak: "rn:peak",
+  near: "rn:near",
+  radar: "rn:radar",
+  grads: "rn:grads",
+  devN: "rn:dev:n",
+  devB: "rn:dev:b",
+  nano: "rn:nano",
+  nanoLog: "rn:nanolog",
+  workAll: "rn:workall",
   solPrice: "rn:solusd",
   ratPrice: "rn:ratsol",
 };

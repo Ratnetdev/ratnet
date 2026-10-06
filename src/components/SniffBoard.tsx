@@ -21,6 +21,8 @@ type Report = {
   free: boolean;
   at: number;
   version: string;
+  dev?: { n: number; b: number } | null;
+  nano?: { score: number; verdict: string } | null;
 };
 type Live = { live: { mint: string } };
 
@@ -45,6 +47,8 @@ export function ReportCard({ r }: { r: Report }) {
       </div>
       <div className="small mt">
         curve {r.progress ?? "–"}% · mcap {r.mcapSol != null ? `${num(Math.round(r.mcapSol))} ◎` : "–"}
+        {r.dev ? ` · dev ${r.dev.n} prior, ${r.dev.b} bonded` : ""}
+        {r.nano ? ` · nano ${r.nano.verdict} ${r.nano.score}` : ""}
       </div>
       <div className="grid g2 mt" style={{ gap: 10 }}>
         <div className="small">{r.plus.map((x) => <div key={x} className="green">+ {x}</div>)}</div>

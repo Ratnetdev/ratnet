@@ -6,6 +6,7 @@ type D = { exports: { day: string; rows: number; url: string }[]; stats: { dug: 
 
 const SCHEMA: [string, string][] = [
   ["mint", "token address"],
+  ["dev_prior_launches, dev_prior_bonded", "the creator's record before this launch"],
   ["created_at", "block time of the create tx"],
   ["name, symbol, description", "as launched"],
   ["twitter, telegram, website", "socials from the metadata"],
@@ -14,8 +15,20 @@ const SCHEMA: [string, string][] = [
   ["curve_at_dig", "% of the bonding curve filled when first dug"],
   ["curve_5m, curve_1h, curve_24h", "curve % at each checkpoint"],
   ["mcap_sol_5m, mcap_sol_1h", "market cap in SOL"],
-  ["king_score, king_verdict, king_counted", "the Rat King's call"],
+  ["curve_peak", "highest curve % the rats saw"],
+  ["king_v0_score, king_v0_verdict, king_nano_score", "the Rat King's calls"],
+  ["features", "the 14 numbers nano saw at 5 minutes"],
+  ["bond_secs", "seconds from launch to graduation"],
   ["outcome", "BONDED, ALIVE or DIED"],
+];
+
+const TUNNELS = [
+  { name: "LAUNCHES", live: true, what: "Every pump.fun create: name, ticker, description, socials, creator, dev buy, curve at birth.", unlock: "" },
+  { name: "CURVES", live: true, what: "Curve checkpoints at 5m, 1h, 24h plus the hot watch that catches every graduation in near real time.", unlock: "" },
+  { name: "DEV MEMORY", live: true, what: "Every creator's record: how many coins, how many bonded. Serial launchers can't hide.", unlock: "" },
+  { name: "FIRST HOUR", live: false, what: "Every buy and sell in a launch's first hour: wallets, sizes, bundles, snipers.", unlock: "Opens with litter 2" },
+  { name: "AFTER MIGRATION", live: false, what: "What graduated coins do on PumpSwap: the next 7 days of price and holders.", unlock: "Opens with litter 3" },
+  { name: "OTHER PADS", live: false, what: "The same digging on other Solana launchpads, so the King learns beyond pump.fun.", unlock: "Holder vote after v1" },
 ];
 
 export default function DatasetBoard() {
@@ -56,12 +69,20 @@ export default function DatasetBoard() {
       </section>
 
       <section className="panel mt">
-        <div className="ph"><span><b>roadmap</b> · where the data goes</span></div>
-        <div className="pb small muted">
-          <div>· <b className="green">now</b> rats dig every pump.fun launch, live. Daily drops published here.</div>
-          <div>· <b style={{ color: "var(--bond)" }}>next</b> Rat King v1 pretrained from scratch on the dug dataset. Public loss curve.</div>
-          <div>· <b style={{ color: "var(--bond)" }}>next</b> weights on Hugging Face after the first epoch, plus the full dataset as a HF dataset.</div>
-          <div>· <b className="muted">later</b> v2 with first-hour trade flow, hit rate per version on /king.</div>
+        <div className="ph"><span><b>tunnels</b> · where the rats dig</span><span>{TUNNELS.filter((t) => t.live).length} / {TUNNELS.length} open</span></div>
+        <div className="pb">
+          <div className="grid g3" style={{ gap: 10 }}>
+            {TUNNELS.map((t, i) => (
+              <div key={t.name} className="screen" style={{ opacity: t.live ? 1 : 0.6 }}>
+                <div className="row between">
+                  <span className="nm" style={{ fontSize: 16 }}>T{i + 1} · {t.name}</span>
+                  <span className={`pill ${t.live ? "" : "soon"}`} style={{ marginRight: 0, color: t.live ? "var(--rat)" : undefined }}>{t.live ? "OPEN" : "SEALED"}</span>
+                </div>
+                <div className="ln2" style={{ whiteSpace: "normal", marginTop: 6 }}>{t.what}</div>
+                {!t.live && <div className="tiny" style={{ color: "var(--bond)", marginTop: 6 }}>{t.unlock}</div>}
+              </div>
+            ))}
+          </div>
         </div>
       </section>
     </>

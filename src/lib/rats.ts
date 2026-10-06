@@ -50,7 +50,10 @@ export async function recordWork(counts: Record<string, number>, last: Record<st
   const p = redis().pipeline();
   const key = K.work(roundOf());
   if (real) {
-    for (const [name, c] of Object.entries(counts)) p.hincrby(key, name, c);
+    for (const [name, c] of Object.entries(counts)) {
+      p.hincrby(key, name, c);
+      p.hincrby(K.workAll, name, c);
+    }
     p.expire(key, 60 * 60 * 24 * 14);
   }
   if (Object.keys(last).length) p.hset(K.ratLast, last as Record<string, unknown>);

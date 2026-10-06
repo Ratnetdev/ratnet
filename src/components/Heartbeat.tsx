@@ -10,7 +10,7 @@ export default function Heartbeat() {
       fetch("/api/dig", { method: "POST", keepalive: true }).catch(() => {});
     };
     const first = setTimeout(beat, 1500);
-    const t = setInterval(beat, 12000);
+    const t = setInterval(beat, 15000);
     return () => {
       stop = true;
       clearTimeout(first);

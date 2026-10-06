@@ -1,6 +1,8 @@
 "use client";
+import Link from "next/link";
 import { ago } from "./fmt";
 
+export type Verdict = "BOND" | "WATCH" | "DUST";
 export type Call = {
   mint: string;
   symbol: string;
@@ -9,32 +11,41 @@ export type Call = {
   createdAt: number;
   at: number;
   score: number;
-  verdict: "BOND" | "WATCH" | "DUST";
+  verdict: Verdict;
   counted: boolean;
   progress: number;
   version: string;
+  nano?: { score: number; verdict: Verdict } | null;
   outcome: "BONDED" | "ALIVE" | "DIED" | null;
 };
 
-export function Verdict({ v }: { v: string }) {
+export function VerdictTag({ v }: { v: string }) {
   return <span className={`tag v-${v}`}>{v}</span>;
 }
 export function Outcome({ o }: { o: string | null }) {
   if (!o) return <span className="tiny mute2">pending</span>;
   return <span className={`tag o-${o}`}>{o}</span>;
 }
-export function ScoreBar({ s, v }: { s: number; v: string }) {
+export function ScoreBar({ s, v, w = 70 }: { s: number; v: string; w?: number }) {
   return (
-    <span className={`bar ${v.toLowerCase()}`} style={{ display: "inline-block", width: 70 }}>
-      <i style={{ width: `${s}%` }} />
+    <span className={`bar ${v.toLowerCase()}`} style={{ display: "inline-block", width: w }}>
+      <i style={{ width: `${Math.max(2, s)}%` }} />
     </span>
   );
 }
-export function hit(c: Call) {
-  if (!c.outcome || !c.counted) return null;
-  if (c.verdict === "BOND") return c.outcome === "BONDED";
-  if (c.verdict === "DUST") return c.outcome !== "BONDED";
+export function hitOf(verdict: string, outcome: string | null, counted = true) {
+  if (!outcome || !counted) return null;
+  if (verdict === "BOND") return outcome === "BONDED";
+  if (verdict === "DUST") return outcome !== "BONDED";
   return null;
+}
+export function Mark({ h }: { h: boolean | null }) {
+  if (h === true) return <span className="green tiny"> ✓</span>;
+  if (h === false) return <span className="tiny" style={{ color: "var(--dust)" }}> ✗</span>;
+  return null;
+}
+export function CoinLink({ mint, symbol }: { mint: string; symbol: string }) {
+  return <Link href={`/c/${mint}`}>${symbol || "?"}</Link>;
 }
 
 export function CallList({ calls, compact = false }: { calls: Call[]; compact?: boolean }) {
@@ -45,44 +56,48 @@ export function CallList({ calls, compact = false }: { calls: Call[]; compact?: 
         <thead>
           <tr>
             <th>Coin</th>
-            <th>Score</th>
-            <th>Call</th>
+            <th>v0</th>
+            {!compact && <th>Nano</th>}
             {!compact && <th>Curve @ call</th>}
             <th>Outcome</th>
             {!compact && <th>Age</th>}
           </tr>
         </thead>
         <tbody>
-          {calls.map((c) => {
-            const h = hit(c);
-            return (
-              <tr key={c.mint}>
+          {calls.map((c) => (
+            <tr key={c.mint}>
+              <td>
+                <CoinLink mint={c.mint} symbol={c.symbol} /> {!compact && <span className="muted small">{(c.name || "").slice(0, 20)}</span>}
+              </td>
+              <td>
+                <span className="row" style={{ gap: 8 }}>
+                  <span style={{ width: 22 }}>{c.score}</span>
+                  <ScoreBar s={c.score} v={c.verdict} w={compact ? 44 : 60} />
+                  <VerdictTag v={c.verdict} />
+                  <Mark h={hitOf(c.verdict, c.outcome, c.counted)} />
+                </span>
+              </td>
+              {!compact && (
                 <td>
-                  <a href={`https://pump.fun/coin/${c.mint}`} target="_blank" rel="noreferrer">
-                    ${c.symbol || "?"}
-                  </a>{" "}
-                  {!compact && <span className="muted small">{(c.name || "").slice(0, 22)}</span>}
+                  {c.nano ? (
+                    <span className="row" style={{ gap: 6 }}>
+                      <span style={{ width: 22 }}>{c.nano.score}</span>
+                      <VerdictTag v={c.nano.verdict} />
+                      <Mark h={hitOf(c.nano.verdict, c.outcome, c.counted)} />
+                    </span>
+                  ) : (
+                    <span className="tiny mute2">learning</span>
+                  )}
                 </td>
-                <td>
-                  <span className="row" style={{ gap: 8 }}>
-                    <span style={{ width: 22 }}>{c.score}</span>
-                    <ScoreBar s={c.score} v={c.verdict} />
-                  </span>
-                </td>
-                <td>
-                  <Verdict v={c.verdict} />
-                  {!c.counted && <span className="tiny mute2"> late</span>}
-                </td>
-                {!compact && <td className="muted">{c.progress}%</td>}
-                <td>
-                  <Outcome o={c.outcome} />
-                  {h === true && <span className="green tiny"> ✓</span>}
-                  {h === false && <span className="tiny" style={{ color: "var(--dust)" }}> ✗</span>}
-                </td>
-                {!compact && <td className="muted">{ago(c.createdAt)}</td>}
-              </tr>
-            );
-          })}
+              )}
+              {!compact && <td className="muted">{c.progress}%</td>}
+              <td>
+                <Outcome o={c.outcome} />
+                {!c.counted && <span className="tiny mute2"> late</span>}
+              </td>
+              {!compact && <td className="muted">{ago(c.createdAt)}</td>}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>

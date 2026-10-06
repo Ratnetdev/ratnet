@@ -4,7 +4,13 @@ Pretraining the first model raised in the trenches. Rats dig every new pump.fun 
 
 ## What runs on launch day
 - **Live rat feed**: every pump.fun create tx (create + create_v2) read from Solana via the pump.fun mint authority, decoded on the fly (name, ticker, uri, creator, dev buy) plus off-chain metadata (description, socials).
-- **Checkpoints**: bonding curve read at dig, 5m, 1h, 24h. Outcome BONDED (curve complete), ALIVE or DIED (<5% at 24h).
+- **Checkpoints**: bonding curve read at dig, 5m, 1h, 24h. Outcome BONDED (curve complete), DIED early (<1% at 1h, peak <3%), else ALIVE or DIED (<5%) at 24h.
+- **Hot watch**: every filling curve is re-checked each run (top 200 by curve + a rotating slice of the rest), so graduations land in near real time. Only curve accounts and two sorted sets are read, so it stays cheap.
+- **Radar**: live launches sorted by curve %, with call and dev record. **Graduations**: every bond, time to bond, and what the King said.
+- **Dev memory**: launches and bonds per creator, used in reports, the radar and the learner.
+- **Rat King nano**: online logistic regression trained from scratch on every resolved launch (`src/lib/nano.ts`), loss log and weights public at `/api/king/weights`. Calls count after 200 lessons.
+- **Coin pages** `/c/{CA}` with a 1200×630 share card at `/api/og/{CA}`.
+- **Open API** documented at `/developers`. Read endpoints are CDN-cached for a few seconds.
 - **Rat King v0**: transparent scorer (`src/lib/king.ts`), call at 5m, hit rate tracked. Calls later than 15m after birth are marked late and never count.
 - **Rats**: burn 100K $RAT to spawn (verified on chain, signature single-use). Weekly litters, overflow queues for the next litter.
 - **Sniff orders**: burn 10K $RAT to score any CA. Free preview (5/hour per IP) until the CA is set.

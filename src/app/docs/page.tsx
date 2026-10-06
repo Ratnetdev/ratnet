@@ -28,7 +28,15 @@ export default function Docs() {
       <ul>
         <li>Digs each new pump.fun launch the moment it is created: name, ticker, description, socials, creator, dev buy, bonding curve at birth.</li>
         <li>Comes back at 5 minutes, 1 hour and 24 hours to sniff the curve again.</li>
-        <li>Records the outcome: <b>BONDED</b> (curve completed), <b>ALIVE</b> or <b>DIED</b> (under 5% curve at 24h).</li>
+        <li>Keeps every curve that is filling on the <b>hot watch</b>, re-checked every few seconds, so a graduation shows up on the board within moments.</li>
+        <li>Remembers every dev: how many coins they launched and how many bonded. Serial launchers can&apos;t hide.</li>
+        <li>Records the outcome: <b>BONDED</b> (curve completed), <b>DIED</b> early (under 1% at the 1-hour check and never above 3%), otherwise at 24h <b>ALIVE</b> or <b>DIED</b> (under 5%).</li>
+      </ul>
+      <h3>What you get from it</h3>
+      <ul>
+        <li><a href="/radar">The Radar</a>: every live launch whose curve is filling, sorted by how close it is to graduating, with the King&apos;s call and the dev&apos;s record.</li>
+        <li><a href="/king?tab=grads">Graduations</a>: every coin that bonded, how fast, and what the King said at 5 minutes.</li>
+        <li>A page per coin with a share card for X.</li>
       </ul>
       <h3>Spawning</h3>
       <ul>
@@ -56,6 +64,10 @@ export default function Docs() {
       <h3>v0 · live now</h3>
       <p>
         A transparent baseline scorer. Every weight is published on the <a href="/king">King page</a>. It calls each launch 5 minutes after birth: <b>BOND</b> at 60+, <b>WATCH</b> at 30 to 59, <b>DUST</b> below 30. Calls made later than 15 minutes after birth are marked late and never count toward the hit rate. Misses stay on the board.
+      </p>
+      <h3>nano · learning live</h3>
+      <p>
+        Next to v0 runs <b>Rat King nano</b>, a model born at zero that learns from every outcome the rats record. One gradient step per resolved launch, 14 features frozen at the 5-minute mark, nothing borrowed. Its calls count once it has 200 lessons. Loss curve, weights and a head to head against v0 are public in <a href="/lab">the Lab</a>.
       </p>
       <h3>v1 · training</h3>
       <p>
@@ -98,12 +110,15 @@ export default function Docs() {
       <ul>
         <li>Live rat feed reading every new pump.fun launch.</li>
         <li>Rat King v0 calls with the hit rate tracked from hour one.</li>
-        <li>Litter 1 spawning, sniff orders, payout ledger, public dataset counter.</li>
+        <li>Radar, graduations, dev memory, coin pages with share cards.</li>
+        <li>Rat King nano learning live in the Lab.</li>
+        <li>Litter 1 spawning, sniff orders, payout ledger, public dataset and open API.</li>
       </ul>
       <h3><span className="pill soon">next</span> Rat King v1</h3>
       <ul>
         <li>First from-scratch pretraining run on the dug dataset, public loss curve.</li>
         <li>Weights and dataset on Hugging Face after the first epoch.</li>
+        <li>Tunnel 4 opens: first-hour trade flow (bundles, snipers, wallet quality).</li>
         <li>Litters 2 and 3, weekly.</li>
       </ul>
       <h3><span className="pill soon">next</span> The King speaks up</h3>
@@ -118,7 +133,7 @@ export default function Docs() {
 
       <h2>Links</h2>
       <ul>
-        <li><a href="/king">Rat King calls</a> · <a href="/rats">Rats</a> · <a href="/sniff">Sniff</a> · <a href="/ledger">Ledger</a> · <a href="/dataset">Dataset</a></li>
+        <li><a href="/radar">Radar</a> · <a href="/king">Rat King calls</a> · <a href="/lab">Lab</a> · <a href="/rats">Rats</a> · <a href="/sniff">Sniff</a> · <a href="/ledger">Ledger</a> · <a href="/dataset">Dataset</a> · <a href="/developers">API</a></li>
       </ul>
     </div>
   );

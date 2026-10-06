@@ -5,6 +5,8 @@ import { K, redis } from "./redis";
 
 let _c: Connection | null = null;
 export function conn(): Connection {
+  const injected = (globalThis as any).__rnConn; // test hook
+  if (injected) return injected;
   if (_c) return _c;
   const url = process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL;
   if (!url) throw new Error("RPC is not configured");

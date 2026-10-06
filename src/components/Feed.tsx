@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { clock } from "./fmt";
 
 export type FeedItem = { kind: string; rat: string; mint: string; symbol: string; name: string; at: number; text: string };
@@ -16,12 +17,12 @@ export default function Feed({ items, max = 40 }: { items: FeedItem[]; max?: num
         <div className="ln" key={`${f.at}-${f.mint}-${f.kind}-${i}`}>
           <span className="t">{clock(f.at)}</span>
           <span className={`who ${f.rat === "RAT KING" ? "king" : f.rat === "LEDGER" ? "ledger" : ""}`}>{f.rat}</span>
-          <span className="msg">
+          <span className="msg" style={f.kind === "grad" ? { color: "var(--bond)" } : f.kind === "near" ? { color: "var(--watch)" } : undefined}>
             {f.kind === "dig" && f.mint ? "dug " : f.kind === "call" ? "calls " : f.kind === "resolve" ? "" : ""}
             {f.symbol && (
-              <a href={`https://pump.fun/coin/${f.mint}`} target="_blank" rel="noreferrer">
+              <Link href={`/c/${f.mint}`}>
                 <b>${f.symbol}</b>
-              </a>
+              </Link>
             )}{" "}
             {f.text}
           </span>

@@ -1,7 +1,9 @@
 import { K, redis } from "./redis";
 import { dasAsset, fetchOffchain, getCurves } from "./solana";
 import { reportLines, score, KING_VERSION } from "./king";
-import type { Launch } from "./digger";
+import { loadModel, type Launch } from "./digger";
+import { features, nanoScore, NANO_MIN } from "./nano";
+import { verdictOf } from "./king";
 
 export type SniffReport = {
   id: string;
@@ -22,6 +24,8 @@ export type SniffReport = {
   free: boolean;
   at: number;
   version: string;
+  dev: { n: number; b: number } | null;
+  nano: { score: number; verdict: string } | null;
 };
 
 export async function sniff(ca: string, wallet: string, sig: string, free: boolean): Promise<SniffReport> {
@@ -59,6 +63,8 @@ export async function sniff(ca: string, wallet: string, sig: string, free: boole
     free,
     at: Date.now(),
     version: KING_VERSION,
+    dev: dug ? { n: dug.devN ?? 0, b: dug.devB ?? 0 } : null,
+    nano: null as { score: number; verdict: string } | null,
   };
 
   if (!c) {
@@ -88,6 +94,32 @@ export async function sniff(ca: string, wallet: string, sig: string, free: boole
   };
   const sc = score(input);
   const lines = reportLines(input, sc, { mcapSol: c.mcapSol, complete: c.complete });
+  if (dug) {
+    const n = dug.devN ?? 0;
+    const b = dug.devB ?? 0;
+    if (n === 0) lines.plus.push("fresh dev, first launch the rats have seen");
+    else if (b > 0) lines.plus.push(`dev has bonded ${b} of ${n} before`);
+    else if (n >= 5) lines.minus.push(`dev launched ${n} coins, none bonded`);
+    const model = await loadModel();
+    if (model.n >= NANO_MIN) {
+      const x = features({
+        curve5: c.progress,
+        curve0: dug.p0,
+        devBuySol: dug.devBuySol,
+        twitter: !!dug.twitter,
+        telegram: !!dug.telegram,
+        website: !!dug.website,
+        description: dug.description,
+        symbol: dug.symbol,
+        name: dug.name,
+        devN: n,
+        devB: b,
+        createdAt: dug.createdAt,
+      });
+      const ns = nanoScore(model, x);
+      base.nano = { score: ns, verdict: verdictOf(ns) };
+    }
+  }
   return {
     ...base,
     score: c.complete ? 100 : sc.score,

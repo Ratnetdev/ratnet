@@ -1,0 +1,158 @@
+"use client";
+import { usePoll } from "./usePoll";
+import { Outcome, VerdictTag, hitOf, Mark } from "./Calls";
+import { CurveBar, DevTag } from "./Radar";
+import { fmtSecs } from "./Grads";
+import { ago, num, short } from "./fmt";
+import { useState } from "react";
+
+type Cp = { p: number; mcap: number; at: number };
+type Launch = {
+  mint: string;
+  createdAt: number;
+  creator: string;
+  name: string;
+  symbol: string;
+  image: string;
+  description: string;
+  twitter: string;
+  telegram: string;
+  website: string;
+  devBuySol: number;
+  devN: number;
+  devB: number;
+  dugBy: string;
+  p0: number;
+  pNow?: number;
+  peak?: number;
+  mcapNow?: number;
+  cp: { t5?: Cp; h1?: Cp; d1?: Cp };
+  outcome?: string;
+  bondSecs?: number;
+};
+type Call = { score: number; verdict: string; counted: boolean; progress: number; nano?: { score: number; verdict: string } | null; outcome: string | null; at: number; symbol: string; name: string };
+
+function socialLinks(l: Launch) {
+  const links = [
+    l.twitter && { k: "X", h: l.twitter },
+    l.telegram && { k: "TG", h: l.telegram },
+    l.website && { k: "web", h: l.website },
+  ].filter(Boolean) as { k: string; h: string }[];
+  if (!links.length) return <span className="mute2">none</span>;
+  return links.map((x, i) => (
+    <span key={x.k}>
+      {i ? " · " : ""}
+      <a href={x.h.startsWith("http") ? x.h : `https://${x.h}`} target="_blank" rel="noreferrer nofollow">{x.k}</a>
+    </span>
+  ));
+}
+
+export default function CoinView({ mint }: { mint: string }) {
+  const { data, error } = usePoll<{ launch: Launch | null; call: Call | null }>(`/api/coin/${mint}`, 6000);
+  const [copied, setCopied] = useState(false);
+  const l = data?.launch;
+  const c = data?.call;
+  const sym = c?.symbol || l?.symbol || "";
+  const outcome = c?.outcome || l?.outcome || null;
+
+  if (error && !data)
+    return (
+      <div className="panel">
+        <div className="pb">
+          <div className="crt green" style={{ fontSize: 28 }}>Not dug</div>
+          <p className="muted small">The rats only keep launches they dug live (dead coins are cleared after a few hours). Burn a sniff order to have the King score any CA.</p>
+          <a className="btn" href="/sniff">Sniff this CA</a>
+        </div>
+      </div>
+    );
+
+  const url = typeof window !== "undefined" ? window.location.href : "";
+  const tweet = c
+    ? `The Rat King called $${sym} ${c.verdict} ${c.score}/100, 5 minutes after launch.${outcome ? ` Outcome: ${outcome}${l?.bondSecs ? ` in ${fmtSecs(l.bondSecs)}` : ""}.` : ""}\n\nEvery call logged and checked on chain.`
+    : `The rats are watching $${sym}.`;
+
+  return (
+    <>
+      <section className="hero" style={{ paddingTop: 6, paddingBottom: 20 }}>
+        <div className="row wrapx" style={{ gap: 16, alignItems: "center" }}>
+          {l?.image && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={l.image.replace("ipfs://", "https://ipfs.io/ipfs/")} alt="" width={72} height={72} style={{ border: "1px solid var(--line2)", objectFit: "cover", imageRendering: "auto" }} />
+          )}
+          <div>
+            <h1 style={{ fontSize: "clamp(36px,6vw,60px)" }}>${sym || "…"}</h1>
+            <div className="muted small">{l?.name || c?.name}</div>
+          </div>
+        </div>
+        <div className="row wrapx mt" style={{ gap: 10 }}>
+          <a className="btn" href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(tweet)}&url=${encodeURIComponent(url)}`} target="_blank" rel="noreferrer">Share call</a>
+          <a className="btn dim" href={`https://pump.fun/coin/${mint}`} target="_blank" rel="noreferrer">pump.fun</a>
+          <a className="btn dim" href={`https://dexscreener.com/solana/${mint}`} target="_blank" rel="noreferrer">chart</a>
+          <button className="btn dim" onClick={() => { navigator.clipboard?.writeText(mint); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "copied" : "copy CA"}</button>
+        </div>
+      </section>
+
+      <section className="grid g3">
+        <div className="panel glow">
+          <div className="ph"><span><b>rat king v0</b></span>{c && <VerdictTag v={c.verdict} />}</div>
+          <div className="pb">
+            <div className="big" style={{ color: c ? `var(--${c.verdict === "BOND" ? "bond" : c.verdict === "WATCH" ? "watch" : "dust"})` : undefined }}>{c?.score ?? "–"}</div>
+            <div className="s small muted mt">{c ? `called ${ago(c.at)} ago at curve ${c.progress}%${c.counted ? "" : " · late, not counted"}` : "the call lands 5 minutes after launch"}<Mark h={c ? hitOf(c.verdict, outcome, c.counted) : null} /></div>
+          </div>
+        </div>
+        <div className="panel">
+          <div className="ph"><span><b>nano</b> · learned model</span>{c?.nano && <VerdictTag v={c.nano.verdict} />}</div>
+          <div className="pb">
+            <div className="big">{c?.nano?.score ?? "–"}</div>
+            <div className="small muted mt">{c?.nano ? "learned from every outcome so far" : "still learning, no counted call yet"}<Mark h={c?.nano ? hitOf(c.nano.verdict, outcome, c.counted) : null} /></div>
+          </div>
+        </div>
+        <div className="panel">
+          <div className="ph"><span><b>outcome</b></span></div>
+          <div className="pb">
+            <div style={{ marginBottom: 10 }}><Outcome o={outcome} /> {l?.bondSecs ? <span className="small" style={{ color: "var(--bond)" }}>in {fmtSecs(l.bondSecs)}</span> : null}</div>
+            <CurveBar p={l?.pNow ?? l?.p0 ?? 0} />
+            <div className="tiny muted mt">peak {l?.peak ?? "–"}% · mcap {l?.mcapNow ? `${num(Math.round(l.mcapNow))} ◎` : "–"}</div>
+          </div>
+        </div>
+      </section>
+
+      {l && (
+        <section className="grid g2 mt">
+          <div className="panel">
+            <div className="ph"><span><b>what the rats dug</b> · {l.dugBy}</span></div>
+            <div className="scroll">
+              <table className="tbl">
+                <tbody>
+                  <tr><td className="muted">born</td><td>{new Date(l.createdAt).toISOString().replace("T", " ").slice(0, 19)} UTC</td></tr>
+                  <tr><td className="muted">creator</td><td><a href={`https://solscan.io/account/${l.creator}`} target="_blank" rel="noreferrer">{short(l.creator, 6, 6)}</a> <DevTag n={l.devN ?? 0} b={l.devB ?? 0} /></td></tr>
+                  <tr><td className="muted">dev buy</td><td>{l.devBuySol} ◎</td></tr>
+                  <tr><td className="muted">socials</td><td>{socialLinks(l)}</td></tr>
+                  <tr><td className="muted">description</td><td style={{ whiteSpace: "normal" }} className="small">{l.description || <span className="mute2">none</span>}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="panel">
+            <div className="ph"><span><b>checkpoints</b></span></div>
+            <div className="scroll">
+              <table className="tbl">
+                <thead><tr><th>When</th><th>Curve</th><th>Mcap</th></tr></thead>
+                <tbody>
+                  <tr><td>at dig</td><td>{l.p0}%</td><td className="muted">–</td></tr>
+                  {(["t5", "h1", "d1"] as const).map((k) => (
+                    <tr key={k}>
+                      <td>{k === "t5" ? "5 min" : k === "h1" ? "1 hour" : "24 hours"}</td>
+                      <td>{l.cp[k] ? `${l.cp[k]!.p}%` : <span className="mute2">{l.outcome ? "–" : "pending"}</span>}</td>
+                      <td className="muted">{l.cp[k]?.mcap ? `${num(Math.round(l.cp[k]!.mcap))} ◎` : "–"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+    </>
+  );
+}

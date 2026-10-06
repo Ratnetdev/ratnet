@@ -4,6 +4,8 @@ import { usePoll } from "./usePoll";
 import Feed, { FeedItem } from "./Feed";
 import { Call, CallList } from "./Calls";
 import { num } from "./fmt";
+import RadarTable, { RadarRow } from "./Radar";
+import GradList, { Grad } from "./Grads";
 
 export type Stats = {
   dug: number;
@@ -17,10 +19,15 @@ export type Stats = {
   bond: { n: number; res: number; hit: number; rate: number | null };
   watch: { n: number; res: number; bonded: number; rate: number | null };
   dust: { n: number; res: number; hit: number; rate: number | null };
+  nano?: {
+    bond: { n: number; res: number; hit: number; rate: number | null };
+    watch: { n: number; res: number; bonded: number; rate: number | null };
+    dust: { n: number; res: number; hit: number; rate: number | null };
+  };
   burnedRat: number;
   sniffs: number;
 };
-type Live = { stats: Stats; feed: FeedItem[]; calls: Call[]; live: { mint: string; litter: { n: number; size: number; open: boolean } } };
+type Live = { stats: Stats; feed: FeedItem[]; calls: Call[]; radar: RadarRow[]; grads: Grad[]; live: { mint: string; litter: { n: number; size: number; open: boolean } } };
 
 export default function LiveBoard() {
   const { data, error } = usePoll<Live>("/api/live", 4000);
@@ -34,7 +41,7 @@ export default function LiveBoard() {
           <div className="pb stat">
             <div className="k">Launches dug</div>
             <div className="big rat">{num(s?.dug ?? 0)}</div>
-            <div className="s">+{num(s?.dugToday ?? 0)} today · {num(s?.tracking ?? 0)} sniffs queued</div>
+            <div className="s">+{num(s?.dugToday ?? 0)} today · {num(s?.tracking ?? 0)} checkpoints queued</div>
           </div>
         </div>
         <div className="panel">
@@ -42,7 +49,7 @@ export default function LiveBoard() {
             <div className="k">King hit rate (BOND calls)</div>
             <div className="big" style={{ color: "var(--bond)" }}>{s?.bond.rate != null ? `${s.bond.rate}%` : "–"}</div>
             <div className="s">
-              {s ? `${num(s.bond.hit)} of ${num(s.bond.res)} resolved` : "warming up"}
+              {s ? `${num(s.bond.hit)} of ${num(s.bond.n)} BOND calls bonded` : "warming up"}
               {lift ? ` · ${lift}x base rate` : ""}
             </div>
           </div>
@@ -51,14 +58,14 @@ export default function LiveBoard() {
           <div className="pb stat">
             <div className="k">Trench base rate</div>
             <div className="big">{s?.baseRate != null ? `${s.baseRate}%` : "–"}</div>
-            <div className="s">of dug launches bond in 24h ({num(s?.bonded ?? 0)} bonded)</div>
+            <div className="s">of all dug launches graduated</div>
           </div>
         </div>
         <div className="panel">
           <div className="pb stat">
-            <div className="k">DUST calls right</div>
-            <div className="big" style={{ color: "var(--dust)" }}>{s?.dust.rate != null ? `${s.dust.rate}%` : "–"}</div>
-            <div className="s">{s ? `${num(s.calls)} calls made · ${num(s.callsToday)} today` : "–"}</div>
+            <div className="k">Graduated</div>
+            <div className="big" style={{ color: "var(--bond)" }}>{num(s?.bonded ?? 0)}</div>
+            <div className="s">{s ? `DUST calls right ${s.dust.rate != null ? s.dust.rate + "%" : "–"} · ${num(s.calls)} calls` : "–"}</div>
           </div>
         </div>
       </section>
@@ -78,15 +85,38 @@ export default function LiveBoard() {
         </div>
 
         <div className="grid" style={{ alignContent: "start" }}>
+          <div className="panel glow">
+            <div className="ph">
+              <span>
+                <b>radar</b> · curves filling now
+              </span>
+              <Link href="/radar">full radar →</Link>
+            </div>
+            <RadarTable rows={(data?.radar || []).slice(0, 8)} />
+          </div>
           <div className="panel">
             <div className="ph">
               <span>
-                <b>rat king v0</b> · latest calls
+                <b style={{ color: "var(--bond)" }}>graduations</b> · bonded live
               </span>
-              <Link href="/king">all calls →</Link>
+              <Link href="/king?tab=grads">all →</Link>
             </div>
-            <CallList calls={(data?.calls || []).slice(0, 8)} compact />
+            <GradList grads={(data?.grads || []).slice(0, 6)} />
           </div>
+        </div>
+      </section>
+
+      <section className="grid g-main mt">
+        <div className="panel">
+          <div className="ph">
+            <span>
+              <b>rat king</b> · latest calls
+            </span>
+            <Link href="/king">all calls →</Link>
+          </div>
+          <CallList calls={(data?.calls || []).slice(0, 8)} />
+        </div>
+        <div className="grid" style={{ alignContent: "start" }}>
           <div className="panel">
             <div className="pb">
               <div className="row between">
@@ -106,9 +136,20 @@ export default function LiveBoard() {
               <div className="row between">
                 <div>
                   <div className="crt" style={{ fontSize: 26, color: "var(--rat)" }}>Sniff a CA</div>
-                  <div className="muted small">Burn $RAT, get a Rat King score and report on any coin.</div>
+                  <div className="muted small">Burn $RAT, get a Rat King score, dev history and a report on any coin.</div>
                 </div>
                 <Link href="/sniff" className="btn ghost">Sniff</Link>
+              </div>
+            </div>
+          </div>
+          <div className="panel">
+            <div className="pb">
+              <div className="row between">
+                <div>
+                  <div className="crt" style={{ fontSize: 26, color: "var(--rat)" }}>The Lab</div>
+                  <div className="muted small">Watch Rat King nano learn from every outcome. Loss curve and weights, public.</div>
+                </div>
+                <Link href="/lab" className="btn dim">Open</Link>
               </div>
             </div>
           </div>

@@ -3,14 +3,14 @@ import { getSettings } from "@/lib/settings";
 import { isPubkey } from "@/lib/solana";
 import { sniff, saveSniff } from "@/lib/sniff";
 import { K, redis } from "@/lib/redis";
-import { fail, ipOf, json } from "@/lib/http";
+import { cached, fail, ipOf, json } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 export async function GET() {
   try {
-    return json({ sniffs: (await redis().lrange(K.sniffs, 0, 29)) || [] });
+    return cached({ sniffs: (await redis().lrange(K.sniffs, 0, 29)) || [] }, 4);
   } catch (e) {
     return fail(e, 500);
   }

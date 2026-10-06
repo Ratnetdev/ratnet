@@ -15,6 +15,7 @@ type RatView = {
   earnedSol: number;
   active: boolean;
   work: number;
+  workAll: number;
   last: { mint: string; symbol: string; at: number; kind: string } | null;
 };
 type Board = {
@@ -165,6 +166,29 @@ export default function RatsBoard() {
         </section>
       )}
 
+      {realRats.length > 0 && (
+        <section className="panel mt">
+          <div className="ph"><span><b>top rats</b> · all time</span></div>
+          <div className="scroll">
+            <table className="tbl">
+              <thead><tr><th>#</th><th>Rat</th><th>Owner</th><th>Digs all time</th><th>This round</th><th>Earned</th></tr></thead>
+              <tbody>
+                {[...realRats].sort((a, b) => b.workAll - a.workAll).slice(0, 10).map((r, i) => (
+                  <tr key={r.id}>
+                    <td className="muted">{i + 1}</td>
+                    <td className="green">{r.name}</td>
+                    <td className="muted">{short(r.owner)}</td>
+                    <td>{num(r.workAll)}</td>
+                    <td>{num(r.work)}</td>
+                    <td>{r.earnedSol} ◎</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section className="panel mt">
         <div className="ph"><span><b>rat screens</b> · live</span><span>{realRats.length ? `${realRats.length} rats` : "scouts on duty until litter 1"}</span></div>
         <div className="pb">
@@ -174,7 +198,7 @@ export default function RatsBoard() {
                 <div className="nm">{r.name}</div>
                 <div className="ln2">owner {short(r.owner)}</div>
                 <div className="ln2">{r.last ? `${r.last.kind} $${r.last.symbol} · ${ago(r.last.at)}` : "sniffing around…"}</div>
-                <div className="ln2">digs {r.work}</div>
+                <div className="ln2">digs {r.work} this round · {num(r.workAll)} total</div>
                 <div className="meter"><i style={{ width: `${Math.min(100, (r.work / (data?.costs.minWork || 50)) * 100)}%` }} /></div>
               </div>
             ))}

@@ -2,7 +2,7 @@ import { getRounds } from "@/lib/rounds";
 import { getExports } from "@/lib/exporter";
 import { getStats } from "@/lib/stats";
 import { K, redis } from "@/lib/redis";
-import { fail, json } from "@/lib/http";
+import { cached, fail } from "@/lib/http";
 import { roundOf, roundStart } from "@/lib/rats";
 import { ROUND_MS, FEE_SPLIT } from "@/config/site";
 
@@ -17,14 +17,14 @@ export async function GET() {
       getStats(),
     ]);
     const cur = roundOf();
-    return json({
+    return cached({
       rounds,
       burns: burns || [],
       exports,
       stats,
       split: FEE_SPLIT,
       current: { id: cur, startsAt: roundStart(cur), endsAt: roundStart(cur) + ROUND_MS },
-    });
+    }, 10);
   } catch (e) {
     return fail(e, 500);
   }
