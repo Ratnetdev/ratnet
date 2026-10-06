@@ -93,6 +93,7 @@ export const DEFAULT_SETTINGS = {
     wireMinW: 0.2, // trust an account's posts must have before WIRE sends its coins to the desk (seeds start at 0.3 to 0.5)
     wireMaxCurve: 85, // tweet coins move fast: allowed up to this curve %
     wireMaxOpen: 2, // tweet-coin positions open at once
+    ghostSol: 0.1, // ghost desk: fixed size per trade (not counted anywhere, only learned from)
     slippageBps: 1500,
   },
 };

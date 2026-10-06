@@ -345,6 +345,7 @@ async function main() {
   const { deskSession, getDesk } = await import("../src/lib/desk");
   const { getRunner, topRunners } = await import("../src/lib/runner");
   const { ingest, parseHook } = await import("../src/lib/wire");
+  if (process.env.DAILY_LOSS) R.kv.set("rn:settings", { desk: { dailyLoss: Number(process.env.DAILY_LOSS), maxOpen: Number(process.env.MAX_OPEN || 5) } });
   const NAMES = [["Kekius Maximus", "KEKIUS"], ["Mars Colony", "MARS"], ["Gork", "GORK"], ["Dogefather", "DOGEFATHER"], ["Tariff Cat", "TARIFF"], ["Grok Imagine", "IMAGINE"], ["Pepe Tesla", "PEPETESLA"], ["Moonshot", "MOONSHOT"]];
   const AUTH = ["elonmusk", "realDonaldTrump", "cz_binance", "blknoiz06", "WatcherGuru"];
   let tweetN = 0;
@@ -421,6 +422,9 @@ async function main() {
   for (const c of realBonds) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; rbCalled++; if (call.farm) rbFlag++; }
   console.log(`bot coins: ${washCoins.length} launched, ${wCalled} called, ${wFlag} flagged FARM, ${wBond} still called BOND, ${wTaped} read and not flagged · desk bought bot coins: ${(d.trades as any[]).filter((t) => t.side === "buy" && byMint.get(t.mint)?.wash).length} · real bonds wrongly flagged: ${rbFlag} of ${rbCalled}`);
   for (const t of (d.trades as any[]).filter((t) => t.side === "buy" && (byMint.get(t.mint)?.farm || byMint.get(t.mint)?.wash))) { const L = R.kv.get(`rn:launch:${t.mint}`) as any; console.log("BOUGHT BAD", t.symbol, t.reason, "early tape farm", L?.tape?.farm?.farm, "call farm", (R.kv.get(`rn:call:${t.mint}`) as any)?.farm, "ctx checks", JSON.stringify(t.ctx?.checks?.find((c: any) => c.rule === "not_a_farm"))); }
+  const gt = ((R.kv.get("rn:ghost:trades") as any[]) || []);
+  const gpos = R.kv.get("rn:ghost:pos") as any;
+  console.log(`ghost desk: ${gt.filter((t) => t.side === "buy").length} buys, ${gt.filter((t) => t.side === "sell").length} sells, ${gpos ? Object.keys(gpos).length : 0} open · exam drawdown check: ${JSON.stringify((await (await import("../src/lib/desk")).getDesk() as any).exam?.checks?.find((c: any) => /drawdown/.test(c.label)))}`);
   const twCoins = coins.filter((c) => c.tw);
   const picked = twCoins.filter((c) => (R.kv.get(`rn:launch:${c.mint}`) as any)?.wire?.pick);
   const boughtTw = (d.trades as any[]).filter((t) => t.side === "buy" && byMint.get(t.mint)?.tw);

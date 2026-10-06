@@ -17,6 +17,7 @@ export class MockRedis {
   async hincrby(k: string, f: string, n: number) { this.calls++; const h = this.h(k); h[f] = Number(h[f] || 0) + n; return h[f]; }
   async hincrbyfloat(k: string, f: string, n: number) { this.calls++; const h = this.h(k); h[f] = Number(h[f] || 0) + n; return h[f]; }
   async exists(...ks: string[]) { this.calls++; return ks.filter((k) => this.live(k)).length; }
+  async hexists(k: string, f: string) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; return h && f in h ? 1 : 0; }
   async hget(k: string, f: string) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; return h[f] ?? null; }
   async hgetall(k: string) { this.calls++; return this.live(k) && Object.keys(this.kv.get(k)).length ? this.clone(this.kv.get(k)) : null; }
   async hmget(k: string, ...f: string[]) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; const o: any = {}; f.forEach((x) => (o[x] = h[x] ?? null)); return o; }

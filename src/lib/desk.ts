@@ -24,7 +24,7 @@ import { NANO_MIN, type NanoModel } from "./nano";
 import { agentLog, type AgentEv } from "./agents";
 import { coachStats, coachStep, follow, followsFor, tripId, type Check } from "./coach";
 import { filmStats, filmStep, logSkip } from "./film";
-import { onClose as pmClose, pmView, sleeveOf, sleeveWeight } from "./pm";
+import { onClose as pmClose, onGhost as pmGhost, pmView, sleeveOf, sleeveWeight } from "./pm";
 import { accountOf, notePnl, wireView } from "./wire";
 import { getHistory } from "./historian";
 import { loadModel } from "./digger";
@@ -85,6 +85,7 @@ export type Pos = {
   gradSeen?: boolean;
   xm?: number | null;
   ctx?: EntryCtx;
+  ghost?: string | null; // ghost desk position: why the real desk could not take it
   creator?: string;
   devSellPx?: number; // price when the dev sold past the line while we held (memes: we hold, COACH scores it)
 };
@@ -335,12 +336,12 @@ async function tokenBalanceRaw(owner: PublicKey, mint: string): Promise<bigint> 
 
 // ---------------------------------------------------------------- logging
 
-type Batch = { ev: DeskEv[]; trades: Trade[] };
+type Batch = { ev: DeskEv[]; trades: Trade[]; ghost?: Trade[] };
 function log(b: Batch, agent: Agent, text: string, tone: Tone = "info", coin?: { mint: string; symbol: string }) {
   b.ev.push({ agent, at: Date.now(), text, tone, mint: coin?.mint, symbol: coin?.symbol });
 }
 async function flushLog(b: Batch) {
-  if (!b.ev.length && !b.trades.length) return;
+  if (!b.ev.length && !b.trades.length && !b.ghost?.length) return;
   const p = redis().pipeline();
   if (b.ev.length) {
     p.lpush(K.deskEv, ...b.ev);
@@ -359,9 +360,14 @@ async function flushLog(b: Batch) {
     p.lpush(K.deskTrades, ...b.trades);
     p.ltrim(K.deskTrades, 0, 1999); // the full public track record
   }
+  if (b.ghost?.length) {
+    p.lpush(GHOST_TRADES, ...b.ghost);
+    p.ltrim(GHOST_TRADES, 0, 1999);
+  }
   await p.exec();
   b.ev = [];
   b.trades = [];
+  b.ghost = [];
 }
 
 const pct = (a: number, b: number) => (b ? ((a - b) / b) * 100 : 0);
@@ -381,14 +387,24 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
   const wins = last.filter((x) => x > 0).length;
   const winRate = last.length ? (wins / last.length) * 100 : 0;
   const pnlPct = pct(state.equity, state.start);
+  // worst drawdown over the last 30 trades (not all time), so one bad stretch can't lock the exam forever
+  const buys = ((await redis().lrange<Trade>(K.deskTrades, 0, 1999)) || []).filter((t) => t.side === "buy" && !t.live);
+  const since = buys.length ? buys[Math.min(buys.length, EXAM.trades) - 1].at : Date.now();
+  const eqs = (((await redis().lrange<{ t: number; eq: number; live: boolean }>(K.deskEq, -3000, -1)) || []) as { t: number; eq: number; live: boolean }[]).filter((x) => !x.live && x.t >= since);
+  let peak = 0;
+  let dd30 = 0;
+  for (const x of [...eqs, { t: Date.now(), eq: state.equity, live: false }]) {
+    peak = Math.max(peak, x.eq);
+    if (peak > 0) dd30 = Math.max(dd30, ((peak - x.eq) / peak) * 100);
+  }
   const checks = [
     { label: "paper round trips", need: `≥ ${EXAM.trades}`, now: String(rounds.length), ok: rounds.length >= EXAM.trades },
     { label: "win rate", need: `≥ ${EXAM.winRate}%`, now: `${winRate.toFixed(0)}%`, ok: winRate >= EXAM.winRate },
     { label: "paper profit", need: `≥ +${EXAM.pnlPct}%`, now: fmtPct(pnlPct), ok: pnlPct >= EXAM.pnlPct },
-    { label: "worst drawdown", need: `≤ ${EXAM.maxDD}%`, now: `${state.maxDD.toFixed(0)}%`, ok: state.maxDD <= EXAM.maxDD },
+    { label: "worst drawdown (last 30 trades)", need: `≤ ${EXAM.maxDD}%`, now: `${dd30.toFixed(0)}%`, ok: dd30 <= EXAM.maxDD },
     { label: "funded wallet", need: `≥ ${EXAM.minWallet} SOL`, now: walletSol == null ? "none" : `${walletSol.toFixed(2)} SOL`, ok: walletSol != null && walletSol >= EXAM.minWallet },
   ];
-  return { trades: rounds.length, winRate, pnlPct, maxDD: state.maxDD, walletSol, checks, passed: checks.every((c) => c.ok) };
+  return { trades: rounds.length, winRate, pnlPct, maxDD: Math.round(dd30 * 10) / 10, walletSol, checks, passed: checks.every((c) => c.ok) };
 }
 
 // ---------------------------------------------------------------- prices
@@ -589,9 +605,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const closeAll = !!(await r.get("rn:desk:closeall"));
       if (closeAll) await r.del("rn:desk:closeall");
 
-      // --- prices for everything we hold, stalk, shadow, review or might buy
+      const ghosts = Object.values(((await r.hgetall<Record<string, Pos>>(GHOST_POS)) || {}) as Record<string, Pos>);
+      // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
       const px = await priceOf(
-        Array.from(new Set([...positions.map((p) => p.mint), ...queued.map((x) => x.replace(/^w:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.keys(afters)]))
+        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^w:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
       );
       if (now - lastRunsAt > 10_000) {
         lastRunsAt = now;
@@ -607,11 +624,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       // --- insiders (every other beat): token balances of the dev, bundle wallets, snipers, top early buyers
       if (loops % 2 === 1) {
-        const accs = Array.from(new Set(positions.flatMap((p) => (p.watch || []).map((w) => w.acc))));
+        const accs = Array.from(new Set([...positions, ...ghosts].flatMap((p) => (p.watch || []).map((w) => w.acc))));
         if (accs.length) {
           const amt = await tokenAmounts(accs).catch(() => null);
           if (amt)
-            for (const p of positions) {
+            for (const p of [...positions, ...ghosts]) {
               const w = p.watch || [];
               const dev = w.filter((x) => x.role === "dev" && x.base > 0);
               const ins = w.filter((x) => x.role !== "dev" && x.base > 0);
@@ -622,18 +639,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
       }
 
-      // --- exits (RISK)
-      for (const p of positions) {
-        const q = px[p.mint];
-        if (!q) {
-          // no price: the curve completed but the coin has not (or never) migrated. after 30 minutes it is written off
-          p.noPxSince ||= now;
-          if (now - p.noPxSince > 30 * 60_000) {
-            const ok = await sell(b, state, p, 1, 0, "curve full but never migrated: written off", cfg.slippageBps, kp);
-            if (ok) await r.hdel(K.deskPos, p.mint);
-          } else await r.hset(K.deskPos, { [p.mint]: p });
-          continue;
-        }
+      // the exit rules (RISK), shared by the real desk and the ghost desk so both trade exactly alike
+      const decide = (p: Pos, q: Px, gt = "") => {
         p.noPxSince = undefined;
         p.lastPx = q.px;
         p.peakPx = Math.max(p.peakPx, q.px);
@@ -661,7 +668,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         let tunable = false;
         if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && !learnS.devExitOn && !p.devSellPx) {
           p.devSellPx = q.px;
-          log(b, "RISK", `$${p.symbol}: dev sold ${Math.round((1 - p.dev) * 100)}% of their bag. holding: on memes a dev sell is normal. COACH scores what selling here would have done`, "info", p);
+          log(b, "RISK", `$${p.symbol}${gt}: dev sold ${Math.round((1 - p.dev) * 100)}% of their bag. holding: on memes a dev sell is normal. COACH scores what selling here would have done`, "info", p);
         }
         if (closeAll) [sellFrac, reason] = [1, "manual close"];
         else if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && learnS.devExitOn) [sellFrac, reason] = [1, `dev sold ${Math.round((1 - p.dev) * 100)}% of their bag (dev exit earned by COACH)`];
@@ -685,13 +692,29 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             const f = Math.min(p.pn < cfg.ladderBelow ? cfg.ladderMax * (1 - p.pn / cfg.ladderBelow) : 0, toBag);
             p.msHi = lv;
             if (f >= 0.03) [sellFrac, reason, tunable] = [f, `${usdS(MILESTONES[lv])} reached, P(next ${usdS(MILESTONES[Math.min(lv + 1, MILESTONES.length - 1)])}) ${Math.round(p.pn * 100)}%`, true];
-            else log(b, "RISK", `$${p.symbol} at ${usdS(MILESTONES[lv])}, P(next) ${Math.round(p.pn * 100)}%: holding`, "ok", p);
+            else log(b, "RISK", `$${p.symbol}${gt} at ${usdS(MILESTONES[lv])}, P(next) ${Math.round(p.pn * 100)}%: holding`, "ok", p);
           } else if (q.grad && !p.gradSeen) {
             p.gradSeen = true;
             if (p.pn < cfg.gradKeepP && toBag > 0.03) [sellFrac, reason] = [toBag, `migrated, P(next) ${Math.round(p.pn * 100)}%: down to the moonbag`];
-            else log(b, "RISK", `$${p.symbol} migrated, P(next) ${Math.round(p.pn * 100)}%: runner bag stays`, "ok", p);
+            else log(b, "RISK", `$${p.symbol}${gt} migrated, P(next) ${Math.round(p.pn * 100)}%: runner bag stays`, "ok", p);
           }
         }
+        return { sellFrac, reason, tunable, lv };
+      };
+
+      // --- exits (RISK)
+      for (const p of positions) {
+        const q = px[p.mint];
+        if (!q) {
+          // no price: the curve completed but the coin has not (or never) migrated. after 30 minutes it is written off
+          p.noPxSince ||= now;
+          if (now - p.noPxSince > 30 * 60_000) {
+            const ok = await sell(b, state, p, 1, 0, "curve full but never migrated: written off", cfg.slippageBps, kp);
+            if (ok) await r.hdel(K.deskPos, p.mint);
+          } else await r.hset(K.deskPos, { [p.mint]: p });
+          continue;
+        }
+        const { sellFrac, reason, tunable, lv } = decide(p, q);
         if (sellFrac > 0) {
           const peakHeld = p.peakPx;
           const ok = await sell(b, state, p, sellFrac, q.px, reason, cfg.slippageBps, kp);
@@ -719,6 +742,40 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
         if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
         else await r.hdel(K.deskPos, p.mint);
+      }
+
+      // --- ghost desk exits: the same rules, in the ghost book
+      for (const p of ghosts) {
+        const q = px[p.mint];
+        if (!q) {
+          p.noPxSince ||= now;
+          if (now - p.noPxSince > 30 * 60_000) {
+            await ghostSell(b, p, 1, 0, "curve full but never migrated: written off");
+            await r.hdel(GHOST_POS, p.mint);
+          } else await r.hset(GHOST_POS, { [p.mint]: p });
+          continue;
+        }
+        const d = decide(p, q, " (ghost)");
+        if (d.sellFrac > 0 && !d.reason.startsWith("manual")) {
+          const peakHeld = p.peakPx;
+          const closed = await ghostSell(b, p, d.sellFrac, q.px, d.reason);
+          if (!p.tp1Done && d.sellFrac < 1) {
+            p.tp1Done = true;
+            p.msHi = d.lv;
+          }
+          if (closed && p.devSellPx) {
+            const saved = q.px < p.devSellPx;
+            learnS.devStat.n++;
+            if (saved) learnS.devStat.saved++;
+            else learnS.devStat.cost++;
+            learnS.devExitOn = learnS.devStat.n >= LEARN_RULES.devMin && learnS.devStat.saved / learnS.devStat.n >= LEARN_RULES.devSaved;
+            learnDirty = true;
+          }
+          // COACH reviews ghost exits like real ones (trail too tight or too loose)
+          if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable } satisfies After });
+        }
+        if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
+        else await r.hdel(GHOST_POS, p.mint);
       }
 
       // --- entries (VET -> FLOW -> BUZZ -> SIZE -> EXEC); signals that pass VET are also shadowed for learning
@@ -798,7 +855,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
         await r.hincrby(dk, "seen", 1);
         await r.expire(dk, 3 * 86400);
-        if (fail) {
+        // blocked only by the desk itself (loss limit, full slots), not by anything about the coin: the ghost desk takes it
+        const deskBlock = !!fail && fails.every((c) => DESK_RULES.has(c.rule)) && !posMap[m] && !stalks[m];
+        if (fail && deskBlock) log(b, "VET", `$${rec.symbol} passes every check on the coin; the desk is blocked (${fails.map((c) => `${c.rule.replace(/_/g, " ")} ${c.v}`).join(", ")}). ghost desk follows it`, "info", coin);
+        if (fail && !deskBlock) {
           log(b, "VET", `skipped $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
           // FILM follows every skip (except a full desk or the loss limit, which say nothing about the coin)
           if (fail.rule !== "open_slots" && fail.rule !== "daily_loss_ok") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
@@ -814,7 +874,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           log(b, "VET", `$${rec.symbol} early read is clean. shadow only: early entries unlock at ${LEARN_RULES.earlyMin} resolved reads beating the minute-5 King (now ${es.n}, ${es.n ? Math.round((es.hit / es.n) * 100) : 0}% vs ${es.mainN ? Math.round((es.mainHit / es.mainN) * 100) : 0}%)`, "info", coin);
           continue;
         }
-        log(b, "VET", `$${rec.symbol} clean: curve ${curve}%, dev ${rec.devN ?? 0}/${rec.devB ?? 0}${t ? `, bundle ${Math.round(t.bundleShare * 100)}%` : ""}${g?.smartN ? `, ${g.smartN} smart wallets` : ""}`, "ok", coin);
+        if (!deskBlock) log(b, "VET", `$${rec.symbol} clean: curve ${curve}%, dev ${rec.devN ?? 0}/${rec.devB ?? 0}${t ? `, bundle ${Math.round(t.bundleShare * 100)}%` : ""}${g?.smartN ? `, ${g.smartN} smart wallets` : ""}`, "ok", coin);
 
         // FLOW: live pressure on the curve over a few seconds plus the last hour of trades
         const before = q.real;
@@ -840,7 +900,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
         // never chase: past maxChase above the call price, or when pullbacks have proven better, stalk instead
         const nowPx = again?.priceSol || q.px;
-        if (!wireSig && (learnS.stalkOn || chase > cfg.maxChase)) {
+        if (!wireSig && !deskBlock && (learnS.stalkOn || chase > cfg.maxChase)) {
           if (learnS.stalkOn) {
             await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: nowPx, depth: learnS.stalkArm || 30, hi: nowPx, lo: nowPx, armed: false, early } satisfies Stalk });
             log(b, "SIZE", `$${rec.symbol}: stalking a -${learnS.stalkArm || 30}% pullback for up to ${cfg.stalkMins}m`, "info", coin);
@@ -850,7 +910,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           }
           continue;
         }
-        await enter(b, state, rec, nowPx, again?.realSol ?? 0, eq.value, walletSol, kp, cfg, wireSig ? "wire" : early ? "early" : "direct", xm);
+        const how0 = wireSig ? "wire" : early ? "early" : "direct";
+        if (deskBlock) await ghostEnter(b, rec, nowPx, again?.realSol ?? 0, how0, fails.map((c) => `${c.rule.replace(/_/g, " ")} ${c.v}`).join(", "), cfg);
+        else await enter(b, state, rec, nowPx, again?.realSol ?? 0, eq.value, walletSol, kp, cfg, how0, xm);
       }
 
       // --- stalks: buy the pullback once it bounces
@@ -891,7 +953,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             await r.hdel(K.deskShadow, sh.k || sh.mint);
           } else await r.hset(K.deskShadow, { [sh.k || sh.mint]: sh });
         }
-        for (const a of Object.values(afters)) {
+        for (const [ak, a] of Object.entries(afters)) {
           const q = px[a.mint];
           if (q) {
             a.hi = Math.max(a.hi, q.px);
@@ -899,8 +961,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           }
           if (reviewExit(learnS, a, b)) {
             learnDirty = true;
-            await r.hdel(K.deskAfter, a.mint);
-          } else await r.hset(K.deskAfter, { [a.mint]: a });
+            await r.hdel(K.deskAfter, ak);
+          } else await r.hset(K.deskAfter, { [ak]: a });
         }
         // FILM reviews every skip at 30m, 2h, 24h
         for (const e of await filmStep().catch(() => [])) log(b, "FILM", e.text, e.tone as Tone, { mint: e.mint, symbol: e.symbol });
@@ -991,7 +1053,8 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   const sl = sleeveOf(how);
   const pmw = await sleeveWeight(sl).catch(() => ({ w: 1, paused: false, until: 0 }));
   if (pmw.paused) {
-    log(b, "PM", `$${rec.symbol}: ${sl} sleeve is paused until ${new Date(pmw.until).toISOString().slice(11, 16)} UTC after a bad run. skipped`, "info", coin);
+    log(b, "PM", `$${rec.symbol}: ${sl} sleeve is paused until ${new Date(pmw.until).toISOString().slice(11, 16)} UTC after a bad run. ghost desk takes it`, "info", coin);
+    await ghostEnter(b, rec, px, real, how, `${sl} sleeve paused by PM`, cfg);
     return;
   }
   const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct * pmw.w) / 100);
@@ -999,7 +1062,8 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   const size = Math.min(cfg.maxSol, want, liqCap, avail * 0.95);
   if (want > liqCap && liqCap < cfg.maxSol) log(b, "SIZE", `$${rec.symbol}: liquidity caps the buy at ${liqCap.toFixed(2)} SOL (max ${cfg.maxImpact ?? 6}% price impact on a ${vSol.toFixed(0)} SOL curve)`, "info", coin);
   if (size < cfg.minSol * 0.99) {
-    log(b, "SIZE", `no room for $${rec.symbol}: ${avail.toFixed(3)} SOL free`, "info", coin);
+    log(b, "SIZE", `no room for $${rec.symbol}: ${avail.toFixed(3)} SOL free. ghost desk takes it`, "info", coin);
+    await ghostEnter(b, rec, px, real, how, `no paper balance free (${avail.toFixed(3)} SOL)`, cfg);
     return;
   }
   log(b, "SIZE", `${size.toFixed(3)} SOL on $${rec.symbol} (${cfg.sizePct}% of desk, ${how} entry)`, "info", coin);
@@ -1130,6 +1194,62 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   return true;
 }
 
+// ---------------------------------------------------------------- ghost desk
+
+/** Take a trade in the ghost book: same fill rules as paper, a fixed size, nothing touches the real books. */
+async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: Pos["how"], blocked: string, cfg: Cfg) {
+  const r = redis();
+  const coin = { mint: rec.mint, symbol: rec.symbol };
+  if (!px || (await r.hexists(GHOST_POS, rec.mint))) return;
+  if (((await r.hlen(GHOST_POS)) || 0) >= GHOST_MAX) {
+    log(b, "SIZE", `$${rec.symbol}: ghost desk full (${GHOST_MAX} open), not followed`, "info", coin);
+    return;
+  }
+  const sol = cfg.ghostSol ?? 0.1;
+  const fillPx = px * (1 + PAPER_SLIP);
+  const tokens = (sol * (1 - FEE)) / fillPx;
+  const now = Date.now();
+  const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
+  const why = how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}`;
+  (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
+  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text } : null };
+  const ins = rec.tape?.insiders || [];
+  if (ins.length) {
+    const amt = await tokenAmounts(ins.map((i) => i.acc)).catch(() => ({} as Record<string, number>));
+    pos.watch = ins.map((i) => ({ acc: i.acc, role: i.role, base: amt[i.acc] ?? 0 })).filter((w) => w.base > 0);
+  }
+  await r.hset(GHOST_POS, { [rec.mint]: pos });
+  log(b, "EXEC", `ghost desk bought $${rec.symbol} for ${sol} SOL (the real desk is blocked: ${blocked}). not counted, learned from`, "info", coin);
+}
+
+/** Sell in the ghost book. Returns true when the position is fully closed. */
+async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: string) {
+  const coin = { mint: p.mint, symbol: p.symbol };
+  const amt = frac >= 1 ? p.tokens : p.tokens * frac;
+  const proceeds = amt * px * (1 - PAPER_SLIP) * (1 - FEE);
+  const costPart = p.costSol * (amt / p.tokens0);
+  const pnl = proceeds - costPart;
+  p.tokens -= amt;
+  p.soldSol += proceeds;
+  const now = Date.now();
+  const sol$ = await solUsd().catch(() => null);
+  (b.ghost ||= []).push({ id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pct(proceeds, costPart) * 10) / 10, live: false, mc: mcUsd(px, sol$) });
+  log(b, "RISK", `ghost: ${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, "info", coin);
+  if (p.tokens > 1e-9) return false;
+  p.tokens = 0;
+  const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
+  const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
+  await redis().lpush(GHOST_TRIPS, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: p.ctx } satisfies TripMeta);
+  await redis().ltrim(GHOST_TRIPS, 0, 999);
+  // COACH follows ghost exits too (5m to 7d), and PM hears how a paused strategy would have done
+  await follow({ id: `g:${tripId(p.mint, p.openedAt)}`, mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: now, entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
+  const note = await pmGhost(sleeveOf(p.how), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
+  if (note) log(b, "PM", note, "win");
+  const total = p.soldSol - p.costSol;
+  log(b, "LEDGER", `ghost desk closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))}). not counted`, "info", coin);
+  return true;
+}
+
 // ---------------------------------------------------------------- read side
 
 const BEAT_KEY = "rn:desk:beat"; // last time a desk beat finished
@@ -1207,6 +1327,11 @@ export async function getDesk() {
     coach: await coachStats().catch(() => null),
     film: await filmStats().catch(() => null),
     pm: await pmView().catch(() => null),
+    ghost: await (async () => {
+      const r = redis();
+      const [open, n] = await Promise.all([r.hlen(GHOST_POS), r.llen(GHOST_TRADES)]);
+      return { open: open || 0, fills: n || 0, max: GHOST_MAX };
+    })().catch(() => null),
     wire: await wireView().catch(() => null),
     learn: { ...learnS, arms, shadows: nShadow || 0, reviewing: nAfter || 0, rules: LEARN_RULES, xConnected: !!process.env.X_BEARER_TOKEN },
     now: await rightNow(learnS).catch(() => null),
@@ -1217,6 +1342,15 @@ export async function getDesk() {
 // ---------------------------------------------------------------- track record (public)
 
 const TRIPS_KEY = "rn:desk:trips"; // closed trades with their chart and context
+// GHOST DESK: signals that pass every check on the coin but are blocked only by the desk itself (daily loss limit,
+// full slots, a paused strategy, no paper balance left) are traded anyway in a separate book, with the same entries
+// and exits. Ghost trades never touch the balance, the exam or the track record; COACH, FILM and the priors learn
+// from them, so the desk keeps learning on its worst and busiest days.
+export const GHOST_POS = "rn:ghost:pos";
+const GHOST_TRADES = "rn:ghost:trades";
+const GHOST_TRIPS = "rn:ghost:trips";
+const GHOST_MAX = 10;
+const DESK_RULES = new Set(["daily_loss_ok", "open_slots"]);
 export const VET_KEY = (m: string) => `rn:vet:${m}`; // the last VET verdict on a coin (7 days)
 const ENTRY_KEY = (m: string) => `rn:entry:${m}`; // checks, flow and buzz of the signal that is about to be bought
 
@@ -1295,13 +1429,14 @@ export type Trip = {
 };
 
 /** Every trade the desk made, grouped into round trips: entry, each exit, result. Open trips at the live price. */
-export async function getRecord(onlyMint?: string) {
+export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "real") {
   const r = redis();
+  const ghost = book === "ghost";
   const [trades, posMap, st, metas, sol] = await Promise.all([
-    r.lrange<Trade>(K.deskTrades, 0, 1999),
-    r.hgetall<Record<string, Pos>>(K.deskPos),
+    r.lrange<Trade>(ghost ? GHOST_TRADES : K.deskTrades, 0, 1999),
+    r.hgetall<Record<string, Pos>>(ghost ? GHOST_POS : K.deskPos),
     r.get<DeskState>(K.deskState),
-    r.lrange<TripMeta>(TRIPS_KEY, 0, 999),
+    r.lrange<TripMeta>(ghost ? GHOST_TRIPS : TRIPS_KEY, 0, 999),
     solUsd().catch(() => null),
   ]);
   const metaBy: Record<string, TripMeta> = {};
@@ -1363,13 +1498,34 @@ export async function getRecord(onlyMint?: string) {
   }
   const closed = trips.filter((t) => !t.open);
   const recent = onlyMint ? closed.filter((t) => t.mint === onlyMint) : closed.slice(-60);
-  const fol = await followsFor(recent.map((t) => tripId(t.mint, t.openedAt))).catch(() => ({} as Record<string, Check[]>));
-  for (const t of recent) t.after = fol[tripId(t.mint, t.openedAt)] || [];
+  const fid = (t: Trip) => `${ghost ? "g:" : ""}${tripId(t.mint, t.openedAt)}`;
+  const fol = await followsFor(recent.map(fid)).catch(() => ({} as Record<string, Check[]>));
+  for (const t of recent) t.after = fol[fid(t)] || [];
   const wins = closed.filter((t) => t.pnlSol > 0);
   const sum = (a: Trip[], f: (t: Trip) => number) => a.reduce((x, t) => x + f(t), 0);
   const best = closed.reduce<Trip | null>((b, t) => (!b || t.pnlPct > b.pnlPct ? t : b), null);
   const worst = closed.reduce<Trip | null>((b, t) => (!b || t.pnlPct < b.pnlPct ? t : b), null);
   const start = st?.live ? st.liveStart ?? st.start : st?.start ?? 0;
+  if (ghost) {
+    // the ghost book has no balance: its return is on what it staked
+    const staked = sum(trips, (t) => t.costSol);
+    const pnl = sum(trips, (t) => t.pnlSol);
+    return {
+      live: false,
+      ghost: true,
+      summary: {
+        trips: trips.length, open: trips.filter((t) => t.open).length, closed: closed.length, wins: wins.length,
+        winRate: closed.length ? Math.round((wins.length / closed.length) * 1000) / 10 : null,
+        realizedSol: r4(sum(closed, (t) => t.pnlSol)), openSol: r4(sum(trips.filter((t) => t.open), (t) => t.pnlSol)),
+        start: r4(staked), equity: r4(staked + pnl), returnPct: staked ? Math.round((pnl / staked) * 1000) / 10 : null,
+        best: best ? { symbol: best.symbol, mint: best.mint, pnlPct: best.pnlPct } : null,
+        worst: worst ? { symbol: worst.symbol, mint: worst.mint, pnlPct: worst.pnlPct } : null,
+        avgHoldMs: closed.length ? Math.round(sum(closed, (t) => t.holdMs) / closed.length) : null,
+        since: trips.length ? trips[0].openedAt : null,
+      },
+      trips: onlyMint ? trips.reverse().filter((t) => t.mint === onlyMint) : trips.reverse().slice(0, 300).map((t, i) => (i < 60 ? t : { ...t, series: undefined, ctx: undefined })),
+    };
+  }
   return {
     live: !!st?.live,
     summary: {

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.8 · The ghost desk
+- Ghost desk: every signal that passes every check on the coin but is blocked only by the desk itself (daily loss limit, full slots, a strategy paused by PM, no paper balance left) is traded anyway in a separate book: same entry, same exit rules, fixed 0.1 SOL, up to 10 open. Ghost trades never touch the balance, the exam or the track record. COACH (exit reviews and follow-ups 5m to 7d), the dev-sell prior and the entry shadows learn from them; PM lets a paused strategy back in early when its last 4 ghost trades made money.
+- Track record: a "ghost" tab with every ghost trade in full detail (same trade view as real trades).
+- Desk: a banner when the daily loss limit is hit, with how many signals the ghost desk is following.
+- Exam: the drawdown check now covers the last 30 trades instead of all time, so one bad stretch can't lock the exam forever. The daily loss limit (25%) stays as it is.
+- Sim with a 3% loss limit: the ghost desk took 37 trades the real desk was blocked from, 0 errors.
+
 ## v0.1.7 · The film room
 - PULSE warm-up: needs 3 hours of history before it calls anything rising (on the first night every topic looked like it was rising), at least 8 weighted posts in 15 minutes, and a longer list of common words it ignores (have, says, today, people...). The desk shows when it will be ready.
 - WIRE (15th agent): tracks X accounts whose posts spawn coins (seed list of 52: leaders, Elon and his orbit, founders, KOLs, news), via twitterapi.io webhooks. Every launch is matched against the last hour of posts (links the post, ticker or name), 30 seconds later the leader among the copies is picked, its tape read, farms dropped, and it goes to the desk as its own strategy for trusted accounts. Trust per account is learned from results; the list grows by itself (authors of posts that bonded coins link to, accounts the tracked ones amplify) and mutes dead accounts. Coin pages show the post a coin was born from. King v0.3: +8 for a coin born from a tracked post. Sim: 10 posts, 41 tweet coins, every one matched, the leader picked once per post.

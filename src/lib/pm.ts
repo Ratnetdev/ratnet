@@ -13,7 +13,7 @@ const PRIOR: Record<Sleeve, number> = { king: 1, early: 0.7, wire: 0.8 }; // wei
 const MIN_N = 6; // trades before the record moves the weight
 const PAUSE_MS = 2 * 3600_000;
 
-type S = { r: number[]; pausedUntil: number; n: number; wins: number };
+type S = { r: number[]; pausedUntil: number; n: number; wins: number; g?: number[] };
 type PM = Record<Sleeve, S>;
 
 export const sleeveOf = (how?: string): Sleeve => (how === "early" ? "early" : how === "wire" ? "wire" : "king");
@@ -71,12 +71,28 @@ export async function onClose(sl: Sleeve, logRet: number): Promise<string | null
   return note;
 }
 
+/** Ghost desk result for a sleeve. A paused sleeve whose ghost trades keep winning is let back in early. */
+export async function onGhost(sl: Sleeve, logRet: number): Promise<string | null> {
+  const pm = await load();
+  const s = pm[sl];
+  s.g = [...(s.g || []), Math.max(-3, Math.min(3, logRet))].slice(-8);
+  let note: string | null = null;
+  const last = s.g.slice(-4);
+  if (s.pausedUntil > Date.now() && last.length >= 4 && last.reduce((a, b) => a + b, 0) > 0) {
+    s.pausedUntil = 0;
+    note = `${sl} sleeve back on early: its last 4 ghost trades made money while it was paused`;
+  }
+  await redis().set(KEY, pm);
+  return note;
+}
+
 export async function pmView() {
   const pm = await load();
   const now = Date.now();
   return SLEEVES.map((sl) => {
     const s = pm[sl];
     const { n, mean } = stats(s);
-    return { sleeve: sl, trades: s.n, wins: s.wins, winRate: s.n ? Math.round((s.wins / s.n) * 1000) / 10 : null, avg: n ? Math.round((Math.exp(mean) - 1) * 1000) / 10 : null, w: weightOf(sl, s), paused: s.pausedUntil > now ? s.pausedUntil : null };
+    const g = s.g || [];
+    return { ghost: g.length, ghostAvg: g.length ? Math.round((Math.exp(g.reduce((a, b) => a + b, 0) / g.length) - 1) * 1000) / 10 : null, sleeve: sl, trades: s.n, wins: s.wins, winRate: s.n ? Math.round((s.wins / s.n) * 1000) / 10 : null, avg: n ? Math.round((Math.exp(mean) - 1) * 1000) / 10 : null, w: weightOf(sl, s), paused: s.pausedUntil > now ? s.pausedUntil : null };
   });
 }

@@ -315,7 +315,7 @@ The desk starts on paper, with fills simulated including pump.fun fees and slipp
 | Paper round trips | at least 30 |
 | Win rate | at least 40% |
 | Paper profit | at least +10% |
-| Worst drawdown | at most 30% |
+| Worst drawdown over the last 30 trades | at most 30% |
 | Funded desk wallet | at least 0.5 SOL |
 
 Once live, a 40% drawdown from the live starting balance sends the desk back to paper to re-take the exam. The exam is deliberately taken on live paper trades, not on the historic replay: history trains the models, but only the present can prove the desk.
@@ -343,6 +343,7 @@ Live swaps are routed through Jupiter with a `veryHigh` priority fee and 15% max
 | **PULSE: narratives** | Term counts per 5 minutes and per hour from every tracked post, weighted by the author's reach; rising = 3x+ the 24-hour pace; mood from trench words. | Narratives are context: +5 on a launch named after one, never a buy on their own. |
 | **WIRE: X posts** | Per account: posts, coins sparked, picks, bonds and desk P&L. Trust starts from a prior (leaders and celebrities 0.5, other seeds 0.3, found accounts 0.15) and moves with 4 picks of evidence. Accounts whose posts bonded coins link to, or that tracked accounts keep mentioning, join the list; found accounts with 300 posts and no coin sparked are muted. | Only accounts above the trust line send coins to the desk; every pick is still recorded so trust can grow. The King adds 8 points to a coin born from a tracked post. |
 | **PM: sleeves** | Each strategy's size follows its own record: average log return over its spread, last 30 trades, shrunk toward a starting weight until 30 trades. | A sleeve that lost 60% of a stake over its last 6 trades sits out 2 hours. Tweet coins have their own 2 slots. |
+| **Ghost desk** | Signals blocked only by the desk (daily loss limit, full slots, a paused strategy, no balance) are traded in a separate book with the same entries and exits at a fixed size. | Never counted in the balance, exam or track record; COACH, the priors and PM learn from them. |
 | **Priors** | Starting hints from the dev, not laws. `holding_floor`: skip a coin already 40%+ under its high since launch. `dev_exit`: off on memes, the desk holds through dev sells. | Every case a prior affects is followed in shadow. COACH switches `holding_floor` off when the coins it skipped do better than the ones bought (30+ cases), and switches `dev_exit` on only if selling with the dev beats holding in 60%+ of 15+ cases. |
 | **COACH: entries** | Every clean signal is followed in shadow four ways: buy now, or wait for a 20, 30 or 45% pullback and a bounce. Each is scored 30 minutes later. | Pullback entries switch on only after 30+ signals show a pullback beating buying now by 10%+. |
 | **FARM detector** | Block-0 bundles that pump the curve with no organic buyers after, bundle-run coins, volume bots, and (v0.2) bot coins: 3 or fewer wallets trading, wash loops (3+ trades per wallet among under 12 wallets) and micro-buys (median buy under 0.01 SOL). No coin reaches the desk without its trades read. | Transparent rules in `tape.ts`; real block-0 launches followed by organic buyers pass. Farms get a 45-point King penalty and never reach the desk. |

@@ -48,25 +48,26 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
 
 /** The desk's public track record. `compact` for the homepage, full table on /desk. Click any trade for every detail. */
 export default function TrackRecord({ compact = false }: { compact?: boolean }) {
-  const d = usePoll<Rec>("/api/desk/record", compact ? 10000 : 5000).data;
-  const [tab, setTab] = useState<"all" | "open" | "closed">("all");
+  const [tab, setTab] = useState<"all" | "open" | "closed" | "ghost">("all");
+  const d = usePoll<Rec>(`/api/desk/record${tab === "ghost" ? "?book=ghost" : ""}`, compact ? 10000 : 5000).data;
+  const isGhost = tab === "ghost";
   const s = d?.summary;
-  const trips = (d?.trips || []).filter((t) => (tab === "all" ? true : tab === "open" ? t.open : !t.open));
+  const trips = (d?.trips || []).filter((t) => (tab === "all" || tab === "ghost" ? true : tab === "open" ? t.open : !t.open));
   const shown = compact ? trips.slice(0, 6) : trips;
   return (
     <section className="panel mt record" id="record">
       <div className="ph">
-        <span><Info k="record"><b>track record</b></Info> · {d?.live ? "live wallet" : "paper desk"}{s?.since ? `, since ${ago(s.since)} ago` : ""}</span>
+        <span><Info k={isGhost ? "ghostdesk" : "record"}><b>{isGhost ? "ghost desk" : "track record"}</b></Info> · {isGhost ? "not counted, learned from" : d?.live ? "live wallet" : "paper desk"}{s?.since ? `, since ${ago(s.since)} ago` : ""}</span>
         {compact ? <Link href="/desk#record">every trade →</Link> : (
           <span className="rec-tabs">
-            {(["all", "open", "closed"] as const).map((k) => (
+            {(["all", "open", "closed", "ghost"] as const).map((k) => (
               <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{k}{k === "open" && s ? ` ${s.open}` : k === "closed" && s ? ` ${s.closed}` : ""}</button>
             ))}
           </span>
         )}
       </div>
       <div className="rec-stats">
-        <div><span className="k">Return</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
+        <div><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
         <div><span className="k">Trades closed</span><b>{s?.closed ?? 0}</b><em>{s ? `${s.open} open now` : ""}</em></div>
         <div><span className="k">Win rate</span><b>{s?.winRate != null ? `${s.winRate}%` : "–"}</b><em>{s ? `${s.wins} of ${s.closed} in profit` : ""}</em></div>
         <div><span className="k">Realized</span><b style={{ color: col(s?.realizedSol ?? 0) }}>{s ? `${sgn(s.realizedSol, 3)} ◎` : "–"}</b><em>{s && s.open ? `${sgn(s.openSol, 3)} ◎ open` : "closed trades"}</em></div>
@@ -93,7 +94,8 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
           </tbody>
         </table>
       </div>
-      {!compact && <div className="pb tiny muted">Click a trade for the full picture: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart and every fill. Paper fills use the real price at that moment, with fees and slippage. Live fills link to Solscan.</div>}
+      {!compact && isGhost && <div className="pb tiny muted">Trades the real desk was blocked from taking (daily loss limit, full slots, a paused strategy, no paper balance), taken anyway at a fixed size with the same entries and exits. They never touch the balance, the exam or the track record; COACH, FILM, PM and the priors learn from them.</div>}
+      {!compact && !isGhost && <div className="pb tiny muted">Click a trade for the full picture: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart and every fill. Paper fills use the real price at that moment, with fees and slippage. Live fills link to Solscan.</div>}
     </section>
   );
 }

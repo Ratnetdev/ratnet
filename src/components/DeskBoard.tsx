@@ -51,6 +51,7 @@ type Rising = { term: string; now: number; usual: number; x: number; mood: strin
 type Wire = { on: boolean; j7?: { on: boolean; last: { at: number; got: number; error: string | null } | null; covered: number } | null; pulse?: { at: number; rising: Rising[]; warming?: number } | null; tweets: (WireT & { src?: string; ca?: string })[]; accounts: WireA[]; candidates: { h: string; pts: number }[] };
 type PmRow = { sleeve: string; trades: number; wins: number; winRate: number | null; avg: number | null; w: number; paused: number | null };
 type Desk = {
+  ghost?: { open: number; fills: number; max: number } | null;
   wire?: Wire | null;
   pm?: PmRow[] | null;
   film?: Film | null;
@@ -158,6 +159,11 @@ export default function DeskBoard() {
     <>
       <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam.checks || []} />
 
+      {d && today <= -d.cfg.dailyLoss ? (
+        <div className="panel mt ghost-note">
+          <b>Daily loss limit hit ({sign(today)}% today).</b> The desk opens no new trades until 00:00 UTC. The ghost desk keeps taking every clean signal (not counted, learned from): {d.ghost?.open ?? 0} open now. See the ghost tab below.
+        </div>
+      ) : null}
       <TrackRecord />
 
       <section className="desk-top mt">

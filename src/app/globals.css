@@ -767,3 +767,4 @@ th .info, .k .info { gap: 4px; }
 .pulse-r span:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
 .pulse-r em { font-style: normal; font-size: 11px; text-align: right; }
 .pulse-list .pb { padding: 8px 18px 12px; }
+.ghost-note { padding: 12px 18px; font-size: 12.5px; color: var(--dim); border-color: rgba(255, 181, 71, 0.35); } .ghost-note b { color: var(--bond); font-weight: 500; }
