@@ -26,7 +26,11 @@ type Launch = {
   pNow?: number;
   peak?: number;
   mcapNow?: number;
-  cp: { t5?: Cp; h1?: Cp; d1?: Cp };
+  cp: { t1?: Cp; t5?: Cp; h1?: Cp; d1?: Cp };
+  early?: { score: number; verdict: string; curve: number; at: number } | null;
+  tape?: { n: number; vel: number; uniq: number; buys: number; sells: number; solIn: number; solPerBuy: number; buyShare: number; bundleN: number; bundleShare: number; sniperN: number; top5: number; devSold: number } | null;
+  g?: { funder: string | null; clN: number; clB: number; clM: number; clRatio: number; smartN: number; smartMax: number } | null;
+  meta?: { lift: number; hot: string | null; dup: number; copy: boolean } | null;
   outcome?: string;
   bondSecs?: number;
   resolvedAt?: number;
@@ -49,7 +53,8 @@ function socialLinks(l: Launch) {
 }
 
 export default function CoinView({ mint }: { mint: string }) {
-  const { data, error } = usePoll<{ launch: Launch | null; call: Call | null; mkt?: Mkt | null }>(`/api/coin/${mint}`, 6000);
+  const { data, error } = usePoll<{ launch: Launch | null; call: Call | null; mkt?: Mkt | null; run?: { pk: number; cUsd?: number | null; x: number | null; pkAt?: number } | null }>(`/api/coin/${mint}`, 6000);
+  const run = data?.run;
   const [copied, setCopied] = useState(false);
   const l = data?.launch;
   const m = data?.mkt;
@@ -137,11 +142,43 @@ export default function CoinView({ mint }: { mint: string }) {
             <div><span className="k">Change 1h</span><b style={{ color: (m.c1 ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{chg(m.c1)}</b></div>
             <div><span className="k">Buys / sells 1h</span><FlowBar b={m.b1} s={m.s1} /></div>
             <div><span className="k">{m.liq ? "Liquidity" : "Venue"}</span><b>{m.liq ? usd(m.liq) : m.dex || "–"}</b></div>
+            {run?.pk ? <div><span className="k">Peak seen</span><b>{usd(run.pk)}</b></div> : null}
+            {run?.cUsd ? <div><span className="k">At the King&apos;s call</span><b>{usd(run.cUsd)}</b></div> : null}
+            {run?.x ? <div><span className="k">Call to peak</span><b style={{ color: run.x >= 2 ? "var(--bond)" : "var(--text)" }}>{run.x}x</b></div> : null}
           </div>
         ) : (
           <div className="pb small muted">{data ? "No market data yet. Very fresh coins can take a minute to show up." : "loading…"}</div>
         )}
       </section>
+
+      {l?.tape && (
+        <section className="grid g2 mt">
+          <div className="panel">
+            <div className="ph"><span><b>tape</b> · every trade on the curve at the read</span></div>
+            <div className="mkt" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+              <div><span className="k">Trades</span><b>{l.tape.n}{l.tape.vel ? <span className="tiny muted"> · {l.tape.vel}/min</span> : null}</b></div>
+              <div><span className="k">Traders</span><b>{l.tape.uniq}</b></div>
+              <div><span className="k">SOL per buy</span><b>{l.tape.solPerBuy} ◎</b></div>
+              <div><span className="k">Buy share</span><b>{Math.round(l.tape.buyShare * 100)}%</b></div>
+              <div><span className="k">Bundle</span><b style={{ color: l.tape.bundleShare > 0.5 ? "var(--dust)" : "var(--text)" }}>{Math.round(l.tape.bundleShare * 100)}% <span className="tiny muted">{l.tape.bundleN}w</span></b></div>
+              <div><span className="k">Snipers</span><b>{l.tape.sniperN}</b></div>
+              <div><span className="k">Top 5 early</span><b>{Math.round(l.tape.top5 * 100)}%</b></div>
+              <div><span className="k">Dev sold</span><b style={{ color: l.tape.devSold > 0 ? "var(--dust)" : "var(--rat)" }}>{l.tape.devSold > 0 ? `${l.tape.devSold} ◎` : "nothing"}</b></div>
+            </div>
+          </div>
+          <div className="panel">
+            <div className="ph"><span><b>graph</b> · who is behind it</span></div>
+            <div className="mkt" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+              <div><span className="k">Dev funded by</span><b>{l.g?.funder ? <a href={`https://solscan.io/account/${l.g.funder}`} target="_blank" rel="noreferrer">{short(l.g.funder, 4, 4)}</a> : "unknown"}</b></div>
+              <div><span className="k">Funder cluster</span><b>{l.g ? `${l.g.clB}/${l.g.clN} bonded` : "–"}</b></div>
+              <div><span className="k">Cluster edge</span><b style={{ color: (l.g?.clRatio ?? 1) >= 2 ? "var(--rat)" : (l.g?.clRatio ?? 1) < 0.5 ? "var(--dust)" : "var(--text)" }}>{l.g ? `${l.g.clRatio}x` : "–"}</b></div>
+              <div><span className="k">Smart wallets early</span><b style={{ color: l.g?.smartN ? "var(--bond)" : "var(--text)" }}>{l.g?.smartN ?? 0}</b></div>
+              <div><span className="k">Hot meta</span><b>{l.meta?.hot ? `"${l.meta.hot}" ${l.meta.lift}x` : "none"}</b></div>
+              <div><span className="k">Copycat</span><b style={{ color: l.meta?.copy ? "var(--dust)" : "var(--text)" }}>{l.meta?.copy ? "copies a recent winner" : "original"}</b></div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {l && (
         <section className="grid g2 mt">
@@ -166,9 +203,9 @@ export default function CoinView({ mint }: { mint: string }) {
                 <thead><tr><th>When</th><th>Curve</th><th>Mcap</th></tr></thead>
                 <tbody>
                   <tr><td>at dig</td><td>{l.p0}%</td><td className="muted">–</td></tr>
-                  {(["t5", "h1", "d1"] as const).map((k) => (
+                  {(["t1", "t5", "h1", "d1"] as const).map((k) => (
                     <tr key={k}>
-                      <td>{k === "t5" ? "5 min" : k === "h1" ? "1 hour" : "24 hours"}</td>
+                      <td>{k === "t1" ? `1 min${l.early ? ` · early ${l.early.verdict} ${l.early.score}` : ""}` : k === "t5" ? "5 min" : k === "h1" ? "1 hour" : "24 hours"}</td>
                       <td>{l.cp[k] ? `${l.cp[k]!.p}%` : <span className="mute2">{l.outcome ? "–" : "pending"}</span>}</td>
                       <td className="muted">{l.cp[k]?.mcap ? `${num(Math.round(l.cp[k]!.mcap))} ◎` : "–"}</td>
                     </tr>

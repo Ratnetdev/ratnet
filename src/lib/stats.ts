@@ -4,6 +4,7 @@ import { loadModel } from "./digger";
 import { NANO_MIN } from "./nano";
 import { getMarket, type Mkt } from "./market";
 import { solUsd } from "./solana";
+import { runViews, RunView } from "./runner";
 import { getSettings } from "./settings";
 import { allRats, isActive, roundOf, roundStart } from "./rats";
 import { ROUND_MS } from "@/config/site";
@@ -142,8 +143,10 @@ export async function getRadar(limit = 15): Promise<RadarRow[]> {
     }));
 }
 
-export async function getGrads(limit = 30): Promise<Grad[]> {
-  return ((await redis().lrange<Grad>(K.grads, 0, limit - 1)) || []) as Grad[];
+export async function getGrads(limit = 30): Promise<(Grad & { run?: RunView })[]> {
+  const grads = ((await redis().lrange<Grad>(K.grads, 0, limit - 1)) || []) as Grad[];
+  const views = await runViews(grads.map((g) => g.mint)).catch(() => ({} as Record<string, RunView>));
+  return grads.map((g) => (views[g.mint] ? { ...g, run: views[g.mint] } : g));
 }
 
 export async function getCoin(mint: string) {
@@ -158,8 +161,13 @@ export async function getCoin(mint: string) {
     if (live != null) launch.pNow = Number(live);
     if (peak != null) launch.peak = Math.max(launch.peak ?? 0, Number(peak));
   }
-  const mkt = (await getMarket([mint]).catch(() => ({} as Record<string, Mkt | null>)))[mint] ?? null;
-  return { launch, call: call || launch?.call || null, mkt };
+  const [mktAll, runs] = await Promise.all([getMarket([mint]).catch(() => ({} as Record<string, Mkt | null>)), runViews([mint]).catch(() => ({} as Record<string, RunView>))]);
+  const mkt = mktAll[mint] ?? null;
+  if (launch) {
+    // the desk-only bits stay private: insider token accounts are not needed on the page
+    if (launch.tape) launch.tape = { ...launch.tape, insiders: [], early: [] };
+  }
+  return { launch, call: call || launch?.call || null, mkt, run: runs[mint] ?? null };
 }
 
 export async function getNano() {

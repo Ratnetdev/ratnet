@@ -16,6 +16,8 @@ export type Mkt = {
   dex: string;
   url: string;
   pn: number | null; // price in SOL per token (SOL-quoted pairs)
+  bo: number; // active DexScreener boosts (paid)
+  pf: boolean; // DexScreener profile set (paid)
 };
 
 const KEY = (m: string) => `rn:mkt:${m}`;
@@ -39,6 +41,8 @@ function pick(pairs: any[]): Mkt | null {
     s1: tx("h1", "sells"),
     dex: String(best.dexId || ""),
     url: String(best.url || ""),
+    bo: Number(best.boosts?.active ?? 0),
+    pf: !!(best.info && (best.info.imageUrl || (best.info.socials || []).length || (best.info.websites || []).length)),
     pn: best.quoteToken?.symbol === "SOL" || best.quoteToken?.address === "So11111111111111111111111111111111111111112" ? num(best.priceNative) : null,
   };
 }

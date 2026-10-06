@@ -1,6 +1,7 @@
 "use client";
 import { CoinLink, VerdictTag } from "./Calls";
 import { ago } from "./fmt";
+import Info from "./Info";
 
 export type Grad = {
   mint: string;
@@ -13,7 +14,14 @@ export type Grad = {
   v0: { score: number; verdict: string; counted: boolean } | null;
   nano: { score: number; verdict: string } | null;
   lead?: number | null;
+  run?: { pk: number; now?: number; cUsd?: number | null; x: number | null } | null;
 };
+
+export function usdK(n?: number | null) {
+  if (!n) return "–";
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  return `$${Math.max(1, Math.round(n / 1000))}K`;
+}
 
 export function fmtSecs(s: number) {
   if (s < 60) return `${s}s`;
@@ -36,6 +44,8 @@ export default function GradList({ grads, full = false }: { grads: Grad[]; full?
             <th>Coin</th>
             <th>Bonded in</th>
             <th>King said</th>
+            <th><Info k="peak">Peak</Info></th>
+            <th><Info k="fromcall">From call</Info></th>
             {full && <th>Nano said</th>}
             {full && <th>Dev</th>}
             <th>When</th>
@@ -57,6 +67,8 @@ export default function GradList({ grads, full = false }: { grads: Grad[]; full?
                   <span className="tiny mute2">bonded before 5m</span>
                 )}
               </td>
+              <td>{usdK(g.run?.pk)}{g.run?.now && g.run.pk ? <span className="tiny mute2"> · now {usdK(g.run.now)}</span> : null}</td>
+              <td style={{ color: (g.run?.x ?? 0) >= 2 ? "var(--bond)" : "var(--dim)" }}>{g.run?.x ? `${g.run.x}x` : "–"}</td>
               {full && <td>{g.nano ? <span><VerdictTag v={g.nano.verdict} /> <span className="tiny muted">{g.nano.score}</span></span> : <span className="tiny mute2">–</span>}</td>}
               {full && <td className="tiny muted">{g.devN ? `${g.devN} prior` : "fresh"}</td>}
               <td className="muted">{ago(g.bondedAt)}</td>

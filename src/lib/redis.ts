@@ -60,6 +60,12 @@ export const K = {
   devN: "rn:dev:n",
   devB: "rn:dev:b",
   nano: "rn:nano",
+  nano1: "rn:nano1", // minute-1 model
+  lessons: "rn:lessons", // zset: launches whose label (bonded within 2h) is ready to learn, score = createdAt + 2h
+  deskShadow: "rn:desk:shadow", // signals followed in shadow to learn entries (hash)
+  deskAfter: "rn:desk:after", // closed positions followed by COACH (hash)
+  deskStalk: "rn:desk:stalk", // live stalks waiting for a pullback (hash)
+  deskLearn: "rn:desk:learn", // what the desk has learned (trail scale, pullback arms, early gate)
   nanoLog: "rn:nanolog",
   workAll: "rn:workall",
   solPrice: "rn:solusd",

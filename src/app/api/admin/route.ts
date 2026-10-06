@@ -34,9 +34,14 @@ export async function POST(req: Request) {
         if (p.links) clean.links = p.links;
         if (p.desk && typeof p.desk === "object") {
           const d: Record<string, unknown> = {};
-          for (const [k, v] of Object.entries(p.desk)) d[k] = k === "mode" ? String(v) : typeof v === "boolean" ? v : Number(v);
+          for (const [k, v] of Object.entries(p.desk)) d[k] = k === "mode" ? String(v) : typeof v === "boolean" ? v : Array.isArray(v) ? v.map(Number) : Number(v);
           if (!["off", "paper", "auto", "live"].includes(String(d.mode ?? "auto"))) return fail("Bad desk mode");
           clean.desk = d;
+        }
+        if (p.history && typeof p.history === "object") {
+          const h: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(p.history)) h[k] = typeof v === "boolean" ? v : Math.max(0, Number(v));
+          clean.history = h;
         }
         if (clean.mint !== (await getSettings()).mint) await redis().del(K.ratPrice);
         return json({ settings: await saveSettings(clean) });

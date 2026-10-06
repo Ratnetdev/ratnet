@@ -7,7 +7,7 @@ export default function DeskPage() {
     <>
       <section className="hero" style={{ paddingTop: 6, paddingBottom: 18 }}>
         <h1 style={{ fontSize: "clamp(36px,6vw,64px)" }}>THE DESK</h1>
-        <p>Eight rats turn the King&apos;s calls into trades. Every decision, every fill and every exit, live.</p>
+        <p>Thirteen rats turn the King&apos;s calls into trades and learn from every one. Every decision, every fill, every exit and every lesson, live.</p>
       </section>
       <DeskBoard />
     </>

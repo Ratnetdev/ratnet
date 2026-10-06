@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.1.3-8cff5a?style=flat-square&labelColor=060807" alt="version">
+  <img src="https://img.shields.io/badge/version-v0.1.4-8cff5a?style=flat-square&labelColor=060807" alt="version">
   <img src="https://img.shields.io/badge/chain-Solana-8cff5a?style=flat-square&labelColor=060807" alt="Solana">
   <img src="https://img.shields.io/badge/source-pump.fun-ffb547?style=flat-square&labelColor=060807" alt="pump.fun">
   <img src="https://img.shields.io/badge/model-trained%20from%20scratch-7fd1ff?style=flat-square&labelColor=060807" alt="from scratch">
@@ -42,6 +42,7 @@
 6. [The Rat King: models](#6-the-rat-king-models)
 7. [Measuring the King in public](#7-measuring-the-king-in-public)
 8. [The Desk: autonomous trading](#8-the-desk-autonomous-trading)
+8b. [How it learns: past, present, run](#8b-how-it-learns-past-present-run)
 9. [Economy: rats, sniffs and rounds](#9-economy-rats-sniffs-and-rounds)
 10. [Tokenomics](#10-tokenomics)
 11. [The open dataset](#11-the-open-dataset)
@@ -51,6 +52,7 @@
 15. [Self-hosting](#15-self-hosting)
 16. [Repository layout](#16-repository-layout)
 17. [Security and transparency](#17-security-and-transparency)
+18. [Research behind the design](#18-research-behind-the-design)
 
 ---
 
@@ -62,7 +64,9 @@ A swarm of crawler **rats** indexes every pump.fun launch in real time: metadata
 
 The **Rat King** is a model trained from scratch on that dataset alone. It scores each launch at minute 5 on one target: **will this coin bond?** Every call is frozen the moment it is made, then graded by the chain. Hits and misses stay on the board forever.
 
-The **Desk** is an autonomous team of eight agents that turns the King's calls into trades with its own wallet, on chain, in public. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
+The **Desk** is an autonomous team of thirteen agents that turns the King's calls into trades with its own wallet, on chain, in public. It reads every trade on the curve, traces who funded the dev, recognises smart wallets, never chases, takes its cost back at 2x and lets the rest run with a trail that widens as the coin climbs. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
+
+The **HISTORIAN** replays pump.fun's past, launch by launch and in time order, so the models start trained instead of waiting weeks for live data. Every bond is then followed for 7 days, so the King learns not just which coins bond, but which ones run to $1M, $10M and beyond.
 
 > Other agents talk about markets. RATNET learns from them and trades them.
 
@@ -98,7 +102,10 @@ The data never runs out. Every new launch is a new training sample, so the King 
 | Crawl | The rats (`src/lib/digger.ts`, `src/lib/solana.ts`) | Decode create transactions, read bonding curves, fetch off-chain metadata, track checkpoints and resolve outcomes. |
 | Data | Upstash Redis + Vercel Blob | Hot state, sorted watch sets, 24h coin index, resolved rows and daily JSONL drops. |
 | Model | Rat King v0 + nano (`src/lib/king.ts`, `src/lib/nano.ts`) | Score every launch at minute 5. Nano learns online from every resolved launch. |
-| Execution | The Desk (`src/lib/desk.ts`) | Vet, size, buy, manage and sell positions. Paper or live. |
+| Reads | TAPE, GRAPH, META, BUZZ (`tape.ts`, `graph.ts`, `meta.ts`, `buzz.ts`) | Trades on the curve, bundles, snipers, dev sells; dev funder cluster and smart wallets; hot narrative and copycats; X mentions and paid dex signals. |
+| History | HISTORIAN (`src/lib/historian.ts`) | Replays past launches in time order and trains every model on them, with no look-ahead. |
+| Runs | Runner model (`src/lib/runner.ts`) | Follows every bond for 7 days and learns P(next market cap milestone). |
+| Execution | The Desk (`src/lib/desk.ts`) | Vet, size, buy, manage and sell positions. Shadow entries, COACH exit reviews. Paper or live. |
 | Interface | Next.js 14 app + open API | Live feed, radar, explore, desk, lab, coin pages, share cards. |
 
 One scheduled ping per minute drives the whole system. Each ping opens a ~55 second session in which the desk re-reads open positions every 2 seconds and the rats dig every 10 seconds.
@@ -119,6 +126,12 @@ For each launch the rats:
 
 **Hot watch.** Every curve above 2% is re-read on every run (the top 200 by curve plus a rotating slice of the rest). Graduations are detected within seconds instead of at the next checkpoint. The watch reads only curve accounts and two sorted sets, so it stays cheap at full pump.fun volume.
 
+**TAPE (trades).** For every coin moving at its read (curve 5%+ at minute 5, 3%+ at minute 1) the rats read the curve's transactions: trade count and speed, unique traders, SOL per buy, buy share, bundle wallets in the create slot, snipers in the next two slots, top-5 early concentration and whether the dev has sold. The token accounts of the dev, bundle wallets, snipers and top buyers are kept, so the desk can watch those bags while it holds.
+
+**GRAPH (wallets).** The dev wallet is traced to the wallet that first funded it. Launches are grouped by that funder, so a factory that launches hundreds of coins from fresh wallets is recognised on sight, and so is a team that ships winners. Every early buyer is put on record: wallets that keep getting in early on coins that bond or reach $1M become smart wallets, learned from scratch out of RATNET's own data.
+
+**META (narrative).** Words in names and tickers are counted against what is bonding right now, so a launch riding the hot meta is flagged, and a copy of a coin that just bonded is flagged too (copies graduate at about a tenth of the rate of originals).
+
 **Market data.** Market cap, volume, price change, liquidity and buy/sell counts come from DexScreener, cached for 30 seconds and shown next to the on-chain curve data.
 
 **Simulation.** `sim/run.ts` replays hours of synthetic pump.fun traffic through the real engine with a mock RPC and an in-memory Redis. A 30 hour run at ~21,000 launches a day caught every bond with an average lag of 9 seconds and zero errors.
@@ -134,9 +147,11 @@ For each launch the rats:
 | Checkpoint | Time after birth | What happens |
 |---|---|---|
 | Dig | 0s | Launch decoded, curve read, metadata fetched, dev history attached. |
+| Early read | 1m | TAPE and GRAPH read the coin; the minute-1 model makes its own call, tracked separately. |
 | Call | 5m | Rat King v0 and nano score the launch. Features are frozen. |
 | Window | 15m | Calls made after this point are marked late and never count toward the hit rate. |
 | Check | 1h | Early death rule applied. |
+| Lesson | 2h | The label is in (bonded within 2h or not). Every model learns this launch now. |
 | Resolve | 24h | Final outcome recorded and the call is graded. |
 
 | Outcome | Rule |
@@ -183,10 +198,12 @@ The raw total (max 95) is normalised to 0 to 100.
 Nano is a model trained from scratch, live, on nothing but what the rats dig. No pretrained weights and no outside data.
 
 - **Model:** logistic regression trained online with SGD, one step per resolved launch.
-- **Features (14):** bias, curve at 5m, curve climb since dig, dev buy (log SOL), X, Telegram, website, real description, clean ticker, short name, dev past launches (log), dev past bond rate, UTC hour (sin and cos).
+- **Features (28):** bias, curve at 5m, curve climb since dig, dev buy (log SOL), X, Telegram, website, real description, clean ticker, short name, dev past launches (log), dev past bond rate, UTC hour (sin and cos), plus what TAPE, GRAPH and META read: trades read, trades per minute, unique traders, SOL per buy, buy share, bundle share, snipers, top-5 early share, dev already sold, smart wallets early, dev funder cluster edge, copy of a recent winner, same-ticker launches and hot meta lift.
+- **One label window:** every launch is learned at its 2-hour mark as "bonded within 2h" or not. Winners bond in minutes while losers take a day to resolve; learning both at the same moment keeps the model from concluding that everything bonds.
 - **Class balance:** bonds are rare, so they are weighted 8x. Otherwise the model would learn to say "dies" every time.
 - **Regularisation:** L2 at 1e-4, learning rate 0.05.
 - **Warm-up:** nano calls only count after 200 lessons.
+- **An early twin:** the same model is trained on what the rats see at minute 1. Its calls are recorded on their own board, and the desk may act on them only once that record beats the minute-5 King.
 - **Learns from what it missed:** coins that bond before the 5 minute call are still turned into lessons, so the King learns from the bonds it never got to call.
 - **Fully public:** current weights, sample count and the loss log are served at `/api/king/weights` and charted in the Lab.
 
@@ -208,6 +225,8 @@ Every number on the site is computed from frozen calls and on-chain outcomes.
 | **Head start** | Average time between the King's BOND call and the actual graduation. |
 | **Calibration** | Graduation rate per score bucket, for v0 and nano separately. |
 | **Hourly hit rate** | Hit rate against base rate per hour over the last 24h. |
+| **Runners** | Every coin followed after the call: market cap at the King's call, peak seen after bond, and the multiple between them. On graduations, coin pages and the Runners board. |
+| **Backtest** | The HISTORIAN scores every past launch before learning it (prequential), so the historic hit rate is out of sample. |
 
 Calls are never deleted, edited or re-scored. If the King is wrong, the board says so.
 
@@ -219,43 +238,52 @@ Calls are never deleted, edited or re-scored. If the King is wrong, the board sa
   <img src="docs/assets/desk.png" alt="The Desk" width="100%">
 </p>
 
-The Desk is a team of eight agents that turns BOND calls into trades. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions with live mini charts, the trade log and the full rule set.
+The Desk is a team of thirteen agents that turns calls into trades and learns from every one. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions (market cap, P(next milestone), trail, insider bags), the trade log, the full rule set and what the desk has learned.
 
 | Agent | Role |
 |---|---|
-| SCOUT | Digs every launch. |
+| HISTORIAN | Replays past launches to train the models. |
+| SCOUT | Digs every launch; early read at minute 1. |
 | KING | Calls it at minute 5. |
-| VET | Checks the dev and the curve. |
+| TAPE | Reads every trade on the curve. |
+| GRAPH | Traces the dev's funder and spots smart wallets. |
+| VET | Checks dev, bundles, cluster, copycats, curve. |
 | FLOW | Reads live buy and sell pressure. |
-| SIZE | Decides how much. |
+| BUZZ | X mentions of the CA (optional) and paid dex signals. Context, never a buy trigger alone. |
+| SIZE | Small, equal bets. |
 | EXEC | Buys and sells. |
-| RISK | Takes profit and cuts losses. |
+| RISK | Initials, milestone ladder, trailing stop, insider exits. |
+| COACH | Reviews every exit and every entry, and retunes the desk. |
 | LEDGER | Keeps the books. |
 
 ### Entry: every rule must pass
 
 | Rule | Default |
 |---|---|
+| Signal | King or nano BOND at minute 5 (or the early read, once earned) |
 | Curve window | between 8% and 70% |
 | Dev not a serial launcher | not 5+ launches with 0 bonds |
-| Dev buy sane | at most 5 SOL |
-| Live order flow | curve did not drop 5%+ in a 3 second read, and buys are at least 55% of recent trades |
-| Daily loss limit | equity not down 25% on the day |
-| Open positions | at most 5 |
-| Nano agrees | optional, off by default |
+| Dev not selling | dev has taken out at most 0.25 SOL |
+| Bundle | create-slot bundle wallets put in at most 60% of the SOL |
+| Funder cluster | not a cluster with 5+ launches and 0 bonds |
+| Not a copycat | ticker did not just bond on another coin |
+| Live order flow | curve did not drop 5%+ in a 3 second read, buys at least 55% of recent trades |
+| Never chase | more than +60% over the call price: wait for a pullback instead |
+| Daily loss limit, open slots | equity not down 25% on the day, at most 5 open |
 
-**Sizing:** 5% of equity per trade, between 0.05 and 0.5 SOL.
+**Sizing:** 5% of equity per trade, between 0.05 and 0.5 SOL. Equal, small bets: with fat-tailed outcomes, the desk has to survive many small losses to be there for the rare runner.
 
-### Exit: the first rule that fires
+### Exit: built to let outliers run
 
-| Exit | Default |
+| Stage | Rule |
 |---|---|
-| Take profit 1 | sell 50% at +60% |
-| Take profit 2 | sell the rest at +150% |
-| Stop loss | -35% |
-| Sellers took over | real SOL in the curve drops 20%+ within 40 seconds |
-| Graduation | sold into the migration |
-| Time stop | 60 minutes |
+| Before initials | Stop at -35%. Out if sellers drain the curve 20% in 40s. Out after 45 minutes without initials. |
+| Initials | At 2x, sell 50%: the cost is back, the rest is house money. |
+| Milestone ladder | At each new market cap milestone ($25K, $50K, $100K, $250K, $500K, $1M, $2.5M, ...) sell part of the bag only when the runner model rates the next milestone as weak (under 40%). Strong coins keep the whole bag. |
+| Moonbag | 20% of the original bag is never sold by the ladder. Only the trail or a hard exit can sell it. |
+| Trailing stop | 30% from the peak under 3x, 40% at 3 to 10x, 45% at 10 to 30x, 50% above 30x. Scaled by COACH and by P(next milestone). |
+| Insider exit | The token accounts of the dev, bundle wallets, snipers and top early buyers are read every 4 seconds. Dev sold half, or insiders sold half: everything out. |
+| Migration | Keep the runner bag through migration only if P(next milestone) is at least 35%. |
 
 Positions are re-read from the bonding curve every 2 seconds, so exits react to the chain, not to a delayed price feed.
 
@@ -271,11 +299,30 @@ The desk starts on paper, with fills simulated including pump.fun fees and slipp
 | Worst drawdown | at most 30% |
 | Funded desk wallet | at least 0.5 SOL |
 
-Once live, a 40% drawdown from the live starting balance sends the desk back to paper to re-take the exam. The exam and its current state are public on `/desk`.
+Once live, a 40% drawdown from the live starting balance sends the desk back to paper to re-take the exam. The exam is deliberately taken on live paper trades, not on the historic replay: history trains the models, but only the present can prove the desk.
 
 ### Execution
 
 Live swaps are routed through Jupiter with a `veryHigh` priority fee and 15% max slippage. Signed transactions are rebroadcast every 1.5 seconds until confirmed, so buys and sells land during congestion. Every live trade links to Solscan.
+
+---
+
+## 8b. How it learns: past, present, run
+
+<p align="center">
+  <img src="docs/assets/learning.png" alt="How it learns" width="100%">
+</p>
+
+| Learner | What it learns | How it stays honest |
+|---|---|---|
+| **HISTORIAN** | Replays past pump.fun launches (default 14 days) and trains nano, the early model, the runner model, dev records, funder clusters and smart wallets. | Walks history forward in time. Each launch is rebuilt from on-chain history at minute 1 and minute 5 only. Records are credited only once the replay clock passes their label time. Every launch is scored before it is learned, so its backtest is out of sample. Every bonded launch plus 1 in 10 of the rest is replayed, weighted back to the true base rate. |
+| **Live models** | Nano and the early model learn every launch at its 2-hour label. | Winners and losers are learned at the same delay. |
+| **Runner model** | P(next milestone), from $25K to $50M, learned from every bond followed for 7 days and from historic post-bond candles. | A milestone counts as reached only if the next one came within 6 hours; every snapshot is settled at the same horizon. |
+| **COACH: exits** | After every exit it keeps watching the coin. If the coin ran 2x+ after a trail or ladder sale, trails widen 6%. If the desk gave back 40%+ from the peak before selling, trails tighten 3%. | Hard exits (dev or insider dumps, stops) are never tuned away. |
+| **COACH: entries** | Every clean signal is followed in shadow four ways: buy now, or wait for a 20, 30 or 45% pullback and a bounce. Each is scored 30 minutes later. | Pullback entries switch on only after 30+ signals show a pullback beating buying now by 10%+. |
+| **Early gate** | Whether minute-1 calls can be traded. | Unlocks only after 50+ early BOND reads whose 2-hour record matches or beats the minute-5 King. |
+
+All of it is public: `/lab` (models, ladder, historian), `/desk` (what the desk learned), `/king` (runners).
 
 ---
 
@@ -357,12 +404,14 @@ All read endpoints are public, JSON, and cached at the edge for a few seconds.
 | `GET /api/radar` | Live launches sorted by curve, with calls, dev record and market data. |
 | `GET /api/graduations` | Every bond, time to bond and what the King said, with head start. |
 | `GET /api/king?page=0` | The King's calls. Add `verdict=BOND` for BOND calls only. |
-| `GET /api/king/weights` | Nano weights, sample count and loss log. |
+| `GET /api/king/weights` | Nano and early-model weights, sample counts and loss log. |
 | `GET /api/proof` | Calibration buckets, hourly hit rate vs base rate, head start, receipts. |
 | `GET /api/coins` | 24h index of every BOND or WATCH call plus every bond. |
 | `GET /api/coin/{CA}` | Everything RATNET knows about one coin. |
 | `GET /api/market` | Cached DexScreener market data. |
-| `GET /api/desk` | Desk state, exam, positions, trades and agent log. |
+| `GET /api/desk` | Desk state, exam, positions, trades, agent log, stalks and what the desk learned. |
+| `GET /api/runners` | Best runs since the King's call (market cap at the call, peak, multiple) and the runner model's ladder. |
+| `GET /api/history` | HISTORIAN progress and its out-of-sample backtest. |
 | `GET /api/ledger` | Rounds and payouts. |
 | `GET /api/og/{CA}` | 1200x630 share card for any coin. |
 
@@ -378,8 +427,8 @@ Full documentation with examples lives at `/developers`.
 | `/desk` | The Desk: agents, the Den, exam, balance, positions and trades. |
 | `/radar` | Every live launch sorted by curve, with filters. |
 | `/explore` | Filter and sort every rated coin of the last 24h. Filters live in the URL. |
-| `/king` | Latest calls, BOND calls, graduations, calibration. |
-| `/lab` | Nano loss curve and weights, v0 vs nano. |
+| `/king` | Latest calls, BOND calls, graduations with peak and multiple, Runners board, calibration. |
+| `/lab` | HISTORIAN progress and backtest, nano loss curve and weights, v0 vs nano, runner ladder. |
 | `/rats` | Litter, spawn, top rats, rat screens. |
 | `/sniff` | Score any CA. |
 | `/ledger` | Rounds and payouts with Solscan links. |
@@ -394,7 +443,7 @@ Also built in: sound and desktop alerts for BOND calls, near-graduations and gra
 
 | Phase | Milestone |
 |---|---|
-| **Now** | Rats live on every pump.fun launch, King v0 and nano calling in public, Desk trading on paper with a self-promoting exam, open API and dataset. |
+| **Now** | Rats live on every pump.fun launch with trades, wallets and narrative read; King v0, nano and the early model calling in public; HISTORIAN replaying the past; runner model following every bond; thirteen-agent Desk on paper with a self-promoting exam; open API and dataset. |
 | **Rat King v1** | Sequence model pretrained from scratch on the daily drops. Public loss curve, weights on Hugging Face after epoch 1, graded on the same board. |
 | **Call bots** | Telegram and X bots posting every BOND call with its share card, and every graduation it called. |
 | **Litter 2: Tunnel 4** | First-hour trade flow per launch: buyers, sellers, sizes and timing. |
@@ -420,10 +469,11 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `BLOB_READ_WRITE_TOKEN` | Set automatically by the Blob integration. |
 | `DESK_WALLET_SECRET` | Optional. Base58 secret of the desk wallet. Without it the desk stays on paper. |
 | `JUPITER_API_KEY` | Optional. Key from portal.jup.ag for live swaps. |
+| `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 
-Ping `GET /api/desk/run?key=<CRON_SECRET>` every minute with any external scheduler. Each ping runs the rats and the desk for ~55 seconds.
+Ping `GET /api/desk/run?key=<CRON_SECRET>` every minute with any external scheduler. Each ping runs the rats, the desk and the HISTORIAN for ~55 seconds. The historian's pace (and RPC cost) is set on `/admin`.
 
-To replay the engine offline: `npx tsx sim/run.ts` (synthetic pump.fun, mock RPC, in-memory Redis) and `npx tsx sim/desk.ts` for the desk.
+To replay the engine offline: `npx tsx sim/run.ts` (synthetic pump.fun, mock RPC, in-memory Redis), `HOURS=14 npx tsx sim/desk.ts` for the full desk against a market with bundles, rugs, smart wallets, factory devs and power-law runners, and `npx tsx sim/history.ts` for the HISTORIAN, including a look-ahead leakage check.
 
 ---
 
@@ -439,13 +489,19 @@ src/
     solana.ts          Create tx decoding, bonding curve parsing
     king.ts            Rat King v0 scorer
     nano.ts            Rat King nano: features, online training, prediction
-    desk.ts            The Desk: agents, exam, sizing, exits, Jupiter execution
+    desk.ts            The Desk: agents, exam, entries, exits, stalks, shadows, COACH, Jupiter execution
+    tape.ts            TAPE: trades, bundles, snipers, dev sells, insider token accounts
+    graph.ts           GRAPH: dev funder clusters and smart wallets
+    meta.ts            META: hot narrative and copycats
+    buzz.ts            BUZZ: X mentions (optional)
+    runner.ts          Runner model: milestone ladder, post-bond tracking, peaks
+    historian.ts       HISTORIAN: forward replay of past launches
     stats.ts           Hit rate, base rate, calibration, proof
     market.ts          DexScreener market data
     burns.ts           Burn transaction builder and verification
     rounds.ts          Payout math and transfers
     exporter.ts        Daily dataset drops
-sim/                   Offline replay of pump.fun through the real engine
+sim/                   Offline replay of pump.fun through the real engine (run, desk, history)
 docs/assets/           Images used in this document
 ```
 
@@ -458,6 +514,26 @@ docs/assets/           Images used in this document
 - **Calls are immutable.** A call is stored with its frozen features the moment it is made and is never edited.
 - **Money is public.** Payouts and live trades link to Solscan.
 - **The model is public.** Weights, features, loss log and the full scoring logic are in this repository and on the site.
+- **No look-ahead.** Live lessons wait for their label; historic lessons are replayed forward in time and scored before they are learned.
+
+---
+
+## 18. Research behind the design
+
+Every rule above traces to a source. The main ones:
+
+| Finding | Used for | Source |
+|---|---|---|
+| Fast SOL accumulation in few trades is the strongest predictor of graduation (655,770 launches, Sep 2025). | TAPE features: velocity, SOL per buy | [arXiv 2602.14860](https://arxiv.org/abs/2602.14860) |
+| 28% of holders of graduated coins are bundled and hold 36.5% of supply; 73% of bonded coins drop below 40% of their migration price within 20 minutes. | Bundle rule, migration rule | [MemeTrans, arXiv 2602.13480](https://arxiv.org/html/2602.13480v1) |
+| Creator wallets cluster by shared funder; the top 1% of clusters make 58.6% of coins; copycats graduate at 0.86% vs 9.2% for originals; coordinated dumps consolidate tokens into dumper wallets first. | GRAPH clusters, copycat rule, insider exit | [Meme Coin Factories, arXiv 2609.10246](https://arxiv.org/html/2609.10246v1) |
+| First-5-minute trade features predict 1-hour rugs (XGBoost AUPRC 0.80); time-ordered validation, recent data only. | Feature design, forward-only replay | [arXiv 2608.20271](https://arxiv.org/html/2608.20271v1) |
+| 62% of organic graduates bond within 10 minutes, 85% within an hour; ~24% of graduations are bot-engineered. | 2-hour label window, early read | [pumpfundata, Apr 2026](https://pumpfundata.com/blog/pumpfun-graduation-rate-analysis) |
+| About 1 in 20,000 launches above $1M, 1 in 100,000 above $10M. | Runner ladder, moonbag | [ChainCatcher / Dune](https://www.chaincatcher.com/en/article/2139008) |
+| Following single KOL wallets loses; several strong wallets together is the signal. | Smart wallets as features, not copy triggers | [MadeOnSol, 1.6M trades](https://coinstats.app/news/07f38ebd47e8d820af3eb96b00c42a84b9b856c602626e3e4a71afbbd79014d6_KOL-Wallet-Tracking-on-Solana-What-the-Data-Actually-Shows-After-16-Million-Trades/) |
+| Take initials at 2x, keep a moonbag, widen the trail as profit grows. | Exit stack | [GMGN](https://memecoin.gmgn.ai/memecoin-trading-tutorial-claude/tutorial/markdown), [TINGLISE bot](https://github.com/TINGLISE/auto-trading-bot-pumpfun-solana-V2), [memsTrading](https://github.com/stevey52/memsTrading) |
+| Kelly sizing overstates safe bets under fat tails; use small fixed fractions. | SIZE | [Leptokurtic Capital](https://leptokurticapital.substack.com/p/size-matters) |
+| pump.fun comments are faked by bot clusters; only timing separates pump calls from organic ones. | BUZZ ignores comments | [arXiv 2609.10246](https://arxiv.org/html/2609.10246v1), [arXiv 2609.01176](https://pith.science/paper/2609.01176) |
 
 ---
 

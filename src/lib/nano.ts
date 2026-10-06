@@ -17,6 +17,21 @@ export const NANO_FEATURES = [
   { key: "dev_bond_rate", label: "dev past bond rate" },
   { key: "hour_sin", label: "UTC hour (sin)" },
   { key: "hour_cos", label: "UTC hour (cos)" },
+  // v0.1.4: what the TAPE, GRAPH and META agents see (zero when the coin was not taped)
+  { key: "has_tape", label: "trades read" },
+  { key: "velocity", label: "trades per minute (log)" },
+  { key: "uniq", label: "unique traders (log)" },
+  { key: "sol_per_buy", label: "SOL per buy" },
+  { key: "buy_share", label: "buy share" },
+  { key: "bundle_share", label: "bundle share of SOL in" },
+  { key: "snipers", label: "snipers (log)" },
+  { key: "top5", label: "top 5 early buyers share" },
+  { key: "dev_sold", label: "dev already sold" },
+  { key: "smart", label: "smart wallets early (log)" },
+  { key: "cluster", label: "dev cluster edge (log)" },
+  { key: "copy", label: "copy of a recent winner" },
+  { key: "dup", label: "same ticker launches (log)" },
+  { key: "meta", label: "hot meta lift (log)" },
 ] as const;
 
 export const NANO_MIN = 200; // labelled samples before nano starts making counted calls
@@ -47,6 +62,12 @@ export type FeatureInput = {
   devN: number;
   devB: number;
   createdAt: number;
+  tape?: { vel: number; uniq: number; solPerBuy: number; buyShare: number; bundleShare: number; sniperN: number; top5: number; devSold: number } | null;
+  smartN?: number;
+  clRatio?: number;
+  copy?: boolean;
+  dup?: number;
+  lift?: number;
 };
 
 export function emptyModel(): NanoModel {
@@ -72,6 +93,20 @@ export function features(i: FeatureInput): number[] {
     i.devN > 0 ? Math.min(1, i.devB / i.devN) : 0,
     Math.sin(ang),
     Math.cos(ang),
+    i.tape ? 1 : 0,
+    i.tape ? Math.log1p(Math.max(0, i.tape.vel)) / 5 : 0,
+    i.tape ? Math.log1p(i.tape.uniq) / 5 : 0,
+    i.tape ? Math.min(5, i.tape.solPerBuy) / 5 : 0,
+    i.tape ? i.tape.buyShare : 0,
+    i.tape ? Math.min(1, i.tape.bundleShare) : 0,
+    i.tape ? Math.log1p(i.tape.sniperN) / 3 : 0,
+    i.tape ? i.tape.top5 : 0,
+    i.tape && i.tape.devSold > 0 ? 1 : 0,
+    Math.log1p(i.smartN || 0) / 2,
+    i.clRatio ? Math.max(-1, Math.min(1, Math.log(Math.max(0.05, i.clRatio)) / 3)) : 0,
+    i.copy ? 1 : 0,
+    Math.log1p(Math.max(0, (i.dup || 1) - 1)) / 4,
+    Math.min(1, Math.log(Math.max(1, i.lift || 1)) / 3),
   ].map(r);
 }
 
@@ -88,11 +123,11 @@ export function nanoScore(m: NanoModel, x: number[]) {
 }
 
 /** One SGD step on one resolved launch. Mutates and returns the model. */
-export function learn(m: NanoModel, x: number[], bonded: boolean): NanoModel {
+export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = POS_WEIGHT, sampleWeight = 1): NanoModel {
   if (m.w.length !== x.length) m.w = x.map((_, i) => m.w[i] || 0);
   const p = predict(m, x);
   const y = bonded ? 1 : 0;
-  const wt = bonded ? POS_WEIGHT : 1;
+  const wt = (bonded ? posWeight : 1) * sampleWeight;
   const g = (p - y) * wt;
   for (let i = 0; i < x.length; i++) {
     const reg = i === 0 ? 0 : L2 * m.w[i];

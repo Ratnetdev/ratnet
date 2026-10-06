@@ -8,7 +8,24 @@ import { ago, short, solscanAcc, solscanTx } from "./fmt";
 
 type Ev = { agent: string; at: number; mint?: string; symbol?: string; text: string; tone: string };
 type Sample = [number, number, number];
-type Pos = { mint: string; symbol: string; openedAt: number; entryPx: number; costSol: number; tokens: number; lastPx: number; peakPx: number; tp1Done: boolean; king: number; nano: number | null; live: boolean; series: Sample[] };
+type Pos = { mint: string; symbol: string; openedAt: number; entryPx: number; costSol: number; tokens: number; tokens0: number; lastPx: number; peakPx: number; tp1Done: boolean; king: number; nano: number | null; live: boolean; series: Sample[]; how?: string; pn?: number; trail?: number; usd?: number; ins?: number | null; dev?: number | null; nWatch?: number };
+type Learn = {
+  trailK: number;
+  reviews: number;
+  early: number;
+  late: number;
+  good: number;
+  arms: { arm: number; n: number; fills: number; mean: number | null }[];
+  stalkOn: boolean;
+  stalkArm: number;
+  earlyOn: boolean;
+  earlyStat: { n: number; hit: number; mainN: number; mainHit: number };
+  shadows: number;
+  reviewing: number;
+  rules: { stalkMin: number; stalkEdge: number; earlyMin: number; shadowMins: number; coachHours: number };
+  xConnected: boolean;
+};
+type Stalk = { mint: string; symbol: string; at: number; depth: number; hi: number; lo: number; armed: boolean };
 type Trade = { id: string; mint: string; symbol: string; side: string; at: number; sol: number; reason: string; pnlSol?: number; pnlPct?: number; live: boolean; sig?: string };
 type Desk = {
   mode: string;
@@ -24,16 +41,24 @@ type Desk = {
   equity: { t: number; eq: number; live: boolean }[];
   agents: Record<string, Ev>;
   vet: { symbol: string; at: number; checks: { rule: string; ok: boolean; v: string }[] } | null;
+  stalks?: Stalk[];
+  learn?: Learn;
 };
+const usdK = (n?: number) => (!n ? "–" : n >= 1e6 ? `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : `$${Math.round(n / 1000)}K`);
 
 const ROLES: [string, string][] = [
-  ["SCOUT", "digs every launch"],
+  ["HISTORIAN", "replays past launches, trains the models"],
+  ["SCOUT", "digs every launch, early read at 1m"],
   ["KING", "calls it at minute 5"],
-  ["VET", "checks dev and curve"],
+  ["TAPE", "reads every trade on the curve"],
+  ["GRAPH", "dev funding, smart wallets"],
+  ["VET", "checks dev, bundles, curve"],
   ["FLOW", "reads buy/sell pressure"],
+  ["BUZZ", "X mentions, paid dex"],
   ["SIZE", "decides how much"],
   ["EXEC", "buys and sells"],
-  ["RISK", "takes profit, cuts loss"],
+  ["RISK", "initials, ladder, trail"],
+  ["COACH", "reviews every exit, entry"],
   ["LEDGER", "keeps the books"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
@@ -172,19 +197,23 @@ export default function DeskBoard() {
           <pre className="code">
             {d
               ? [
-                  ["enter_on", d.cfg.needNano ? "King + nano BOND" : "King or nano BOND"],
+                  ["enter_on", d.cfg.needNano ? "King + nano BOND" : "King or nano BOND (early read once earned)"],
                   ["curve_window", `${d.cfg.minCurve}% .. ${d.cfg.maxCurve}%`],
-                  ["max_dev_buy", `${d.cfg.maxDevBuy} SOL`],
-                  ["reject_dev", `${d.cfg.serialDev}+ launches, 0 bonds`],
+                  ["reject_dev", `${d.cfg.serialDev}+ launches 0 bonds, sold, or 5+ cluster launches 0 bonds`],
+                  ["max_bundle", `${d.cfg.maxBundle}% of SOL in`],
+                  ["copycats", "pass"],
                   ["min_buy_flow", `${Math.round(d.cfg.minFlow * 100)}% buys`],
+                  ["never_chase", `> +${d.cfg.maxChase}% over the call: stalk a pullback`],
                   ["size", `${d.cfg.sizePct}% (${d.cfg.minSol}..${d.cfg.maxSol} SOL)`],
-                  ["max_open", d.cfg.maxOpen],
-                  ["take_profit_1", `+${d.cfg.tp1}% sell ${Math.round(d.cfg.tp1Frac * 100)}%`],
-                  ["take_profit_2", `+${d.cfg.tp2}% sell rest`],
-                  ["stop_loss", `${d.cfg.sl}%`],
-                  ["sellers_exit", "curve -20% in 40s"],
-                  ["on_graduation", d.cfg.sellOnGrad ? "sell all" : "hold"],
-                  ["time_stop", `${d.cfg.timeStop}m`],
+                  ["stop_loss", `${d.cfg.sl}% (before initials)`],
+                  ["initials", `+${d.cfg.initialsAt}%: sell ${Math.round(d.cfg.initialsFrac * 100)}%`],
+                  ["moonbag", `${Math.round(d.cfg.moonbag * 100)}% only the trail sells`],
+                  ["ladder", `at each milestone if P(next) < ${Math.round(d.cfg.ladderBelow * 100)}%`],
+                  ["trail", `${(d.cfg.trail || []).join("/")}% at <3x/3-10x/10-30x/30x+ × ${d.learn?.trailK?.toFixed(2) ?? "1.00"}`],
+                  ["insider_exit", `dev ${d.cfg.devExit}% or insiders ${d.cfg.insiderExit}% sold`],
+                  ["sellers_exit", "curve -20% in 40s (before initials)"],
+                  ["on_migration", `keep runner bag if P(next) ≥ ${Math.round(d.cfg.gradKeepP * 100)}%`],
+                  ["time_stop", `${d.cfg.timeStop}m before initials`],
                   ["daily_stop", `-${d.cfg.dailyLoss}%`],
                 ].map(([k, v]) => (
                   <div key={String(k)} className="row between">
@@ -213,21 +242,24 @@ export default function DeskBoard() {
           <div className="ph"><span><b>open positions</b></span><span className="tiny muted">re-checked every 2s</span></div>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>Coin</th><th>Chart</th><th>Size</th><th>P&amp;L</th><th>Age</th></tr></thead>
+              <thead><tr><th>Coin</th><th>Chart</th><th>P&amp;L</th><th>Mcap</th><th><Info k="pnext">P(next)</Info></th><th><Info k="trail">Trail</Info></th><th><Info k="insiders">Insiders</Info></th><th>Age</th></tr></thead>
               <tbody>
                 {(d?.positions || []).map((p) => {
                   const g = pct(p.lastPx, p.entryPx);
                   return (
                     <tr key={p.mint}>
-                      <td><Link href={`/c/${p.mint}`}>${p.symbol}</Link> <span className="tiny muted">K{p.king}{p.tp1Done ? " · TP1" : ""}</span></td>
+                      <td><Link href={`/c/${p.mint}`}>${p.symbol}</Link> <span className="tiny muted">{p.costSol.toFixed(2)}◎ · {p.how || "direct"}{p.tp1Done ? ` · initials, ${Math.round((p.tokens / Math.max(1e-9, p.tokens0)) * 100)}% left` : ""}</span></td>
                       <td><Spark s={p.series} entry={p.entryPx} /></td>
-                      <td>{p.costSol.toFixed(3)}</td>
                       <td style={{ color: g >= 0 ? "var(--rat)" : "var(--dust)" }}>{sign(g)}%</td>
+                      <td className="muted">{usdK(p.usd)}</td>
+                      <td>{p.pn != null ? `${Math.round(p.pn * 100)}%` : "–"}</td>
+                      <td className="muted">{p.tp1Done && p.trail ? `${p.trail}%` : "after initials"}</td>
+                      <td style={{ color: (p.ins ?? 1) < 0.8 || (p.dev ?? 1) < 0.8 ? "var(--dust)" : "var(--dim)" }}>{p.nWatch ? `${p.ins != null ? Math.round(p.ins * 100) + "%" : "–"}${p.dev != null ? ` · dev ${Math.round(p.dev * 100)}%` : ""}` : "–"}</td>
                       <td className="muted">{ago(p.openedAt)}</td>
                     </tr>
                   );
                 })}
-                {!d?.positions.length && <tr><td colSpan={5} className="muted">No open positions. The desk waits for a King BOND call that passes every check.</td></tr>}
+                {!d?.positions.length && <tr><td colSpan={8} className="muted">No open positions. The desk waits for a King BOND call that passes every check.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -249,6 +281,56 @@ export default function DeskBoard() {
                   </tr>
                 ))}
                 {!d?.trades.length && <tr><td colSpan={6} className="muted">No trades yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section className="grid g2 mt">
+        <div className="panel">
+          <div className="ph"><span><b>what the desk learned</b> · <Info k="learn">from its own trades</Info></span><span className="tiny muted">{d?.learn ? `${d.learn.shadows} in shadow · ${d.learn.reviewing} exits under review` : ""}</span></div>
+          <pre className="code">
+            {d?.learn ? (
+              <>
+                <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>trail_scale</span></span><span className="green">{d.learn.trailK.toFixed(2)}x</span></div>
+                <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>exit_reviews</span></span><span className="green">{d.learn.reviews} · {d.learn.early} too early · {d.learn.late} too late · {d.learn.good} right</span></div>
+                <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>pullback_entries</span></span><span style={{ color: d.learn.stalkOn ? "var(--rat)" : "var(--mute)" }}>{d.learn.stalkOn ? `on, -${d.learn.stalkArm}%` : `locked (need ${d.learn.rules.stalkMin} shadows, +${Math.round(d.learn.rules.stalkEdge * 100)}% edge)`}</span></div>
+                <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>early_entries</span></span><span style={{ color: d.learn.earlyOn ? "var(--rat)" : "var(--mute)" }}>{d.learn.earlyOn ? "on" : `locked: ${d.learn.earlyStat.n}/${d.learn.rules.earlyMin} reads, ${d.learn.earlyStat.n ? Math.round((d.learn.earlyStat.hit / d.learn.earlyStat.n) * 100) : 0}% vs King ${d.learn.earlyStat.mainN ? Math.round((d.learn.earlyStat.mainHit / d.learn.earlyStat.mainN) * 100) : 0}%`}</span></div>
+                <div className="row between"><span><span className="mute2">let </span><span style={{ color: "var(--watch)" }}>x_mentions</span></span><span className="muted">{d.learn.xConnected ? "connected" : "not connected"}</span></div>
+              </>
+            ) : "loading…"}
+          </pre>
+          <div className="scroll">
+            <table className="tbl">
+              <thead><tr><th><Info k="arms">Entry</Info></th><th>Signals</th><th>Filled</th><th>Mean after {d?.learn?.rules.shadowMins ?? 30}m</th></tr></thead>
+              <tbody>
+                {(d?.learn?.arms || []).map((a) => (
+                  <tr key={a.arm}>
+                    <td>{a.arm ? `wait for -${a.arm}%` : "buy now"}{d?.learn?.stalkOn && d.learn.stalkArm === a.arm ? <span className="green tiny"> · in use</span> : null}</td>
+                    <td className="muted">{a.n}</td>
+                    <td className="muted">{a.n ? `${Math.round((a.fills / a.n) * 100)}%` : "–"}</td>
+                    <td style={{ color: (a.mean ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{a.mean != null ? `${sign(a.mean)}%` : "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="panel">
+          <div className="ph"><span><b>stalking</b> · waiting for a pullback</span><span className="tiny muted">{d?.stalks?.length ?? 0}</span></div>
+          <div className="scroll">
+            <table className="tbl">
+              <thead><tr><th>Coin</th><th>Wants</th><th>Dip so far</th><th>Since</th></tr></thead>
+              <tbody>
+                {(d?.stalks || []).map((k) => (
+                  <tr key={k.mint}>
+                    <td><Link href={`/c/${k.mint}`}>${k.symbol}</Link></td>
+                    <td>-{k.depth}% then a bounce</td>
+                    <td style={{ color: k.armed ? "var(--rat)" : "var(--dim)" }}>{k.hi ? `${Math.round((1 - k.lo / k.hi) * 100)}%${k.armed ? " · armed" : ""}` : "–"}</td>
+                    <td className="muted">{ago(k.at)}</td>
+                  </tr>
+                ))}
+                {!d?.stalks?.length && <tr><td colSpan={4} className="muted">{d?.learn?.stalkOn ? "Nothing to stalk right now." : "Pullback entries unlock once the shadow record proves they beat buying straight away."}</td></tr>}
               </tbody>
             </table>
           </div>

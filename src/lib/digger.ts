@@ -1,11 +1,23 @@
 import { PublicKey } from "@solana/web3.js";
 import { CALL_MAX_AGE_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr } from "./solana";
+import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
-import { emptyModel, features, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
+import { emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
+import { readTape, Tape } from "./tape";
+import { creditResolve, Graph, readGraph } from "./graph";
+import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
+import { enroll, Run, runnerPass } from "./runner";
+
+// Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
+type Extra = { tape: Tape | null; g: Graph | null; meta: Meta | null; px: number };
+const MAX_TAPES_PER_RUN = 12;
+// Every lesson waits for the same label window: "bonded within 2h". Without it, winners (which bond in minutes) would be
+// learned long before losers (which take up to 24h to resolve), and the models would learn that everything bonds.
+// Research: 85% of graduates bond within an hour (pumpfundata, Apr 2026), so 2h keeps label noise and lag small.
+export const LABEL_MS = 2 * 3600_000;
 
 export type Outcome = "BONDED" | "ALIVE" | "DIED";
 type Stage = keyof typeof CHECKPOINTS;
@@ -37,6 +49,12 @@ export type Launch = {
   near?: boolean;
   cp: Partial<Record<Stage, Cp>>;
   call?: Call;
+  early?: { at: number; score: number; verdict: Verdict; curve: number; x: number[] } | null; // minute-1 read
+  xpre?: number[]; // features of a coin that bonded before its call (still a lesson)
+  learned?: boolean;
+  tape?: Tape | null;
+  g?: Graph | null;
+  meta?: Meta | null;
   outcome?: Outcome;
   resolvedAt?: number;
   bondSecs?: number;
@@ -60,6 +78,8 @@ export type Call = {
   devN?: number;
   devB?: number;
   soc?: number;
+  px?: number; // curve price (SOL) at the call, so the desk knows when it would be chasing
+  tp?: { n: number; uniq: number; spb: number; bs: number; sn: number; sm: number; cl: number; ds: number } | null; // tape + graph summary
 };
 
 /** Compact row for the explorer index (short keys keep the payload small). */
@@ -163,11 +183,20 @@ type Ctx = {
   stat: Record<string, number>;
   model: NanoModel;
   modelDirty: boolean;
+  model1: NanoModel;
+  model1Dirty: boolean;
   nanoLog: { n: number; loss: number; acc: number; pos: number; at: number }[];
 };
 
+// Models are loaded once per dig() and shared by every step of the run.
+let M1: NanoModel = emptyModel();
+// Coins that bonded or stopped during this run, for the runner model; USD market caps the rats read off the curves.
+let RUN_EV: { bonded: string[]; died: string[] } = { bonded: [], died: [] };
+let CURVE_USD: Record<string, number> = {};
+let SOL_USD = 0;
+
 function newCtx(model: NanoModel): Ctx {
-  return { p: redis().pipeline(), now: Date.now(), feed: [], stat: {}, model, modelDirty: false, nanoLog: [] };
+  return { p: redis().pipeline(), now: Date.now(), feed: [], stat: {}, model, modelDirty: false, model1: M1, model1Dirty: false, nanoLog: [] };
 }
 const inc = (c: Ctx, k: string, n = 1) => (c.stat[k] = (c.stat[k] || 0) + n);
 
@@ -182,13 +211,14 @@ async function flush(c: Ctx) {
     p.ltrim(K.feed, 0, 299);
   }
   if (c.modelDirty) p.set(K.nano, c.model);
+  if (c.model1Dirty) p.set(K.nano1, c.model1);
   for (const l of c.nanoLog) p.rpush(K.nanoLog, l);
   if (c.nanoLog.length) p.ltrim(K.nanoLog, -500, -1);
   await p.exec();
 }
 
-export async function loadModel(): Promise<NanoModel> {
-  const m = await redis().get<NanoModel>(K.nano);
+export async function loadModel(key: string = K.nano): Promise<NanoModel> {
+  const m = await redis().get<NanoModel>(key);
   return m && Array.isArray(m.w) ? m : emptyModel();
 }
 
@@ -199,10 +229,16 @@ export async function dig(): Promise<Record<string, unknown>> {
   const started = Date.now();
   try {
     const model = await loadModel();
+    M1 = await loadModel(K.nano1);
+    RUN_EV = { bonded: [], died: [] };
+    CURVE_USD = {};
+    SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
     const dug = await digNew(model);
     const due = await processDue(model);
     const hot = await hotWatch(model);
-    return { ok: true, ...dug, ...due, ...hot, ms: Date.now() - started };
+    const les = await lessons(model);
+    const run = await runnerPass(CURVE_USD, RUN_EV).catch((e) => ({ runnerError: safeErr(e) }));
+    return { ok: true, ...dug, ...due, ...hot, ...les, ...run, ms: Date.now() - started };
   } catch (e) {
     return { ok: false, error: safeErr(e) };
   } finally {
@@ -284,6 +320,7 @@ async function digNew(model: NanoModel) {
       cp: {},
     };
     if (l.creator) p.hincrby(K.devN, l.creator, 1);
+    metaLaunch(p, l.name, l.symbol);
     const socials = [rec.twitter && "x", rec.telegram && "tg", rec.website && "web"].filter(Boolean).join(" ");
     const devTxt = prior > 0 ? ` · dev ${prior} prior${rec.devB ? `, ${rec.devB} bonded` : ""}` : "";
     c.feed.push({
@@ -375,6 +412,15 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
   inc(c, "resolved");
   inc(c, outcome.toLowerCase());
 
+  const bonded = outcome === "BONDED";
+  if (bonded) {
+    RUN_EV.bonded.push(rec.mint);
+    metaBond(p, rec.name, rec.symbol);
+    // every bonded coin is followed for a week so the runner model sees how far it really went
+    if (!rec.tape) enroll(p, runOf(rec, c.now));
+  } else RUN_EV.died.push(rec.mint);
+  // wallet, cluster and early-read records are credited at the label window (see lessons()), never here
+
   if (outcome === "BONDED") {
     rec.bondSecs = Math.max(0, Math.round((c.now - rec.createdAt) / 1000));
     rec.peak = 100;
@@ -435,12 +481,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
     indexCall(c, call, rec.bondSecs);
     p.lpush(K.callRes, call);
     p.ltrim(K.callRes, 0, 199);
-    if (call.x?.length) {
-      learn(c.model, call.x, outcome === "BONDED");
-      c.modelDirty = true;
-      if (c.model.n % 25 === 0)
-        c.nanoLog.push({ n: c.model.n, loss: round4(c.model.loss), acc: round4(c.model.acc), pos: c.model.pos, at: c.now });
-    }
+    // the models learn this launch at createdAt + 2h (see LABEL_MS), not now
   }
 
   // Graduated before the 5-minute call: nano still learns from it, using what the rats saw at dig time.
@@ -460,10 +501,9 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome) {
       devB: rec.devB ?? 0,
       createdAt: rec.createdAt,
     });
-    learn(c.model, x, true);
-    c.modelDirty = true;
+    rec.xpre = x;
+    p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
     inc(c, "learn_precall");
-    if (c.model.n % 25 === 0) c.nanoLog.push({ n: c.model.n, loss: round4(c.model.loss), acc: round4(c.model.acc), pos: c.model.pos, at: c.now });
   }
 
   p.rpush(K.resolvedHour(hourKey(rec.createdAt)), compactRow(rec));
@@ -523,7 +563,34 @@ export async function processDue(model: NanoModel) {
   const [curves, peaks] = await Promise.all([getCurves(live), live.length ? r.zmscore(K.peak, live) : Promise.resolve(null)]);
   const peakOf: Record<string, number> = {};
   live.forEach((m, i) => (peakOf[m] = Number(peaks?.[i] ?? 0)));
+  if (SOL_USD) for (const m of live) if (curves[m] && !curves[m]!.complete) CURVE_USD[m] = curves[m]!.mcapSol * SOL_USD;
   const s = await getSettings();
+
+  // Coins about to get a read (minute 1) or a call (minute 5): narrative for all, trades and wallets for the ones moving.
+  const reading = items.filter((it) => {
+    const rec = recs[it.mint];
+    const cv = curves[it.mint];
+    if (!rec || rec.outcome || !cv || cv.complete) return false;
+    return (it.stage === "t5" && !rec.call) || (it.stage === "t1" && !rec.early);
+  });
+  const tapeable = reading
+    .filter((it) => (curves[it.mint]?.progress ?? 0) >= (it.stage === "t5" ? s.desk.tapeMinCurve : s.desk.earlyMinCurve))
+    .sort((a, b) => (curves[b.mint]?.progress ?? 0) - (curves[a.mint]?.progress ?? 0))
+    .slice(0, MAX_TAPES_PER_RUN);
+  const [metaMap, st] = await Promise.all([
+    readMeta(reading.map((it) => ({ mint: it.mint, name: recs[it.mint].name, symbol: recs[it.mint].symbol }))).catch(() => ({} as Record<string, Meta>)),
+    r.hmget<Record<string, number>>(K.stat, "tape_n", "tape_b"),
+  ]);
+  const base = tapeBase(st);
+  const extras: Record<string, Extra> = {};
+  for (const it of reading) extras[it.m] = { tape: null, g: null, meta: metaMap[it.mint] || null, px: curves[it.mint]?.priceSol || 0 };
+  await pmap(tapeable, 4, async (it) => {
+    const rec = recs[it.mint];
+    const tape = await readTape(rec.mint, rec.creator, rec.createdAt);
+    const g = await readGraph(rec.creator, tape?.early || [], base).catch(() => null);
+    extras[it.m] = { ...extras[it.m], tape, g };
+  });
+
   const work = await assignWork(items.length, s);
   const c = newCtx(model);
   const p = c.p;
@@ -532,7 +599,7 @@ export async function processDue(model: NanoModel) {
   const hotAdds: { score: number; member: string }[] = [];
   const radarAdds: { score: number; member: string }[] = [];
 
-  const order: Record<Stage, number> = { t5: 0, h1: 1, d1: 2 };
+  const order: Record<Stage, number> = { t1: -1, t5: 0, h1: 1, d1: 2 };
   items.sort((a, b) => order[a.stage] - order[b.stage]);
   p.zrem(K.due, ...members);
 
@@ -556,8 +623,10 @@ export async function processDue(model: NanoModel) {
       return;
     }
 
-    if (it.stage === "t5" && !rec.call) {
-      makeCall(c, rec, cp.p);
+    if (it.stage === "t1") {
+      if (!rec.early && !rec.call) makeEarly(c, rec, cp.p, extras[it.m] || { tape: null, g: null, meta: null, px: cv?.priceSol || 0 });
+    } else if (it.stage === "t5" && !rec.call) {
+      makeCall(c, rec, cp.p, extras[it.m] || { tape: null, g: null, meta: null, px: cv?.priceSol || 0 });
     } else if (it.stage === "h1") {
       // Dead on arrival: nothing on the curve after an hour and it never got going. Resolve now so
       // the scoreboard and the learner see losers as fast as winners.
@@ -590,19 +659,14 @@ export async function processDue(model: NanoModel) {
   return { checked: items.length };
 }
 
-function makeCall(c: Ctx, rec: Launch, curveNow: number) {
-  const sc = score({
-    progress: curveNow,
-    progress0: rec.p0,
-    twitter: !!rec.twitter,
-    telegram: !!rec.telegram,
-    website: !!rec.website,
-    description: rec.description,
-    symbol: rec.symbol,
-    name: rec.name,
-    devBuySol: rec.devBuySol,
-  });
-  const x = features({
+function tapeBase(st: Record<string, number> | null) {
+  const n = Number(st?.tape_n || 0);
+  const b = Number(st?.tape_b || 0);
+  return n >= 200 ? Math.max(0.005, b / n) : 0.08; // bond rate of coins moving enough to be taped
+}
+
+function featIn(rec: Launch, curveNow: number, ex: Extra): FeatureInput {
+  return {
     curve5: curveNow,
     curve0: rec.p0,
     devBuySol: rec.devBuySol,
@@ -615,7 +679,91 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number) {
     devN: rec.devN ?? 0,
     devB: rec.devB ?? 0,
     createdAt: rec.createdAt,
+    tape: ex.tape,
+    smartN: ex.g?.smartN,
+    clRatio: ex.g?.clRatio,
+    copy: ex.meta?.copy,
+    dup: ex.meta?.dup,
+    lift: ex.meta?.lift,
+  };
+}
+
+export function runOf(rec: Launch, bondedAt: number | null): Run {
+  return {
+    mint: rec.mint,
+    symbol: rec.symbol,
+    createdAt: rec.createdAt,
+    bondedAt,
+    hi: -1,
+    pk: 0,
+    xs: {},
+    s: {
+      king: rec.call?.score ?? 0,
+      nano: rec.call?.nano?.score ?? null,
+      smartN: rec.g?.smartN ?? 0,
+      clRatio: rec.g?.clRatio ?? 1,
+      bundleShare: rec.tape?.bundleShare ?? 0,
+      uniq: rec.tape?.uniq ?? 0,
+      solPerBuy: rec.tape?.solPerBuy ?? 0,
+      buyShare: rec.tape?.buyShare ?? 0,
+      copy: !!rec.meta?.copy,
+      lift: rec.meta?.lift ?? 1,
+      funder: rec.g?.funder ?? null,
+      early: rec.tape?.early ?? [],
+    },
+    cUsd: rec.cp.t5?.mcap && SOL_USD ? Math.round(rec.cp.t5.mcap * SOL_USD) : null,
+    verdict: rec.call?.verdict ?? null,
+  };
+}
+
+function tapeLine(t: Tape) {
+  return `${t.n} trades, ${t.uniq} traders, ${t.solPerBuy}◎/buy, buys ${Math.round(t.buyShare * 100)}%, bundle ${Math.round(t.bundleShare * 100)}%${t.sniperN ? `, ${t.sniperN} snipers` : ""}${t.devSold > 0 ? `, dev sold ${t.devSold}◎` : ", dev holding"}`;
+}
+function graphLine(g: Graph, meta: Meta | null) {
+  const cl = g.funder ? `dev funded by ${g.funder.slice(0, 4)}…: ${g.clN} launches, ${g.clB} bonded (${g.clRatio}x)` : "fresh dev, no funder history";
+  return `${cl}${g.smartN ? ` · ${g.smartN} smart wallet${g.smartN > 1 ? "s" : ""} early` : ""}${meta?.hot ? ` · meta "${meta.hot}" ${meta.lift}x` : ""}${meta?.copy ? " · copies a recent winner" : ""}`;
+}
+
+/** Minute-1 read: its own model, its own scoreboard. The desk may act on it only after the early record earns it. */
+function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
+  const x = features(featIn(rec, curveNow, ex));
+  const v0 = score({ progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, description: rec.description, symbol: rec.symbol, name: rec.name, devBuySol: rec.devBuySol });
+  const sc = c.model1.n >= NANO_MIN ? nanoScore(c.model1, x) : v0.score;
+  const verdict = verdictOf(sc);
+  rec.early = { at: c.now, score: sc, verdict, curve: curveNow, x };
+  c.p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
+  if (ex.tape) {
+    rec.tape = ex.tape;
+    rec.g = ex.g;
+  }
+  rec.meta = ex.meta;
+  inc(c, `e${verdict.toLowerCase()}_n`);
+  if (verdict === "BOND") {
+    c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
+    const ev = { agent: "SCOUT", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} early read BOND ${sc} at minute 1, curve ${curveNow}%`, tone: "ok" };
+    c.p.lpush(K.deskEv, ev);
+  }
+  c.feed.push({ kind: "t1", rat: "RAT KING", mint: rec.mint, symbol: rec.symbol, name: rec.name, at: c.now, text: `early read ${verdict} ${sc} · curve ${curveNow}%${ex.tape ? ` · ${ex.tape.n} trades` : ""}` });
+}
+
+function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
+  if (ex.tape) {
+    rec.tape = ex.tape;
+    rec.g = ex.g;
+  }
+  if (ex.meta) rec.meta = ex.meta;
+  const sc = score({
+    progress: curveNow,
+    progress0: rec.p0,
+    twitter: !!rec.twitter,
+    telegram: !!rec.telegram,
+    website: !!rec.website,
+    description: rec.description,
+    symbol: rec.symbol,
+    name: rec.name,
+    devBuySol: rec.devBuySol,
   });
+  const x = features(featIn(rec, curveNow, { ...ex, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null }));
   const nano =
     c.model.n >= NANO_MIN
       ? (() => {
@@ -642,8 +790,14 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number) {
     devN: rec.devN ?? 0,
     devB: rec.devB ?? 0,
     soc: [rec.twitter, rec.telegram, rec.website].filter(Boolean).length,
+    px: ex.px || undefined,
+    tp: rec.tape
+      ? { n: rec.tape.n, uniq: rec.tape.uniq, spb: rec.tape.solPerBuy, bs: rec.tape.bundleShare, sn: rec.tape.sniperN, sm: rec.g?.smartN ?? 0, cl: rec.g?.clRatio ?? 1, ds: rec.tape.devSold }
+      : null,
   };
   c.p.set(K.call(rec.mint), rec.call, { ex: CALL_TTL });
+  c.p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
+  if (rec.tape) enroll(c.p, runOf(rec, null));
   indexCall(c, rec.call);
   c.p.zadd(K.calls, { score: rec.createdAt, member: rec.mint });
   inc(c, "calls");
@@ -651,8 +805,11 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number) {
     // hand the coin to the desk; the desk loop picks it up within 2 seconds
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
     const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${sc.verdict} ${sc.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok" };
-    c.p.lpush(K.deskEv, ev);
-    c.p.hset(K.deskAgent, { KING: ev });
+    const evs: any[] = [ev];
+    if (rec.tape) evs.push({ agent: "TAPE", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${tapeLine(rec.tape)}`, tone: rec.tape.devSold > 0 || rec.tape.bundleShare > 0.5 ? "bad" : "info" });
+    if (rec.g) evs.push({ agent: "GRAPH", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${graphLine(rec.g, rec.meta ?? null)}`, tone: rec.g.clRatio < 0.5 ? "bad" : rec.g.smartN || rec.g.clRatio > 2 ? "ok" : "info" });
+    c.p.lpush(K.deskEv, ...evs);
+    c.p.hset(K.deskAgent, Object.fromEntries(evs.map((e) => [e.agent, e])));
   }
   if (counted) {
     c.p.hincrby(K.calib, `v${bucket(sc.score)}n`, 1);
@@ -674,6 +831,55 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number) {
   });
 }
 
+// ---------------------------------------------------------------- lessons (label window reached)
+
+async function lessons(model: NanoModel) {
+  const r = redis();
+  const now = Date.now();
+  const due = (await r.zrange<string[]>(K.lessons, 0, now, { byScore: true, offset: 0, count: 300 })) || [];
+  if (!due.length) return { lessons: 0 };
+  const recs = await r.mget<(Launch | null)[]>(...due.map((m) => K.launch(m)));
+  const c = newCtx(model);
+  let n = 0;
+  due.forEach((m, i) => {
+    const rec = recs[i];
+    if (!rec || rec.learned) return;
+    // label: bonded within the window (a bond after 2h is rare; it still counts on the scoreboard, not in training)
+    const bonded = rec.outcome === "BONDED" && (rec.bondSecs ?? Infinity) * 1000 <= LABEL_MS;
+    const x = rec.call?.x?.length ? rec.call.x : rec.xpre;
+    if (x?.length) {
+      learn(c.model, x, bonded);
+      c.modelDirty = true;
+      n++;
+      if (c.model.n % 25 === 0) c.nanoLog.push({ n: c.model.n, loss: round4(c.model.loss), acc: round4(c.model.acc), pos: c.model.pos, at: c.now });
+    }
+    const x1 = rec.early?.x?.length ? rec.early.x : rec.xpre;
+    if (x1?.length) {
+      learn(c.model1, x1, bonded);
+      c.model1Dirty = true;
+    }
+    // same moment for winners and losers: wallet and cluster records, and the early-vs-King record that gates early entries
+    if (rec.tape) {
+      inc(c, "tape_n");
+      if (bonded) inc(c, "tape_b");
+      creditResolve(c.p, rec.g?.funder, rec.tape.early, bonded);
+    }
+    if (rec.early?.verdict === "BOND") {
+      inc(c, "lebond_n");
+      if (bonded) inc(c, "lebond_hit");
+    }
+    if (rec.call?.counted && rec.call.verdict === "BOND") {
+      inc(c, "lbond_n");
+      if (bonded) inc(c, "lbond_hit");
+    }
+    rec.learned = true;
+    c.p.set(K.launch(m), rec, { keepTtl: true });
+  });
+  c.p.zrem(K.lessons, ...due);
+  await flush(c);
+  return { lessons: n };
+}
+
 // ---------------------------------------------------------------- hot watch (bonds in near real time)
 // Reads only curve accounts plus two sorted sets, so it stays cheap even with thousands of live coins.
 
@@ -691,6 +897,7 @@ export async function hotWatch(model: NanoModel) {
   const mints = Array.from(new Set([...(top || []), ...Object.keys(born)]));
   const curves = await getCurves(mints);
   const now = Date.now();
+  if (SOL_USD) for (const m of mints) if (curves[m] && !curves[m]!.complete) CURVE_USD[m] = curves[m]!.mcapSol * SOL_USD;
 
   const radarAdds: { score: number; member: string }[] = [];
   const gone: string[] = [];

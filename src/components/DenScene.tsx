@@ -5,10 +5,15 @@ import { useEffect, useRef } from "react";
 // and a speech bubble shows what it did. A coin token walks the pipeline when the desk buys.
 
 type Ev = { agent: string; at: number; symbol?: string; text: string; tone: string };
-const ORDER = ["SCOUT", "KING", "VET", "FLOW", "SIZE", "EXEC", "RISK", "LEDGER"];
+const ORDER = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER"];
 export const AGENT_COLOR: Record<string, string> = {
   SCOUT: "#8cff5a",
   KING: "#ffb547",
+  HISTORIAN: "#b08968",
+  TAPE: "#ffe066",
+  GRAPH: "#6b8cff",
+  BUZZ: "#ff9a3c",
+  COACH: "#ffb3a7",
   VET: "#7fd1ff",
   FLOW: "#c08bff",
   SIZE: "#5ee6c8",
@@ -51,8 +56,8 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
       const delay = i * 900;
       setTimeout(() => {
         st.bubbles[e.agent] = { text: e.text, tone: e.tone, until: performance.now() + 4200, hop: performance.now() };
-        if (e.agent === "EXEC" && /bought/.test(e.text)) st.tokens.push({ path: [0, 1, 2, 3, 4, 5], t0: performance.now(), label: e.symbol ? `$${e.symbol}` : "$", color: "#ffb547" });
-        if (e.agent === "RISK" && /sold/.test(e.text)) st.tokens.push({ path: [6, 7], t0: performance.now(), label: e.tone === "win" ? "+◎" : "-◎", color: TONE[e.tone] || "#fff" });
+        if (e.agent === "EXEC" && /bought/.test(e.text)) st.tokens.push({ path: [1, 2, 3, 4, 5, 6, 8, 9], t0: performance.now(), label: e.symbol ? `$${e.symbol}` : "$", color: "#ffb547" });
+        if (e.agent === "RISK" && /sold/.test(e.text)) st.tokens.push({ path: [10, 12], t0: performance.now(), label: e.tone === "win" ? "+◎" : "-◎", color: TONE[e.tone] || "#fff" });
       }, delay);
     });
   }, [events]);
@@ -63,9 +68,10 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
     if (!c || !el) return;
     const ctx = c.getContext("2d")!;
     let W = 0;
-    const H = 340;
+    let H = 440;
     const resize = () => {
       W = el.clientWidth;
+      H = W < 640 ? 540 : 560;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       c.width = W * dpr;
       c.height = H * dpr;

@@ -11,6 +11,7 @@ type Settings = {
   freeSniff: boolean;
   links: { x: string; tg: string; pump: string; dex: string };
   desk: Record<string, any>;
+  history: Record<string, any>;
 };
 type Round = { id: number; feesSol: number; ownersSol: number; computeSol: number; cappedSol: number; eligible: number; status: string; payouts: { owner: string; sol: number; sig?: string; error?: string }[] };
 
@@ -35,6 +36,7 @@ export default function Admin() {
   const [day, setDay] = useState("");
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
   const [deskJson, setDeskJson] = useState("");
+  const [histJson, setHistJson] = useState("");
 
   const load = useCallback(async () => {
     const r = await fetch("/api/admin", { cache: "no-store" });
@@ -43,6 +45,7 @@ export default function Admin() {
     setAuthed(true);
     setS(j.settings);
     setDeskJson(JSON.stringify(j.settings.desk, null, 2));
+    setHistJson(JSON.stringify(j.settings.history, null, 2));
     setRounds(j.rounds);
     setCur(j.currentRound);
     setSniffers(j.sniffers);
@@ -191,6 +194,17 @@ export default function Admin() {
             <button className="btn" onClick={() => run("Save desk", () => call({ action: "settings", settings: { desk: JSON.parse(deskJson) } }))}>Save desk</button>
             <button className="btn dim" onClick={() => run("Close all", () => call({ action: "desk-closeall" }))}>Close all positions</button>
             <button className="btn dim" onClick={() => confirm("Reset the paper desk and its history?") && run("Reset desk", () => call({ action: "desk-reset" }))}>Reset desk</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph"><span><b>historian</b> · replays past launches to train the models</span></div>
+        <div className="pb">
+          <p className="muted small" style={{ marginTop: 0 }}>Runs next to the desk on the same cron. Each step costs RPC credits: scanPerRun at ~1 credit each, deepPerRun at ~50 each. Lower them if your Helius plan runs hot.</p>
+          <textarea className="input" style={{ minHeight: 160, fontSize: 12 }} value={histJson} onChange={(e) => setHistJson(e.target.value)} spellCheck={false} />
+          <div className="row wrapx mt">
+            <button className="btn" onClick={() => run("Save historian", () => call({ action: "settings", settings: { history: JSON.parse(histJson) } }))}>Save historian</button>
           </div>
         </div>
       </div>

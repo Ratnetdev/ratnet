@@ -131,8 +131,10 @@ export default function LabBoard() {
           <div className="ph"><span><b>how nano learns</b></span></div>
           <div className="pb small muted">
             <div>· Born at zero. No pretrained weights, no outside data.</div>
-            <div>· 5 minutes after each launch, the rats freeze 14 features: curve, climb, dev buy, socials, ticker, the dev&apos;s history, time of day.</div>
-            <div>· When the chain decides the outcome (bonded, dead at the 1-hour check, or settled at 24h), nano takes one gradient step on that launch.</div>
+            <div>· 5 minutes after each launch, the rats freeze 28 features: curve, climb, dev buy, socials, ticker, the dev&apos;s history, time of day, plus what TAPE, GRAPH and META read: trade speed, SOL per buy, unique traders, bundles, snipers, top-5 share, dev sells, smart wallets, the dev&apos;s funder cluster, copycats and the hot meta.</div>
+            <div>· Every lesson waits for the same 2-hour label (bonded within 2h), so winners and losers are learned at the same moment and the model is never fooled by fast winners.</div>
+            <div>· A second model does the same at minute 1. The desk may act on it only once its record beats the minute-5 King.</div>
+            <div>· The HISTORIAN replays past pump.fun launches in time order, scoring each one before learning from it, so the models start trained.</div>
             <div>· It learns from every graduation, including the ones the King got wrong and the ones that graduated before the 5-minute call (those use what the rats saw at dig time).</div>
             <div>· Bonds are rare (around 1 in 100), so a bond counts 8x in the loss.</div>
             <div>· Its calls only count on the board after {data?.counted_calls_from ?? 200} lessons.</div>

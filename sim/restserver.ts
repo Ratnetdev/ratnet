@@ -39,6 +39,9 @@ function run(cmd: any[]): any {
       return ws ? arr.flatMap(([m, s]) => [m, String(s)]) : arr.map(([m]) => m);
     }
     case "lrange": { const l = kv.get(k) || []; const s = Number(a[0]); const e0 = Number(a[1]); const e = e0 < 0 ? l.length + e0 : e0; return l.slice(s, e + 1).map(ser); }
+    case "hget": { const h = kv.get(k); return h ? ser(h[a[0]] ?? null) : null; }
+    case "hlen": { const h = kv.get(k); return h ? Object.keys(h).length : 0; }
+    case "llen": return (kv.get(k) || []).length;
     case "smembers": return kv.get(k) || [];
     case "sismember": return (kv.get(k) || []).includes(a[0]) ? 1 : 0;
     case "set": case "del": case "incr": case "incrby": case "expire": case "hincrby": case "zadd": case "zrem": case "lpush": case "ltrim": case "rpush": case "sadd": case "hset":

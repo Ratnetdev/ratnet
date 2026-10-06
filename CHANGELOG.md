@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.4 · The learning desk
+- HISTORIAN: replays past pump.fun launches in time order (default 14 days) and trains every model before live data piles up. Rebuilds minute 1 and minute 5 from on-chain history only, credits records only when the replay clock reaches them, scores each launch before learning it (honest backtest in the Lab).
+- TAPE: reads the trades on every coin that is moving: trade speed, unique traders, SOL per buy, buy share, bundle wallets, snipers, top-5 concentration, dev sells.
+- GRAPH: traces each dev to the wallet that funded it and scores that funder's record; learns smart wallets from scratch (wallets that keep getting in early on coins that bond or hit $1M).
+- META: hot narrative of the moment and a copycat flag.
+- BUZZ: X mentions of the CA (optional X_BEARER_TOKEN) and paid DexScreener boosts/profiles.
+- Early read at minute 1 with its own model and scoreboard. The desk may trade it only after its record beats the minute-5 King.
+- Nano grows from 14 to 28 features. Every lesson waits for one 2-hour label so fast winners can't fool the models.
+- Runner model: follows every bond for 7 days and learns P(next market cap milestone) from $25K to $50M.
+- Post-bond visibility: peak market cap, market cap at the King's call and the multiple, on graduations, coin pages and a new Runners board.
+- Exits rebuilt: initials at 2x, 20% moonbag, milestone ladder only when P(next) is weak, trailing stop that widens from 30% to 50% as the coin runs, instant exit when the dev or insiders dump (their bags are read every 4s), smart migration rule.
+- Entries: never chase (+60% over the call means wait), bundle, cluster and copycat checks, pullback entries that unlock only when proven in shadow.
+- COACH: reviews every exit and every entry and retunes trails and entries from what really happened.
+- Desk grows to thirteen agents; new "what the desk learned" and stalking panels; tape and graph panels on coin pages.
+- Simulators: full desk market (bundles, rugs, factory devs, smart wallets, power-law runners) and a historian replay with a look-ahead leakage check.
+
 ## v0.1.3 · The Desk
 - The Desk (/desk): eight agents (Scout, King, Vet, Flow, Size, Exec, Risk, Ledger) turn King BOND calls into trades, every step shown live.
 - Agent cards with each agent's last move, the Den scene where the rats work, speech bubbles and a coin rolling down the pipeline on every buy.

@@ -15,6 +15,7 @@ export class MockRedis {
   async expire(k: string, s: number) { this.exp.set(k, this.now() + s * 1000); return 1; }
   private h(k: string) { if (!this.live(k)) this.kv.set(k, {}); return this.kv.get(k); }
   async hincrby(k: string, f: string, n: number) { this.calls++; const h = this.h(k); h[f] = Number(h[f] || 0) + n; return h[f]; }
+  async hget(k: string, f: string) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; return h[f] ?? null; }
   async hgetall(k: string) { this.calls++; return this.live(k) && Object.keys(this.kv.get(k)).length ? this.clone(this.kv.get(k)) : null; }
   async hmget(k: string, ...f: string[]) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; const o: any = {}; f.forEach((x) => (o[x] = h[x] ?? null)); return o; }
   async hlen(k: string) { this.calls++; return this.live(k) ? Object.keys(this.kv.get(k)).length : 0; }
@@ -46,11 +47,15 @@ export class MockRedis {
     const sl = arr.slice(a, end + 1);
     return o.withScores ? sl.flatMap((x) => [x[0], x[1]]) : sl.map((x) => x[0]);
   }
+  async zremrangebyscore(k: string, a: number, b: number) { this.calls++; const z = this.z(k); for (const [m, sc] of [...z.entries()]) if (sc >= a && sc <= b) z.delete(m); return 1; }
+  async hscan(k: string, _c: any) { this.calls++; const h = this.live(k) ? this.kv.get(k) : {}; return ["0", Object.entries(h).flat()]; }
   async zremrangebyrank(k: string, a: number, b: number) { const arr = [...this.z(k).entries()].sort((x, y) => x[1] - y[1]); const end = b < 0 ? arr.length + b : b; arr.slice(a, end + 1).forEach(([m]) => this.z(k).delete(m)); return 1; }
   private l(k: string): any[] { if (!this.live(k)) this.kv.set(k, []); return this.kv.get(k); }
   async lpush(k: string, ...v: any[]) { this.calls++; const l = this.l(k); v.forEach((x) => l.unshift(this.clone(x))); return l.length; }
   async rpush(k: string, ...v: any[]) { this.calls++; const l = this.l(k); v.forEach((x) => l.push(this.clone(x))); return l.length; }
   async ltrim(k: string, a: number, b: number) { const l = this.l(k); const n = l.length; const s = a < 0 ? Math.max(0, n + a) : a; const e = b < 0 ? n + b : b; this.kv.set(k, l.slice(s, e + 1)); return "OK"; }
+  async llen(k: string) { this.calls++; return this.live(k) ? this.kv.get(k).length : 0; }
+  async lpop(k: string, n?: number) { this.calls++; const l = this.l(k); if (n == null) return l.length ? this.clone(l.shift()) : null; const out = l.splice(0, n); return out.length ? this.clone(out) : null; }
   async lrange(k: string, a: number, b: number) { this.calls++; const l = this.l(k); const e = b < 0 ? l.length + b : b; return this.clone(l.slice(a, e + 1)); }
   async sadd(k: string, ...m: string[]) { const s = this.live(k) ? new Set(this.kv.get(k)) : new Set(); const before = s.size; m.forEach((x) => s.add(x)); this.kv.set(k, [...s]); return s.size - before; }
   async sismember(k: string, m: string) { return this.live(k) && this.kv.get(k).includes(m) ? 1 : 0; }

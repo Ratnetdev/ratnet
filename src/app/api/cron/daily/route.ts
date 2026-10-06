@@ -2,6 +2,7 @@ import { exportDay, getExports } from "@/lib/exporter";
 import { isCron } from "@/lib/admin";
 import { fail, json } from "@/lib/http";
 import { dayKey } from "@/lib/redis";
+import { pruneWallets } from "@/lib/graph";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -21,5 +22,6 @@ export async function GET(req: Request) {
       out[day] = String((e as Error).message);
     }
   }
+  out.wallets = await pruneWallets().catch((e) => String((e as Error).message));
   return json(out);
 }
