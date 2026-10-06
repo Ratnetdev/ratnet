@@ -1,0 +1,17 @@
+# dependencies and builds
+node_modules
+.next
+.vercel
+tsconfig.tsbuildinfo
+
+# secrets: never commit these
+.env*
+*.pem
+*.key
+keypair*.json
+id.json
+
+# local data and OS files
+sim/state.json
+.DS_Store
+**/.DS_Store
