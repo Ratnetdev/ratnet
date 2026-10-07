@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.27 · /desk crash fix, error pages
+- /desk crashed ("Application error") after v0.1.26: the page's new exam cache used the same Redis key as the homepage's exam summary, so each overwrote the other and the desk payload arrived without its exam. The full exam now has its own key, and the page tolerates a missing exam.
+- Error pages: one page that fails to draw no longer blanks the whole site. The header and menu stay, the page offers a retry and a link to /status; an error in the layout itself shows a plain reload screen.
+
 ## v0.1.26 · Redis bandwidth diet, outage alerts
 - 7 Oct: Upstash hit its plan limit (60 GB of bandwidth in one day) and every page and loop went down. The causes, all fixed:
   - Open positions (each carries its price path, ~20KB) and the ghost book were read whole and written back twice a second. They now live in the desk's memory between beats and go to Redis at most every 10s, at once after a trade. Entry checks use the same memory copy, so a coin bought earlier in the same beat is seen at once.

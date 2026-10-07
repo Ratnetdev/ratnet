@@ -374,6 +374,10 @@ async function flushPositions() {
   for (const [key, m] of Object.entries(POSC)) for (const p of Array.from(m.values())) await savePos(key, p, true).catch(() => {});
 }
 
+// the full exam, cached for the pages (rn:desk:exam is the homepage's short summary: v0.1.26 cached the full exam
+// under that same key, the two overwrote each other and /desk crashed on an exam without its checks)
+const EXAM_FULL = "rn:desk:examfull";
+
 let DESK_LOCK: Lock | null = null;
 let DESK_LOST = false;
 /** Throws unless this process holds the desk lock right now (checked with Redis before every real-money swap). */
@@ -1394,7 +1398,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       // --- the homepage shows how close the desk is to its own wallet (every ~30s)
       if (loops % 15 === 1) {
         const ex = await exam(state, walletSol);
-        await r.set("rn:desk:exam", { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
+        await r.set(EXAM_FULL, { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
         await r.set(K.deskExam, { at: now, live: state.live, passed: ex.checks.filter((c) => c.ok).length, total: ex.checks.length, checks: ex.checks.map((c) => ({ l: c.label, ok: c.ok, now: c.now, need: c.need })), walletSol, wallet: kp ? kp.publicKey.toBase58() : null }, { ex: 600 });
       }
 
@@ -1997,9 +2001,10 @@ export async function getDesk() {
   const walletSol = addr ? await cachedBalance(addr) : null;
   // the exam reads up to 2,000 trades (with their entry context) and 3,000 equity points: once per 30s for every
   // visitor, not on every page poll
-  const exC = await r.get<{ at: number; ex: Exam }>("rn:desk:exam").catch(() => null);
-  const ex = exC && Date.now() - exC.at < 30_000 ? exC.ex : await exam(state, walletSol);
-  if (!exC || Date.now() - exC.at >= 30_000) await r.set("rn:desk:exam", { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
+  const exC = await r.get<{ at: number; ex: Exam }>(EXAM_FULL).catch(() => null);
+  const fresh = !!exC && Date.now() - Number(exC.at) < 30_000 && Array.isArray(exC.ex?.checks);
+  const ex = fresh ? exC!.ex : await exam(state, walletSol);
+  if (!fresh) await r.set(EXAM_FULL, { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
   // the page draws a small sparkline: 90 points of each path are plenty (positions carry up to 360)
   for (const k of Object.keys(pos || {})) {
     const ser = pos[k]?.series;

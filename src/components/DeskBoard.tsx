@@ -175,12 +175,12 @@ export default function DeskBoard() {
   const total = pct(eq, base);
   const today = st ? pct(eq, st.dayStart) : 0;
   const winRate = st?.closed ? (st.wins / st.closed) * 100 : null;
-  const passed = d?.exam.checks.filter((c) => c.ok).length ?? 0;
+  const passed = d?.exam?.checks.filter((c) => c.ok).length ?? 0;
   const [agent, setAgent] = useState<string | null>(null);
 
   return (
     <>
-      <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam.checks || []} />
+      <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam?.checks || []} />
 
       {d && today <= -d.cfg.dailyLoss ? (
         <div className="panel mt ghost-note">
@@ -209,13 +209,13 @@ export default function DeskBoard() {
         </div>
         <div className="panel exam">
           <div className="ph">
-            <span><b>{d?.live ? "live" : "live exam"}</b> · <Info k="exam">{d?.live ? "promoted by the desk itself" : `${passed}/${d?.exam.checks.length ?? 5} passed`}</Info></span>
+            <span><b>{d?.live ? "live" : "live exam"}</b> · <Info k="exam">{d?.live ? "promoted by the desk itself" : `${passed}/${d?.exam?.checks.length ?? 5} passed`}</Info></span>
           </div>
           <div className="pb small">
             {d?.live ? (
               <div className="muted">Went live {st?.promotedAt ? ago(st.promotedAt) + " ago" : ""} with {st?.liveStart?.toFixed(3)} SOL. Drops back to paper at -40%.</div>
             ) : (
-              (d?.exam.checks || []).map((c) => (
+              (d?.exam?.checks || []).map((c) => (
                 <div key={c.label} className="row between" style={{ padding: "3px 0" }}>
                   <span><span style={{ color: c.ok ? "var(--rat)" : "var(--mute)" }}>{c.ok ? "■" : "□"}</span> {c.label}</span>
                   <span className="tiny"><span style={{ color: c.ok ? "var(--rat)" : "var(--text)" }}>{c.now}</span> <span className="mute2">/ {c.need}</span></span>
