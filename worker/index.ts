@@ -13,6 +13,7 @@ import { swapsInFlight } from "../src/lib/exec";
 import { logCreate, logTrade, pruneStream, streamSize, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
+import { heliusFeed } from "../src/lib/heliusfeed";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, redisDown } from "../src/lib/critical";
 import { markAlive, markBusy } from "../src/lib/alive";
@@ -153,7 +154,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never" }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never", feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} addrs ${FEED.view().trades} trades${FEED.view().error ? ` err ${FEED.view().error}` : ""}` : PP_KEY ? "pumpportal key" : "off" }).catch(() => {});
   }
   // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};
@@ -223,6 +224,10 @@ async function flushIntake() {
 }
 
 let noteAt = 0;
+const PP_KEY = process.env.PUMPPORTAL_API_KEY || "";
+// every trade, from PumpPortal (with a key) or the Helius feed, goes through here
+let TRADE_IN: (msg: any) => void = () => {};
+let FEED: ReturnType<typeof heliusFeed> | null = null;
 const SHAPES = new Map<string, number>();
 let shapesAt = 0;
 function noteShape(msg: any) {
@@ -245,14 +250,26 @@ function pumpportal() {
     lastCatch = Date.now();
     lane.run(2, () => catchPass(true)).catch(() => null);
   };
+  TRADE_IN = (msg: any) => {
+    const tx = String(msg.txType || "").toLowerCase();
+    const fc = FLW.get(String(msg.mint));
+    if (fc) {
+      fc.trades.push({ t: Date.now(), side: tx as "buy" | "sell", sol: Number(msg.solAmount) || 0, w: String(msg.traderPublicKey || "") });
+      if (Number(msg.vSolInBondingCurve) > 0) fc.vSol = Number(msg.vSolInBondingCurve);
+      if (Number(msg.vTokensInBondingCurve) > 0) fc.vTok = Number(msg.vTokensInBondingCurve);
+      if (Number(msg.marketCapSol) > 0) fc.mcSol = Number(msg.marketCapSol);
+    }
+    return onTrade(msg, kick);
+  };
   const resync = async () => {
     if (!up) return;
     const want = await wantList();
     const add = [...want].filter((k) => !watched.has(k));
     const drop = [...watched].filter((k) => !want.has(k));
-    if (add.length) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: add }));
+    // PumpPortal streams trades only with a funded key (since Oct 2026); without one the Helius feed brings them
+    if (add.length && PP_KEY) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: add }));
     if (drop.length) {
-      ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: drop }));
+      if (PP_KEY) ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: drop }));
       drop.forEach((k) => (TAPE.delete(k), LAST.delete(k), SEEN.delete(k)));
       redis().hdel("rn:rt", ...drop).catch(() => 0);
     }
@@ -260,8 +277,7 @@ function pumpportal() {
   };
   const open = () => {
     // PUMPPORTAL_API_KEY (optional): PumpPortal's keyed data stream, for when the free stream stops sending trades
-    const key = process.env.PUMPPORTAL_API_KEY;
-    ws = new WS(`wss://pumpportal.fun/api/data${key ? `?api-key=${encodeURIComponent(key)}` : ""}`);
+    ws = new WS(`wss://pumpportal.fun/api/data${PP_KEY ? `?api-key=${encodeURIComponent(PP_KEY)}` : ""}`);
     ws.onopen = () => {
       up = true;
       watched = new Set();
@@ -295,16 +311,7 @@ function pumpportal() {
         kick();
         return;
       }
-      if (tx === "buy" || tx === "sell") {
-        const fc = FLW.get(String(msg.mint));
-        if (fc) {
-          fc.trades.push({ t: Date.now(), side: tx, sol: Number(msg.solAmount) || 0, w: String(msg.traderPublicKey || "") });
-          if (Number(msg.vSolInBondingCurve) > 0) fc.vSol = Number(msg.vSolInBondingCurve);
-          if (Number(msg.vTokensInBondingCurve) > 0) fc.vTok = Number(msg.vTokensInBondingCurve);
-          if (Number(msg.marketCapSol) > 0) fc.mcSol = Number(msg.marketCapSol);
-        }
-        return onTrade(msg, kick);
-      }
+      if (tx === "buy" || tx === "sell") return TRADE_IN(msg);
       // a new launch: to the rats now (batched every 300ms), and onto FLASH's first-seconds watch
       // pump.fun launches only: PumpPortal also streams other launchpads (pool "bonk"...), which have no pump.fun
       // curve and used to be dug, resolved as dead and counted in the base rate
@@ -314,7 +321,8 @@ function pumpportal() {
         INTAKE.push({ mint, sig: String(msg.signature || msg.sig || msg.txSignature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
         logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
         FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
-        if (up) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
+        if (up && PP_KEY) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
+        FEED?.nudge();
         watched.add(mint);
         if (++createN % LAG_EVERY === 0 && msg.signature) sampleLag(String(msg.signature), now);
       }
@@ -463,6 +471,8 @@ async function main() {
   console.log("nano", JSON.stringify(await migrateNano().catch((e) => ({ nano: "error", error: String(e?.message || e) }))));
   console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
   pumpportal();
+  // trades for every followed coin from Helius (no PumpPortal key needed): the same handler as PumpPortal's trades
+  if (!PP_KEY) FEED = heliusFeed({ want: wantList, onTrade: (t) => TRADE_IN(t), log: (x) => console.log(x) });
   setInterval(beat, 20_000);
   await beat();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);

@@ -116,6 +116,19 @@ export function budgetState() {
   if (budget.day !== utcDay()) Object.assign(budget, { day: utcDay(), used: 0 });
   return { budget: DAY_BUDGET, used: budget.used, pace: Math.round(DAY_BUDGET * Math.min(1, frac + 0.05)) };
 }
+/** Helius websocket data is billed by volume (2 credits per 0.1 MB): counted against the day like any call. */
+export function noteStreamBytes(bytes: number) {
+  budgetState();
+  STREAM_BYTES += bytes;
+  const credits = Math.floor(STREAM_BYTES / 50_000); // 2 credits per 100,000 bytes = 1 per 50,000
+  if (credits > 0) {
+    STREAM_BYTES -= credits * 50_000;
+    budget.used += credits;
+    rpcStats.byLane[1] += credits;
+    rpcStats.calls += credits;
+  }
+}
+let STREAM_BYTES = 0;
 export class BudgetError extends Error {}
 function budgetBlocks(l: number) {
   if (!DAY_BUDGET) return false;

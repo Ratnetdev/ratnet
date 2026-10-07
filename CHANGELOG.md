@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.32 · Hotfix: trade feed from Helius
+- PumpPortal now streams trades only to a funded API key: "'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL", at 0.01 SOL per 10,000 messages (about 1 SOL a day for what RATNET follows). Since that change no trades arrived: stream tapes held only the dev's buy, the desk had no stream prices, and FLASH and CATCH's live tape were blind.
+- New trade feed (lib/heliusfeed.ts) on the Helius plan already paid for:
+  - one websocket, one transactionSubscribe for every followed coin's bonding curve and canonical PumpSwap pool;
+  - small messages (keys and balances only);
+  - each transaction becomes the same trade message as before (side, SOL, tokens, trader, curve reserves, market cap), so tapes, desk prices, FLASH and CATCH work unchanged;
+  - a new launch is added to the feed within a second;
+  - the feed's data is billed by Helius by volume (2 credits per 0.1 MB) and counted against the day's budget on /status.
+- PumpPortal still brings launches and migrations (free). With PUMPPORTAL_API_KEY set, PumpPortal streams the trades instead.
+- /status: the Live stream tile shows the feed (up or down, addresses followed, trades received, any error).
+
 ## v0.1.31 · Honest paper desk (Run 4)
 - Paper pays what live pays (lib/costs.ts), in the real desk, the ghost desk and the exit lab:
   - venue fee 1.25% on the curve, PumpSwap's market-cap tiers after migration (1.25% down to 0.30%);
