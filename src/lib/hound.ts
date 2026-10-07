@@ -27,7 +27,7 @@ import { bondingCurvePda, getCurves, pmap, solUsd } from "./solana";
 import { readPools } from "./pool";
 import { oldestSigs } from "./historian";
 import { parseTrade } from "./tape";
-import { conn } from "./solana";
+import { conn, parsedTxsAny } from "./solana";
 import { enqueueMind } from "./mind";
 import { enqueueLens } from "./lens";
 import { GK } from "./graph";
@@ -349,7 +349,7 @@ async function digBreakout() {
   const txs: any[] = [];
   for (let i = 0; i < sigs.length; i += 100) {
     const chunk = sigs.slice(i, i + 100).map((s) => s.signature);
-    const got = await conn().getParsedTransactions(chunk, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => pmap(chunk, 6, (s) => conn().getParsedTransaction(s, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null)));
+    const got = await parsedTxsAny(chunk);
     txs.push(...got);
   }
   const trades = txs.map((tx) => parseTrade(tx, curve, mint)).filter((t): t is NonNullable<typeof t> => !!t && t.sol > 0);

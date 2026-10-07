@@ -5,7 +5,7 @@ import {
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { conn } from "./solana";
+import { conn, parsedTx } from "./solana";
 import { K, redis } from "./redis";
 import { ROUND_MS, Settings } from "@/config/site";
 import { priceFor } from "./rats";
@@ -55,7 +55,7 @@ export type BurnCheck =
 export async function checkBurn(sig: string, wallet: string, kind: BurnKind, s: Settings): Promise<BurnCheck> {
   if (!s.mint) return { ok: false, error: "$RAT is not live yet" };
   if (await redis().sismember(K.burnsUsed, sig)) return { ok: false, error: "This burn was already used" };
-  const tx = await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+  const tx = await parsedTx(sig);
   if (!tx) return { ok: false, pending: true, error: "Waiting for confirmation" };
   if (tx.meta?.err) return { ok: false, error: "Transaction failed on chain" };
   if (tx.blockTime && Date.now() / 1000 - tx.blockTime > 60 * 60 * 3) return { ok: false, error: "Burn is older than 3 hours" };

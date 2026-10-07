@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.30 · Hotfix: version 1 transactions
+- Since early October most pump.fun creates and many trades are version 1 transactions. web3.js only asks for version 0, so the RPC refused them ("Transaction version (1) is not supported"). Every one of them was lost or retried:
+  - the rats' backfill failed on ~2 of 3 launches and retried each one 3 times (~30 chain calls a second, most of the day's budget);
+  - tapes read from the chain, funder lookups, the historian's replays and its bond scan, HOUND's wallet reads and the burn checks all silently dropped those transactions.
+- Every transaction read now tries version 0 first (same cost as before). On a version error it asks again with maxSupportedTransactionVersion 1 and shapes the answer like web3.js's parsed transaction, so every parser works unchanged. A real failure (timeout, rate limit) still counts as a failure.
+- nano is warm-started once more: the v0.1.28 code ran on the new v1.1 model for a few minutes on 7 Oct (a reverted push) and trained it the old way. The archived v1 model is left as it was.
+- Run 4 (honest paper desk) follows as v0.1.31.
+
 ## v0.1.29 · CATCH off the curve, King v1.1 (nano rebuilt)
 - 7 Oct, 22:00 to 23:15: the paper desk went from +32% to -19%. Almost all of it was CATCH: 20 real trades, 1 winner, -0.21 SOL. It bought $5K-20K curve coins on its starting score, before its model had earned anything, and those coins dumped 60-80% within seconds (stops filled at -40% to -80%). MOMO and WIRE were flat to positive.
   - CATCH trades real money only on what it has proven: migrated coins once its model has earned a score band, and curve coins only once its last 30 closed curve trades (ghost and real, after fees) average +5% or better with 30%+ winners. It locks again as soon as they fall below that. The ghost desk keeps following every signal, so the record keeps building. Progress shows on every skipped signal.

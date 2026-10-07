@@ -223,6 +223,72 @@ export function conn(): Connection {
   return _c;
 }
 
+// ---- transaction reads that also understand version 1 transactions (v0.1.30)
+// Since early October most pump.fun creates and many trades are version 1 transactions. web3.js 1.x only asks for
+// version 0 and the RPC refuses ("Transaction version (1) is not supported"): the backfill retried them for nothing
+// (~30 calls a second on the rats' lane) and every tape, funder and historian read silently lost those trades.
+// The v0 request is tried first (same cost as before); a version error is answered by the raw request with
+// maxSupportedTransactionVersion 1, shaped like web3.js's parsed transaction so every parser keeps working.
+const isVersionErr = (e: unknown) => /transaction version/i.test(String((e as any)?.message || e));
+const pk = (v: any) => {
+  if (v && typeof v === "object" && typeof v.toBase58 === "function") return v;
+  try {
+    return new PublicKey(String(v));
+  } catch {
+    return v;
+  }
+};
+function shapeIx(ix: any) {
+  if (!ix || typeof ix !== "object") return ix;
+  const out: any = { ...ix, programId: pk(ix.programId) };
+  if (Array.isArray(ix.accounts)) out.accounts = ix.accounts.map(pk);
+  return out;
+}
+/** A raw jsonParsed transaction in the shape web3.js returns (PublicKey objects where the parsers expect them). */
+export function shapeParsedTx(raw: any): ParsedTransactionWithMeta | null {
+  if (!raw?.transaction?.message || !raw.meta) return null;
+  const msg = raw.transaction.message;
+  const keys = (msg.accountKeys || []).map((k: any) => (typeof k === "string" ? { pubkey: pk(k), signer: false, writable: false } : { ...k, pubkey: pk(k.pubkey) }));
+  return {
+    ...raw,
+    transaction: { ...raw.transaction, message: { ...msg, accountKeys: keys, instructions: (msg.instructions || []).map(shapeIx) } },
+    meta: {
+      ...raw.meta,
+      innerInstructions: (raw.meta.innerInstructions || []).map((x: any) => ({ ...x, instructions: (x.instructions || []).map(shapeIx) })),
+      loadedAddresses: raw.meta.loadedAddresses ? { writable: (raw.meta.loadedAddresses.writable || []).map(pk), readonly: (raw.meta.loadedAddresses.readonly || []).map(pk) } : raw.meta.loadedAddresses,
+    },
+  } as ParsedTransactionWithMeta;
+}
+async function rawParsedTxs(sigs: string[]): Promise<(ParsedTransactionWithMeta | null)[]> {
+  const url = process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL;
+  if (!url || !sigs.length) return sigs.map(() => null);
+  const body = sigs.map((s, i) => ({ jsonrpc: "2.0", id: i, method: "getTransaction", params: [s, { encoding: "jsonParsed", maxSupportedTransactionVersion: 1, commitment: "confirmed" }] }));
+  const res = await limitedFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const j: any = await res.json().catch(() => null);
+  const arr: any[] = Array.isArray(j) ? j : j ? [j] : [];
+  const byId = new Map(arr.map((x) => [Number(x?.id), x?.result]));
+  return sigs.map((_, i) => shapeParsedTx(byId.get(i)));
+}
+/** One parsed transaction, any version. Throws only on a real read failure (timeout, budget, rate limit). */
+export async function parsedTx(sig: string): Promise<ParsedTransactionWithMeta | null> {
+  try {
+    return await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+  } catch (e) {
+    if (!isVersionErr(e)) throw e;
+    return (await rawParsedTxs([sig]))[0];
+  }
+}
+/** Many parsed transactions, any version; a read that fails comes back as null. */
+export async function parsedTxsAny(sigs: string[]): Promise<(ParsedTransactionWithMeta | null)[]> {
+  if (!sigs.length) return [];
+  try {
+    return await conn().getParsedTransactions(sigs, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+  } catch (e) {
+    if (isVersionErr(e)) return rawParsedTxs(sigs).catch(() => sigs.map(() => null));
+    return pmap(sigs, 6, (s) => parsedTx(s).catch(() => null));
+  }
+}
+
 // Never leak the RPC URL (it holds the API key) into errors shown to users.
 export function safeErr(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);

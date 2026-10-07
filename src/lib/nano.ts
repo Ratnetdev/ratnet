@@ -95,6 +95,7 @@ export type NanoModel = {
   am?: number[]; // Adam first moment
   av?: number[]; // Adam second moment
   t?: number; // Adam steps
+  warm?: string; // build that warm-started it
 };
 
 export type FeatureInput = {

@@ -4,7 +4,7 @@
 // Cost: one getSignaturesForAddress (up to 1000 sigs) + one batch of parsed transactions (~40) per coin.
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
-import { bondingCurvePda, conn, pmap } from "./solana";
+import { bondingCurvePda, conn, parsedTxsAny, pmap } from "./solana";
 import { streamLog } from "./streamlog";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
@@ -134,11 +134,7 @@ export function parseTrade(tx: ParsedTransactionWithMeta | null, curve: string, 
 }
 
 async function parsedMany(sigs: string[]) {
-  try {
-    return await conn().getParsedTransactions(sigs, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-  } catch {
-    return pmap(sigs, 6, (s) => conn().getParsedTransaction(s, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null));
-  }
+  return parsedTxsAny(sigs);
 }
 
 /** Read the tape of one launch. Returns null when nothing could be read (never throws). */

@@ -25,7 +25,7 @@ import { canonicalPool, migrated, readPools } from "./pool";
 import { lane, laneOpen } from "./solana";
 import { epochReady } from "./epoch";
 import { agentLog } from "./agents";
-import { bondingCurvePda, conn, fetchOffchain, getCurves, limitedFetch, parseCreateTx, pmap, safeErr } from "./solana";
+import { bondingCurvePda, conn, parsedTx, fetchOffchain, getCurves, limitedFetch, parseCreateTx, pmap, safeErr } from "./solana";
 import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "./tape";
 import { creditMillion, creditResolve, funderOf, GK } from "./graph";
 import { features, nanoScore, NANO_MIN } from "./nano";
@@ -176,7 +176,7 @@ async function fillJob(job: Job): Promise<Job | null> {
   if (job.createdAt) return job;
   const first = (await oldestSigs(job.curve, Date.now(), 1000)).find((x) => !x.err);
   if (!first) return null;
-  const tx = await conn().getParsedTransaction(first.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null);
+  const tx = await parsedTx(first.signature).catch(() => null);
   const l = tx ? parseCreateTx(first.signature, tx) : null;
   if (!l || l.mint !== job.mint) return null;
   return { ...job, createdAt: l.createdAt, creator: l.creator, name: l.name, symbol: l.symbol, uri: l.uri, devBuySol: l.devBuySol };
@@ -248,7 +248,7 @@ async function bondTime(job: Job) {
   if (job.bondAt) return job.bondAt;
   const s = (await conn().getSignaturesForAddress(new PublicKey(job.curve), { limit: 6 })).filter((x) => !x.err);
   for (const x of s.slice(0, 3)) {
-    const tx: any = await conn().getParsedTransaction(x.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null);
+    const tx: any = await parsedTx(x.signature).catch(() => null);
     if ((tx?.meta?.logMessages || []).some((l: string) => /Instruction: Migrate/i.test(l))) return (tx.blockTime || x.blockTime || 0) * 1000 || null;
   }
   // no migrate log among the newest: the oldest of the recent ones is the closest bound (never the newest)
@@ -340,7 +340,7 @@ async function historianInner(budgetMs: number) {
           const WSOL_M = "So11111111111111111111111111111111111111112";
           const found = await pmap(mchunk, 16, async (sig) => {
             try {
-              const tx: any = await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+              const tx: any = await parsedTx(sig);
               const logs: string[] = tx?.meta?.logMessages || [];
               if (!logs.some((l) => /Instruction: Migrate/i.test(l))) return null;
               const bal: any[] = [...(tx?.meta?.postTokenBalances || []), ...(tx?.meta?.preTokenBalances || [])];
@@ -408,7 +408,7 @@ async function historianInner(budgetMs: number) {
         st.pos += chunk.length;
         const parsed = await pmap(chunk, 16, async (sig) => {
           try {
-            return parseCreateTx(sig, await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }));
+            return parseCreateTx(sig, await parsedTx(sig));
           } catch {
             return null;
           }

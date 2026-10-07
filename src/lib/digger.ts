@@ -1,7 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, RPS } from "./solana";
+import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, RPS } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
@@ -317,6 +317,7 @@ export async function applyNano(ops0: NanoOp[]) {
  * (replays), so they are useful from the first call instead of starting at zero. The historian then replays its
  * window again with the v0.1.28 clean labels, and the runner model starts over on the same learner.
  */
+const WARM = "0.1.30";
 export async function migrateNano() {
   const l = await acquire("rn:lock:nano", 60_000);
   if (!l) return { nano: "busy" };
@@ -329,10 +330,13 @@ export async function migrateNano() {
 async function migrateNanoHeld() {
   const r = redis();
   const cur = await r.get<NanoModel>(K.nano);
-  if (cur?.v === NANO_V) return { nano: "v2" };
+  // "warm" marks the build that warm-started it: v0.1.30 does it once more, because the v0.1.28 code ran for a few
+  // minutes on 7 Oct (a reverted push) and trained the new model the old way
+  if (cur?.v === NANO_V && cur.warm === WARM) return { nano: "v2" };
   const lessons = (((await r.lrange<Lesson>(REPLAY_KEY, 0, -1).catch(() => [])) || []) as Lesson[]).reverse(); // oldest first
   const m = emptyModel();
   const m1 = emptyModel();
+  m.warm = m1.warm = WARM;
   for (const l of lessons) {
     if (l.x) learn(m, l.x, l.y === 1);
     if (l.x1) learn(m1, l.x1, l.y === 1);
@@ -346,8 +350,8 @@ async function migrateNanoHeld() {
   }
   const old1 = await r.get<NanoModel>(K.nano1);
   const p = r.pipeline();
-  if (cur) p.set("rn:nano:v1", cur);
-  if (old1) p.set("rn:nano1:v1", old1);
+  if (cur && cur.v !== NANO_V) p.set("rn:nano:v1", cur);
+  if (old1 && old1.v !== NANO_V) p.set("rn:nano1:v1", old1);
   p.set(K.nano, m);
   p.set(K.nano1, m1);
   // the historian walks its window again (clean labels since v0.1.28), the runner model starts over on v2
@@ -515,7 +519,7 @@ async function digNew(model: NanoModel) {
     try {
       return parseCreateTx(
         x.signature,
-        await conn().getParsedTransaction(x.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" })
+        await parsedTx(x.signature)
       );
     } catch (e) {
       LAST_PARSE_ERR = safeErr(e);

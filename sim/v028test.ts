@@ -50,7 +50,7 @@ const ok = (c: boolean, m: string) => {
   ok(!sol.laneOpen(3) && sol.laneOpen(2) && sol.laneOpen(1) && sol.laneOpen(0), "at 95% of pace only the historian pauses");
   sol.seedDayUsed(day, Math.round(b0.pace * 1.02));
   ok(!sol.laneOpen(3) && !sol.laneOpen(2) && sol.laneOpen(1) && sol.laneOpen(0), "past pace the agents pause too, the rats and desk still read");
-  sol.seedDayUsed(day, 100_000);
+  sol.seedDayUsed(day, 106_000); // above the rats' limit at any time of day (pace x 1.05 tops out at 105K)
   ok(!sol.laneOpen(1) && sol.laneOpen(0), "at the full day's budget only the desk reads");
   sol.seedDayUsed(day, 116_000);
   ok(sol.laneOpen(0), "past 115% the desk still reads (v0.1.29: the desk is never budget-blocked)");

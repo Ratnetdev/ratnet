@@ -8,7 +8,7 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { conn, lane, rpcView } from "../src/lib/solana";
+import { lane, parsedTx, rpcView } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
 import { logCreate, logTrade, pruneStream, streamSize, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
@@ -53,7 +53,7 @@ let createN = 0;
 function sampleLag(sig: string, gotAt: number) {
   setTimeout(() => {
     lane
-      .run(1, () => conn().getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }))
+      .run(1, () => parsedTx(sig))
       .then((tx) => {
         if (!tx?.blockTime) return;
         // block times are whole seconds: the lag is rounded to the second, never below 0

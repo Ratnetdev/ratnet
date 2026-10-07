@@ -5,7 +5,7 @@
 // Research (MadeOnSol, 1.6M KOL trades): following single wallets loses; several strong wallets together is the signal.
 
 import { PublicKey } from "@solana/web3.js";
-import { conn } from "./solana";
+import { conn, parsedTx } from "./solana";
 import { redis } from "./redis";
 
 export const GK = {
@@ -29,7 +29,7 @@ export async function funderOf(wallet: string): Promise<string | null> {
     const sigs = await conn().getSignaturesForAddress(new PublicKey(wallet), { limit: 60 });
     if (sigs.length && sigs.length < 60) {
       const first = sigs[sigs.length - 1];
-      const tx = await conn().getParsedTransaction(first.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+      const tx = await parsedTx(first.signature);
       const keys = tx?.transaction.message.accountKeys || [];
       const payer = keys.find((k) => k.signer)?.pubkey.toBase58();
       if (payer && payer !== wallet) f = payer;
