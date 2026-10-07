@@ -84,6 +84,7 @@ export type Pos = {
   wire?: { h: string; tid: string; text: string; vamp?: boolean } | null; // the post a tweet coin was born from
   peakAt?: number; // when the price peaked while held (exit profiles)
   tier?: Tier; // market cap tier at entry (exit lab buckets)
+  kind?: Kind; // tech or meme (the dev exit is learned per kind)
   msHi?: number; // highest milestone the ladder has acted on
   pn?: number; // P(next milestone) at the last check
   noPxSince?: number; // first beat with no price (curve complete, not migrated yet)
@@ -184,6 +185,7 @@ export type Learn = {
   // dev sells: on memes the dev selling is normal. The desk holds through it and COACH scores what an exit would have done.
   devExitOn: boolean;
   devStat: { n: number; saved: number; cost: number }; // trades where the dev sold while held: an exit then would have saved / cost
+  devBy?: Record<Kind, DevRec>; // the same, learned separately for tech coins and memes
   // PRIOR "holding floor": skip a coin that already dumped far from its high. A starting hint from the dev, not a law:
   // every coin it skips is followed in shadow, and COACH drops the rule if those coins do better than the ones bought.
   floorOn: boolean;
@@ -229,6 +231,7 @@ function emptyLearn(): Learn {
     earlyStat: { n: 0, hit: 0, mainN: 0, mainHit: 0 },
     devExitOn: false,
     devStat: { n: 0, saved: 0, cost: 0 },
+    devBy: { tech: { n: 0, saved: 0, cost: 0, on: true }, meme: { n: 0, saved: 0, cost: 0, on: false } },
     floorOn: true,
     floor: { n: 0, sum: 0 },
     socialsOn: true,
@@ -241,7 +244,7 @@ function emptyLearn(): Learn {
 
 type ArmTrack = { hi: number; lo: number; armed: boolean; fill: number | null };
 type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" | "socials" | "traction" };
-type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string; entryPx?: number; openedAt?: number; tier?: Tier; pts?: [number, number][]; reviewed?: boolean };
+type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string; entryPx?: number; openedAt?: number; tier?: Tier; pts?: [number, number][]; reviewed?: boolean; devExit?: Kind };
 type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean };
 
 // the desk lock lives this long past its last renewal (one pass, including a swap waiting for confirmation)
@@ -264,7 +267,7 @@ async function loadState(start: number): Promise<DeskState> {
 async function loadLearn(): Promise<Learn> {
   const l = await redis().get<Learn>(K.deskLearn);
   const e = emptyLearn();
-  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn, traction: { ...e.traction, ...(l.traction || {}) }, tractionOn: l.tractionOn ?? e.tractionOn, trailBy: { ...(l.trailBy || {}) } } : e;
+  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn, traction: { ...e.traction, ...(l.traction || {}) }, tractionOn: l.tractionOn ?? e.tractionOn, trailBy: { ...(l.trailBy || {}) }, devBy: { tech: { ...e.devBy!.tech, ...(l.devBy?.tech || {}) }, meme: { ...e.devBy!.meme, ...(l.devBy?.meme || {}), ...(l.devBy?.meme ? {} : { on: !!l.devExitOn }) } } } : e;
 }
 
 /** The paper desk mirrors the real desk wallet, so the start on the site is the real balance. */
@@ -429,7 +432,46 @@ export async function priceOf(mints: string[]) {
     if (c && !c.complete && c.priceSol > 0) px[m] = { px: c.priceSol, real: c.realSol, curve: c, grad: false };
     else if (pools[m]?.px) px[m] = { px: pools[m]!.px, real: pools[m]!.sol, curve: c, grad: true };
   }
+  // no curve and no canonical pool read (another pool, another launchpad, or the read failed): never leave a
+  // position blind. DexScreener's deepest SOL pair, 2s budget, cached 2s so many pages and beats share one call.
+  const rest = mints.filter((m) => !px[m]);
+  if (rest.length) {
+    const dx = await dexPx(rest).catch(() => ({} as Record<string, { px: number; sol: number }>));
+    for (const m of rest) if (dx[m]) px[m] = { px: dx[m].px, real: dx[m].sol, curve: curves[m] ?? null, grad: true };
+  }
   return px;
+}
+
+export type Kind = "tech" | "meme";
+type DevRec = { n: number; saved: number; cost: number; on: boolean };
+
+/**
+ * Tech or meme. A dev selling a meme is normal; on a tech coin it usually means a team with more bags (a starting
+ * prior, nothing more). Read from what the coin says about itself and what LENS found: a product, an app, an agent,
+ * a protocol, code on GitHub, docs.
+ */
+export function kindOf(rec: { name?: string; symbol?: string; description?: string; website?: string; twitter?: string } | null | undefined): Kind {
+  if (!rec) return "meme";
+  const text = `${rec.name || ""} ${rec.description || ""}`.toLowerCase();
+  const site = String(rec.website || "").toLowerCase();
+  if (/github\.com|gitbook|docs\.|\/docs|whitepaper/.test(site)) return "tech";
+  return /\b(ai agent|agent|agents|protocol|platform|app|dapp|sdk|api|github|open[- ]source|infra|infrastructure|launchpad|dex|swap|staking|bridge|layer ?[12]|l2|oracle|terminal|llm|gpt|model|framework|tool|tools|bot|bots|trading bot|analytics|dashboard|depin|rwa|zk)\b/.test(text) ? "tech" : "meme";
+}
+
+/** One dev-sell case for a kind. Switches the dev exit for that kind on or off once there is a record. Returns true on a switch. */
+function devCase(l: Learn, kind: Kind, saved: boolean) {
+  l.devBy ||= { tech: { n: 0, saved: 0, cost: 0, on: true }, meme: { n: 0, saved: 0, cost: 0, on: false } };
+  const d = l.devBy[kind];
+  d.n++;
+  if (saved) d.saved++;
+  else d.cost++;
+  l.devStat.n++;
+  if (saved) l.devStat.saved++;
+  else l.devStat.cost++;
+  const was = d.on;
+  if (d.n >= LEARN_RULES.devMin) d.on = d.saved / d.n >= LEARN_RULES.devSaved;
+  l.devExitOn = l.devBy.meme.on; // legacy field, the King lane's VET line reads it
+  return was !== d.on;
 }
 
 /** The held part of a position's path for the EXIT LAB: [minutes since entry, price / entry], ~30s apart. */
@@ -453,6 +495,32 @@ function labDefault(cfg: Cfg, sl: string, _tier: Tier): ExitSet {
   if (sl === "momo") return { stop: c.momoSl ?? -20, time: c.momoTimeStop ?? 40, initials: c.momoInitials ?? 40, trailK: 0.6 };
   if (sl === "catch") return { stop: c.catchSl ?? -18, time: c.catchTimeStop ?? 30, initials: c.catchInitials ?? 60, trailK: 0.8 };
   return { stop: cfg.sl, time: cfg.timeStop, initials: cfg.initialsAt, trailK: 1 };
+}
+
+const DEX_CACHE = new Map<string, { at: number; px: number; sol: number }>();
+/** SOL price per whole token from DexScreener's deepest SOL-quoted pair (fallback only). */
+export async function dexPx(mints: string[]) {
+  const out: Record<string, { px: number; sol: number }> = {};
+  const now = Date.now();
+  const need: string[] = [];
+  for (const m of mints) {
+    const c = DEX_CACHE.get(m);
+    if (c && now - c.at < 2000) out[m] = { px: c.px, sol: c.sol };
+    else need.push(m);
+  }
+  for (let i = 0; i < need.length; i += 30) {
+    const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${need.slice(i, i + 30).join(",")}`, { cache: "no-store", signal: AbortSignal.timeout(2000) }).catch(() => null);
+    const pairs: any[] = res?.ok ? ((await res.json().catch(() => [])) as any[]) : [];
+    for (const pr of Array.isArray(pairs) ? pairs : []) {
+      const m = pr?.baseToken?.address;
+      if (!m || !need.includes(m) || !/^(SOL|WSOL)$/i.test(pr?.quoteToken?.symbol || "")) continue;
+      const liq = Number(pr?.liquidity?.quote || 0);
+      const p = Number(pr?.priceNative);
+      if (p > 0 && (!out[m] || liq > out[m].sol)) out[m] = { px: p, sol: liq };
+    }
+  }
+  for (const m of need) if (out[m]) DEX_CACHE.set(m, { at: now, ...out[m] });
+  return out;
 }
 
 /** Trailing stop width for a coin up `mult` times, before COACH and the runner model scale it. */
@@ -550,6 +618,13 @@ function reviewExit(l: Learn, a: After, b: Batch): boolean {
   const expired = Date.now() - a.at > LEARN_RULES.coachHours * 3600_000;
   if (!ranAfter && !dumped && !expired) return false;
   const coin = { mint: a.mint, symbol: a.symbol };
+  if (a.devExit) {
+    // we sold because the dev sold: right if it never got 30% above our exit, wrong if it ran
+    const saved = a.hi < a.exitPx * 1.3;
+    const flip = devCase(l, a.devExit, saved);
+    log(b, "COACH", `$${a.symbol} (${a.devExit}) sold with the dev: ${saved ? "right, it never came back" : `wrong, it ran ${(a.hi / a.exitPx).toFixed(1)}x after`}. ${l.devBy![a.devExit].saved}/${l.devBy![a.devExit].n} ${a.devExit} cases favour the dev exit`, saved ? "ok" : "bad", coin);
+    if (flip) log(b, "COACH", l.devBy![a.devExit].on ? `dev exit switched on for ${a.devExit} coins` : `dev exit switched off for ${a.devExit} coins: holding through dev sells is doing better`, "win");
+  }
   l.reviews++;
   const gaveBack = a.peakHeld > 0 ? 1 - a.exitPx / a.peakHeld : 0;
   const sl = a.sl || "king";
@@ -674,9 +749,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       const ghosts = Object.values(((await r.hgetall<Record<string, Pos>>(GHOST_POS)) || {}) as Record<string, Pos>);
       // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
-      const px = await priceOf(
-        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrc]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
-      );
+      const pxList = Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrc]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]));
+      // positions first: if the RPC is busy or down, open positions still get a price (DexScreener) and their exits
+      // keep working; everything else waits for the next beat
+      const px: Record<string, Px> = await priceOf(pxList).catch(async (e) => {
+        const held = positions.map((p) => p.mint);
+        const dx = held.length ? await dexPx(held).catch(() => ({} as Record<string, { px: number; sol: number }>)) : {};
+        if (Object.keys(dx).length) log(b, "RISK", `chain read failed (${safeErr(e)}): ${Object.keys(dx).length} open positions priced from DexScreener this beat`, "info");
+        return Object.fromEntries(Object.entries(dx).map(([m, v]) => [m, { px: v.px, real: v.sol, curve: null, grad: true } as Px]));
+      });
       if (now - lastRunsAt > 10_000) {
         lastRunsAt = now;
         sol = (await solUsd()) || sol;
@@ -754,12 +835,14 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         let sellFrac = 0;
         let reason = "";
         let tunable = false;
-        if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && !learnS.devExitOn && !p.devSellPx) {
+        const kind: Kind = p.kind || "meme";
+        const devOn = learnS.devBy?.[kind]?.on ?? kind === "tech";
+        if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && !devOn && !p.devSellPx) {
           p.devSellPx = q.px;
           log(b, "RISK", `$${p.symbol}${gt}: dev sold ${Math.round((1 - p.dev) * 100)}% of their bag. holding: on memes a dev sell is normal. COACH scores what selling here would have done`, "info", p);
         }
         if (closeAll) [sellFrac, reason] = [1, "manual close"];
-        else if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && learnS.devExitOn) [sellFrac, reason] = [1, `dev sold ${Math.round((1 - p.dev) * 100)}% of their bag (dev exit earned by COACH)`];
+        else if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && devOn) [sellFrac, reason] = [1, `dev sold ${Math.round((1 - p.dev) * 100)}% of their bag (${kind} coin: dev exit ${learnS.devBy?.[kind]?.n ? `kept by COACH, ${learnS.devBy[kind].saved}/${learnS.devBy[kind].n} cases` : "starting prior"})`];
         // insider exit only when it matters: they let go of a real share of the supply (not a few tiny sniper bags) and
         // the price shows it (8%+ off the peak). Otherwise a 99% "dump" of 0.3% of supply could throw out a good coin
         else if (p.ins != null && p.ins <= 1 - cfg.insiderExit / 100 && (p.insSold ?? 0) >= ((cfg as any).insiderMinSupply ?? 2) && q.px <= p.peakPx * 0.92)
@@ -823,19 +906,16 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             if (ok && p.tokens <= 0 && p.devSellPx) {
               // COACH: would selling with the dev have beaten holding?
               const saved = q.px < p.devSellPx;
-              learnS.devStat.n++;
-              if (saved) learnS.devStat.saved++;
-              else learnS.devStat.cost++;
-              const was = learnS.devExitOn;
-              const ds = learnS.devStat;
-              learnS.devExitOn = ds.n >= LEARN_RULES.devMin && ds.saved / ds.n >= LEARN_RULES.devSaved;
-              log(b, "COACH", `$${p.symbol} dev-sell review: ${saved ? "selling with the dev would have been better" : "holding through the dev sell paid"} (${(q.px / p.devSellPx).toFixed(2)}x since). ${ds.saved}/${ds.n} cases favour the dev exit`, saved ? "bad" : "ok", p);
-              if (was !== learnS.devExitOn) log(b, "COACH", learnS.devExitOn ? "dev exit switched on: selling with the dev has been better" : "dev exit switched off: holding through dev sells is doing better", "win");
+              const k = p.kind || "meme";
+              const flip = devCase(learnS, k, saved);
+              const ds = learnS.devBy![k];
+              log(b, "COACH", `$${p.symbol} (${k}) dev-sell review: ${saved ? "selling with the dev would have been better" : "holding through the dev sell paid"} (${(q.px / p.devSellPx).toFixed(2)}x since). ${ds.saved}/${ds.n} ${k} cases favour the dev exit`, saved ? "bad" : "ok", p);
+              if (flip) log(b, "COACH", ds.on ? `dev exit switched on for ${k} coins: selling with the dev has been better` : `dev exit switched off for ${k} coins: holding through dev sells is doing better`, "win");
               await r.set(K.deskLearn, learnS);
             }
             if (ok && p.tokens <= 0) {
               // COACH follows the coin after we leave it
-              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px) } satisfies After });
+              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}) } satisfies After });
             }
           }
           if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
@@ -869,15 +949,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               p.msHi = d.lv;
             }
             if (closed && p.devSellPx) {
-              const saved = q.px < p.devSellPx;
-              learnS.devStat.n++;
-              if (saved) learnS.devStat.saved++;
-              else learnS.devStat.cost++;
-              learnS.devExitOn = learnS.devStat.n >= LEARN_RULES.devMin && learnS.devStat.saved / learnS.devStat.n >= LEARN_RULES.devSaved;
+              devCase(learnS, p.kind || "meme", q.px < p.devSellPx);
               learnDirty = true;
             }
             // COACH reviews ghost exits like real ones (trail too tight or too loose)
-            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px) } satisfies After });
+            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}) } satisfies After });
           }
           if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
           else await r.hdel(GHOST_POS, p.mint);
@@ -972,7 +1048,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             { rule: "dev_not_serial", ok: !((rec.devN ?? 0) >= cfg.serialDev && (rec.devB ?? 0) === 0), v: `${rec.devN ?? 0} launches, ${rec.devB ?? 0} bonded` },
             { rule: "dev_buy_sane", ok: rec.devBuySol <= cfg.maxDevBuy, v: `${rec.devBuySol} SOL` },
             // memes: a dev sell is normal, so it only blocks once COACH has proven the dev exit
-            { rule: "dev_not_selling", ok: !learnS.devExitOn || !t || t.devSold <= 0.25, v: t ? `${t.devSold} SOL out${learnS.devExitOn ? "" : " (info only)"}` : "not read" },
+            { rule: "dev_not_selling", ok: !(learnS.devBy?.[kindOf(rec)]?.on ?? kindOf(rec) === "tech") || !t || t.devSold <= 0.25, v: t ? `${t.devSold} SOL out · ${kindOf(rec)}${(learnS.devBy?.[kindOf(rec)]?.on ?? kindOf(rec) === "tech") ? "" : " (info only)"}` : "not read" },
             { rule: "bundle_ok", ok: !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in, ${t.bundleN} wallets` : "not read" },
             { rule: "cluster_ok", ok: !g || !(g.clN >= 5 && g.clB === 0), v: g ? (g.funder ? `${g.clN} launches, ${g.clB} bonded` : "fresh") : "not read" },
             { rule: "not_a_copycat", ok: !rec.meta?.copy, v: rec.meta?.copy ? "copies a recent winner" : "original" },
@@ -1321,6 +1397,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     nano: rec.call?.nano?.score ?? null,
     live: state.live,
     series: [[now, px, real]],
+    kind: kindOf(rec),
     how,
     msHi: -1,
     ctx,
@@ -1576,7 +1653,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}`;
   (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
-  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
+  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];
   if (ins.length) {
     const amt = await tokenAmounts(ins.map((i) => i.acc)).catch(() => ({} as Record<string, number>));

@@ -45,6 +45,7 @@ const slot = (l: number, cost: number) =>
     pump();
   });
 export const rpcStats = { calls: 0, throttled: 0 };
+const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 8000);
 async function limitedFetch(input: any, init?: any): Promise<Response> {
   const l = lane.getStore() ?? 0;
   let cost = 1;
@@ -55,7 +56,11 @@ async function limitedFetch(input: any, init?: any): Promise<Response> {
   for (let i = 0; ; i++) {
     await slot(l, cost);
     rpcStats.calls += cost;
-    const res = await fetch(input, init);
+    // every chain read has a deadline: one stalled connection must never freeze the desk (a long-running worker has
+    // no platform timeout to save it)
+    const deadline = AbortSignal.timeout(RPC_TIMEOUT_MS);
+    const signal = init?.signal && (AbortSignal as any).any ? (AbortSignal as any).any([init.signal, deadline]) : deadline;
+    const res = await fetch(input, { ...(init || {}), signal });
     if (res.status !== 429 || i >= 4) return res;
     rpcStats.throttled++;
     sent.push([Date.now(), CAP]); // everyone backs off for a second

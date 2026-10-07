@@ -10,7 +10,17 @@ import { catchPass, noteMigration } from "../src/lib/catcher";
 process.env.RATNET_WORKER = "1";
 const SESSION_MS = Number(process.env.WORKER_SESSION_MS || 55_000);
 
+// An honest heartbeat: it only beats while sessions are actually completing. A session stuck past 3x its length
+// stops the heartbeat (the Vercel minute ping takes over at once); stuck past 5x, the process exits and Railway starts
+// a fresh one.
+let sessionAt = Date.now();
 async function beat() {
+  const stuck = Date.now() - sessionAt;
+  if (stuck > SESSION_MS * 5) {
+    console.log(`watchdog: session stuck for ${Math.round(stuck / 1000)}s, restarting`);
+    process.exit(1);
+  }
+  if (stuck > SESSION_MS * 3) return console.log(`watchdog: session running ${Math.round(stuck / 1000)}s, heartbeat paused`);
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
 }
 
@@ -136,6 +146,7 @@ async function main() {
   await beat();
   for (;;) {
     const t0 = Date.now();
+    sessionAt = t0;
     try {
       const r: any = await runSession(SESSION_MS);
       console.log(new Date().toISOString(), `session ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ desk: r?.desk, momo: r?.momo, mind: r?.mind }).slice(0, 300));

@@ -4,7 +4,7 @@
 // of waiting for the next poll. One shared connection per tab, subscriptions ref-counted by the components that ask.
 import { useEffect, useSyncExternalStore } from "react";
 
-export type LivePx = { mcSol: number; at: number; side: "buy" | "sell"; sol: number; trader: string };
+export type LivePx = { mcSol: number; mcUsd?: number; at: number; side: "buy" | "sell" | "read"; sol: number; trader: string };
 
 const URL = "wss://pumpportal.fun/api/data";
 const data = new Map<string, LivePx>();
@@ -78,6 +78,8 @@ function want(mint: string) {
   if (!n) {
     pending.add(mint);
     if (!flushT) flushT = setTimeout(flush, 120);
+    ensurePoll();
+    setTimeout(poll, 300); // first number right away, not after 2 seconds
   }
 }
 function release(mint: string) {
@@ -87,9 +89,40 @@ function release(mint: string) {
   setTimeout(() => {
     if (refs.has(mint)) return;
     data.delete(mint);
+    ensurePoll();
     send({ method: "unsubscribeTokenTrade", keys: [mint] });
     if (!refs.size) ws?.close();
   }, 3000);
+}
+
+// Second source: the chain itself, through /api/px (curve or canonical pool, 1s CDN cache). Every 2 seconds, for the
+// coins whose last streamed trade is older than 3 seconds (quiet coins, migrated coins the stream may not cover, or a
+// stream that is down), so a number on screen is never more than ~2-3 seconds old.
+let pollT: ReturnType<typeof setInterval> | null = null;
+async function poll() {
+  if (typeof document !== "undefined" && document.hidden) return;
+  const now = Date.now();
+  const stale = Array.from(refs.keys()).filter((m) => !data.get(m) || now - data.get(m)!.at > 3000).sort().slice(0, 60);
+  if (!stale.length) return;
+  try {
+    const j = await fetch(`/api/px?m=${stale.join(",")}`).then((r) => r.json());
+    let changed = false;
+    for (const [m, v] of Object.entries((j?.px || {}) as Record<string, { mc: number }>)) {
+      if (!refs.has(m) || !(v.mc > 0)) continue;
+      const cur = data.get(m);
+      if (cur && now - cur.at <= 3000) continue; // a fresher streamed trade arrived meanwhile
+      data.set(m, { mcSol: 0, mcUsd: v.mc, at: Date.now(), side: !cur ? "read" : (cur.mcUsd ?? 0) > v.mc ? "sell" : "buy", sol: 0, trader: "" });
+      changed = true;
+    }
+    if (changed) notify();
+  } catch {}
+}
+function ensurePoll() {
+  if (refs.size && !pollT) pollT = setInterval(poll, 2000);
+  if (!refs.size && pollT) {
+    clearInterval(pollT);
+    pollT = null;
+  }
 }
 
 const subscribe = (f: () => void) => {

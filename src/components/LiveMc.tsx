@@ -10,7 +10,7 @@ const fmt = (n: number) => (n >= 1e9 ? `$${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? 
 export default function LiveMc({ mint, usd, className = "" }: { mint?: string | null; usd?: number | null; className?: string }) {
   const lp = useLivePx(mint);
   const sol = Number((useLive().data as any)?.sol) || 0;
-  const live = lp && sol ? lp.mcSol * sol : null;
+  const live = lp ? (lp.mcUsd ?? (sol && lp.mcSol ? lp.mcSol * sol : null)) : null;
   const val = live ?? usd ?? null;
   const [flash, setFlash] = useState<"" | "up" | "down">("");
   const last = useRef<number | null>(null);
@@ -26,7 +26,7 @@ export default function LiveMc({ mint, usd, className = "" }: { mint?: string | 
   }, [live]);
   if (val == null) return <span className={className}>–</span>;
   return (
-    <span className={`livemc ${flash} ${className}`} title={live != null ? "live from the trade stream" : "last reading"}>
+    <span className={`livemc ${flash} ${className}`} title={live != null ? (lp?.mcUsd != null ? "live from the chain" : "live from the trade stream") : "last reading"}>
       {live != null ? <i className="livemc-dot" /> : null}
       {fmt(val)}
     </span>

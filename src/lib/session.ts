@@ -19,6 +19,11 @@ import { redis } from "./redis";
 import { X_SEED } from "@/config/x-accounts";
 
 
+/** A part of the session that runs past its time is left behind (it finishes on its own) so the loop never stalls. */
+function within<T>(p: Promise<T>, ms: number, label: string): Promise<T | { timeout: string }> {
+  return Promise.race([p, new Promise<{ timeout: string }>((res) => setTimeout(() => res({ timeout: `${label} ran past ${Math.round(ms / 1000)}s` }), ms))]);
+}
+
 /** One run of every agent. `ms` is how long the desk loop stays on (55s from the minute ping; longer in the worker). */
 export async function runSession(ms = 55_000) {
   const k = ms / 55_000;
@@ -60,13 +65,16 @@ export async function runSession(ms = 55_000) {
   const overseer = overseerSession(Math.round(50_000 * k)).catch((e) => ({ overseer: "error", error: String(e?.message || e) }));
   const mind = mindSession(Math.round(54_000 * k)).catch((e) => ({ mind: "error", error: String(e?.message || e) }));
   const lens = lensSession(Math.round(52_000 * k)).catch((e) => ({ lens: "error", error: String(e?.message || e) }));
+  const cap = ms + 30_000; // nothing may hold the next session back by more than this
   const [desk, history, receipts, telegram, x] = await Promise.all([
-    deskSession(ms, () => dig()),
-    historianSession(Math.round(45_000 * k)).catch((e) => ({ history: "error", error: String(e?.message || e) })),
-    sealDue().catch((e) => ({ sealed: 0, error: String(e?.message || e) })),
-    tg,
-    wire,
+    within(deskSession(ms, () => dig()), ms + 90_000, "desk"),
+    within(historianSession(Math.round(45_000 * k)).catch((e) => ({ history: "error", error: String(e?.message || e) })), cap, "historian"),
+    within(sealDue().catch((e) => ({ sealed: 0, error: String(e?.message || e) })), cap, "receipts"),
+    within(tg, cap, "telegram"),
+    within(wire, cap, "wire"),
   ]);
-  return { desk, history, receipts, telegram, wire: x, j7: await j7, lens: await lens, mind: await mind, hound: await hound, overseer: await overseer, momo: await momo, catch: await caught };
+  const rest = await Promise.all([j7, lens, mind, hound, overseer, momo, caught].map((p, i) => within(p as Promise<unknown>, 15_000, ["j7", "lens", "mind", "hound", "overseer", "momo", "catch"][i])));
+  const [j7r, lensr, mindr, houndr, overseerr, momor, catchr] = rest;
+  return { desk, history, receipts, telegram, wire: x, j7: j7r, lens: lensr, mind: mindr, hound: houndr, overseer: overseerr, momo: momor, catch: catchr };
 }
 
