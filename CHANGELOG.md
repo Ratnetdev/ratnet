@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.34 · Hotfix: fits the Helius plan
+- The cause: following launches through Helius transaction messages cost 1.3M to 5.7M credits a day (~50 KB per message). The plan's daily share is ~330K. On 7 Oct the day's budget ran out by evening and the rats, agents and historian stood still until midnight UTC.
+- The Helius feed now prices open positions only, real and ghost, through account updates:
+  - a coin on the curve: its curve account; a migrated coin: its canonical pool's two vaults;
+  - one update is ~340 bytes (was ~50 KB), sent only when the price moves;
+  - a pool price is taken only when both vaults are from the same slot (no half-updated swaps);
+  - while the feed follows a coin, no update means the same price: the desk uses it up to a minute, and checks the chain every 15 seconds.
+- The desk reads a position from the chain at most every 2 seconds (every beat used to read every position, ~370K credits a day alone). Right before a buy the chain is always read.
+- Transactions are asked for as version 1 directly. Trying version 0 first cost a refused, billed call on every version 1 transaction (509K errors on Helius in one day).
+- Launch tapes come from the chain, so the rats read trades only for launches with at least 8% of the curve at minute 5 and 5% at minute 1 (was 5% and 3%). Saved settings below that are lifted. The historian uses the same floors, so the models learn on what live sees.
+- FLASH pauses while no trade messages arrive (it read launches from trades alone, and a launch with no trades would be learned as dead). It comes back by itself with a PumpPortal key.
+- /status: the Live stream tile shows the feed's accounts followed, prices received and credits a day.
+
 ## v0.1.33 · Live-safe execution and scam walls (Run 5)
 - Signing:
   - every swap is checked before the key touches it, with every address resolved through the lookup tables;

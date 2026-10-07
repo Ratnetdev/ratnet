@@ -1,104 +1,79 @@
-// The trade feed (v0.1.32). PumpPortal now only streams trades with a paid key (0.01 SOL per 10,000 messages, about
-// 1 SOL a day for what RATNET follows). Helius streams the same transactions on the plan we already pay for, billed by
-// data volume (2 credits per 0.1 MB): every transaction that touches a coin we follow (its bonding curve, or its
-// canonical PumpSwap pool once migrated) arrives here and is turned into the same trade message the rest of the
-// worker already understands (mint, side, SOL, tokens, trader, curve reserves, market cap).
+// The price feed (v0.1.34). History: PumpPortal now streams trades only with a paid key (about 1 SOL a day for what
+// RATNET follows). v0.1.32 streamed whole transactions from Helius instead: that worked, but each message was ~50 KB
+// and following launches cost ~1.3M credits a day, four times the plan's daily share.
 //
-// One websocket, one transactionSubscribe whose accountInclude is the followed set; when the set changes, a new
-// subscription is opened and the old one closed once the new one is confirmed. transactionDetails "accounts" keeps
-// each message small (keys and balances only, which is all a trade needs).
-import { bondingCurvePda, noteStreamBytes, shapeParsedTx } from "./solana";
-import { canonicalPool } from "./pool";
-import { parseTrade } from "./tape";
+// What the worker really needs live is the price of what it holds. So the feed now follows only open positions (real
+// and ghost), through accountSubscribe: the bonding curve account of a coin on the curve, or the two vault accounts of
+// its canonical PumpSwap pool once it migrated. Each update is a few hundred bytes (billed at 2 credits per 0.1 MB).
+// The desk prices positions from it between its 10-second chain checks. Launch tapes come from the chain again, for
+// the coins that pass the curve minimum (see processDue).
+import { bondingCurvePda, noteStreamBytes, parseCurve, viewCurve } from "./solana";
+import { redis } from "./redis";
+import { POOLS_KEY } from "./pool";
 
-const WSOL = "So11111111111111111111111111111111111111112";
-const K_CURVE = 30 * 1073e6; // pump curve constant: virtual SOL x virtual tokens (millions)
+export type FeedQuote = { mint: string; px: number; real: number; mcSol: number; curve: boolean };
+type Sub = { mint: string; kind: "curve" | "base" | "quote"; addr: string };
 
-export type FeedTrade = { mint: string; txType: "buy" | "sell"; traderPublicKey: string; solAmount: number; tokenAmount: number; vSolInBondingCurve?: number; marketCapSol: number; pool: "pump" | "pump-amm"; signature: string };
+const amountOf = (b: Buffer) => (b.length >= 72 ? Number(b.readBigUInt64LE(64)) : null);
 
-type Watch = { mint: string; kind: "curve" | "pool" };
-
-/** A raw transactionNotification result in web3.js's parsed shape ("accounts" details carry no message wrapper). */
-function shapeNote(res: any) {
-  const t = res?.transaction;
-  if (!t) return null;
-  const inner = t.transaction || {};
-  const msg = inner.message || { accountKeys: inner.accountKeys || [], instructions: [] };
-  return shapeParsedTx({ slot: res.slot, blockTime: Math.floor(Date.now() / 1000), version: t.version, meta: t.meta, transaction: { ...inner, message: msg } });
-}
-
-/** One trade on a bonding curve, priced from the curve's SOL after the trade. */
-export function curveTrade(tx: any, mint: string, sig: string): FeedTrade | null {
-  const curve = bondingCurvePda(mint);
-  const t = parseTrade(tx, curve, mint);
-  if (!t || Math.abs(t.sol) < 1e-6) return null;
-  const keys = tx.transaction.message.accountKeys;
-  const ci = keys.findIndex((k: any) => k.pubkey.toBase58() === curve);
-  const real = Math.max(0, (tx.meta.postBalances[ci] || 0) / 1e9 - 0.0016);
-  const vSol = 30 + real;
-  const vTok = K_CURVE / vSol;
-  return { mint, txType: t.sol > 0 ? "buy" : "sell", traderPublicKey: t.w, solAmount: Math.abs(t.sol), tokenAmount: Math.abs(t.tok), vSolInBondingCurve: vSol, marketCapSol: (vSol / vTok) * 1e9, pool: "pump", signature: sig };
-}
-
-/** One trade in the canonical PumpSwap pool, priced from the pool's two vaults after the trade. */
-export function poolTrade(tx: any, mint: string, pool: string, sig: string): FeedTrade | null {
-  const post = (tx.meta.postTokenBalances || []).filter((b: any) => b.owner === pool);
-  const pre = (tx.meta.preTokenBalances || []).filter((b: any) => b.owner === pool);
-  const q = post.find((b: any) => b.mint === WSOL);
-  const bse = post.find((b: any) => b.mint === mint);
-  if (!q || !bse) return null;
-  const q0 = pre.find((b: any) => b.mint === WSOL);
-  const quote = Number(q.uiTokenAmount?.uiAmount || 0);
-  const base = Number(bse.uiTokenAmount?.uiAmount || 0);
-  const dq = quote - Number(q0?.uiTokenAmount?.uiAmount || quote);
-  if (!(base > 0) || Math.abs(dq) < 1e-6) return null;
-  const keys = tx.transaction.message.accountKeys;
-  const w = (keys.find((k: any) => k.signer) || keys[0]).pubkey.toBase58();
-  const own = (tx.meta.postTokenBalances || []).find((b: any) => b.mint === mint && b.owner === w);
-  const own0 = own ? (tx.meta.preTokenBalances || []).find((b: any) => b.accountIndex === own.accountIndex) : null;
-  const tok = own ? Number(own.uiTokenAmount?.uiAmount || 0) - Number(own0?.uiTokenAmount?.uiAmount || 0) : 0;
-  return { mint, txType: dq > 0 ? "buy" : "sell", traderPublicKey: w, solAmount: Math.abs(dq), tokenAmount: Math.abs(tok), marketCapSol: (quote / base) * 1e9, pool: "pump-amm", signature: sig };
-}
-
-export function heliusFeed(opts: { want: () => Promise<Set<string>>; onTrade: (t: FeedTrade) => void; log?: (s: string) => void }) {
+export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q: FeedQuote) => void; log?: (s: string) => void }) {
   const WS: any = (globalThis as any).WebSocket;
   const http = process.env.HELIUS_RPC_URL || "";
   const url = process.env.HELIUS_WS_URL || (http.startsWith("http") ? http.replace(/^http/, "ws") : "");
-  const state = { up: false, subs: 0, msgs: 0, trades: 0, lastAt: 0, addrs: 0, error: "", bytes: 0, since: Date.now(), perDay: 0 };
+  const state = { up: false, subs: 0, msgs: 0, quotes: 0, lastAt: 0, addrs: 0, error: "", bytes: 0, since: Date.now(), perDay: 0 };
+  const api = { nudge: () => {}, view: () => ({ ...state }), live: () => new Set<string>() };
   if (!WS || !url) {
     state.error = !WS ? "no WebSocket in this Node version" : "HELIUS_RPC_URL not set";
-    return { ...state, nudge: () => {}, view: () => ({ ...state }) };
+    return api;
   }
   let ws: any = null;
   let id = 1;
-  let live: number | null = null; // the confirmed subscription
-  const pending = new Map<number, string[]>(); // request id -> addresses asked for
-  let watch = new Map<string, Watch>();
-  let asked = "";
-  let backoff = 2000;
+  const byAddr = new Map<string, Sub>(); // address -> what it is
+  const subOf = new Map<string, number>(); // address -> subscription id
+  const addrOfSub = new Map<number, string>();
+  const pending = new Map<number, string>(); // request id -> address
+  const vault = new Map<string, { base?: number; quote?: number; bs?: number; qs?: number; vq: number }>(); // pool coins: last vault amounts and their slots
 
-  const subscribe = (addrs: string[]) => {
+  const send = (method: string, params: unknown[], addr?: string) => {
     const rid = id++;
-    pending.set(rid, addrs);
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id: rid, method: "transactionSubscribe", params: [{ accountInclude: addrs, failed: false, vote: false }, { commitment: "confirmed", encoding: "jsonParsed", transactionDetails: "accounts", showRewards: false, maxSupportedTransactionVersion: 1 }] }));
+    if (addr) pending.set(rid, addr);
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: rid, method, params }));
   };
   const resync = async () => {
     if (!state.up) return;
-    const mints = Array.from(await opts.want().catch(() => new Set<string>())).slice(0, 4000);
-    const next = new Map<string, Watch>();
+    const mints = Array.from(await opts.want().catch(() => new Set<string>())).slice(0, 200);
+    const r = redis();
+    const vaults = mints.length ? (((await r.hmget<Record<string, { bv: string; qv: string; vq?: number } | null>>(POOLS_KEY, ...mints).catch(() => null)) || {}) as Record<string, { bv: string; qv: string; vq?: number } | null>) : {};
+    const next = new Map<string, Sub>();
     for (const m of mints) {
       try {
-        next.set(bondingCurvePda(m), { mint: m, kind: "curve" });
-        next.set(canonicalPool(m), { mint: m, kind: "pool" });
+        next.set(bondingCurvePda(m), { mint: m, kind: "curve", addr: bondingCurvePda(m) });
+        const v = vaults[m];
+        if (v?.bv && v?.qv) {
+          if (!vault.has(m)) vault.set(m, { vq: Number(v.vq) || 0 });
+          next.set(v.bv, { mint: m, kind: "base", addr: v.bv });
+          next.set(v.qv, { mint: m, kind: "quote", addr: v.qv });
+        }
       } catch {}
     }
-    const addrs = Array.from(next.keys()).sort();
-    const sig = addrs.join(",");
-    if (sig === asked || !addrs.length) return;
-    asked = sig;
-    watch = next; // trades for the new set are matched at once; the old subscription is closed when the new one is up
-    state.addrs = addrs.length;
-    subscribe(addrs);
+    for (const [a, s] of next) {
+      if (byAddr.has(a)) continue;
+      byAddr.set(a, s);
+      send("accountSubscribe", [a, { encoding: "base64", commitment: "confirmed" }], a);
+    }
+    for (const a of Array.from(byAddr.keys())) {
+      if (next.has(a)) continue;
+      const gone = byAddr.get(a)!;
+      byAddr.delete(a);
+      if (!mints.includes(gone.mint)) vault.delete(gone.mint);
+      const sid = subOf.get(a);
+      if (sid != null) {
+        send("accountUnsubscribe", [sid]);
+        subOf.delete(a);
+        addrOfSub.delete(sid);
+      }
+    }
+    state.addrs = byAddr.size;
   };
 
   const open = () => {
@@ -106,21 +81,20 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onTrade: (t
     ws.onopen = () => {
       state.up = true;
       state.error = "";
-      backoff = 2000;
-      asked = "";
-      live = null;
+      byAddr.clear();
+      subOf.clear();
+      addrOfSub.clear();
       resync().catch(() => null);
-      opts.log?.("helius feed: trades for followed coins");
+      opts.log?.("helius feed: live prices of open positions");
     };
     ws.onmessage = (ev: any) => {
       const data = String(ev?.data || "");
       noteStreamBytes(data.length);
       state.bytes += data.length;
-      // credits a day at the rate since the last reset (2 credits per 100,000 bytes), window restarted hourly
+      state.msgs++;
       const el = Date.now() - state.since;
       if (el > 3600_000) Object.assign(state, { bytes: data.length, since: Date.now() });
-      else if (el > 30_000) state.perDay = Math.round((state.bytes / el) * 86_400_000 / 50_000);
-      state.msgs++;
+      else if (el > 30_000) state.perDay = Math.round(((state.bytes / el) * 86_400_000) / 50_000);
       let j: any = null;
       try {
         j = JSON.parse(data);
@@ -128,47 +102,63 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onTrade: (t
         return;
       }
       if (j?.id != null && pending.has(Number(j.id))) {
+        const a = pending.get(Number(j.id))!;
         pending.delete(Number(j.id));
-        if (j.error) {
-          state.error = String(j.error?.message || j.error).slice(0, 120);
-          return;
+        if (j.error) state.error = String(j.error?.message || j.error).slice(0, 120);
+        else {
+          subOf.set(a, Number(j.result));
+          addrOfSub.set(Number(j.result), a);
+          state.subs++;
         }
-        const old = live;
-        live = Number(j.result);
-        state.subs++;
-        if (old != null) ws.send(JSON.stringify({ jsonrpc: "2.0", id: id++, method: "transactionUnsubscribe", params: [old] }));
         return;
       }
-      const res = j?.params?.result;
-      if (j?.method !== "transactionNotification" || !res) return;
-      const tx: any = shapeNote(res);
-      if (!tx?.meta) return;
+      if (j?.method !== "accountNotification") return;
+      const a = addrOfSub.get(Number(j?.params?.subscription));
+      const s = a ? byAddr.get(a) : null;
+      const raw = j?.params?.result?.value?.data;
+      if (!s || !Array.isArray(raw) || !raw[0]) return;
+      const buf = Buffer.from(String(raw[0]), "base64");
+      const slot = Number(j?.params?.result?.context?.slot) || 0;
       state.lastAt = Date.now();
-      const sig = String(res.signature || "");
-      const seen = new Set<string>();
-      for (const k of tx.transaction.message.accountKeys) {
-        const a = k.pubkey.toBase58();
-        const w = watch.get(a);
-        if (!w || seen.has(w.mint)) continue;
-        seen.add(w.mint);
-        const t = w.kind === "curve" ? curveTrade(tx, w.mint, sig) : poolTrade(tx, w.mint, a, sig);
-        if (t) {
-          state.trades++;
-          opts.onTrade(t);
-        }
+      if (s.kind === "curve") {
+        const c = parseCurve(buf);
+        if (!c) return;
+        const v = viewCurve(c);
+        if (v.complete || !(v.priceSol > 0)) return; // migrated: the pool vaults take over
+        state.quotes++;
+        opts.onQuote({ mint: s.mint, px: v.priceSol, real: v.realSol, mcSol: v.mcapSol, curve: true });
+        return;
+      }
+      const amt = amountOf(buf);
+      if (amt == null) return;
+      const vv = vault.get(s.mint) || { vq: 0 };
+      if (s.kind === "base") (vv.base = amt / 1e6), (vv.bs = slot);
+      else (vv.quote = amt / 1e9), (vv.qs = slot);
+      vault.set(s.mint, vv);
+      // a swap moves both vaults in one slot, as two notifications: price only once both sides are from the same slot
+      if (vv.base && vv.quote && vv.bs === vv.qs) {
+        const px = (vv.quote + vv.vq) / vv.base;
+        state.quotes++;
+        opts.onQuote({ mint: s.mint, px, real: vv.quote, mcSol: px * 1e9, curve: false });
       }
     };
     ws.onclose = () => {
       state.up = false;
-      setTimeout(open, backoff);
-      backoff = Math.min(60_000, backoff * 2);
+      setTimeout(open, 3000);
     };
     ws.onerror = (e: any) => {
       state.error = String(e?.message || "websocket error").replace(/api-key=\S+/gi, "").slice(0, 120);
     };
   };
+  // the mints whose accounts are confirmed subscribed while the socket is up: no notification on them means no change
+  api.live = () => {
+    const out = new Set<string>();
+    if (!state.up) return out;
+    for (const [a, sub] of byAddr) if (subOf.has(a)) out.add(sub.mint);
+    return out;
+  };
   open();
-  setInterval(() => resync().catch(() => null), 3000);
-  // a quick extra resync when a new launch arrives (its first trades matter most)
-  return { ...state, nudge: () => setTimeout(() => resync().catch(() => null), 300), view: () => ({ ...state }) };
+  setInterval(() => resync().catch(() => null), 5000);
+  api.nudge = () => setTimeout(() => resync().catch(() => null), 300);
+  return api;
 }

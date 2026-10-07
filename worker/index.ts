@@ -10,7 +10,7 @@ import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type Fl
 import { K, redis } from "../src/lib/redis";
 import { budgetState, lane, parsedTx, rpcView } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
-import { logCreate, logTrade, pruneStream, streamQuote, streamSize, youngMints } from "../src/lib/streamlog";
+import { logCreate, logTrade, markFeedLive, pruneStream, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
@@ -154,7 +154,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never", feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} addrs ${FEED.view().trades} trades ~${Math.round(FEED.view().perDay / 1000)}K credits/day${FEED.view().error ? ` err ${FEED.view().error}` : ""}` : PP_KEY ? "pumpportal key" : "off" }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never", feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accounts ${FEED.view().quotes} prices ~${Math.round(FEED.view().perDay / 1000)}K credits/day${FEED.view().error ? ` err ${FEED.view().error}` : ""}` : PP_KEY ? "pumpportal key" : "off" }).catch(() => {});
   }
   // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};
@@ -198,28 +198,14 @@ async function wantList() {
 }
 
 /**
- * What the Helius feed follows (v0.1.33). Its data is billed by volume (~0.2 credits per trade), and following every
- * hot coin was ~300 trades a second (~5M credits a day, half the month's plan). So, in order:
- *  - open positions, real and ghost (their prices and exits): always
- *  - every launch for its first ~100 seconds (FLASH reads the first seconds)
- *  - a launch up to its minute-5 tape (7 minutes) only once its curve has ~3% in it: most launches never get there
- * While the day's credits run ahead of pace, only the first two. Hot curves and migrated coins are read from the chain
- * by CATCH and the rats as before.
+ * What the Helius feed follows (v0.1.34): open positions only, real and ghost. Following launches and their trades
+ * (v0.1.32-33) cost 1.3M to 5.7M credits a day against a plan share of ~300K. A position is followed through its curve
+ * account, or its pool's two vaults once migrated: a few hundred bytes per change.
  */
 async function feedWant() {
   const r = redis();
-  const now = Date.now();
   const [pos, ghosts] = await Promise.all([r.hkeys(K.deskPos).catch(() => [] as string[]), r.hkeys("rn:ghost:pos").catch(() => [] as string[])]);
-  const want = new Set([...(pos || []), ...(ghosts || [])].map(String).filter(Boolean));
-  for (const m of FLW.keys()) want.add(m);
-  const b = budgetState();
-  if (!b.budget || b.used < b.pace) {
-    for (const m of youngMints(now)) {
-      const q = streamQuote(m, 10 * 60_000);
-      if (q && (q.real ?? 0) >= 2.5) want.add(m);
-    }
-  }
-  return want;
+  return new Set([...(pos || []), ...(ghosts || [])].map(String).filter(Boolean));
 }
 
 // FLASH: every new launch is streamed for its first ~100 seconds and read at 15s, 45s and 90s, from the trades
@@ -227,8 +213,19 @@ async function feedWant() {
 const FLW = new Map<string, FlCoin>();
 let INTAKE: any[] = [];
 
+let flashPausedAt = 0;
 function flashTick() {
   const now = Date.now();
+  // FLASH reads the first seconds from trade messages alone. Without a PumpPortal key there are none (v0.1.34: the
+  // Helius feed follows positions only), and a launch with no trades would read as dead and be learned as dead.
+  if (!tradesFlowing(now)) {
+    FLW.clear();
+    if (now - flashPausedAt > 30_000) {
+      flashPausedAt = now;
+      markAlive("flash", { paused: "no stream trades (PumpPortal trades need a key)" }).catch(() => {});
+    }
+    return;
+  }
   const looks: FlashLook[] = [];
   for (const [mint, c] of FLW) {
     for (const st of FL_STAGES) {
@@ -497,7 +494,11 @@ async function main() {
   console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
   pumpportal();
   // trades for every followed coin from Helius (no PumpPortal key needed): the same handler as PumpPortal's trades
-  if (!PP_KEY) FEED = heliusFeed({ want: feedWant, onTrade: (t) => TRADE_IN(t), log: (x) => console.log(x) });
+  // live prices of open positions from Helius account updates (with a PumpPortal key, its trades price them instead)
+  if (!PP_KEY) {
+    FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), log: (x) => console.log(x) });
+    setInterval(() => FEED && markFeedLive(FEED.live()), 1_000);
+  }
   setInterval(beat, 20_000);
   await beat();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);

@@ -30,7 +30,7 @@ import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "
 import { creditMillion, creditResolve, funderOf, GK } from "./graph";
 import { features, nanoScore, NANO_MIN } from "./nano";
 import { score, verdictOf } from "./king";
-import { applyNano, loadModel, LABEL_MS, type NanoOp } from "./digger";
+import { applyNano, loadModel, LABEL_MS, tapeFloor, type NanoOp } from "./digger";
 import { applyRunnerOps, features as runFeatures, MILESTONES, MILLION, RK, Run, type RunnerOp } from "./runner";
 import { ensureSolHistory, RG, regimeAt, seasonNow } from "./regime";
 import { getSettings } from "./settings";
@@ -182,7 +182,7 @@ async function fillJob(job: Job): Promise<Job | null> {
   return { ...job, createdAt: l.createdAt, creator: l.creator, name: l.name, symbol: l.symbol, uri: l.uri, devBuySol: l.devBuySol };
 }
 
-async function replay(job0: Job, mins = { t1: 3, t5: 5 }) {
+async function replay(job0: Job, mins = { t1: 5, t5: 8 }) {
   const job = await fillJob(job0);
   if (!job) return null;
   const sigs = (await oldestSigs(job.curve, job.createdAt + CUT5 + 5000)).filter((x) => !x.err);
@@ -456,7 +456,7 @@ async function historianInner(budgetMs: number) {
       }
       const results = await pmap(list, 6, async (job) => {
         try {
-          const [bt, rep, funder] = await Promise.all([job.bondedNow ? bondTime(job) : Promise.resolve(null), replay(job, { t1: Number((s.desk as any).earlyMinCurve ?? 3), t5: Number((s.desk as any).tapeMinCurve ?? 5) }), funderOf(job.creator).catch(() => null)]);
+          const [bt, rep, funder] = await Promise.all([job.bondedNow ? bondTime(job) : Promise.resolve(null), replay(job, tapeFloor(s.desk as any)), funderOf(job.creator).catch(() => null)]);
           return { job, bt, rep, funder };
         } catch (e) {
           st.errors++;

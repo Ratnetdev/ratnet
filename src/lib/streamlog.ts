@@ -5,7 +5,7 @@
 // Only the worker process has a stream; anywhere else these are empty and callers read the chain as before.
 export type StreamTrade = { t: number; w: string; sol: number; tok: number; buy: boolean };
 type Log = { t0: number; creator: string; trades: StreamTrade[]; n: number };
-type Quote = { at: number; px: number; real: number | null; mcSol: number; curve: boolean };
+type Quote = { at: number; px: number; real: number | null; mcSol: number; curve: boolean; feed?: boolean };
 
 const LOGS = new Map<string, Log>();
 const QUOTES = new Map<string, Quote>();
@@ -56,10 +56,33 @@ export function youngMints(now = Date.now()) {
   return out;
 }
 
-/** A fresh quote (default: at most 3s old). */
-export function streamQuote(mint: string, maxAgeMs = 3_000) {
+/**
+ * A price from the Helius account feed (v0.1.34): the curve or the pool vaults changed. It does not mark trades as
+ * flowing (it carries no trade, so it never makes a stream tape look complete).
+ */
+export function setQuote(q: { mint: string; px: number; real: number; mcSol: number; curve: boolean }) {
+  if (!(q.px > 0)) return;
+  QUOTES.set(q.mint, { at: Date.now(), px: q.px, real: q.real, mcSol: q.mcSol, curve: q.curve, feed: true });
+}
+
+// The mints the account feed confirms it follows, refreshed by the worker every second while the socket is up. An
+// account feed only speaks on a change: while it is up and following the coin, silence means the price held.
+let FEED_LIVE = new Set<string>();
+let FEED_LIVE_AT = 0;
+export function markFeedLive(mints: Set<string>, now = Date.now()) {
+  FEED_LIVE = mints;
+  FEED_LIVE_AT = now;
+}
+export const FEED_QUOTE_MS = 60_000;
+
+/** A fresh quote (default: at most 3s old; a feed quote on a followed account stays good up to a minute). */
+export function streamQuote(mint: string, maxAgeMs = 3_000, now = Date.now()) {
   const q = QUOTES.get(mint);
-  return q && Date.now() - q.at <= maxAgeMs ? q : null;
+  if (!q) return null;
+  const age = now - q.at;
+  if (age <= maxAgeMs) return q;
+  if (q.feed && FEED_LIVE.has(mint) && now - FEED_LIVE_AT < 5_000 && age <= FEED_QUOTE_MS) return q;
+  return null;
 }
 
 /** Drop what is no longer needed (called by the worker every few seconds). */

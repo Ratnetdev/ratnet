@@ -263,6 +263,15 @@ export type NanoOp = { k: 0 | 1; x: number[]; y: boolean; pw?: number; sw?: numb
  * (the zigzag at the end of the line on /lab).
  */
 const NANO_PENDING = "rn:nano:pending"; // lessons waiting for the trainer when the lock was busy
+/**
+ * Curve % a launch needs for the rats to read its trades (v0.1.34: at least 8% at minute 5 and 5% at minute 1). A tape
+ * is ~42 chain reads; without stream trades every tape comes from the chain. Settings saved before v0.1.34 kept 5/3,
+ * so the floor applies whatever is stored. The historian uses the same floor (what the models learn on matches live).
+ */
+export function tapeFloor(d: { tapeMinCurve?: number; earlyMinCurve?: number }) {
+  return { t5: Math.max(8, Number(d?.tapeMinCurve ?? 8)), t1: Math.max(5, Number(d?.earlyMinCurve ?? 5)) };
+}
+
 export async function applyNano(ops0: NanoOp[]) {
   if (!ops0.length) return;
   const r = redis();
@@ -899,7 +908,7 @@ export async function processDue(model: NanoModel) {
     return (it.stage === "t5" && !rec.call && age <= CALL_MAX_AGE_MS) || (it.stage === "t1" && !rec.early && age <= EARLY_MAX_AGE_MS);
   });
   const tapeable = reading
-    .filter((it) => (curves[it.mint]?.progress ?? 0) >= (it.stage === "t5" ? s.desk.tapeMinCurve : s.desk.earlyMinCurve))
+    .filter((it) => (curves[it.mint]?.progress ?? 0) >= (it.stage === "t5" ? tapeFloor(s.desk).t5 : tapeFloor(s.desk).t1))
     // minute-5 calls first (they go to the desk), then the fullest curves
     .sort((a, b) => (a.stage === b.stage ? 0 : a.stage === "t5" ? -1 : 1) || (curves[b.mint]?.progress ?? 0) - (curves[a.mint]?.progress ?? 0))
     .slice(0, MAX_TAPES_PER_RUN);

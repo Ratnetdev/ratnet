@@ -272,18 +272,25 @@ export function shapeParsedTx(raw: any): ParsedTransactionWithMeta | null {
     },
   } as ParsedTransactionWithMeta;
 }
-async function rawParsedTxs(sigs: string[]): Promise<(ParsedTransactionWithMeta | null)[]> {
+async function rawParsedTxs(sigs: string[], strict = false): Promise<(ParsedTransactionWithMeta | null)[]> {
   const url = process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL;
   if (!url || !sigs.length) return sigs.map(() => null);
   const body = sigs.map((s, i) => ({ jsonrpc: "2.0", id: i, method: "getTransaction", params: [s, { encoding: "jsonParsed", maxSupportedTransactionVersion: 1, commitment: "confirmed" }] }));
   const res = await limitedFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (strict && !res.ok) throw new Error(`rpc ${res.status}`);
   const j: any = await res.json().catch(() => null);
+  if (strict && !j) throw new Error("rpc: no answer");
   const arr: any[] = Array.isArray(j) ? j : j ? [j] : [];
+  if (strict && arr.length === 1 && arr[0]?.error) throw new Error(String(arr[0].error?.message || "rpc error"));
   const byId = new Map(arr.map((x) => [Number(x?.id), x?.result]));
   return sigs.map((_, i) => shapeParsedTx(byId.get(i)));
 }
+// v0.1.34: version 1 is asked for directly. Trying v0 first cost a refused call on every v1 transaction (509K errors
+// on Helius in a day, each one billed). The web3.js path stays only for tests, which inject a connection.
+const direct = () => !(globalThis as any).__rnConn && !!(process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL);
 /** One parsed transaction, any version. Throws only on a real read failure (timeout, budget, rate limit). */
 export async function parsedTx(sig: string): Promise<ParsedTransactionWithMeta | null> {
+  if (direct()) return (await rawParsedTxs([sig], true))[0];
   try {
     return await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
   } catch (e) {
@@ -294,6 +301,11 @@ export async function parsedTx(sig: string): Promise<ParsedTransactionWithMeta |
 /** Many parsed transactions, any version; a read that fails comes back as null. */
 export async function parsedTxsAny(sigs: string[]): Promise<(ParsedTransactionWithMeta | null)[]> {
   if (!sigs.length) return [];
+  if (direct()) {
+    const out: (ParsedTransactionWithMeta | null)[] = [];
+    for (let i = 0; i < sigs.length; i += 50) out.push(...(await rawParsedTxs(sigs.slice(i, i + 50)).catch(() => sigs.slice(i, i + 50).map(() => null))));
+    return out;
+  }
   try {
     return await conn().getParsedTransactions(sigs, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
   } catch (e) {

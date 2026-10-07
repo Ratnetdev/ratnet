@@ -734,15 +734,23 @@ export type Px = { px: number; real: number; curve: CurveView | null; grad: bool
 // Each position is checked on the chain at most every 10s; in between its price comes from the stream's last trade
 // (the worker streams every position). Before v0.1.28 every position was read from the chain on every beat, about
 // a third of the plan's credits. A stale stream quote (no trade in 3s) always falls back to the chain.
+// v0.1.34: the stream is now the Helius account feed (curve or pool vault changes of each position), and with no
+// fresh quote a position is read from the chain at most every 2s (the desk beats faster than that: before, every beat
+// read every position, ~370K credits a day for the desk alone).
 const VERIFIED = new Map<string, { at: number; px: Px }>();
-const VERIFY_MS = 10_000;
-export async function priceOf(mints: string[]) {
+const VERIFY_MS = 15_000;
+const CHAIN_MIN_MS = 2_000;
+export async function priceOf(mints: string[], fresh = false) {
   const now = Date.now();
   const fromStream: Record<string, Px> = {};
   for (const m of mints) {
     const v = VERIFIED.get(m);
+    if (!fresh && v && now - v.at < CHAIN_MIN_MS) {
+      fromStream[m] = v.px;
+      continue;
+    }
     const sq = streamQuote(m);
-    if (!v || now - v.at > VERIFY_MS || !sq) continue;
+    if (fresh || !v || now - v.at > VERIFY_MS || !sq) continue;
     // the stream only knows the curve or the pool from the venue of the trade; the chain check says which it is
     if (sq.curve !== !v.px.grad) continue;
     // a stream price far from the last chain read is not trusted until the chain confirms it: the stream also carries
@@ -1911,7 +1919,7 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   if (sh) await r.set(`rn:shield:${rec.mint}`, { at: Date.now(), checks: sh.checks }, { ex: 7 * 86400 });
   // FILL at a fresh price: VET, SHIELD, FLOW and the X read take seconds, and the signal's price is stale by then.
   // Before v0.1.31 paper filled at the price from the start of the beat, however far the coin had moved since
-  const fresh = (await priceOf([rec.mint]).catch(() => ({} as Record<string, Px>)))[rec.mint];
+  const fresh = (await priceOf([rec.mint], true).catch(() => ({} as Record<string, Px>)))[rec.mint];
   if (!fresh || fresh.src === "dex") {
     log(b, "EXEC", `$${rec.symbol}: no fresh price right before the buy. skipped`, "info", coin);
     return;

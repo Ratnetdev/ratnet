@@ -99,8 +99,8 @@ export const DEFAULT_SETTINGS = {
     // entries v0.1.4
     maxChase: 60, // % above the call price: do not chase, stalk for a pullback instead
     maxBundle: 60, // % of SOL in from create-slot bundle wallets: pass
-    tapeMinCurve: 5, // curve % at the call needed for the rats to read trades and wallets (RPC budget)
-    earlyMinCurve: 3, // curve % at minute 1 for the early read
+    tapeMinCurve: 8, // curve % at the call needed for the rats to read trades and wallets (RPC budget)
+    earlyMinCurve: 5, // curve % at minute 1 for the early read
     stalkMins: 15, // how long a stalk waits for its pullback
     dailyLoss: 25, // % from day start: stop opening
     maxBags: 12, // positions held at once in total, house-money bags included; past it the quietest bag is sold
