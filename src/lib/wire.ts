@@ -314,7 +314,8 @@ export async function syncRules(force = false) {
   }
   if (cur) chunks.push(cur);
   const head = { "X-API-Key": process.env.X_API_KEY!, "content-type": "application/json" };
-  const interval = Number(process.env.X_RULE_INTERVAL || 1);
+  // how often twitterapi.io checks each rule. It bills every check, so 1s costs ~$20 a day; 20s is ~20x cheaper and J7 covers the big accounts in real time anyway
+  const interval = Math.max(5, Number(process.env.X_RULE_INTERVAL || 20));
   // remove our old rules, then add the new set and switch each on
   const old = ((await r.get<string[]>(RULES)) || []) as string[];
   for (const id of old) await fetch(`${API}/oapi/tweet_filter/delete_rule`, { method: "DELETE", headers: head, body: JSON.stringify({ rule_id: id }) }).catch(() => null);
