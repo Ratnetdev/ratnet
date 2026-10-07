@@ -4,7 +4,7 @@ import { usePoll } from "./usePoll";
 import DenScene, { AGENT_COLOR } from "./DenScene";
 import Info from "./Info";
 import CountUp from "./CountUp";
-import { ago, short, solscanAcc, solscanTx } from "./fmt";
+import { safeHref, ago, short, solscanAcc, solscanTx } from "./fmt";
 import DeskNow, { type DeskNowData } from "./DeskNow";
 import TrackRecord from "./TrackRecord";
 import AgentPanel from "./AgentPanel";
@@ -12,6 +12,7 @@ import { useState } from "react";
 import LensCam from "./LensCam";
 import MindBoard from "./MindBoard";
 import MomoBoard from "./MomoBoard";
+import CatchBoard from "./CatchBoard";
 import HoundBoard from "./HoundBoard";
 import { TradeIcons } from "./venues";
 import { fullUrl, useAdmin } from "./useAdmin";
@@ -105,6 +106,7 @@ const ROLES: [string, string][] = [
   ["MIND", "judges coins like a trader"],
   ["HOUND", "tracks FOMO, KOL and smart wallets"],
   ["MOMO", "runners pulling volume after migration"],
+  ["CATCH", "catches senders before they send"],
   ["OVERSEER", "explores, proposes improvements"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
@@ -154,6 +156,8 @@ function EquityChart({ pts, start }: { pts: Desk["equity"]; start: number }) {
     </svg>
   );
 }
+
+const SLEEVE_NAME: Record<string, string> = { king: "King calls", early: "Early reads", wire: "Tweet coins", vamp: "Vamps", momo: "MOMO runners", mind: "MIND calls", catch: "CATCH senders" };
 
 export default function DeskBoard() {
   const admin = useAdmin();
@@ -241,6 +245,7 @@ export default function DeskBoard() {
         })}
       </section>
 
+      <CatchBoard />
       <MomoBoard />
       <MindBoard />
       <HoundBoard />
@@ -419,7 +424,7 @@ export default function DeskBoard() {
           <div className="wire-list">
             {(d?.wire?.tweets || []).slice(0, 10).map((t) => (
               <div key={t.id} className="wire-t">
-                <div className="wire-h"><a href={t.url} target="_blank" rel="noreferrer">@{t.h}</a><span className="muted"> · {ago(t.at)} ago{t.kind !== "post" ? ` · ${t.kind}` : ""}{t.src && !["j7", "tapi"].includes(t.src) ? ` · ${t.src}` : ""}{t.ca ? " · CA" : ""}</span>{t.picked ? <Link href={`/c/${t.picked}`} className="wire-pick">coin picked →</Link> : null}</div>
+                <div className="wire-h"><a href={safeHref(t.url)} target="_blank" rel="noreferrer">@{t.h}</a><span className="muted"> · {ago(t.at)} ago{t.kind !== "post" ? ` · ${t.kind}` : ""}{t.src && !["j7", "tapi"].includes(t.src) ? ` · ${t.src}` : ""}{t.ca ? " · CA" : ""}</span>{t.picked ? <Link href={`/c/${t.picked}`} className="wire-pick">coin picked →</Link> : null}</div>
                 <div className="wire-x">{t.text}</div>
                 {t.terms.length ? <div className="wire-terms">{t.terms.slice(0, 6).map((x) => <span key={x}>{x}</span>)}</div> : null}
               </div>
@@ -450,7 +455,7 @@ export default function DeskBoard() {
                 <tbody>
                   {(d?.pm || []).map((x) => (
                     <tr key={x.sleeve}>
-                      <td>{x.sleeve === "king" ? "King calls" : x.sleeve === "early" ? "Early reads" : "Tweet coins"}</td>
+                      <td>{SLEEVE_NAME[x.sleeve] || x.sleeve}</td>
                       <td className="muted">{x.trades}</td>
                       <td className="muted">{x.winRate != null ? `${x.winRate}%` : "–"}</td>
                       <td style={{ color: (x.avg ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{x.avg != null ? `${sign(x.avg)}%` : "–"}</td>

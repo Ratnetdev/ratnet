@@ -10,6 +10,8 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { catchSignal } from "./catcher";
+import { acquire, release, renew } from "./lock";
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { K, dayKey, redis } from "./redis";
@@ -77,7 +79,7 @@ export type Pos = {
   nano: number | null;
   live: boolean;
   series: Sample[];
-  how?: "direct" | "stalk" | "early" | "wire" | "mind" | "momo";
+  how?: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch";
   wire?: { h: string; tid: string; text: string; vamp?: boolean } | null; // the post a tweet coin was born from
   peakAt?: number; // when the price peaked while held (exit profiles)
   msHi?: number; // highest milestone the ladder has acted on
@@ -238,6 +240,9 @@ type ArmTrack = { hi: number; lo: number; armed: boolean; fill: number | null };
 type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" | "socials" | "traction" };
 type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string };
 type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean };
+
+// the desk lock lives this long past its last renewal (one pass, including a swap waiting for confirmation)
+const LOCK_MS = 75_000;
 
 export const EXAM = { trades: 30, winRate: 40, pnlPct: 10, maxDD: 30, minWallet: 0.5, liveMaxDD: 40 };
 const FEE = 0.01; // pump.fun fee per side
@@ -409,8 +414,8 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
 
 // ---------------------------------------------------------------- prices
 
-type Px = { px: number; real: number; curve: CurveView | null; grad: boolean };
-async function priceOf(mints: string[]) {
+export type Px = { px: number; real: number; curve: CurveView | null; grad: boolean };
+export async function priceOf(mints: string[]) {
   const curves = mints.length ? await getCurves(mints) : {};
   const done = mints.filter((m) => !curves[m] || curves[m]!.complete);
   // migrated coins: the canonical pool's own reserves (exact, one RPC call). Never a random side pool.
@@ -559,8 +564,9 @@ async function earlyStats(l: Learn) {
  */
 export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unknown>) {
   const r = redis();
-  const got = await r.set("rn:lock:desk", Date.now(), { nx: true, ex: Math.ceil(budgetMs / 1000) + 8 });
-  if (!got) return { skipped: "busy" };
+  // owned lock, renewed every pass: a slow swap can't let a second desk in, and we never free someone else's lock
+  const lock = await acquire("rn:lock:desk", LOCK_MS);
+  if (!lock) return { skipped: "busy" };
   const t0 = Date.now();
   let loops = 0;
   const b: Batch = { ev: [], trades: [] };
@@ -595,6 +601,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let walletSolC: number | null = null;
     while (Date.now() - t0 < budgetMs) {
       loops++;
+      if (!(await renew(lock, LOCK_MS))) {
+        log(b, "LEDGER", "desk lock lost to another session; stopping this one", "info");
+        break;
+      }
       const now = Date.now();
       try {
       // the dig runs next to the desk, never in front of it: positions keep their 2s beat while the rats dig
@@ -638,7 +648,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const ghosts = Object.values(((await r.hgetall<Record<string, Pos>>(GHOST_POS)) || {}) as Record<string, Pos>);
       // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
       const px = await priceOf(
-        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmr]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
+        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrc]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
       );
       if (now - lastRunsAt > 10_000) {
         lastRunsAt = now;
@@ -682,11 +692,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const pf = prof[sl];
         // MOMO coins move fast both ways: tighter starting exits until their own record says otherwise
         const mo = sl === "momo";
+        const ca = sl === "catch"; // CATCH: senders get room to run, but a fake start is cut fast
         const c2: any = cfg;
-        const initialsAt = pf?.initials ?? (mo ? c2.momoInitials ?? 40 : cfg.initialsAt);
-        const timeStop = pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : cfg.timeStop);
-        const stopAt = mo ? c2.momoSl ?? -20 : cfg.sl;
-        const trailK = learnS.trailBy?.[sl] ?? (mo ? 0.6 : learnS.trailK);
+        const initialsAt = pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 60 : cfg.initialsAt);
+        const timeStop = pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : cfg.timeStop);
+        const stopAt = mo ? c2.momoSl ?? -20 : ca ? c2.catchSl ?? -18 : cfg.sl;
+        const trailK = learnS.trailBy?.[sl] ?? (mo ? 0.6 : ca ? 0.8 : learnS.trailK);
         rs.push([now, q.px, q.real]);
         while (rs.length && now - rs[0][0] > 60_000) rs.shift();
         const lastS = p.series[p.series.length - 1];
@@ -718,16 +729,21 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         else if (!p.tp1Done) {
           if (gain <= stopAt) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
           else if (drain <= -20) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}% in 40s`];
-          else if (gain >= initialsAt) [sellFrac, reason] = [cfg.initialsFrac, `initials at ${mult.toFixed(1)}x${initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf!.medPk}x)` : ""}, cost is back`];
+          else if (gain >= initialsAt) [sellFrac, reason] = [cfg.initialsFrac, `initials at ${mult.toFixed(1)}x${pf?.medPk && initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf.medPk}x)` : ""}, cost is back`];
           else if (q.grad && !p.gradSeen) {
             p.gradSeen = true;
             if (p.pn < cfg.gradKeepP) [sellFrac, reason] = [1, `migrated before initials, P(next) ${Math.round(p.pn * 100)}%: out`];
-          } else if (age >= timeStop) [sellFrac, reason] = [1, `time stop ${Math.round(age)}m at ${fmtPct(gain)}${timeStop !== cfg.timeStop ? ` (${sl} coins peak within ${pf!.medTtp}m)` : ""}`];
+          } else if (age >= timeStop) [sellFrac, reason] = [1, `time stop ${Math.round(age)}m at ${fmtPct(gain)}${pf?.medTtp && timeStop !== cfg.timeStop ? ` (${sl} coins peak within ${pf.medTtp}m)` : ""}`];
         } else {
           // house money: trail + milestone ladder + migration check
           const width = Math.max(15, Math.min(65, trailFor(cfg.trail, mult) * trailK * (0.85 + 0.3 * p.pn)));
           p.trail = Math.round(width);
-          if (q.px <= p.peakPx * (1 - width / 100)) {
+          const quiet = (now - (p.peakAt || p.openedAt)) / 60_000;
+          const staleMin = (cfg as any).bagStaleMin ?? 120;
+          if (quiet >= staleMin && mult < 3) {
+            // a bag that has not made a new high in a long time is dead money: sell it and keep the record clean
+            [sellFrac, reason, tunable] = [1, `bag went quiet: no new high in ${Math.round(quiet)}m, out at ${mult.toFixed(1)}x`, true];
+          } else if (q.px <= p.peakPx * (1 - width / 100)) {
             [sellFrac, reason, tunable] = [1, `trailing stop ${p.trail}% off the peak (${(p.peakPx / p.entryPx).toFixed(1)}x), out at ${mult.toFixed(1)}x`, true];
           } else if (lv > (p.msHi ?? -1) && lv >= 0) {
             // only de-risk at a milestone when the runner model rates the next one as weak; strong coins keep running
@@ -746,78 +762,90 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       // --- exits (RISK)
       for (const p of positions) {
-        const q = px[p.mint];
-        if (!q) {
-          // no price: the curve completed but the coin has not (or never) migrated. after 30 minutes it is written off
-          p.noPxSince ||= now;
-          if (now - p.noPxSince > 30 * 60_000) {
-            const ok = await sell(b, state, p, 1, 0, "curve full but never migrated: written off", cfg.slippageBps, kp);
-            if (ok) await r.hdel(K.deskPos, p.mint);
-          } else await r.hset(K.deskPos, { [p.mint]: p });
-          continue;
+        // one broken position must never freeze the desk: it logs, the others keep their exits
+        try {
+          const q = px[p.mint];
+          if (!q) {
+            // no price: the curve completed but the coin has not (or never) migrated. after 30 minutes it is written off
+            p.noPxSince ||= now;
+            if (now - p.noPxSince > 30 * 60_000) {
+              const ok = await sell(b, state, p, 1, 0, "curve full but never migrated: written off", cfg.slippageBps, kp);
+              if (ok) await r.hdel(K.deskPos, p.mint);
+            } else await r.hset(K.deskPos, { [p.mint]: p });
+            continue;
+          }
+          const { sellFrac, reason, tunable, lv } = decide(p, q);
+          if (sellFrac > 0) {
+            const peakHeld = p.peakPx;
+            const ok = await sell(b, state, p, sellFrac, q.px, reason, cfg.slippageBps, kp);
+            if (ok && !p.tp1Done && sellFrac < 1) {
+              p.tp1Done = true;
+              p.msHi = lv; // the ladder only acts on milestones reached after initials
+            }
+            if (ok && p.tokens <= 0 && p.devSellPx) {
+              // COACH: would selling with the dev have beaten holding?
+              const saved = q.px < p.devSellPx;
+              learnS.devStat.n++;
+              if (saved) learnS.devStat.saved++;
+              else learnS.devStat.cost++;
+              const was = learnS.devExitOn;
+              const ds = learnS.devStat;
+              learnS.devExitOn = ds.n >= LEARN_RULES.devMin && ds.saved / ds.n >= LEARN_RULES.devSaved;
+              log(b, "COACH", `$${p.symbol} dev-sell review: ${saved ? "selling with the dev would have been better" : "holding through the dev sell paid"} (${(q.px / p.devSellPx).toFixed(2)}x since). ${ds.saved}/${ds.n} cases favour the dev exit`, saved ? "bad" : "ok", p);
+              if (was !== learnS.devExitOn) log(b, "COACH", learnS.devExitOn ? "dev exit switched on: selling with the dev has been better" : "dev exit switched off: holding through dev sells is doing better", "win");
+              await r.set(K.deskLearn, learnS);
+            }
+            if (ok && p.tokens <= 0) {
+              // COACH follows the coin after we leave it
+              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
+            }
+          }
+          if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
+          else await r.hdel(K.deskPos, p.mint);
+        } catch (e) {
+          const k = `rn:desk:poserr:${p.mint}`;
+          const n = await r.incr(k).catch(() => 1);
+          if (n === 1) await r.expire(k, 3600).catch(() => {});
+          if (n === 1 || n % 30 === 0) log(b, "RISK", `$${p.symbol}: exit check failed (${safeErr(e)}). other positions unaffected${n > 1 ? `, ${n} times this hour` : ""}`, "bad", p);
         }
-        const { sellFrac, reason, tunable, lv } = decide(p, q);
-        if (sellFrac > 0) {
-          const peakHeld = p.peakPx;
-          const ok = await sell(b, state, p, sellFrac, q.px, reason, cfg.slippageBps, kp);
-          if (ok && !p.tp1Done && sellFrac < 1) {
-            p.tp1Done = true;
-            p.msHi = lv; // the ladder only acts on milestones reached after initials
-          }
-          if (ok && p.tokens <= 0 && p.devSellPx) {
-            // COACH: would selling with the dev have beaten holding?
-            const saved = q.px < p.devSellPx;
-            learnS.devStat.n++;
-            if (saved) learnS.devStat.saved++;
-            else learnS.devStat.cost++;
-            const was = learnS.devExitOn;
-            const ds = learnS.devStat;
-            learnS.devExitOn = ds.n >= LEARN_RULES.devMin && ds.saved / ds.n >= LEARN_RULES.devSaved;
-            log(b, "COACH", `$${p.symbol} dev-sell review: ${saved ? "selling with the dev would have been better" : "holding through the dev sell paid"} (${(q.px / p.devSellPx).toFixed(2)}x since). ${ds.saved}/${ds.n} cases favour the dev exit`, saved ? "bad" : "ok", p);
-            if (was !== learnS.devExitOn) log(b, "COACH", learnS.devExitOn ? "dev exit switched on: selling with the dev has been better" : "dev exit switched off: holding through dev sells is doing better", "win");
-            await r.set(K.deskLearn, learnS);
-          }
-          if (ok && p.tokens <= 0) {
-            // COACH follows the coin after we leave it
-            await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
-          }
-        }
-        if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
-        else await r.hdel(K.deskPos, p.mint);
       }
 
       // --- ghost desk exits: the same rules, in the ghost book
       for (const p of ghosts) {
-        const q = px[p.mint];
-        if (!q) {
-          p.noPxSince ||= now;
-          if (now - p.noPxSince > 30 * 60_000) {
-            await ghostSell(b, p, 1, 0, "curve full but never migrated: written off");
-            await r.hdel(GHOST_POS, p.mint);
-          } else await r.hset(GHOST_POS, { [p.mint]: p });
-          continue;
-        }
-        const d = decide(p, q, " (ghost)");
-        if (d.sellFrac > 0 && !d.reason.startsWith("manual")) {
-          const peakHeld = p.peakPx;
-          const closed = await ghostSell(b, p, d.sellFrac, q.px, d.reason);
-          if (!p.tp1Done && d.sellFrac < 1) {
-            p.tp1Done = true;
-            p.msHi = d.lv;
+        try {
+          const q = px[p.mint];
+          if (!q) {
+            p.noPxSince ||= now;
+            if (now - p.noPxSince > 30 * 60_000) {
+              await ghostSell(b, p, 1, 0, "curve full but never migrated: written off");
+              await r.hdel(GHOST_POS, p.mint);
+            } else await r.hset(GHOST_POS, { [p.mint]: p });
+            continue;
           }
-          if (closed && p.devSellPx) {
-            const saved = q.px < p.devSellPx;
-            learnS.devStat.n++;
-            if (saved) learnS.devStat.saved++;
-            else learnS.devStat.cost++;
-            learnS.devExitOn = learnS.devStat.n >= LEARN_RULES.devMin && learnS.devStat.saved / learnS.devStat.n >= LEARN_RULES.devSaved;
-            learnDirty = true;
+          const d = decide(p, q, " (ghost)");
+          if (d.sellFrac > 0 && !d.reason.startsWith("manual")) {
+            const peakHeld = p.peakPx;
+            const closed = await ghostSell(b, p, d.sellFrac, q.px, d.reason);
+            if (!p.tp1Done && d.sellFrac < 1) {
+              p.tp1Done = true;
+              p.msHi = d.lv;
+            }
+            if (closed && p.devSellPx) {
+              const saved = q.px < p.devSellPx;
+              learnS.devStat.n++;
+              if (saved) learnS.devStat.saved++;
+              else learnS.devStat.cost++;
+              learnS.devExitOn = learnS.devStat.n >= LEARN_RULES.devMin && learnS.devStat.saved / learnS.devStat.n >= LEARN_RULES.devSaved;
+              learnDirty = true;
+            }
+            // COACH reviews ghost exits like real ones (trail too tight or too loose)
+            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
           }
-          // COACH reviews ghost exits like real ones (trail too tight or too loose)
-          if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
+          if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
+          else await r.hdel(GHOST_POS, p.mint);
+        } catch (e) {
+          log(b, "RISK", `ghost $${p.symbol}: exit check failed (${safeErr(e)})`, "bad");
         }
-        if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
-        else await r.hdel(GHOST_POS, p.mint);
       }
 
       // --- entries (VET -> FLOW -> BUZZ -> SIZE -> EXEC); signals that pass VET are also shadowed for learning
@@ -827,165 +855,175 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         state.dayStart = eq.value;
       }
       for (const q0 of queued) {
-        await r.zrem(K.deskQ, q0);
-        const wireSig = q0.startsWith("w:");
-        const mindSig = q0.startsWith("m:");
-        const momoSig = q0.startsWith("r:");
-        const m = wireSig || mindSig || momoSig ? q0.slice(2) : q0;
-        if (momoSig) {
+        // one bad signal never stops the others (or the exits on the next beat)
+        try {
           await r.zrem(K.deskQ, q0);
-          if (px[m]) await momoEntry(b, state, m, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `MOMO signal: ${safeErr(e)}`, "bad"));
-          continue;
-        }
-        const rec = await r.get<Launch>(K.launch(m));
-        // MIND may buy after migration too; everything else trades the curve only
-        if (!rec || (rec.outcome && !(mindSig && rec.outcome === "BONDED"))) continue;
-        if (mindSig) {
-          if (px[m]) await mindEntry(b, state, rec, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `MIND signal $${rec.symbol}: ${safeErr(e)}`, "bad"));
-          continue;
-        }
-        const early = !wireSig && !rec.call && rec.early?.verdict === "BOND";
-        if (!wireSig && !rec.call && !early) continue;
-        if (wireSig && !rec.wire?.pick) continue;
-        const coin = { mint: m, symbol: rec.symbol };
-        const q = px[m];
-        if (!q) continue;
-        const curve = q.curve?.progress ?? 0;
-        // tweet coins have their own slots, so the King's positions never crowd them out (and the reverse)
-        const liveNow = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
-        const open = liveNow.filter((p) => (wireSig ? p.how === "wire" : p.how !== "wire" && p.how !== "mind")).length;
-        // a BOND call the rats could not tape in time: read its trades now, before VET (desk lane, ~1s)
-        if (!rec.tape && !wireSig) {
-          const tp = await readTape(m, rec.creator, rec.createdAt).catch(() => null);
-          if (tp) {
-            rec.tape = tp;
-            await r.set(K.launch(m), rec, { keepTtl: true });
-            log(b, "TAPE", `$${rec.symbol}: read at the desk: ${tp.n} trades, ${tp.uniq} traders, bundle ${Math.round(tp.bundleShare * 100)}%${tp.farm?.farm ? `, FARM: ${tp.farm.why}` : ""}`, tp.farm?.farm ? "bad" : "info", coin);
+          const wireSig = q0.startsWith("w:");
+          const mindSig = q0.startsWith("m:");
+          const momoSig = q0.startsWith("r:");
+          const catchSig = q0.startsWith("c:");
+          const m = wireSig || mindSig || momoSig || catchSig ? q0.slice(2) : q0;
+          if (catchSig) {
+            if (px[m]) await catchEntry(b, state, m, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `CATCH signal: ${safeErr(e)}`, "bad"));
+            continue;
           }
-        }
-        const t = rec.tape;
-        const g = rec.g;
-        const callPx = rec.call?.px || 0;
-        const chase = callPx ? pct(q.px, callPx) : 0;
-        // how far the price sits under the coin's high since launch (curve high from every dig, 10s apart)
-        const hiProg = Math.max(rec.peak ?? 0, Number((await r.zscore(K.peak, m)) ?? 0), curve);
-        const dd = hiProg > curve ? Math.round((1 - curvePx(curve) / curvePx(hiProg)) * 100) : 0;
-        const trust = wireSig ? (await accountOf(rec.wire!.h)).w : 0;
-        const wireOpen = wireSig ? open : 0;
-        const checks = wireSig
-          ? [
-              { rule: "wire_post", ok: trust >= (cfg.wireMinW ?? 0.2), v: `@${rec.wire!.h} · ${rec.wire!.how} · ${rec.wire!.lagSec}s after the post · trust ${trust}` },
-              // PRIOR: most headlines move nothing. The post has to have spawned a wave (or the author posted the CA)
-              (() => {
-                const tr = rec.wire!.trac;
-                const ok = !learnS.tractionOn || rec.wire!.how === "posted the CA" || (!!tr && (tr.copies >= 3 || tr.sol >= 25));
-                return { rule: "post_traction", ok, v: `${tr ? `${tr.copies} coins, ${tr.sol} SOL across them` : "no count"}${rec.wire!.vamp ? " · vamp" : ""}${learnS.tractionOn ? "" : " (prior overruled)"}` };
-              })(),
-              { rule: "curve_window", ok: curve <= (cfg.wireMaxCurve ?? 85), v: `${curve}%` },
-              { rule: "dev_buy_sane", ok: rec.devBuySol <= cfg.maxDevBuy, v: `${rec.devBuySol} SOL` },
-              { rule: "bundle_ok", ok: !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in, ${t.bundleN} wallets` : "not read" },
-              { rule: "tape_read", ok: !!t, v: t ? `${t.n} trades, ${t.uniq} traders read` : "no tape read in time" },
-              { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders` : "not read" },
-              { rule: "holding_floor", ok: !learnS.floorOn || dd < LEARN_RULES.floorMax, v: `${dd}% under its high${learnS.floorOn ? "" : " (prior overruled)"}` },
-              { rule: "open_slots", ok: wireOpen < (cfg.wireMaxOpen ?? 2) && !posMap[m] && !stalks[m], v: `${wireOpen}/${cfg.wireMaxOpen ?? 2} tweet-coin slots` },
-              { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
-            ]
-          : [
-          early
-            ? { rule: "early_read_bond", ok: true, v: `BOND ${rec.early!.score} at minute 1` }
-            : { rule: "king_or_nano_bond", ok: rec.call!.verdict === "BOND" || rec.call!.nano?.verdict === "BOND", v: `${rec.call!.verdict} ${rec.call!.score}` },
-          { rule: "nano_agrees", ok: early || !cfg.needNano || rec.call!.nano?.verdict === "BOND", v: `${rec.call?.nano ? `${rec.call.nano.verdict} ${rec.call.nano.score}` : "learning"}${cfg.needNano ? "" : " (not required yet)"}` },
-          { rule: "curve_window", ok: curve <= cfg.maxCurve && (early || curve >= cfg.minCurve), v: `${curve}%` },
-          { rule: "dev_not_serial", ok: !((rec.devN ?? 0) >= cfg.serialDev && (rec.devB ?? 0) === 0), v: `${rec.devN ?? 0} launches, ${rec.devB ?? 0} bonded` },
-          { rule: "dev_buy_sane", ok: rec.devBuySol <= cfg.maxDevBuy, v: `${rec.devBuySol} SOL` },
-          // memes: a dev sell is normal, so it only blocks once COACH has proven the dev exit
-          { rule: "dev_not_selling", ok: !learnS.devExitOn || !t || t.devSold <= 0.25, v: t ? `${t.devSold} SOL out${learnS.devExitOn ? "" : " (info only)"}` : "not read" },
-          { rule: "bundle_ok", ok: !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in, ${t.bundleN} wallets` : "not read" },
-          { rule: "cluster_ok", ok: !g || !(g.clN >= 5 && g.clB === 0), v: g ? (g.funder ? `${g.clN} launches, ${g.clB} bonded` : "fresh") : "not read" },
-          { rule: "not_a_copycat", ok: !rec.meta?.copy, v: rec.meta?.copy ? "copies a recent winner" : "original" },
-          { rule: "tape_read", ok: !!t, v: t ? `${t.n} trades, ${t.uniq} traders read` : "no tape read in time" },
-          { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders, block-0 curve ${Math.round(t.instant ?? 0)}%` : "not read" },
-          { rule: "holding_floor", ok: !learnS.floorOn || dd < LEARN_RULES.floorMax, v: `${dd}% under its high${learnS.floorOn ? "" : " (prior overruled)"}` },
-          // PRIOR: no socials is usually a rug. A tweet-linked coin or 2+ smart wallets early outweigh it. Not a hard cap: COACH can overrule it.
-          socialsCheck(rec, learnS),
-          { rule: "fresh_signal", ok: now - (rec.call?.at ?? rec.early!.at) < 3 * 60_000, v: `${Math.round((now - (rec.call?.at ?? rec.early!.at)) / 1000)}s old` },
-          { rule: "open_slots", ok: open < cfg.maxOpen && !posMap[m] && !stalks[m], v: `${open}/${cfg.maxOpen}` },
-          { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
-        ];
-        const fail = checks.find((c) => !c.ok);
-        const fails = checks.filter((c) => !c.ok);
-        if (fails.length === 1 && PRIOR_RULES[fails[0].rule] && ((await r.hlen(K.deskShadow)) || 0) < 60) {
-          // a prior skipped it: follow it anyway so COACH can tell whether the prior helps
-          const tag = PRIOR_RULES[fails[0].rule];
-          const sh = { ...newShadow(m, rec.symbol, q.px, early), k: `${tag[0]}:${m}`, tag };
-          await r.hset(K.deskShadow, { [sh.k]: sh });
-        }
-        await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
-        await r.set(VET_KEY(m), { at: now, checks, passed: !checks.find((c) => !c.ok) }, { ex: 7 * 86400 });
-        // daily tally for the "right now" panel: how many signals were checked, and what stopped them
-        const dk = DAY_KEY(now);
-        await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
-        await r.hincrby(dk, "seen", 1);
-        await r.expire(dk, 3 * 86400);
-        // blocked only by the desk itself (loss limit, full slots), not by anything about the coin: the ghost desk takes it
-        const deskBlock = !!fail && fails.every((c) => DESK_RULES.has(c.rule)) && !posMap[m] && !stalks[m];
-        if (fail && deskBlock) log(b, "VET", `$${rec.symbol} passes every check on the coin; the desk is blocked (${fails.map((c) => `${c.rule.replace(/_/g, " ")} ${c.v}`).join(", ")}). ghost desk follows it`, "info", coin);
-        if (fail && !deskBlock) {
-          log(b, "VET", `skipped $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
-          // FILM follows every skip (except a full desk or the loss limit, which say nothing about the coin)
-          if (fail.rule !== "open_slots" && fail.rule !== "daily_loss_ok") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
-          continue;
-        }
-        // every clean signal is followed in shadow: buy-now vs three pullback depths, scored after 30 minutes
-        if (((await r.hlen(K.deskShadow)) || 0) < 40) {
-          const sh = newShadow(m, rec.symbol, q.px, early);
-          await r.hset(K.deskShadow, { [sh.k]: sh });
-        }
-        if (early && !learnS.earlyOn) {
-          const es = learnS.earlyStat;
-          log(b, "VET", `$${rec.symbol} early read is clean. shadow only: early entries unlock at ${LEARN_RULES.earlyMin} resolved reads beating the minute-5 King (now ${es.n}, ${es.n ? Math.round((es.hit / es.n) * 100) : 0}% vs ${es.mainN ? Math.round((es.mainHit / es.mainN) * 100) : 0}%)`, "info", coin);
-          continue;
-        }
-        if (!deskBlock) log(b, "VET", `$${rec.symbol} clean: curve ${curve}%, dev ${rec.devN ?? 0}/${rec.devB ?? 0}${t ? `, bundle ${Math.round(t.bundleShare * 100)}%` : ""}${g?.smartN ? `, ${g.smartN} smart wallets` : ""}`, "ok", coin);
-
-        // FLOW: live pressure on the curve over a few seconds plus the last hour of trades
-        const before = q.real;
-        // FLOW watches the curve for a moment. Tweet coins get no wait: there, seconds are the edge
-        await new Promise((res) => setTimeout(res, wireSig ? 0 : (cfg as any).flowWaitMs ?? 1500));
-        const again = (await getCurves([m]))[m];
-        const delta = again && before ? pct(again.realSol, before) : 0;
-        const mk = (await getMarket([m]).catch(() => ({} as any)))[m];
-        const tot = (mk?.b1 || 0) + (mk?.s1 || 0);
-        const buyShare = tot ? mk.b1 / tot : null;
-        if (delta <= -5 || (buyShare != null && tot >= 8 && buyShare < cfg.minFlow)) {
-          log(b, "FLOW", `$${rec.symbol} selling: curve ${delta.toFixed(1)}% in 3s${buyShare != null ? `, buys ${(buyShare * 100).toFixed(0)}% of flow` : ""}`, "info", coin);
-          await logSkip("flow_selling", `curve ${delta.toFixed(1)}% in 3s`, m, rec.symbol, again?.priceSol || q.px).catch(() => {});
-          continue;
-        }
-        const flowTxt = `curve ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}% in 3s${buyShare != null ? `, buys ${(buyShare * 100).toFixed(0)}% of the last hour (${tot} trades)` : ""}`;
-        log(b, "FLOW", `$${rec.symbol} bid: ${flowTxt}`, "ok", coin);
-
-        // BUZZ: X mentions (if configured) and paid dex signals; logged and fed to the runner model, never a buy trigger alone
-        const xm = await xMentions(m);
-        const buzzTxt = `${xm != null ? `${xm} X posts in 15m` : "X not connected"}${mk?.bo ? `, ${mk.bo} dex boosts` : ""}${mk?.pf ? ", paid dex profile" : ""}`;
-        if (xm != null || mk?.bo || mk?.pf) log(b, "BUZZ", `$${rec.symbol}: ${buzzTxt}`, "info", coin);
-        await r.set(ENTRY_KEY(m), { checks, flow: flowTxt, buzz: buzzTxt, chase }, { ex: 3 * 3600 });
-
-        // never chase: past maxChase above the call price, or when pullbacks have proven better, stalk instead
-        const nowPx = again?.priceSol || q.px;
-        if (!wireSig && !deskBlock && (learnS.stalkOn || chase > cfg.maxChase)) {
-          if (learnS.stalkOn) {
-            await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: nowPx, depth: learnS.stalkArm || 30, hi: nowPx, lo: nowPx, armed: false, early } satisfies Stalk });
-            log(b, "SIZE", `$${rec.symbol}: stalking a -${learnS.stalkArm || 30}% pullback for up to ${cfg.stalkMins}m`, "info", coin);
-          } else {
-            log(b, "VET", `$${rec.symbol} already ${fmtPct(chase)} above the call. not chasing (pullback entries still locked)`, "info", coin);
-            await logSkip("not_chasing", `${fmtPct(chase)} over the call`, m, rec.symbol, nowPx).catch(() => {});
+          if (momoSig) {
+            await r.zrem(K.deskQ, q0);
+            if (px[m]) await momoEntry(b, state, m, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `MOMO signal: ${safeErr(e)}`, "bad"));
+            continue;
           }
-          continue;
+          const rec = await r.get<Launch>(K.launch(m));
+          // MIND may buy after migration too; everything else trades the curve only
+          if (!rec || (rec.outcome && !(mindSig && rec.outcome === "BONDED"))) continue;
+          if (mindSig) {
+            if (px[m]) await mindEntry(b, state, rec, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `MIND signal $${rec.symbol}: ${safeErr(e)}`, "bad"));
+            continue;
+          }
+          const early = !wireSig && !rec.call && rec.early?.verdict === "BOND";
+          if (!wireSig && !rec.call && !early) continue;
+          if (wireSig && !rec.wire?.pick) continue;
+          const coin = { mint: m, symbol: rec.symbol };
+          const q = px[m];
+          if (!q) continue;
+          const curve = q.curve?.progress ?? 0;
+          // tweet coins have their own slots, so the King's positions never crowd them out (and the reverse)
+          const liveNow = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
+          const open = liveNow.filter((p) => takesSlot(p) && (wireSig ? p.how === "wire" : !OWN_LANE.has(p.how || ""))).length;
+          // a BOND call the rats could not tape in time: read its trades now, before VET (desk lane, ~1s)
+          if (!rec.tape && !wireSig) {
+            const tp = await readTape(m, rec.creator, rec.createdAt).catch(() => null);
+            if (tp) {
+              rec.tape = tp;
+              await r.set(K.launch(m), rec, { keepTtl: true });
+              log(b, "TAPE", `$${rec.symbol}: read at the desk: ${tp.n} trades, ${tp.uniq} traders, bundle ${Math.round(tp.bundleShare * 100)}%${tp.farm?.farm ? `, FARM: ${tp.farm.why}` : ""}`, tp.farm?.farm ? "bad" : "info", coin);
+            }
+          }
+          const t = rec.tape;
+          const g = rec.g;
+          const callPx = rec.call?.px || 0;
+          const chase = callPx ? pct(q.px, callPx) : 0;
+          // how far the price sits under the coin's high since launch (curve high from every dig, 10s apart)
+          const hiProg = Math.max(rec.peak ?? 0, Number((await r.zscore(K.peak, m)) ?? 0), curve);
+          const dd = hiProg > curve ? Math.round((1 - curvePx(curve) / curvePx(hiProg)) * 100) : 0;
+          const trust = wireSig ? (await accountOf(rec.wire!.h)).w : 0;
+          const wireOpen = wireSig ? open : 0;
+          const checks = wireSig
+            ? [
+                { rule: "wire_post", ok: trust >= (cfg.wireMinW ?? 0.2), v: `@${rec.wire!.h} · ${rec.wire!.how} · ${rec.wire!.lagSec}s after the post · trust ${trust}` },
+                // PRIOR: most headlines move nothing. The post has to have spawned a wave (or the author posted the CA)
+                (() => {
+                  const tr = rec.wire!.trac;
+                  const ok = !learnS.tractionOn || rec.wire!.how === "posted the CA" || (!!tr && (tr.copies >= 3 || tr.sol >= 25));
+                  return { rule: "post_traction", ok, v: `${tr ? `${tr.copies} coins, ${tr.sol} SOL across them` : "no count"}${rec.wire!.vamp ? " · vamp" : ""}${learnS.tractionOn ? "" : " (prior overruled)"}` };
+                })(),
+                { rule: "curve_window", ok: curve <= (cfg.wireMaxCurve ?? 85), v: `${curve}%` },
+                { rule: "dev_buy_sane", ok: rec.devBuySol <= cfg.maxDevBuy, v: `${rec.devBuySol} SOL` },
+                { rule: "bundle_ok", ok: !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in, ${t.bundleN} wallets` : "not read" },
+                { rule: "tape_read", ok: !!t, v: t ? `${t.n} trades, ${t.uniq} traders read` : "no tape read in time" },
+                { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders` : "not read" },
+                { rule: "holding_floor", ok: !learnS.floorOn || dd < LEARN_RULES.floorMax, v: `${dd}% under its high${learnS.floorOn ? "" : " (prior overruled)"}` },
+                { rule: "open_slots", ok: wireOpen < (cfg.wireMaxOpen ?? 2) && !posMap[m] && !stalks[m], v: `${wireOpen}/${cfg.wireMaxOpen ?? 2} tweet-coin slots` },
+                { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
+              ]
+            : [
+            early
+              ? { rule: "early_read_bond", ok: true, v: `BOND ${rec.early!.score} at minute 1` }
+              : { rule: "king_or_nano_bond", ok: rec.call!.verdict === "BOND" || rec.call!.nano?.verdict === "BOND", v: `${rec.call!.verdict} ${rec.call!.score}` },
+            { rule: "nano_agrees", ok: early || !cfg.needNano || rec.call!.nano?.verdict === "BOND", v: `${rec.call?.nano ? `${rec.call.nano.verdict} ${rec.call.nano.score}` : "learning"}${cfg.needNano ? "" : " (not required yet)"}` },
+            { rule: "curve_window", ok: curve <= cfg.maxCurve && (early || curve >= cfg.minCurve), v: `${curve}%` },
+            { rule: "dev_not_serial", ok: !((rec.devN ?? 0) >= cfg.serialDev && (rec.devB ?? 0) === 0), v: `${rec.devN ?? 0} launches, ${rec.devB ?? 0} bonded` },
+            { rule: "dev_buy_sane", ok: rec.devBuySol <= cfg.maxDevBuy, v: `${rec.devBuySol} SOL` },
+            // memes: a dev sell is normal, so it only blocks once COACH has proven the dev exit
+            { rule: "dev_not_selling", ok: !learnS.devExitOn || !t || t.devSold <= 0.25, v: t ? `${t.devSold} SOL out${learnS.devExitOn ? "" : " (info only)"}` : "not read" },
+            { rule: "bundle_ok", ok: !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in, ${t.bundleN} wallets` : "not read" },
+            { rule: "cluster_ok", ok: !g || !(g.clN >= 5 && g.clB === 0), v: g ? (g.funder ? `${g.clN} launches, ${g.clB} bonded` : "fresh") : "not read" },
+            { rule: "not_a_copycat", ok: !rec.meta?.copy, v: rec.meta?.copy ? "copies a recent winner" : "original" },
+            { rule: "tape_read", ok: !!t, v: t ? `${t.n} trades, ${t.uniq} traders read` : "no tape read in time" },
+            { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders, block-0 curve ${Math.round(t.instant ?? 0)}%` : "not read" },
+            { rule: "holding_floor", ok: !learnS.floorOn || dd < LEARN_RULES.floorMax, v: `${dd}% under its high${learnS.floorOn ? "" : " (prior overruled)"}` },
+            // PRIOR: no socials is usually a rug. A tweet-linked coin or 2+ smart wallets early outweigh it. Not a hard cap: COACH can overrule it.
+            socialsCheck(rec, learnS),
+            { rule: "fresh_signal", ok: now - (rec.call?.at ?? rec.early!.at) < 3 * 60_000, v: `${Math.round((now - (rec.call?.at ?? rec.early!.at)) / 1000)}s old` },
+            { rule: "open_slots", ok: open < cfg.maxOpen && !posMap[m] && !stalks[m], v: `${open}/${cfg.maxOpen}` },
+            { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
+          ];
+          const fail = checks.find((c) => !c.ok);
+          const fails = checks.filter((c) => !c.ok);
+          if (fails.length === 1 && PRIOR_RULES[fails[0].rule] && ((await r.hlen(K.deskShadow)) || 0) < 60) {
+            // a prior skipped it: follow it anyway so COACH can tell whether the prior helps
+            const tag = PRIOR_RULES[fails[0].rule];
+            const sh = { ...newShadow(m, rec.symbol, q.px, early), k: `${tag[0]}:${m}`, tag };
+            await r.hset(K.deskShadow, { [sh.k]: sh });
+          }
+          await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
+          await r.set(VET_KEY(m), { at: now, checks, passed: !checks.find((c) => !c.ok) }, { ex: 7 * 86400 });
+          // daily tally for the "right now" panel: how many signals were checked, and what stopped them
+          const dk = DAY_KEY(now);
+          await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
+          await r.hincrby(dk, "seen", 1);
+          await r.expire(dk, 3 * 86400);
+          // blocked only by the desk itself (loss limit, full slots), not by anything about the coin: the ghost desk takes it
+          const deskBlock = !!fail && fails.every((c) => DESK_RULES.has(c.rule)) && !posMap[m] && !stalks[m];
+          if (fail && deskBlock) log(b, "VET", `$${rec.symbol} passes every check on the coin; the desk is blocked (${fails.map((c) => `${c.rule.replace(/_/g, " ")} ${c.v}`).join(", ")}). ghost desk follows it`, "info", coin);
+          if (fail && !deskBlock) {
+            log(b, "VET", `skipped $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
+            // FILM follows every skip (except a full desk or the loss limit, which say nothing about the coin)
+            if (fail.rule !== "open_slots" && fail.rule !== "daily_loss_ok") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
+            continue;
+          }
+          // every clean signal is followed in shadow: buy-now vs three pullback depths, scored after 30 minutes
+          if (((await r.hlen(K.deskShadow)) || 0) < 40) {
+            const sh = newShadow(m, rec.symbol, q.px, early);
+            await r.hset(K.deskShadow, { [sh.k]: sh });
+          }
+          if (early && !learnS.earlyOn) {
+            const es = learnS.earlyStat;
+            log(b, "VET", `$${rec.symbol} early read is clean. shadow only: early entries unlock at ${LEARN_RULES.earlyMin} resolved reads beating the minute-5 King (now ${es.n}, ${es.n ? Math.round((es.hit / es.n) * 100) : 0}% vs ${es.mainN ? Math.round((es.mainHit / es.mainN) * 100) : 0}%)`, "info", coin);
+            continue;
+          }
+          if (!deskBlock) log(b, "VET", `$${rec.symbol} clean: curve ${curve}%, dev ${rec.devN ?? 0}/${rec.devB ?? 0}${t ? `, bundle ${Math.round(t.bundleShare * 100)}%` : ""}${g?.smartN ? `, ${g.smartN} smart wallets` : ""}`, "ok", coin);
+
+          // FLOW: live pressure on the curve over a few seconds plus the last hour of trades
+          const before = q.real;
+          // FLOW watches the curve for a moment. Tweet coins get no wait: there, seconds are the edge
+          await new Promise((res) => setTimeout(res, wireSig ? 0 : (cfg as any).flowWaitMs ?? 1500));
+          const again = (await getCurves([m]))[m];
+          const delta = again && before ? pct(again.realSol, before) : 0;
+          const mk = (await getMarket([m]).catch(() => ({} as any)))[m];
+          const tot = (mk?.b1 || 0) + (mk?.s1 || 0);
+          const buyShare = tot ? mk.b1 / tot : null;
+          if (delta <= -5 || (buyShare != null && tot >= 8 && buyShare < cfg.minFlow)) {
+            log(b, "FLOW", `$${rec.symbol} selling: curve ${delta.toFixed(1)}% in 3s${buyShare != null ? `, buys ${(buyShare * 100).toFixed(0)}% of flow` : ""}`, "info", coin);
+            await logSkip("flow_selling", `curve ${delta.toFixed(1)}% in 3s`, m, rec.symbol, again?.priceSol || q.px).catch(() => {});
+            continue;
+          }
+          const flowTxt = `curve ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}% in 3s${buyShare != null ? `, buys ${(buyShare * 100).toFixed(0)}% of the last hour (${tot} trades)` : ""}`;
+          log(b, "FLOW", `$${rec.symbol} bid: ${flowTxt}`, "ok", coin);
+
+          // BUZZ: X mentions (if configured) and paid dex signals; logged and fed to the runner model, never a buy trigger alone
+          const xm = await xMentions(m);
+          const buzzTxt = `${xm != null ? `${xm} X posts in 15m` : "X not connected"}${mk?.bo ? `, ${mk.bo} dex boosts` : ""}${mk?.pf ? ", paid dex profile" : ""}`;
+          if (xm != null || mk?.bo || mk?.pf) log(b, "BUZZ", `$${rec.symbol}: ${buzzTxt}`, "info", coin);
+          await r.set(ENTRY_KEY(m), { checks, flow: flowTxt, buzz: buzzTxt, chase }, { ex: 3 * 3600 });
+
+          // never chase: past maxChase above the call price, or when pullbacks have proven better, stalk instead
+          const nowPx = again?.priceSol || q.px;
+          if (!wireSig && !deskBlock && (learnS.stalkOn || chase > cfg.maxChase)) {
+            if (learnS.stalkOn) {
+              await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: nowPx, depth: learnS.stalkArm || 30, hi: nowPx, lo: nowPx, armed: false, early } satisfies Stalk });
+              log(b, "SIZE", `$${rec.symbol}: stalking a -${learnS.stalkArm || 30}% pullback for up to ${cfg.stalkMins}m`, "info", coin);
+            } else {
+              log(b, "VET", `$${rec.symbol} already ${fmtPct(chase)} above the call. not chasing (pullback entries still locked)`, "info", coin);
+              await logSkip("not_chasing", `${fmtPct(chase)} over the call`, m, rec.symbol, nowPx).catch(() => {});
+            }
+            continue;
+          }
+          const how0 = wireSig ? "wire" : early ? "early" : "direct";
+          if (deskBlock) await ghostEnter(b, rec, nowPx, again?.realSol ?? 0, how0, fails.map((c) => `${c.rule.replace(/_/g, " ")} ${c.v}`).join(", "), cfg);
+          else await enter(b, state, rec, nowPx, again?.realSol ?? 0, eq.value, walletSol, kp, cfg, how0, xm);
+        } catch (e) {
+          log(b, "VET", `signal ${q0.slice(0, 8)}… failed: ${safeErr(e)}`, "bad");
         }
-        const how0 = wireSig ? "wire" : early ? "early" : "direct";
-        if (deskBlock) await ghostEnter(b, rec, nowPx, again?.realSol ?? 0, how0, fails.map((c) => `${c.rule.replace(/_/g, " ")} ${c.v}`).join(", "), cfg);
-        else await enter(b, state, rec, nowPx, again?.realSol ?? 0, eq.value, walletSol, kp, cfg, how0, xm);
       }
 
       // --- stalks: buy the pullback once it bounces
@@ -1104,7 +1142,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await flushLog(b).catch(() => {});
     return { error: safeErr(e), loops };
   } finally {
-    await r.del("rn:lock:desk");
+    await release(lock);
   }
 }
 
@@ -1114,10 +1152,21 @@ function fallbackRun(p: Pos): Run {
 
 type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 
-async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo", xm: number | null) {
+async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch", xm: number | null) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
   enqueueLens(r, rec.mint, "buy");
+  // RISK: at the bag cap, the quietest house-money bag makes room (cash and attention go to the new signal)
+  const held = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
+  if (held.length >= ((cfg as any).maxBags ?? 12)) {
+    const bag = held.filter((p) => p.tp1Done && p.mint !== rec.mint).sort((a, z) => (a.peakAt || a.openedAt) - (z.peakAt || z.openedAt))[0];
+    if (!bag) {
+      log(b, "RISK", `$${rec.symbol}: ${held.length} positions held and none is house money yet. skipping`, "info", coin);
+      return;
+    }
+    const ok = await sell(b, state, bag, 1, bag.lastPx, `bag cap: sold the quietest bag to make room for $${rec.symbol}`, cfg.slippageBps, kp);
+    if (ok && bag.tokens <= 0) await r.hdel(K.deskPos, bag.mint);
+  }
   // SIZE: research on fat tails says small, equal bets; never size up on conviction
   const avail = state.live ? (walletSol ?? 0) - 0.02 : state.cash;
   // liquidity cap: on the curve, buying S SOL moves the price by ((vSol + S) / vSol)^2 - 1, vSol = 30 + real SOL
@@ -1238,7 +1287,7 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
   const rec: Launch = known || ({ mint: m, sig: "", createdAt: now - h.ageMin * 60_000, creator: "", name: h.name, symbol: h.symbol, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: now, dugBy: "MOMO", p0: 0, mcap0: 0, cp: {}, outcome: q.grad ? "BONDED" : undefined } as Launch);
   rec.description = `$${Math.round(h.v5 / 1000)}K volume in 5m, ${h.buyers5} buyers vs ${h.sellers5} sellers`;
   const coin = { mint: m, symbol: rec.symbol };
-  const open = Object.values(posMap).filter((p) => p.how === "momo").length;
+  const open = Object.values(posMap).filter((p) => p.how === "momo" && takesSlot(p)).length;
   // holder spread: top 10 token accounts, minus the pool vault (the biggest account once migrated)
   let top10: number | null = null;
   try {
@@ -1255,7 +1304,7 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
     { rule: "holder_spread", ok: top10 == null || top10 <= (c.momoMaxTop10 ?? 35), v: top10 == null ? "not read" : `top 10 hold ${top10}%` },
     { rule: "liquidity_ok", ok: !q.grad || q.real >= (c.momoMinPoolSol ?? 40), v: q.grad ? `${Math.round(q.real)} SOL in the pool` : `on the curve, ${q.curve?.progress ?? "?"}%` },
     { rule: "fresh_signal", ok: now - h.at < 3 * 60_000, v: `${Math.round((now - h.at) / 1000)}s old` },
-    { rule: "open_slots", ok: open < (c.momoMaxOpen ?? 3) && !posMap[m], v: `${open}/${c.momoMaxOpen ?? 3} MOMO slots` },
+    { rule: "open_slots", ok: open < (c.momoMaxOpen ?? 3) && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${c.momoMaxOpen ?? 3} MOMO slots` },
     { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
   ];
   const fails = checks.filter((x) => !x.ok);
@@ -1281,6 +1330,69 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
   await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "momo", null);
 }
 
+/**
+ * A CATCH signal: a coin moving like the ones that ran to $300K+. Its own checks (the curve window doesn't apply:
+ * CATCH buys hot curves late and migrated coins), its own slots, its own sleeve.
+ */
+async function catchEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null, posMap: Record<string, Pos>) {
+  const r = redis();
+  const now = Date.now();
+  const c: any = cfg;
+  const g = await catchSignal(m);
+  if (!g) return;
+  const known = await r.get<Launch>(K.launch(m));
+  const rec: Launch = known || ({ mint: m, sig: "", createdAt: now, creator: "", name: g.sym, symbol: g.sym, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: now, dugBy: "CATCH", p0: 0, mcap0: 0, cp: {}, outcome: q.grad ? "BONDED" : undefined } as Launch);
+  const coin = { mint: m, symbol: rec.symbol };
+  const t = rec.tape;
+  const open = Object.values(posMap).filter((p) => p.how === "catch" && takesSlot(p)).length;
+  // holder spread (pool vault excluded once migrated)
+  let top10: number | null = null;
+  try {
+    const la = await conn().getTokenLargestAccounts(new PublicKey(m));
+    const amts = (la.value || []).map((x) => Number(x.uiAmount || 0)).sort((a, z) => z - a);
+    const rest = q.grad ? amts.slice(1) : amts.slice(1); // on the curve the biggest account is the curve itself
+    top10 = Math.round((rest.slice(0, 10).reduce((a, x) => a + x, 0) / 1e9) * 1000) / 10;
+  } catch {}
+  const sol = (await solUsdCached()) || 150;
+  const mcNow = q.px * SUPPLY * sol;
+  const checks = [
+    { rule: "catch_signal", ok: true, v: `${g.by === "model" ? `P ${Math.round(g.p * 100)}%` : `score ${g.prior}`}: ${g.why.slice(0, 3).join(", ")}` },
+    { rule: "fresh_signal", ok: now - g.at < 90_000, v: `${Math.round((now - g.at) / 1000)}s old` },
+    { rule: "room_to_run", ok: mcNow <= g.target / 2, v: `$${Math.round(mcNow / 1000)}K now, aiming at $${Math.round(g.target / 1000)}K` },
+    { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders` : "not read" },
+    { rule: "bundle_ok", ok: q.grad || !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in` : "not read" },
+    { rule: "holder_spread", ok: top10 == null || top10 <= (c.catchMaxTop10 ?? 40), v: top10 == null ? "not read" : `top 10 hold ${top10}%` },
+    { rule: "liquidity_ok", ok: q.grad ? q.real >= (c.catchMinPoolSol ?? 30) : q.real >= 5, v: q.grad ? `${Math.round(q.real)} SOL in the pool` : `${q.real.toFixed(1)} SOL in the curve` },
+    { rule: "open_slots", ok: open < (c.catchMaxOpen ?? 3) && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${c.catchMaxOpen ?? 3} CATCH slots` },
+    { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
+  ];
+  const fails = checks.filter((x) => !x.ok);
+  const fail = fails[0];
+  await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
+  await r.set(VET_KEY(m), { at: now, checks, passed: !fail }, { ex: 7 * 86400 });
+  const dk = DAY_KEY(now);
+  await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
+  await r.hincrby(dk, "seen", 1);
+  const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule)) && !posMap[m];
+  if (fail && !deskBlock) {
+    log(b, "VET", `skipped CATCH's $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
+    if (fail.rule !== "fresh_signal") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
+    return;
+  }
+  await r.set(ENTRY_KEY(m), { checks, flow: q.grad ? `migrated, ${Math.round(q.real)} SOL in the pool` : `curve ${q.curve?.progress ?? "?"}%`, buzz: `CATCH: ${g.why.join(", ")}`, chase: 0 }, { ex: 3 * 3600 });
+  if (deskBlock) {
+    log(b, "VET", `CATCH's $${rec.symbol} passes; the desk is blocked (${fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", ")}). ghost desk follows it`, "info", coin);
+    await ghostEnter(b, rec, q.px, q.real, "catch", fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", "), cfg);
+    return;
+  }
+  log(b, "VET", `CATCH's $${rec.symbol} clean: ${checks.slice(0, 1).concat(checks.slice(5, 7)).map((x) => x.v).join(", ")}`, "ok", coin);
+  await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "catch", null);
+}
+
+async function solUsdCached() {
+  return solUsd().catch(() => null);
+}
+
 /** A MIND SEND signal: its own checks (no curve window, no floor: MIND may buy migrated coins), its own slots. */
 async function mindEntry(b: Batch, state: DeskState, rec: Launch, q: Px, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null, posMap: Record<string, Pos>) {
   const r = redis();
@@ -1290,14 +1402,25 @@ async function mindEntry(b: Batch, state: DeskState, rec: Launch, q: Px, cfg: Cf
   const c: any = cfg;
   const j = await mindJudgement(m);
   const t = rec.tape;
-  const open = Object.values(posMap).filter((p) => p.how === "mind").length;
+  const open = Object.values(posMap).filter((p) => p.how === "mind" && takesSlot(p)).length;
+  // MIND reads text the coin's creator wrote, so a SEND alone never buys: at least one signal MIND can't be talked into
+  // must agree (King or nano BOND, tracked wallets in it, MOMO traction, or a post wave behind it)
+  const tracked = await buyersOf(m).catch(() => [] as any[]);
+  const indep = [
+    rec.call?.verdict === "BOND" ? "King BOND" : null,
+    rec.call?.nano?.verdict === "BOND" ? "nano BOND" : null,
+    tracked.filter((x: any) => x.side !== "sell").length >= 1 ? `${tracked.length} tracked wallets` : null,
+    (await momoSignal(m).catch(() => null)) ? "MOMO traction" : null,
+    rec.wire?.trac && rec.wire.trac.copies >= 2 ? "post wave" : null,
+  ].filter(Boolean) as string[];
   const checks = [
     { rule: "mind_send", ok: !!j && j.verdict === "SEND" && j.conviction >= (c.mindMin ?? 75), v: j ? `${j.verdict} ${j.conviction}: ${j.thesis.slice(0, 90)}` : "no judgement" },
     { rule: "fresh_signal", ok: !!j && now - j.at < 10 * 60_000, v: j ? `${Math.round((now - j.at) / 1000)}s old` : "-" },
+    { rule: "independent_signal", ok: indep.length > 0, v: indep.join(", ") || "only MIND's read" },
     { rule: "liquidity_ok", ok: !q.grad || q.real >= (c.mindMinPoolSol ?? 20), v: q.grad ? `${Math.round(q.real)} SOL in the pool` : `on the curve, ${q.curve?.progress ?? "?"}%` },
     { rule: "not_a_farm", ok: !t?.farm?.farm, v: t?.farm?.farm ? t.farm.why : t ? `${t.organic ?? "?"} organic traders` : "not read" },
     { rule: "bundle_ok", ok: q.grad || !t || t.bundleShare * 100 <= cfg.maxBundle, v: t ? `${Math.round(t.bundleShare * 100)}% of SOL in` : "not read" },
-    { rule: "open_slots", ok: open < (c.mindMaxOpen ?? 2) && !posMap[m], v: `${open}/${c.mindMaxOpen ?? 2} MIND slots` },
+    { rule: "open_slots", ok: open < (c.mindMaxOpen ?? 2) && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${c.mindMaxOpen ?? 2} MIND slots` },
     { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
   ];
   const fails = checks.filter((x) => !x.ok);
@@ -1537,6 +1660,14 @@ const GHOST_TRADES = "rn:ghost:trades";
 const GHOST_TRIPS = "rn:ghost:trips";
 const GHOST_MAX = 10;
 const DESK_RULES = new Set(["daily_loss_ok", "open_slots"]);
+// strategies with their own slot count (the King's lane never fills up with them, nor they with the King's)
+const OWN_LANE = new Set(["wire", "mind", "momo", "catch"]);
+/**
+ * A position takes a slot only while its cost is at risk. Once initials are taken the rest is house money: it rides on
+ * the trail and frees the slot, so a handful of moonbags can never freeze the desk (seen in the 12h sim: 7 bags held
+ * every slot for 6 hours and the desk stopped trading).
+ */
+const takesSlot = (p: Pos) => !p.tp1Done;
 export const VET_KEY = (m: string) => `rn:vet:${m}`; // the last VET verdict on a coin (7 days)
 const ENTRY_KEY = (m: string) => `rn:entry:${m}`; // checks, flow and buzz of the signal that is about to be bought
 

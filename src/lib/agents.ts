@@ -1,14 +1,15 @@
 // Per-agent history and counters, so anyone can click an agent and see what it has been doing.
 import { K, dayKey, redis } from "./redis";
+import { postTo, stanceOf } from "./board";
 
-export type AgentEv = { agent: string; at: number; text: string; tone: string; mint?: string; symbol?: string };
+export type AgentEv = { agent: string; at: number; text: string; tone: string; mint?: string; symbol?: string; stance?: number };
 const EVK = (a: string) => `rn:ag:ev:${a}`; // newest first, last 200 per agent
 const STATK = "rn:ag:stat"; // {agent}:n, {agent}:{tone}
 const DAYK = (d: string) => `rn:ag:day:${d}`; // {agent} -> actions today
 export const COINK = (m: string) => `rn:ag:coin:${m}`; // every agent line about one coin, newest first (7 days)
 
 /** Queue agent events on a pipeline: last line per agent, its own history, and counters. */
-export function agentLog(p: { lpush: Function; ltrim: Function; hset: Function; hincrby: Function; expire: Function }, evs: AgentEv[]) {
+export function agentLog(p: { lpush: Function; ltrim: Function; hset: Function; hincrby: Function; expire: Function; zadd: Function }, evs: AgentEv[]) {
   if (!evs.length) return;
   const last: Record<string, AgentEv> = {};
   const by: Record<string, AgentEv[]> = {};
@@ -32,6 +33,12 @@ export function agentLog(p: { lpush: Function; ltrim: Function; hset: Function; 
     p.lpush(COINK(m), ...list.slice().reverse());
     p.ltrim(COINK(m), 0, 149);
     p.expire(COINK(m), 7 * 86400);
+  }
+  // BOARD: every agent's latest stance on the coin, so CATCH (and the desk) see all of them at once
+  for (const e of evs) {
+    if (!e.mint) continue;
+    const st = stanceOf(e);
+    if (st != null) postTo(p, e.mint, { a: e.agent, at: e.at, s: st, t: e.text.slice(0, 140), sym: e.symbol });
   }
 }
 

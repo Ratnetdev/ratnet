@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { usePoll } from "./usePoll";
 import Info from "./Info";
-import { ago } from "./fmt";
+import { safeHref, ago } from "./fmt";
 import { lensCol } from "./Scorecard";
 import CoinImg from "./CoinImg";
 
@@ -110,7 +110,7 @@ export function LensDossier({ mint, dossier }: { mint: string; dossier: Dossier 
               <div className="sc-h">Website</div>
               {d.site ? (
                 <>
-                  <a href={d.site.url} target="_blank" rel="noreferrer nofollow" className="ld-link">{d.site.url.replace(/^https?:\/\//, "").slice(0, 48)}</a>
+                  <a href={safeHref(d.site.url)} target="_blank" rel="noreferrer nofollow" className="ld-link">{d.site.url.replace(/^https?:\/\//, "").slice(0, 48)}</a>
                   <div className="tiny muted">{d.site.up ? `${d.site.builder || "custom"} · ${d.site.domainAgeDays == null ? "domain age ?" : `domain ${Math.round(d.site.domainAgeDays)}d old`}${d.site.caOnSite ? " · CA on page" : ""}${d.site.linksX ? " · links X" : ""}` : "does not load"}</div>
                   {d.site.title ? <div className="small">{d.site.title}</div> : null}
                 </>
@@ -120,7 +120,7 @@ export function LensDossier({ mint, dossier }: { mint: string; dossier: Dossier 
               <div className="sc-h">X</div>
               {d.x ? (
                 <>
-                  {d.x.handle ? <a href={`https://x.com/${d.x.handle}`} target="_blank" rel="noreferrer" className="ld-link">@{d.x.handle}</a> : <span className="small">community</span>}
+                  {d.x.handle ? <a href={`https://x.com/${encodeURIComponent(d.x.handle)}`} target="_blank" rel="noreferrer" className="ld-link">@{d.x.handle}</a> : <span className="small">community</span>}
                   <div className="tiny muted">{d.x.kind === "post" ? "the post behind it · " : ""}{k(d.x.followers)} followers{d.x.ageDays != null ? ` · ${Math.round(d.x.ageDays)}d old` : ""}{d.x.blue ? " · blue" : ""}{d.x.trust ? ` · WIRE trust ${d.x.trust}` : ""}</div>
                   {d.x.postText ? <q className="small">{d.x.postText}</q> : d.x.bio ? <div className="small muted">{d.x.bio}</div> : null}
                 </>
@@ -133,14 +133,14 @@ export function LensDossier({ mint, dossier }: { mint: string; dossier: Dossier 
                   <div className="small">{d.talk.authors} accounts · {d.talk.posts} posts · {k(d.talk.reach)} reach</div>
                   {d.talk.known.length ? <div className="tiny green">trusted: @{d.talk.known.join(", @")}</div> : null}
                   {d.talk.top.slice(0, 3).map((t) => (
-                    <a key={t.url} href={t.url} target="_blank" rel="noreferrer" className="ld-post"><b>@{t.h}</b> <span className="muted">{k(t.f)}</span> {t.text}</a>
+                    <a key={t.url} href={safeHref(t.url)} target="_blank" rel="noreferrer" className="ld-post"><b>@{t.h}</b> <span className="muted">{k(t.f)}</span> {t.text}</a>
                   ))}
                 </>
               ) : <div className="muted small">X reads not connected</div>}
             </div>
             <div>
               <div className="sc-h">Telegram</div>
-              {d.tg ? <><a href={d.tg.url} target="_blank" rel="noreferrer" className="ld-link">{d.tg.url.replace("https://", "")}</a><div className="tiny muted">{d.tg.members != null ? `${k(d.tg.members)} members` : "no count"}</div></> : <div className="muted small">none</div>}
+              {d.tg ? <><a href={safeHref(d.tg.url)} target="_blank" rel="noreferrer" className="ld-link">{d.tg.url.replace("https://", "")}</a><div className="tiny muted">{d.tg.members != null ? `${k(d.tg.members)} members` : "no count"}</div></> : <div className="muted small">none</div>}
             </div>
           </div>
           <div className="sc-grid" style={{ marginTop: 12 }}>

@@ -1,13 +1,14 @@
 import { buildBurnTx, BurnKind } from "@/lib/burns";
 import { getSettings } from "@/lib/settings";
 import { isPubkey } from "@/lib/solana";
-import { fail, json } from "@/lib/http";
+import { fail, ipOf, json, limit, tooMany } from "@/lib/http";
 import { redis } from "@/lib/redis";
 import { allRats, isActive, PUPS_KEY } from "@/lib/rats";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  if (!(await limit(`post:${ipOf(req)}`, 12, 60))) return tooMany();
   try {
     const { wallet, kind, ca } = await req.json();
     if (!isPubkey(wallet)) return fail("Connect a wallet first");

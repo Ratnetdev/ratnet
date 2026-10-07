@@ -3,6 +3,7 @@
 // talking about the coin on X right now, and the Telegram. Every step streams live to the LensCam on the site, and
 // the result is a dossier: a 0-100 score with the red flags and the good signs in plain words.
 // LENS informs; it does not block a buy. Its score rides along on every trade so COACH and FILM can learn what it is worth.
+import { safeFetch } from "./safefetch";
 import { K, redis } from "./redis";
 import { agentLog } from "./agents";
 import { accountOf, xOn } from "./wire";
@@ -58,16 +59,11 @@ export async function lensView() {
 
 const safeHost = (u: URL) => /^https?:$/.test(u.protocol) && !/^(localhost|.*\.local|.*\.internal|\d+\.\d+\.\d+\.\d+|\[.*\])$/i.test(u.hostname);
 
+// Every fetch here goes through safeFetch: project websites are chosen by whoever launched the coin (public hosts only,
+// redirects re-checked, 400KB cap, one deadline for the whole read).
 async function get(url: string, ms = 6000, headers: Record<string, string> = {}) {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), ms);
-  try {
-    const r = await fetch(url, { headers: { "user-agent": UA, ...headers }, signal: ctl.signal, redirect: "follow", cache: "no-store" });
-    const buf = await r.arrayBuffer();
-    return { ok: r.ok, status: r.status, url: r.url, body: new TextDecoder().decode(buf.slice(0, 400_000)) };
-  } finally {
-    clearTimeout(t);
-  }
+  const g = await safeFetch(url, { timeoutMs: ms, maxBytes: 400_000, headers: { "user-agent": UA, ...headers }, anyStatus: true });
+  return { ok: g.ok, status: g.status, url: g.url, body: g.buf.toString("utf8") };
 }
 
 async function xApi<T = any>(path: string): Promise<T | null> {
@@ -373,7 +369,7 @@ export async function lensSession(ms: number) {
       p.set(LENS_D(mint), d, { ex: 7 * 86400 });
       p.lpush(HIST, { mint, symbol: d.symbol, at: d.at, why, score: d.score, flags: d.flags.slice(0, 2), good: d.good.slice(0, 2) });
       p.ltrim(HIST, 0, 29);
-      agentLog(p, [{ agent: "LENS", at: Date.now(), mint, symbol: d.symbol, text: `$${d.symbol} ${d.score}/100${d.good[0] ? ` · + ${d.good[0]}` : ""}${d.flags[0] ? ` · - ${d.flags[0]}` : ""}`, tone: d.score >= 60 ? "ok" : d.score < 40 ? "bad" : "info" }]);
+      agentLog(p, [{ agent: "LENS", at: Date.now(), mint, symbol: d.symbol, text: `$${d.symbol} ${d.score}/100${d.good[0] ? ` · + ${d.good[0]}` : ""}${d.flags[0] ? ` · - ${d.flags[0]}` : ""}`, tone: d.score >= 60 ? "ok" : d.score < 40 ? "bad" : "info", stance: Math.max(-1, Math.min(1, (d.score - 50) / 40)) }]);
       await p.exec();
     }
   } finally {

@@ -8,7 +8,8 @@ export class MockRedis {
   private live(k: string) { const e = this.exp.get(k); if (e && e <= this.now()) { this.kv.delete(k); this.exp.delete(k); } return this.kv.has(k); }
   private clone(v: any) { return v === undefined ? null : JSON.parse(JSON.stringify(v)); }
   async get(k: string) { this.calls++; return this.live(k) ? this.clone(this.kv.get(k)) : null; }
-  async set(k: string, v: any, o: any = {}) { this.calls++; if (o.nx && this.live(k)) return null; const keep = o.keepTtl ? this.exp.get(k) : undefined; this.kv.set(k, this.clone(v)); if (o.ex) this.exp.set(k, this.now() + o.ex * 1000); else if (keep) this.exp.set(k, keep); else this.exp.delete(k); return "OK"; }
+  async set(k: string, v: any, o: any = {}) { this.calls++; if (o.nx && this.live(k)) return null; const keep = o.keepTtl ? this.exp.get(k) : undefined; this.kv.set(k, this.clone(v)); if (o.ex) this.exp.set(k, this.now() + o.ex * 1000); else if (o.px) this.exp.set(k, this.now() + o.px); else if (keep) this.exp.set(k, keep); else this.exp.delete(k); return "OK"; }
+  async eval(script: string, keys: string[], args: string[]) { this.calls++; const k = keys[0]; const own = this.live(k) && this.kv.get(k) === args[0]; if (!own) return 0; if (/pexpire/.test(script)) { this.exp.set(k, this.now() + Number(args[1])); return 1; } this.kv.delete(k); this.exp.delete(k); return 1; }
   async del(...ks: string[]) { this.calls++; ks.forEach((k) => this.kv.delete(k)); return 1; }
   async incr(k: string) { return this.incrby(k, 1); }
   async incrby(k: string, n: number) { this.calls++; const v = Number(this.live(k) ? this.kv.get(k) : 0) + n; this.kv.set(k, v); return v; }

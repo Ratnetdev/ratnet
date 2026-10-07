@@ -1,4 +1,4 @@
-// Stan's feedback on what the agents did: good or bad, a few tags, a note. Admin only. Stored per coin and tallied
+// Admin feedback on what the agents did: good or bad, a few tags, a note. Admin only. Stored per coin and tallied
 // per tag, so the Strategy tab shows which mistakes keep coming back. The agents do not read it on their own yet:
 // it is the record for tuning by hand (and later, a training signal).
 import { redis } from "./redis";

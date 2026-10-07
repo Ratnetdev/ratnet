@@ -3,7 +3,7 @@ import { coinLog } from "@/lib/agents";
 import { isPubkey } from "@/lib/solana";
 import { redis } from "@/lib/redis";
 import { fail } from "@/lib/http";
-import { publicChecks, publicTrip, serve } from "@/lib/private";
+import { publicChecks, publicEvs, publicTrip, serve } from "@/lib/private";
 import { lensDossier } from "@/lib/lens";
 import { feedbackFor } from "@/lib/feedback";
 import { mindJudgement } from "@/lib/mind";
@@ -30,7 +30,7 @@ export async function GET(req: Request) {
     return serve(
       req,
       data,
-      (d) => ({ ...d, mind: d.mind ? { ...d.mind, lessons: [] } : null, trips: d.trips.map(publicTrip), vet: d.vet ? { ...d.vet, checks: publicChecks(d.vet.checks) } : null, card: d.card ? { symbol: d.card.symbol, score: d.card.score, verdict: d.card.verdict, nano: d.card.nano, why: d.card.why, progress: d.card.progress, at: d.card.at } : null }),
+      (d) => ({ ...d, log: publicEvs(d.log), mind: d.mind ? { ...d.mind, lessons: [] } : null, trips: d.trips.map(publicTrip), vet: d.vet ? { ...d.vet, checks: publicChecks(d.vet.checks) } : null, card: d.card ? { symbol: d.card.symbol, score: d.card.score, verdict: d.card.verdict, nano: d.card.nano, why: d.card.why, progress: d.card.progress, at: d.card.at } : null }),
       4
     );
   } catch (e) {

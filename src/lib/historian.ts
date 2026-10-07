@@ -32,6 +32,8 @@ import { loadModel, LABEL_MS } from "./digger";
 import { features as runFeatures, MILESTONES, MILLION, RK, Run, loadRunner } from "./runner";
 import { ensureSolHistory, RG, regimeAt, seasonNow } from "./regime";
 import { getSettings } from "./settings";
+import { curveMcSol, learnHistory, peakIn } from "./catcher";
+import { solUsd } from "./solana";
 
 export const HK = {
   state: "rn:h:state2",
@@ -55,6 +57,7 @@ export type HState = {
   deep: number;
   lessons: number;
   runnerLessons: number;
+  catchLessons?: number;
   bt: { v0n: number; v0hit: number; nn: number; nhit: number; base: number; baseHit: number };
   errors: number;
   lastError?: string;
@@ -338,6 +341,9 @@ async function historianInner(budgetMs: number) {
         }
       });
       const p = r.pipeline();
+      const catchItems: { f: Record<string, number>; y: boolean; w: number }[] = [];
+      const target = Number((s.desk as any).catchTargetUsd ?? 300_000);
+      const solNow = (await solUsd().catch(() => null)) || 150;
       for (const { job, bt, rep, funder } of results) {
         if (!rep?.x5) continue;
         const bonded = !!bt && bt - job.createdAt <= LABEL_MS;
@@ -362,8 +368,28 @@ async function historianInner(budgetMs: number) {
         // records for the live rats: the dev's funder cluster and the early wallets
         const early = rep.tape5?.early || [];
         creditResolve(p, funder, early, bonded, GK);
+        // CATCH: the minute-5 look and (if it bonded) the migration look, labelled by the candles after the bond
+        const solAt = Number((await r.hget(RG.solh, hourKey(job.createdAt)).catch(() => null)) || 0) || solNow;
+        const f5: Record<string, number> = {
+          pool: 0, mc: curveMcSol(rep.p5 ?? 0) * solAt, ageMin: 5, prog: rep.p5 ?? 0, vel: ((rep.p5 ?? 0) - 0) / 5, sol: 0, migMin: 0,
+          uniq: rep.tape5?.uniq ?? 0, organic: rep.tape5?.organic ?? 0, buyShare: rep.tape5?.buyShare ?? 0.5, bundle: rep.tape5?.bundleShare ?? 0, farm: rep.tape5?.farm?.farm ? 1 : 0,
+          smart: 0, tracked: 0, king: rep.v0?.score ?? 0, kingBond: rep.v0?.verdict === "BOND" ? 1 : 0, post: 0, wave: 0, narrative: 0, v5: 0, buyers5: 0, buyRatio: 1, ch5: 0, ch1h: 0,
+          confPos: 0, confNeg: 0, devRate: 0, socials: 0, copy: 0, mind: 0, lens: 0,
+        };
+        let catchPath: { t: number; mc: number }[] | null = null;
+        if (bt && bt - job.createdAt <= 6 * 3600_000 && cfg.runner) catchPath = await postRun(job.mint);
+        if (!bt) catchItems.push({ f: f5, y: false, w: job.w * season }); // never bonded: it never got near $300K
+        else if (catchPath?.length) {
+          const pk5 = peakIn(catchPath, job.createdAt, job.createdAt + 6 * 3600_000);
+          catchItems.push({ f: f5, y: pk5 >= Math.max(target, f5.mc * 2), w: job.w * season });
+          const mcMig = curveMcSol(100) * solAt;
+          const migMin = (bt - job.createdAt) / 60_000;
+          const fm = { ...f5, pool: 1, mc: mcMig, ageMin: migMin, prog: 100, vel: 0, sol: 85, migMin };
+          const pkM = peakIn(catchPath, bt, bt + 6 * 3600_000);
+          catchItems.push({ f: fm, y: pkM >= Math.max(target, mcMig * 2), w: job.w * season });
+        }
         if (bt && cfg.runner) {
-          const path = await postRun(job.mint);
+          const path = catchPath ?? (await postRun(job.mint));
           if (path?.length) {
             const run: Run = {
               mint: job.mint, symbol: job.symbol, createdAt: job.createdAt, bondedAt: bt, hi: -1, pk: 0, xs: {},
@@ -389,6 +415,7 @@ async function historianInner(budgetMs: number) {
         if (rep.tape5?.farm?.farm && bonded) log.push(`$${job.symbol} (${new Date(job.createdAt).toISOString().slice(0, 10)}): farm that bonded (${rep.tape5.farm.why}). lesson learned`);
       }
       await p.exec();
+      if (catchItems.length) st.catchLessons = (st.catchLessons || 0) + (await learnHistory(catchItems).catch(() => 0));
     }
     if (dirty) {
       await r.set(K.nano, model);
@@ -437,6 +464,7 @@ export async function getHistory() {
     deep: st.deep,
     lessons: st.lessons,
     runnerLessons: st.runnerLessons,
+    catchLessons: st.catchLessons || 0,
     days,
     backtest: { base: rate(st.bt.baseHit, st.bt.base), v0: rate(st.bt.v0hit, st.bt.v0n), v0n: st.bt.v0n, nano: rate(st.bt.nhit, st.bt.nn), nanoN: st.bt.nn },
     errors: st.errors,

@@ -17,6 +17,8 @@
 // what and how much, MIND gets the coin when several tracked wallets pile in (or one strong one), and every buy is
 // followed 1h, 6h and 24h later, so each wallet and each class gets a copy-trade record of its own. MIND and RISK
 // see those records; nothing is followed blindly.
+import { postTo } from "./board";
+import { safeEq, secretFor } from "./admin";
 import { K, redis } from "./redis";
 import { SITE } from "@/config/site";
 import { agentLog } from "./agents";
@@ -38,7 +40,7 @@ const DUE = "rn:hd:due";
 const BUY = "rn:hd:b"; // id -> pending follow
 const BQ = "rn:hd:bq"; // breakouts to dig
 const SB = "rn:hd:sb"; // wallet -> breakout record
-const HOOK = "rn:hd:hook"; // { id, n, at }
+export const HOOK = "rn:hd:hook"; // { id, n, at }
 const DIRTY = "rn:hd:dirty";
 const FOMO_AT = "rn:hd:fomoAt";
 const KOL_AT = "rn:hd:kolAt";
@@ -325,17 +327,17 @@ async function digBreakout() {
 // ---------------------------------------------------------------- live: the Helius webhook
 
 const heliusKey = () => process.env.HELIUS_API_KEY || (process.env.HELIUS_RPC_URL || "").match(/api-key=([A-Za-z0-9-]+)/)?.[1] || "";
-const hookAuth = () => `rn-${(process.env.CRON_SECRET || "").slice(0, 24)}`;
-export const checkHook = (req: Request) => !!process.env.CRON_SECRET && req.headers.get("authorization") === hookAuth();
+const hookAuth = () => secretFor("helius-hook");
+export const checkHook = (req: Request) => !!hookAuth() && safeEq(req.headers.get("authorization"), hookAuth());
 
 /** Keep one Helius webhook on every tracked wallet (only when the book changed, at most every 10 minutes). */
-async function syncHook() {
+export async function syncHook(force = false) {
   const key = heliusKey();
   const r = redis();
-  if (!key || !process.env.CRON_SECRET) return { hook: "off (no Helius key)" };
-  if (!(await r.get(DIRTY))) return { hook: "unchanged" };
+  if (!key || !hookAuth()) return { hook: "off (no Helius key or CRON_SECRET)" };
+  if (!force && !(await r.get(DIRTY))) return { hook: "unchanged" };
   const prev = await r.get<{ id: string; n: number; at: number }>(HOOK);
-  if (prev && Date.now() - prev.at < 10 * 60_000) return { hook: "waiting" };
+  if (!force && prev && Date.now() - prev.at < 10 * 60_000) return { hook: "waiting" };
   const addrs = Object.values(await book()).filter((x) => !x.off).map((x) => x.w).slice(0, 100_000);
   if (!addrs.length) return { hook: "no wallets yet" };
   const body = { webhookURL: `${SITE.url}/api/hound/hook`, transactionTypes: ["SWAP"], accountAddresses: addrs, webhookType: "enhanced", authHeader: hookAuth() };
@@ -387,6 +389,8 @@ export async function onSwaps(txs: any[]) {
     p.hset(BUY, { [b.id]: { ...b, px0: null } });
     p.zadd(DUE, { score: Date.now() + 60_000, member: b.id });
     hot.add(b.mint);
+    // BOARD: a tracked wallet buying is HOUND's view on the coin (stronger for classes with a proven edge)
+    postTo(p, b.mint, { a: "HOUND", at: b.at, s: b.cls === "smart" || b.cls === "fomo-homerun" ? 0.9 : b.conf === "confirmed" ? 0.7 : 0.5, t: `${b.name} (${CLASS_LABEL[b.cls as keyof typeof CLASS_LABEL] || b.cls}) bought ${b.sol} SOL`, sym: b.symbol });
   }
   p.ltrim(FEED, 0, 199);
   await p.exec();

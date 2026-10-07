@@ -65,7 +65,7 @@ A swarm of crawler **rats** indexes every pump.fun launch in real time: metadata
 
 The **Rat King** is a model trained from scratch on that dataset alone. It scores each launch at minute 5 on one target: **will this coin bond?** Every call is frozen the moment it is made, then graded by the chain. Hits and misses stay on the board forever.
 
-The **Desk** is an autonomous team of seventeen agents that turns the King's calls into trades with its own wallet, on chain, in public. It reads every trade on the curve, traces who funded the dev, recognises smart wallets, never chases, takes its cost back at 2x and lets the rest run with a trail that widens as the coin climbs. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
+The **Desk** is an autonomous team of twenty-three agents that turns the King's calls into trades with its own wallet, on chain, in public. It reads every trade on the curve, traces who funded the dev, recognises smart wallets, never chases, takes its cost back at 2x and lets the rest run with a trail that widens as the coin climbs. It trades on paper until it passes its own exam, then promotes itself to live. Nobody flips the switch.
 
 The **HISTORIAN** replays pump.fun's past, launch by launch and in time order, so the models start trained instead of waiting weeks for live data. Every bond is then followed for 7 days, so the King learns not just which coins bond, but which ones run to $1M, $10M and beyond.
 
@@ -251,7 +251,7 @@ Calls are never deleted, edited or re-scored. If the King is wrong, the board sa
   <img src="docs/assets/desk.png" alt="The Desk" width="100%">
 </p>
 
-The Desk is a team of seventeen agents that turns calls and posts into trades and learns from every one. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions (market cap, P(next milestone), trail, insider bags), the trade log, the full rule set and what the desk has learned.
+The Desk is a team of twenty-three agents that turns calls, posts, wallets and runners into trades and learns from every one. They share one BOARD per coin, so every agent sees what the others think. Every step each agent takes is logged and shown live on `/desk`, together with the balance chart, open positions (market cap, P(next milestone), trail, insider bags), the trade log, the full rule set and what the desk has learned.
 
 | Agent | Role |
 |---|---|
@@ -269,6 +269,7 @@ The Desk is a team of seventeen agents that turns calls and posts into trades an
 | COACH | Reviews every exit and every entry, follows each coin 5m, 15m, 1h, 2h, 6h, 1d and 7d after the exit with what moved it, and retunes the desk. |
 | LEDGER | Keeps the books. |
 | WIRE | The social monitor: tracks X accounts whose posts spawn coins, matches every launch against the last hour of posts, picks the real coin among the copies 30 seconds in, and hands it to the desk. Learns trust per account from results and grows its own account list. |
+| CATCH | The sender catcher. Asks "does this reach $300K (or 2x) within 6 hours?" again and again: on every hot curve, at migration and for two hours after, so it catches fast migrators and slow grinders. Each look is a ~30-feature snapshot labelled 6 hours later; an online model learns from every label (scored before it learns, so its record is honest), pretrained on replayed history. Trades in its own sleeve. |
 | MOMO | The runners after migration: every minute the busiest pump.fun pools on GeckoTerminal; coins with real volume, many buyers and more buyers than sellers go to the desk in their own sleeve with tighter starting exits. |
 | HOUND | The wallet book: FOMO traders with a positive EV (home-run hitters, steady hands), KOL wallets with objective ownership proof, smart wallets found on chain from breakouts. Live buys via one Helius webhook, copy records per wallet and class, confluence sent to MIND. |
 | OVERSEER | Explores Reddit, GitHub, arXiv and X for ideas, reads the whole protocol every 6 hours, and proposes improvements on Telegram (/yes, /no, /later). Proposes only. |
@@ -276,6 +277,7 @@ The Desk is a team of seventeen agents that turns calls and posts into trades an
 | LENS | The hands-on look: opens the website, the X account or post, an X search for the CA and ticker, and the Telegram of every desk buy, tweet pick, BOND call and narrative coin, live in the LensCam on /desk. Writes a 0-100 dossier. Informs, never blocks. |
 | PULSE | Reads the room: counts what every tracked post is about in 5-minute and hourly windows, weighted by reach, and flags narratives running at 3x+ their usual pace, with a mood. Launches named after one get +5 from the King. |
 | PM | The portfolio manager: runs King calls, early reads and tweet coins as separate sleeves and sizes each by its risk-adjusted record, so no single strategy decides the curve. |
+| BOARD | Not an agent: the shared page per coin. Every agent line about a coin lands there as a stance for or against; families (models, flow, wallets, social, the hands-on look) count once and views fade over 45 minutes. Where 3+ families agree, CATCH, MIND and LENS look right away. |
 | FILM | The film room: goes back over every decision (King calls, VET, FLOW and never-chase skips) and scores it against what the coin did next. |
 
 Every trade on `/desk` opens to its full story: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart, every fill with its market cap, and COACH's follow-ups after the exit. Every coin page shows the desk's trades on that coin and every line the agents wrote about it.
@@ -579,6 +581,15 @@ docs/assets/           Images used in this document
 - **Money is public.** Payouts and live trades link to Solscan.
 - **The model is public.** Weights, features, loss log and the full scoring logic are in this repository and on the site.
 - **No look-ahead.** Live lessons wait for their label; historic lessons are replayed forward in time and scored before they are learned.
+- **Admin sessions are signed, expiring tokens.** HMAC-signed with a key derived from the password and a server-only secret, 7-day expiry, constant-time checks, login rate limited (5 tries per 15 minutes per IP), logout.
+- **Every machine secret has one job.** Webhook keys for X, Helius and Telegram are derived per purpose from the root secret (or set on their own), so a key that leaks through a third party's logs opens nothing else. Cron calls take the root secret in an `Authorization` header (`CRON_HEADER_ONLY=1` refuses the URL form).
+- **Hostile URLs are treated as hostile.** Token metadata, coin images and project websites are chosen by whoever launched the coin. They are fetched only from public hosts (private, loopback, link-local and metadata ranges refused, every redirect re-checked), with a byte cap and one deadline for the whole read. Coin images are served only if their bytes are a real raster image (no SVG or HTML), with `nosniff` and a sandbox CSP.
+- **The trading wallet signs only what it expects.** Every transaction is checked before signing: paid by the desk wallet, and touching only Jupiter, the token programs, compute budget and the Jito tip. A swap that timed out is followed until its blockhash expires before anything is retried, so a slow confirmation can never become a double buy. Payouts record their signature before sending and check the chain before any retry.
+- **One desk at a time.** Locks are owned (random token), renewed while the desk works and released only by their owner.
+- **Settings have hard bounds.** Desk settings are checked against the defaults' shape and capped (size, slippage, priority fee, loss limits), so a typo can't set a 1,000 SOL trade.
+- **Text from strangers is data.** MIND reads coin names, descriptions, websites and posts inside marked blocks and is told to treat any instruction there as a scam signal; a MIND buy also needs a second signal it can't be talked into (King, wallets, MOMO or a post wave).
+- **Headers.** CSP, `frame-ancestors 'none'`, HSTS, `nosniff`, a strict referrer policy and a locked-down permissions policy on every page.
+- **Tests.** `npx tsx sim/securitytest.ts` checks the rate limit, the locks, the SSRF guard, image sniffing and the per-purpose secrets.
 
 ---
 

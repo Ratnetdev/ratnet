@@ -2,7 +2,7 @@
 // Admin: OVERSEER's ideas (approve, reject, park), its exploring trail and what it found.
 import { useState } from "react";
 import { usePoll } from "../usePoll";
-import { ago } from "../fmt";
+import { safeHref, ago } from "../fmt";
 
 type Idea = { id: number; at: number; title: string; problem: string; proposal: string; impact: string; risk: string; effort: string; kind: string; sources: string[]; status: string; note?: string };
 type V = { trail: { at: number; text: string; url: string | null }[]; finds: { src: string; title: string; url: string; at: number }[]; ideas: Idea[]; thinkAt: number | null; telegram: boolean; llm: boolean };
@@ -36,7 +36,7 @@ export default function Overseer() {
               <p><b>Data:</b> {i.problem}</p>
               <p><b>Change:</b> {i.proposal}</p>
               <p><b>Impact:</b> {i.impact} · <b>Risk:</b> {i.risk}</p>
-              {i.sources.map((s) => <p key={s}><a href={s} target="_blank" rel="noreferrer">{s.slice(0, 70)}</a></p>)}
+              {i.sources.map((s) => <p key={s}><a href={safeHref(s)} target="_blank" rel="noreferrer">{s.slice(0, 70)}</a></p>)}
               {i.note ? <p><b>Your note:</b> {i.note}</p> : null}
               <div className="fb-row">
                 {(["yes", "later", "no"] as const).map((s) => <button key={s} className={`fb-t ${i.status === s ? "on" : ""}`} onClick={async () => { const note = s === "no" ? prompt("Why not? (helps it learn)") || undefined : undefined; await post({ action: "decide", id: i.id, status: s, note }).catch(() => null); reload(); }}>{s}</button>)}
@@ -51,13 +51,13 @@ export default function Overseer() {
         <div className="panel">
           <div className="ph"><span><b>exploring</b> · live trail</span></div>
           <div className="pb ov-trail">
-            {(v?.trail || []).map((t, k) => <div key={k}><span className="tiny mute2">{ago(t.at)}</span><span>{t.url ? <a href={t.url} target="_blank" rel="noreferrer">{t.text}</a> : t.text}</span></div>)}
+            {(v?.trail || []).map((t, k) => <div key={k}><span className="tiny mute2">{ago(t.at)}</span><span>{t.url ? <a href={safeHref(t.url)} target="_blank" rel="noreferrer">{t.text}</a> : t.text}</span></div>)}
           </div>
         </div>
         <div className="panel">
           <div className="ph"><span><b>found</b> · newest first, never read twice</span></div>
           <div className="pb ov-trail">
-            {(v?.finds || []).map((f) => <div key={f.url}><span className="tiny mute2">{f.src}</span><a href={f.url} target="_blank" rel="noreferrer">{f.title}</a></div>)}
+            {(v?.finds || []).map((f) => <div key={f.url}><span className="tiny mute2">{f.src}</span><a href={safeHref(f.url)} target="_blank" rel="noreferrer">{f.title}</a></div>)}
           </div>
         </div>
       </div>

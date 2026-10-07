@@ -98,6 +98,8 @@ export const DEFAULT_SETTINGS = {
     earlyMinCurve: 3, // curve % at minute 1 for the early read
     stalkMins: 15, // how long a stalk waits for its pullback
     dailyLoss: 25, // % from day start: stop opening
+    maxBags: 12, // positions held at once in total, house-money bags included; past it the quietest bag is sold
+    bagStaleMin: 120, // house-money bag with no new high for this long (and under 3x) is sold
     // WIRE (tweet coins) and PM (strategy sleeves)
     wireMinW: 0.2, // trust an account's posts must have before WIRE sends its coins to the desk (seeds start at 0.3 to 0.5)
     wireMaxCurve: 85, // tweet coins move fast: allowed up to this curve %
@@ -119,6 +121,23 @@ export const DEFAULT_SETTINGS = {
     momoInitials: 40, // % up: sell the initials (until MOMO's own record sets it)
     momoSl: -20, // stop loss before initials
     momoTimeStop: 40, // minutes without initials: out
+    // CATCH (the sender catcher): coins moving like the ones that ran to $300K+, fast migrators and slow ones.
+    // auto/on = trade its signals (prior score until its model has 300 labels, then the model's own cutoff); off = never
+    catchMode: "on" as "auto" | "on" | "off",
+    catchTargetUsd: 300000, // a "sender": reaches max(this, 2x the market cap at the look) within the horizon
+    catchHorizonH: 6,
+    catchPriorMin: 72, // prior score (0-100) needed before the model is ready
+    catchMinHit: 0.08, // once ready: trade the lowest score band hitting at least this often (and 6x the base rate)
+    catchMinCurve: 15, // curve % before CATCH looks at a coin on the curve
+    catchCurveTop: 40, // hottest curves looked at per pass
+    catchSnapsPerPass: 30,
+    catchMaxOpen: 3,
+    catchMaxTop10: 40, // % top 10 holders may hold (curve/pool excluded)
+    catchMinPoolSol: 30,
+    catchCooldownMin: 30,
+    catchInitials: 60, // % up: initials (until CATCH's own exit profile sets it)
+    catchSl: -18,
+    catchTimeStop: 30,
     // MIND (the trader's mind): auto = trades its SEND calls only once its own record earns it; on = now; off = never
     mindMode: "auto" as "auto" | "on" | "off",
     mindMin: 75, // conviction MIND needs before a SEND goes to the desk

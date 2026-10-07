@@ -134,6 +134,7 @@ const RULE: Record<string, string> = {
   post_traction: "The post spawned a wave of coins",
   wire_post: "Tracked X post behind it",
   mind_send: "MIND said SEND with enough conviction",
+  independent_signal: "Another signal agreed (King, wallets, MOMO or a post wave)",
   traction: "Real volume and many buyers right now",
   buy_pressure: "More buyers than sellers",
   holder_spread: "Holders spread out (top 10)",
@@ -209,7 +210,7 @@ export default function TripDetail({ t, coinLink = true }: { t: Trip; coinLink?:
             <KV k="The call" v={call} sub={c?.nano ? `nano ${c.nano.verdict} ${c.nano.score}` : t.nano != null ? `nano ${t.nano}` : "nano learning"} />
             <KV k="Market cap at call" v={usd(c?.callMc)} sub={c?.callCurve != null ? `curve ${c.callCurve}%` : ""} />
             <KV k="Call to buy" v={c?.callAt ? dur(t.openedAt - c.callAt) : "–"} sub={c?.chasePct != null ? `price ${sgn(c.chasePct)}% vs call` : ""} />
-            <KV k="Strategy" v={t.how === "momo" ? "MOMO runner" : t.how === "mind" ? "MIND call" : t.how === "wire" ? "tweet coin" : t.how === "stalk" ? "pullback" : t.how === "early" ? "minute 1" : "on the call"} sub={t.live ? "live wallet" : "paper"} />
+            <KV k="Strategy" v={t.how === "catch" ? "CATCH sender" : t.how === "momo" ? "MOMO runner" : t.how === "mind" ? "MIND call" : t.how === "wire" ? "tweet coin" : t.how === "stalk" ? "pullback" : t.how === "early" ? "minute 1" : "on the call"} sub={t.live ? "live wallet" : "paper"} />
             <KV k="Size" v={`${t.costSol.toFixed(3)} ◎`} sub={t.tokens ? `${Math.round(t.tokens).toLocaleString("en-US")} tokens` : ""} />
           </div>
           {c?.wire ? (

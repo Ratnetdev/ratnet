@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Strategy from "@/components/admin/Strategy";
 import Wallets from "@/components/admin/Wallets";
 import Overseer from "@/components/admin/Overseer";
+import Setup from "@/components/admin/Setup";
 
 type Settings = {
   mint: string;
@@ -42,7 +43,7 @@ export default function Admin() {
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
   const [deskJson, setDeskJson] = useState("");
   const [histJson, setHistJson] = useState("");
-  const [tab, setTab] = useState<"settings" | "strategy" | "wallets" | "overseer">("settings");
+  const [tab, setTab] = useState<"settings" | "setup" | "strategy" | "wallets" | "overseer">("settings");
 
   const load = useCallback(async () => {
     const r = await fetch("/api/admin", { cache: "no-store" });
@@ -56,7 +57,7 @@ export default function Admin() {
     setCur(j.currentRound);
     setSniffers(j.sniffers);
     setRoundId(String(j.currentRound - 1));
-    fetch("/api/health").then((x) => x.json()).then(setHealth).catch(() => {});
+    fetch("/api/health?full=1").then((x) => x.json()).then(setHealth).catch(() => {});
   }, []);
   useEffect(() => {
     load();
@@ -87,7 +88,7 @@ export default function Admin() {
             onClick={async () => {
               const r = await fetch("/api/admin/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: pw }) });
               if (r.ok) load();
-              else setErr("Wrong password");
+              else setErr((await r.json().catch(() => ({}))).error || "Wrong password");
             }}
           >
             Enter
@@ -105,12 +106,12 @@ export default function Admin() {
       <div className="row between wrapx">
         <h2 className="crt green" style={{ fontSize: 34 }}>ADMIN</h2>
         <span className="strat-tabs">
-          {(["settings", "strategy", "wallets", "overseer"] as const).map((k) => <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{k}</button>)}
+          {(["settings", "setup", "strategy", "wallets", "overseer"] as const).map((k) => <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{k}</button>)}
         </span>
-        <span className="small">{msg && <span className="green">{msg}</span>} {err && <span style={{ color: "var(--dust)" }}>{err}</span>}</span>
+        <span className="small">{msg && <span className="green">{msg}</span>} {err && <span style={{ color: "var(--dust)" }}>{err}</span>} <button className="btn sm ghost" onClick={async () => { await fetch("/api/admin/login", { method: "DELETE" }); setAuthed(false); }}>log out</button></span>
       </div>
 
-      {tab === "strategy" ? <Strategy /> : tab === "wallets" ? <Wallets /> : tab === "overseer" ? <Overseer /> : <>
+      {tab === "setup" ? <Setup /> : tab === "strategy" ? <Strategy /> : tab === "wallets" ? <Wallets /> : tab === "overseer" ? <Overseer /> : <>
 
       <div className="panel">
         <div className="ph"><span><b>health</b></span></div>

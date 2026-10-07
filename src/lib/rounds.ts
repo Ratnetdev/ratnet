@@ -1,4 +1,5 @@
-import { Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { acquire, release } from "./lock";
 import bs58 from "bs58";
 import { BAG_TIERS, CAP_FREE_BAG, EARN_CAP_X, FEE_SPLIT, PUP_ROYALTY, PUP_WEIGHT, ROUND_MS } from "@/config/site";
 import { K, redis } from "./redis";
@@ -44,6 +45,8 @@ export async function computeRound(id: number, feesSol: number): Promise<Round> 
   const r = redis();
   const existing = (await getRounds()).find((x) => x.id === id);
   if (existing?.status === "paid") throw new Error("Round already paid");
+  // a partly paid round is frozen: recomputing would rebuild payouts without their signatures and pay owners twice
+  if (existing?.payouts.some((p: any) => p.sig || p.pending)) throw new Error("Round is partly paid: finish it with Pay, don't recompute");
   if (Date.now() < roundStart(id) + ROUND_MS) throw new Error("Round is still running");
 
   const s = await getSettings();
@@ -156,23 +159,63 @@ export async function payRound(id: number): Promise<Round> {
     throw new Error("PAYOUT_WALLET_SECRET is not a valid secret key");
   }
 
-  const todo = round.payouts.filter((p) => !p.sig && p.sol >= 0.000005);
-  for (let i = 0; i < todo.length; i += 8) {
-    const chunk = todo.slice(i, i + 8);
-    const tx = new Transaction();
-    for (const p of chunk) {
-      tx.add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(p.owner), lamports: Math.floor(p.sol * LAMPORTS_PER_SOL) }));
-    }
-    try {
-      const sig = await sendAndConfirmTransaction(conn(), tx, [kp], { commitment: "confirmed" });
-      chunk.forEach((p) => {
-        p.sig = sig;
-        delete p.error;
+  // one payer per round at a time (double clicks, two tabs, a retry while the first call still runs)
+  const lock = await acquire(`rn:lock:pay:${id}`, 10 * 60_000);
+  if (!lock) throw new Error("This round is already being paid. Wait a minute and refresh.");
+  try {
+    const c = conn();
+    // 1) settle anything sent before but not confirmed: it may have landed after a timeout. Resend only when its
+    //    blockhash has expired and the chain has no trace of it.
+    const height = await c.getBlockHeight("confirmed");
+    const pend = round.payouts.filter((p: any) => !p.sig && p.pending);
+    if (pend.length) {
+      const sigs = Array.from(new Set(pend.map((p: any) => p.pending.sig as string)));
+      const st = await c.getSignatureStatuses(sigs, { searchTransactionHistory: true });
+      sigs.forEach((sig, i) => {
+        const v = st.value[i];
+        for (const p of pend.filter((x: any) => x.pending.sig === sig) as any[]) {
+          if (v && !v.err && (v.confirmationStatus === "confirmed" || v.confirmationStatus === "finalized")) {
+            p.sig = sig;
+            delete p.pending;
+            delete p.error;
+          } else if (v?.err || (!v && height > p.pending.lastValid)) {
+            delete p.pending; // failed or provably never landed: safe to send again
+          }
+        }
       });
-    } catch (e) {
-      chunk.forEach((p) => (p.error = safeErr(e)));
-      break;
+      await saveRound(round);
     }
+    // 2) pay whoever is still unpaid and not in flight. The signature is saved *before* sending.
+    const todo = round.payouts.filter((p: any) => !p.sig && !p.pending && p.sol >= 0.000005);
+    for (let i = 0; i < todo.length; i += 8) {
+      const chunk = todo.slice(i, i + 8) as any[];
+      const tx = new Transaction();
+      for (const p of chunk) tx.add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(p.owner), lamports: Math.floor(p.sol * LAMPORTS_PER_SOL) }));
+      const bh = await c.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = bh.blockhash;
+      tx.feePayer = kp.publicKey;
+      tx.sign(kp);
+      const sig = bs58.encode(tx.signature!);
+      chunk.forEach((p) => (p.pending = { sig, lastValid: bh.lastValidBlockHeight }));
+      await saveRound(round);
+      try {
+        await c.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+        await c.confirmTransaction({ signature: sig, ...bh }, "confirmed");
+        chunk.forEach((p) => {
+          p.sig = sig;
+          delete p.pending;
+          delete p.error;
+        });
+      } catch (e) {
+        // keep `pending`: the next Pay checks the chain before deciding to resend
+        chunk.forEach((p) => (p.error = safeErr(e)));
+        break;
+      } finally {
+        await saveRound(round);
+      }
+    }
+  } finally {
+    await release(lock);
   }
 
   // Credit every rat and pup with exactly what it earned (used for the 2x cap).

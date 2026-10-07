@@ -12,6 +12,7 @@ import { lensSession } from "./lens";
 import { mindSession } from "./mind";
 import { houndSession } from "./hound";
 import { momoScan } from "./momo";
+import { catchSession } from "./catcher";
 import { overseerSession } from "./overseer";
 import { agentLog } from "./agents";
 import { redis } from "./redis";
@@ -53,6 +54,8 @@ export async function runSession(ms = 55_000) {
   // HOUND: FOMO traders, KOL wallets, smart wallets from breakouts, the live webhook. OVERSEER: explore and propose
   // MOMO: coins pulling real volume right now (GeckoTerminal), straight to the desk
   const momo = momoScan().catch((e) => ({ momo: "error", error: String(e?.message || e) }));
+  // CATCH: looks again and again at hot curves, migrations and the BOARD, for coins moving like senders
+  const caught = catchSession(Math.round(50_000 * k)).catch((e) => ({ catch: "error", error: String(e?.message || e) }));
   const hound = houndSession().catch((e) => ({ hound: "error", error: String(e?.message || e) }));
   const overseer = overseerSession(Math.round(50_000 * k)).catch((e) => ({ overseer: "error", error: String(e?.message || e) }));
   const mind = mindSession(Math.round(54_000 * k)).catch((e) => ({ mind: "error", error: String(e?.message || e) }));
@@ -64,6 +67,6 @@ export async function runSession(ms = 55_000) {
     tg,
     wire,
   ]);
-  return { desk, history, receipts, telegram, wire: x, j7: await j7, lens: await lens, mind: await mind, hound: await hound, overseer: await overseer, momo: await momo };
+  return { desk, history, receipts, telegram, wire: x, j7: await j7, lens: await lens, mind: await mind, hound: await hound, overseer: await overseer, momo: await momo, catch: await caught };
 }
 

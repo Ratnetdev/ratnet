@@ -3,15 +3,16 @@ import { getSettings } from "@/lib/settings";
 import { isPubkey, ratPriceSol } from "@/lib/solana";
 import { K, redis } from "@/lib/redis";
 import { Rat, ratName } from "@/lib/rats";
-import { fail, json } from "@/lib/http";
+import { fail, ipOf, json, limit, tooMany } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
+  if (!(await limit(`burn:${ipOf(req)}`, 10, 60))) return tooMany();
   try {
     const { wallet, signature } = await req.json();
-    if (!isPubkey(wallet) || typeof signature !== "string" || signature.length < 60) return fail("Missing wallet or signature");
+    if (!isPubkey(wallet) || typeof signature !== "string" || !/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(signature)) return fail("Missing wallet or signature");
     const s = await getSettings();
     const check = await checkBurn(signature, wallet, "spawn", s);
     if (!check.ok) return json({ pending: !!check.pending, error: check.error }, check.pending ? 202 : 400);

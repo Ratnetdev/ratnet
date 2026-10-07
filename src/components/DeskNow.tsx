@@ -29,6 +29,7 @@ const RULE: Record<string, string> = {
   has_socials: "no X, website or Telegram",
   post_traction: "the post spawned no wave",
   mind_send: "MIND not convinced",
+  independent_signal: "only MIND liked it",
   traction: "not enough volume or buyers",
   buy_pressure: "more sellers than buyers",
   holder_spread: "top 10 hold too much",

@@ -6,7 +6,7 @@ import { usePoll } from "./usePoll";
 import { Outcome, VerdictTag, hitOf, Mark } from "./Calls";
 import { CurveBar, DevTag, FlowBar } from "./Radar";
 import { fmtSecs } from "./Grads";
-import { ago, chg, num, short, usd, type Mkt } from "./fmt";
+import { safeHref, ago, chg, num, short, usd, type Mkt } from "./fmt";
 import { useState } from "react";
 import Info from "./Info";
 import CoinImg from "./CoinImg";
@@ -166,7 +166,7 @@ export default function CoinView({ mint }: { mint: string }) {
       <section className="panel mt">
         <div className="ph">
           <span><Info k="t_market"><b>market</b></Info> · live from the chain</span>
-          {m?.url && <a href={m.url} target="_blank" rel="noreferrer">dexscreener →</a>}
+          {m?.url && <a href={safeHref(m.url)} target="_blank" rel="noreferrer">dexscreener →</a>}
         </div>
         {m ? (
           <div className="mkt">

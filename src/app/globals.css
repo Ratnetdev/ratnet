@@ -938,3 +938,32 @@ th .info, .k .info { gap: 4px; }
 .ml-head .cimg { border-radius: 6px; margin-right: 4px; }
 .cimg-l { display: inline-grid; place-items: center; font-family: var(--mono, monospace); font-weight: 700; line-height: 1; overflow: hidden; }
 .vlogo-l { display: inline-grid; place-items: center; border-radius: 3px; background: #111814; color: var(--rat); font-weight: 700; line-height: 1; }
+.setup-code { display: inline-block; padding: 2px 6px; background: var(--bg2); border: 1px solid var(--line2); font-size: 12px; word-break: break-all; }
+/* CATCH + BOARD */
+.catch-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; padding: 12px 14px; }
+@media (max-width: 900px) { .catch-grid { grid-template-columns: 1fr; } }
+.catch-tbl td, .catch-bands td { white-space: nowrap; }
+.catch-bar { display: inline-block; width: 46px; height: 5px; background: var(--line2); vertical-align: middle; }
+.catch-bar i { display: block; height: 100%; }
+.catch-rec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 10px; }
+.catch-rec > div { border: 1px solid var(--line2); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.catch-rec .k { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); }
+.catch-rec b { font-size: 20px; color: var(--bond); }
+.catch-rec em { font-style: normal; font-size: 11px; color: var(--mute); }
+.catch-lab { display: flex; gap: 10px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--line2); text-decoration: none; color: inherit; min-width: 0; }
+.catch-lab b { width: 38px; flex: none; }
+.catch-lab .tiny { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-list { padding: 4px 14px 14px; }
+.board-row { display: flex; gap: 12px; align-items: center; padding: 7px 0; border-bottom: 1px dashed var(--line2); flex-wrap: wrap; }
+.board-n { font-size: 11px; color: var(--mute); min-width: 84px; }
+.board-n.hot { color: var(--bond); }
+.board-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+.board-chip { font-size: 10px; letter-spacing: .04em; padding: 1px 6px; border: 1px solid; white-space: nowrap; }
+@media (max-width: 640px) { .hide-m { display: none; } .catch-rec b { font-size: 16px; } }
+/* mobile tables: tighter cells, trade icons live on the coin page instead of every row, shorter curve bars */
+.curvebar { width: 90px; }
+@media (max-width: 640px) {
+  .tbl th, .tbl td { padding-left: 7px; padding-right: 7px; }
+  .tbl .vicons { display: none; }
+  .curvebar { width: 46px; }
+}

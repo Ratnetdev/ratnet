@@ -935,14 +935,14 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   if (counted && !farm && !rec.tape && (kv.verdict === "BOND" || nano?.verdict === "BOND")) {
     // the rats had no time to read its trades: the desk reads them itself (on its own fast lane) before VET
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
-    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}, sent to the desk (TAPE reads it there)`, tone: "ok" };
+    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}, sent to the desk (TAPE reads it there)`, tone: "ok", stance: kv.verdict === "BOND" ? 0.8 : 0.5 };
     c.p.lpush(K.deskEv, ev);
     agentLog(c.p, [ev]);
   }
   if (counted && !farm && rec.tape && (kv.verdict === "BOND" || nano?.verdict === "BOND")) {
     // hand the coin to the desk; the desk loop picks it up within 2 seconds
     c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
-    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok" };
+    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}${nano ? ` · nano ${nano.verdict} ${nano.score}` : ""}, sent to the desk`, tone: "ok", stance: kv.verdict === "BOND" ? 0.8 : 0.5 };
     const evs: any[] = [ev];
     if (rec.tape) evs.push({ agent: "TAPE", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${tapeLine(rec.tape)}`, tone: rec.tape.devSold > 0 || rec.tape.bundleShare > 0.5 ? "bad" : "info" });
     if (rec.g) evs.push({ agent: "GRAPH", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${graphLine(rec.g, rec.meta ?? null)}`, tone: rec.g.clRatio < 0.5 ? "bad" : rec.g.smartN || rec.g.clRatio > 2 ? "ok" : "info" });
@@ -1113,6 +1113,7 @@ async function migrations(model: NanoModel) {
     const at = rec.completeAt || c.now;
     if (migrated(pools[m])) {
       resolve(c, rec, "BONDED", at);
+      c.p.zadd("rn:ct:mig", { score: c.now, member: m }); // CATCH looks at fresh migrations right away
       if (SOL_USD) CURVE_USD[m] = poolUsd(pools[m], SOL_USD, rec.supply);
       c.p.zrem(K.migr, m);
       ok++;

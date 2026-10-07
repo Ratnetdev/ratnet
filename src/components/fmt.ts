@@ -28,3 +28,6 @@ export function usd(n: number | null | undefined) {
 }
 export const chg = (n: number | null | undefined) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n.toFixed(n >= 100 || n <= -100 ? 0 : 1)}%`);
 export type Mkt = { mc: number | null; v5: number; v1: number; v24: number; c5: number | null; c1: number | null; liq: number | null; b1: number; s1: number; dex: string; url: string };
+
+/** Links that came from outside (token metadata, websites, X): only real http(s) URLs, anything else becomes "#". */
+export const safeHref = (u?: string | null) => (typeof u === "string" && /^https?:\/\/[^\s"'<>]+$/i.test(u) ? u : "#");

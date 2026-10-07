@@ -145,7 +145,7 @@ export async function momoScan() {
     p.zadd(K.deskQ, { score: Date.now(), member: `r:${h.mint}` });
     enqueueLens(p, h.mint, "wire");
     enqueueMind(p, h.mint, "momo");
-    agentLog(p, [{ agent: "MOMO", at: Date.now(), mint: h.mint, symbol: h.symbol, text: `$${h.symbol} has traction: $${Math.round(h.v5 / 1000)}K volume in 5m, $${Math.round(h.v1h / 1000)}K in 1h, ${h.buyers5} buyers vs ${h.sellers5} sellers, ${h.ch5 > 0 ? "+" : ""}${Math.round(h.ch5)}% 5m, mc $${Math.round(h.mc / 1000)}K, ${h.ageMin < 120 ? `${h.ageMin}m` : `${Math.round(h.ageMin / 60)}h`} old. sent to the desk`, tone: "ok" }]);
+    agentLog(p, [{ agent: "MOMO", at: Date.now(), mint: h.mint, symbol: h.symbol, text: `$${h.symbol} has traction: $${Math.round(h.v5 / 1000)}K volume in 5m, $${Math.round(h.v1h / 1000)}K in 1h, ${h.buyers5} buyers vs ${h.sellers5} sellers, ${h.ch5 > 0 ? "+" : ""}${Math.round(h.ch5)}% 5m, mc $${Math.round(h.mc / 1000)}K, ${h.ageMin < 120 ? `${h.ageMin}m` : `${Math.round(h.ageMin / 60)}h`} old. sent to the desk`, tone: "ok", stance: 0.9 }]);
     await p.exec();
     sent.push(h);
   }

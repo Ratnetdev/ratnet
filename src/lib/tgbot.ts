@@ -6,12 +6,14 @@
 //   /wallet ADDRESS Name [@handle] [proof url]   add a wallet to HOUND's book
 //   /id              this chat's id (works anywhere, for setup)
 // Replying to an idea message with plain text saves it as your note on that idea.
-import { createHash } from "crypto";
+import { secretFor } from "./admin";
 import { SITE } from "@/config/site";
 
 const TOKEN = () => process.env.TELEGRAM_BOT_TOKEN || "";
 export const ideasChat = () => process.env.TELEGRAM_IDEAS_CHAT_ID || null;
-export const hookSecret = () => createHash("sha256").update(`ratnet-tg:${process.env.CRON_SECRET || ""}`).digest("hex").slice(0, 48);
+/** Telegram sends this back on every update. Empty when CRON_SECRET/TG_HOOK_SECRET is missing: the hook then refuses everything. */
+export const hookSecret = () => secretFor("tg-hook");
+export const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export async function tgSend(chat: string | number, html: string) {
   if (!TOKEN()) return false;
@@ -33,9 +35,13 @@ export async function setupHook() {
   return (await res?.json().catch(() => null)) || { ok: false };
 }
 
-const allowed = (chatId: number | string, userId?: number) => {
+// Who may command the bot. With TELEGRAM_ADMIN_IDS set, only those users (anywhere), plus posts in the ideas chat
+// when it is a channel (only channel admins can post there). Without it, anyone in the ideas chat (set it!).
+const allowed = (m: any) => {
   const admins = (process.env.TELEGRAM_ADMIN_IDS || "").split(",").map((x) => x.trim()).filter(Boolean);
-  return String(chatId) === String(ideasChat()) || (userId != null && admins.includes(String(userId)));
+  const inIdeas = ideasChat() != null && String(m.chat?.id) === String(ideasChat());
+  if (admins.length) return (m.from?.id != null && admins.includes(String(m.from.id))) || (inIdeas && m.chat?.type === "channel");
+  return inIdeas;
 };
 
 export async function handleUpdate(u: any) {
@@ -46,13 +52,13 @@ export async function handleUpdate(u: any) {
   const [cmd0, ...rest] = text.split(/\s+/);
   const cmd = cmd0.toLowerCase().replace(/@\w+$/, "");
   if (cmd === "/id") return tgSend(chat, `chat id: <code>${chat}</code>${m.from?.id ? `\nyour user id: <code>${m.from.id}</code>` : ""}`);
-  if (!allowed(chat, m.from?.id)) return;
+  if (!allowed(m)) return;
   const { decide, ideasList, ideaText, think } = await import("./overseer");
   if (cmd === "/yes" || cmd === "/no" || cmd === "/later") {
     const id = Number(rest[0]);
     const note = rest.slice(1).join(" ");
     const i = await decide(id, cmd === "/yes" ? "yes" : cmd === "/no" ? "no" : "later", note || undefined);
-    return tgSend(chat, i ? `#${id} ${i.status === "yes" ? "approved" : i.status === "no" ? "rejected" : "parked"}${note ? `: ${note}` : ""}` : `no idea #${rest[0]}`);
+    return tgSend(chat, i ? `#${id} ${i.status === "yes" ? "approved" : i.status === "no" ? "rejected" : "parked"}${note ? `: ${esc(note)}` : ""}` : `no idea #${esc(rest[0])}`);
   }
   if (cmd === "/ideas") {
     const open = (await ideasList()).filter((i) => i.status === "new" || i.status === "later").slice(0, 8);
@@ -77,7 +83,7 @@ export async function handleUpdate(u: any) {
   if (cmd === "/teach") {
     const { teach } = await import("./mind");
     const added = await teach(rest.join(" "), "telegram");
-    return tgSend(chat, added.length ? `MIND learned:\n${added.map((l) => `- ${l.text}`).join("\n")}` : "Nothing new to add (or MIND is off).");
+    return tgSend(chat, added.length ? `MIND learned:\n${added.map((l) => `- ${esc(l.text)}`).join("\n")}` : "Nothing new to add (or MIND is off).");
   }
   if (cmd === "/wallet") {
     const { addWallet } = await import("./hound");
@@ -87,9 +93,9 @@ export async function handleUpdate(u: any) {
     const name = more.filter((x) => !x.startsWith("@") && !/^https?:\/\//.test(x)).join(" ") || handle || "wallet";
     try {
       const x = await addWallet(w, name, handle, url, "kol");
-      return tgSend(chat, `added ${x.name} · ${x.conf}\n${x.proof.map((p) => `- ${p}`).join("\n")}`);
+      return tgSend(chat, `added ${esc(x.name)} · ${x.conf}\n${x.proof.map((p) => `- ${esc(p)}`).join("\n")}`);
     } catch (e: any) {
-      return tgSend(chat, `could not add: ${e?.message || e}`);
+      return tgSend(chat, `could not add: ${esc(e?.message || e)}`);
     }
   }
   if (cmd === "/help" || cmd === "/start") return tgSend(chat, "/yes N · /no N why · /later N · /ideas · /think · /status · /teach text · /wallet ADDRESS Name @handle proof-url · /id");

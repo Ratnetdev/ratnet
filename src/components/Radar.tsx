@@ -24,7 +24,7 @@ export function CurveBar({ p }: { p: number }) {
   const cls = p >= 85 ? "bond" : p >= 40 ? "watch" : "";
   return (
     <span className="row" style={{ gap: 8 }}>
-      <span className={`bar ${cls}`} style={{ display: "inline-block", width: 90 }}>
+      <span className={`bar curvebar ${cls}`} style={{ display: "inline-block" }}>
         <i style={{ width: `${Math.max(2, p)}%` }} />
       </span>
       <span style={{ width: 40 }}>{p}%</span>

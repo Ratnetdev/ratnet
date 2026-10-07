@@ -327,6 +327,7 @@ export async function syncRules(force = false) {
     await fetch(`${API}/oapi/tweet_filter/update_rule`, { method: "POST", headers: head, body: JSON.stringify({ rule_id: res.rule_id, tag, value: chunks[i], interval_seconds: interval, is_effect: 1 }) }).catch(() => null);
   }
   await r.set(RULES, ids);
+  await r.set("rn:x:synced", { at: Date.now(), n: ids.length, accounts: handles.length });
   await r.del(DIRTY);
   return { synced: true, rules: ids.length, accounts: handles.length };
 }

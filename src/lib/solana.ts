@@ -80,10 +80,11 @@ export function safeErr(e: unknown): string {
   return msg.replace(/https?:\/\/\S+/g, "[rpc]").replace(/api-key=\S+/gi, "api-key=[hidden]").slice(0, 200);
 }
 
-export function isPubkey(s: string) {
+export function isPubkey(s: unknown): s is string {
+  if (typeof s !== "string" || s.length < 32 || s.length > 44 || !/^[1-9A-HJ-NP-Za-km-z]+$/.test(s)) return false;
   try {
     new PublicKey(s);
-    return s.length >= 32 && s.length <= 44;
+    return true;
   } catch {
     return false;
   }
@@ -266,14 +267,17 @@ export type OffMeta = { description: string; twitter: string; telegram: string; 
 
 export async function fetchOffchain(uri: string, timeoutMs = 2500): Promise<OffMeta | null> {
   if (!uri) return null;
-  const url = uri.startsWith("ipfs://") ? `https://ipfs.io/ipfs/${uri.slice(7)}` : uri;
+  // pump.fun's own gateway first for IPFS; the URI is chosen by the launcher, so safeFetch (public hosts, 64KB cap)
+  const url = uri.startsWith("ipfs://") ? `https://pump.mypinata.cloud/ipfs/${uri.slice(7)}` : uri;
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    const r = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
-    clearTimeout(t);
-    if (!r.ok) return null;
-    const j: any = await r.json();
+    let j: any;
+    if (process.env.RATNET_SIM === "1") j = await (await fetch(url)).json(); // the simulator stubs fetch
+    else {
+      const { safeFetch } = await import("./safefetch");
+      const g = await safeFetch(url, { timeoutMs, maxBytes: 64_000 });
+      j = JSON.parse(g.buf.toString("utf8"));
+    }
+    if (!j || typeof j !== "object") return null;
     const s = (v: any) => (typeof v === "string" ? v.slice(0, 280) : "");
     return {
       description: s(j.description),

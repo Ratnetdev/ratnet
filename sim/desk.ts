@@ -1,3 +1,4 @@
+process.env.RATNET_SIM = "1";
 // Desk simulator v0.1.4: the real engine + desk against a synthetic pump.fun with structure the agents can learn:
 // trades on every curve, bundles, snipers, dev rugs, 40 smart wallets that tend to be early on winners,
 // factory devs funded from the same wallet, pro teams funded from another, power-law peaks after bond, insider dumps.
@@ -380,6 +381,7 @@ async function main() {
   const { ingest, parseHook } = await import("../src/lib/wire");
   const { mindSession, mindRecord, lessonBook } = await import("../src/lib/mind");
   const { momoScan } = await import("../src/lib/momo");
+  const { catchPass, catchView } = await import("../src/lib/catcher");
   if (process.env.MIND !== "0") {
     const cur: any = R.kv.get("rn:settings") || {};
     R.kv.set("rn:settings", { ...cur, desk: { ...(cur.desk || {}), mindMode: "on" } });
@@ -411,6 +413,10 @@ async function main() {
     }
     for (let k = pendingCopies.length - 1; k >= 0; k--) if (pendingCopies[k].at <= NOW + 60_000) spawnCoin(pendingCopies.splice(k, 1)[0].tw);
     if (process.env.MOMO !== "0") await momoScan().catch((e: any) => errs++ < 8 && console.log("MOMO ERR", String(e)));
+    if (process.env.CATCH !== "0") {
+      const cr: any = await catchPass(true).catch((e: any) => ({ error: String(e?.stack || e) }));
+      if (cr?.error && errs++ < 8) console.log("CATCH ERR", cr.error);
+    }
     const res: any = await deskSession(50_000, async () => {
       const d: any = await dig();
       if (d.ok === false && errs++ < 5) console.log("DIG ERR", d.error);
@@ -421,6 +427,18 @@ async function main() {
       if (mr?.error && errs++ < 8) console.log("MIND ERR", mr.error);
     }
     if (NOW < t + 60_000) NOW = t + 60_000;
+    if (process.env.SIM_HOURLY === "1" && Math.floor((NOW - begin) / 3600_000) !== Math.floor((t - begin) / 3600_000)) {
+      const dd: any = await getDesk();
+      const day = Object.entries(R.kv).length; void day;
+      const dk = [...R.kv.keys()].filter((k: string) => k.startsWith("rn:desk:day:")).map((k: string) => R.kv.get(k));
+      const sum: Record<string, number> = {};
+      for (const h of dk) for (const [k, v] of Object.entries(h || {})) sum[k] = (sum[k] || 0) + Number(v);
+      const q = R.kv.get("rn:desk:q");
+      const evs = ((R.kv.get("rn:desk:ev") || []) as any[]).slice(0, 300);
+      const king = evs.filter((e) => e.agent === "KING" && NOW - e.at < 3600_000).length;
+      const recentStats = (R.kv.get("rn:stat") || {}) as any;
+      console.log(`H${Math.floor((NOW - begin) / 3600_000)} closed=${dd.state.closed} open=${dd.positions.length} eq=${dd.state.equity.toFixed(2)} dayStart=${dd.state.dayStart?.toFixed?.(2)} seen=${sum.seen || 0} passed=${sum.passed || 0} fails=${Object.entries(sum).filter(([k]) => k.startsWith("f:")).sort((a: any, b: any) => b[1] - a[1]).slice(0, 4).map(([k, v]) => k.slice(2) + ":" + v).join(",")} q=${q ? q.size ?? Object.keys(q).length : 0} kingEv1h=${king} calls=${recentStats.calls ?? "?"} bondCalls=${recentStats.bond ?? "?"} pos=${dd.positions.map((p: any) => p.how + (p.tp1Done ? "*" : "")).join(" ")}`);
+    }
     if (NOW - lastLog >= 2 * 3600_000) {
       lastLog = NOW;
       const d: any = await getDesk();
@@ -439,6 +457,14 @@ async function main() {
   const cl = R.kv.get("rn:g:n") || {};
   const clb = R.kv.get("rn:g:b") || {};
   console.log("\n=== summary");
+  if (process.env.CATCH !== "0") {
+    const cv: any = await catchView();
+    const trips = ((R.kv.get("rn:desk:trips") || []) as any[]).filter((t) => t.how === "catch");
+    const pnl = trips.map((t) => (t.exitPx / t.entryPx - 1) * 100);
+    console.log("CATCH model", JSON.stringify(cv.model.ready), `n=${cv.model.n} pos=${cv.model.pos}`, "all", `${cv.all.hit}/${cv.all.n}`, "curve", `${cv.stages.curve.hit}/${cv.stages.curve.n}`, "pool", `${cv.stages.pool.hit}/${cv.stages.pool.n}`);
+    console.log("CATCH prior bands", cv.bands.map((b: any) => `${b.b * 10}:${b.qhit}/${b.qn}`).join(" "), "| model bands", cv.bands.map((b: any) => `${b.b * 10}:${b.hit}/${b.n}`).join(" "));
+    console.log("CATCH desk trades", trips.length, "avg exit vs entry", pnl.length ? (pnl.reduce((a, x) => a + x, 0) / pnl.length).toFixed(1) + "%" : "-", "winners", pnl.filter((x) => x > 0).length);
+  }
   if (process.env.MIND !== "0") {
     const book = await lessonBook();
     console.log("MIND llm calls", llmCalls, JSON.stringify(llmKinds), "record", JSON.stringify((await mindRecord()).map((r: any) => [r.verdict, r.n, r.h.map((h: any) => `${h.k}:${h.avg}%/${h.n}`).join(" ")])), "lessons", book.length, "top", book.slice(0, 2).map((l: any) => `${l.id} ${l.wins}-${l.losses}`).join(", "));

@@ -5,6 +5,7 @@
 import { runSession } from "../src/lib/session";
 import { dig } from "../src/lib/digger";
 import { redis } from "../src/lib/redis";
+import { catchPass, noteMigration } from "../src/lib/catcher";
 
 process.env.RATNET_WORKER = "1";
 const SESSION_MS = Number(process.env.WORKER_SESSION_MS || 55_000);
@@ -18,14 +19,29 @@ function launches() {
   const WS: any = (globalThis as any).WebSocket;
   if (!WS) return console.log("no WebSocket in this Node version: launches are found by polling (Node 22+ recommended)");
   let lastDig = 0;
+  let lastCatch = 0;
   let ws: any = null;
   const open = () => {
     ws = new WS("wss://pumpportal.fun/api/data");
     ws.onopen = () => {
       ws.send(JSON.stringify({ method: "subscribeNewToken" }));
-      console.log("pumpportal: watching new launches");
+      ws.send(JSON.stringify({ method: "subscribeMigration" }));
+      console.log("pumpportal: watching new launches and migrations");
     };
-    ws.onmessage = () => {
+    ws.onmessage = (ev: any) => {
+      let msg: any = null;
+      try {
+        msg = JSON.parse(String(ev?.data || ""));
+      } catch {}
+      // a migration: CATCH looks at the coin right away (the fast migrators are decided in the first minutes)
+      if (msg?.mint && (msg.txType === "migrate" || msg.txType === "migration")) {
+        noteMigration(String(msg.mint)).catch(() => null);
+        if (Date.now() - lastCatch > 3000) {
+          lastCatch = Date.now();
+          catchPass(true).catch(() => null);
+        }
+        return;
+      }
       if (Date.now() - lastDig < 1500) return;
       lastDig = Date.now();
       dig().catch(() => null);

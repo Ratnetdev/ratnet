@@ -43,6 +43,7 @@ export function publicDesk(d: any) {
     trades: (d.trades || []).map((x: any) => ({ ...x, ctx: publicCtx(x.ctx) })),
     vet: d.vet ? { ...d.vet, checks: publicChecks(d.vet.checks) } : null,
     now: d.now ? stripNow(d.now) : null,
+    events: publicEvs(d.events),
   };
 }
 
@@ -52,4 +53,18 @@ function stripNow(n: any) {
   if (Array.isArray(out.checks)) out.checks = publicChecks(out.checks);
   if (out.vet && Array.isArray(out.vet.checks)) out.vet = { ...out.vet, checks: publicChecks(out.vet.checks) };
   return out;
+}
+
+/** VET's lines carry the measured values behind each check in parentheses: public copies keep the words only. */
+export function publicEv<T extends { agent?: string; text?: string }>(e: T): T {
+  if (!e || e.agent !== "VET" || typeof e.text !== "string") return e;
+  return { ...e, text: e.text.replace(/\s*\([^()]*\)/g, "").replace(/\s{2,}/g, " ").trim() };
+}
+export const publicEvs = (a: any[] | null | undefined) => (Array.isArray(a) ? a.map(publicEv) : a);
+
+/** A King call without the model internals (feature parts, nano contributions, raw inputs). */
+export function publicCall(c: any) {
+  if (!c) return c;
+  const { parts, nc, x, ...rest } = c;
+  return rest;
 }
