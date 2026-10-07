@@ -12,7 +12,7 @@ export async function GET() {
   try {
     const r = redis();
     const rpcP = rpcLive();
-    const [parts, rpc, x, day, boots, bootAt, exits, takeovers, takeoverAt, reconnects] = await Promise.all([
+    const [parts, rpc, x, day, boots, bootAt, exits, takeovers, takeoverAt, reconnects, streamNote, streamShapes] = await Promise.all([
       aliveView(),
       rpcP,
       xSpendView().catch(() => null),
@@ -23,8 +23,10 @@ export async function GET() {
       r.get<number>("rn:takeover:n"),
       r.get<number>("rn:takeover:at"),
       r.get<number>("rn:stream:reconnects"),
+      r.get<{ at: number; text: string }>("rn:stream:note"),
+      r.get<{ at: number; shapes: [string, number][] }>("rn:stream:shapes"),
     ]);
-    const worker = { boots: Number(boots || 0), bootAt: Number(bootAt || 0) || null, exits: exits || [], takeovers: Number(takeovers || 0), takeoverAt: Number(takeoverAt || 0) || null, streamReconnects: Number(reconnects || 0) };
+    const worker = { boots: Number(boots || 0), bootAt: Number(bootAt || 0) || null, exits: exits || [], takeovers: Number(takeovers || 0), takeoverAt: Number(takeoverAt || 0) || null, streamReconnects: Number(reconnects || 0), streamNote: streamNote || null, streamShapes: streamShapes || null };
     return cached({ parts, rpc: rpc || null, x, rpcDay: day, worker }, 3);
   } catch (e) {
     return fail(e, 500);

@@ -153,7 +153,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never" }).catch(() => {});
   }
   // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};
@@ -222,6 +222,18 @@ async function flushIntake() {
   await ingestStream(items).catch((e) => console.log("intake error", e?.message || e));
 }
 
+let noteAt = 0;
+const SHAPES = new Map<string, number>();
+let shapesAt = 0;
+function noteShape(msg: any) {
+  const k = `${String(msg.txType ?? msg.type ?? "-")}|${Object.keys(msg).sort().slice(0, 24).join(",")}`.slice(0, 300);
+  SHAPES.set(k, (SHAPES.get(k) || 0) + 1);
+  if (SHAPES.size > 50) SHAPES.delete(SHAPES.keys().next().value as string);
+  if (Date.now() - shapesAt > 60_000) {
+    shapesAt = Date.now();
+    redis().set("rn:stream:shapes", { at: shapesAt, shapes: Array.from(SHAPES.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12) }, { ex: 3600 }).catch(() => null);
+  }
+}
 function pumpportal() {
   const WS: any = (globalThis as any).WebSocket;
   if (!WS) return console.log("no WebSocket in this Node version: launches are found by polling (Node 22+ recommended)");
@@ -247,7 +259,9 @@ function pumpportal() {
     watched = want;
   };
   const open = () => {
-    ws = new WS("wss://pumpportal.fun/api/data");
+    // PUMPPORTAL_API_KEY (optional): PumpPortal's keyed data stream, for when the free stream stops sending trades
+    const key = process.env.PUMPPORTAL_API_KEY;
+    ws = new WS(`wss://pumpportal.fun/api/data${key ? `?api-key=${encodeURIComponent(key)}` : ""}`);
     ws.onopen = () => {
       up = true;
       watched = new Set();
@@ -262,8 +276,19 @@ function pumpportal() {
       try {
         msg = JSON.parse(String(ev?.data || ""));
       } catch {}
-      if (!msg?.mint) return;
-      const tx = String(msg.txType || "");
+      if (!msg?.mint) {
+        // PumpPortal's own notices (errors, limits, "needs a key"): kept for /status so a silent stream gets a reason
+        const note = String(msg?.message || msg?.error || msg?.errors || "").replace(/api-key=\S+/gi, "").slice(0, 160);
+        if (note && Date.now() - noteAt > 60_000) {
+          noteAt = Date.now();
+          console.log("pumpportal says:", note);
+          redis().set("rn:stream:note", { at: noteAt, text: note }, { ex: 86400 }).catch(() => null);
+        }
+        return;
+      }
+      // message shapes, for /status: if PumpPortal changes its format, the field names show up there (no values kept)
+      noteShape(msg);
+      const tx = String(msg.txType || msg.type || "").toLowerCase();
       if (tx === "migrate" || tx === "migration") {
         noteMigration(String(msg.mint)).catch(() => null);
         streamComplete(String(msg.mint)).catch(() => null);
@@ -286,7 +311,7 @@ function pumpportal() {
       if ((tx === "create" || (!tx && msg.uri && msg.name)) && (!msg.pool || msg.pool === "pump")) {
         const now = Date.now();
         const mint = String(msg.mint);
-        INTAKE.push({ mint, sig: String(msg.signature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
+        INTAKE.push({ mint, sig: String(msg.signature || msg.sig || msg.txSignature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
         logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
         FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
         if (up) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));

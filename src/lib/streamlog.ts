@@ -18,9 +18,19 @@ export function logCreate(mint: string, creator: string, t0: number, devSol: num
   LOGS.set(mint, { t0, creator, trades, n: trades.length });
 }
 
+let LAST_TRADE_AT = 0;
+/**
+ * Are trade messages arriving at all? On 7 Oct the stream delivered launches but no trades for hours, and every
+ * stream tape held just the dev's buy ("1 trade, 1 trader"): the King scored launches on an empty picture. With no
+ * trade message in the last minute, stream tapes are refused and the chain is read instead.
+ */
+export const tradesFlowing = (now = Date.now()) => now - LAST_TRADE_AT < 60_000;
+export const lastTradeAgo = (now = Date.now()) => (LAST_TRADE_AT ? Math.round((now - LAST_TRADE_AT) / 1000) : null);
+
 /** A trade on any streamed coin. */
 export function logTrade(m: { mint: string; w: string; buy: boolean; sol: number; tok: number; vSol?: number; mcSol?: number; pool?: string }) {
   const now = Date.now();
+  LAST_TRADE_AT = now;
   const l = LOGS.get(m.mint);
   if (l && now - l.t0 <= LOG_MS) {
     l.n++;
@@ -58,4 +68,4 @@ export function pruneStream(keep: Set<string>, now = Date.now()) {
   for (const [m, q] of QUOTES) if (!keep.has(m) && now - q.at > 120_000) QUOTES.delete(m);
 }
 
-export const streamSize = () => ({ logs: LOGS.size, quotes: QUOTES.size });
+export const streamSize = () => ({ logs: LOGS.size, quotes: QUOTES.size, lastTradeSec: lastTradeAgo() });

@@ -90,6 +90,20 @@ export async function onGhost(sl: Sleeve, logRet: number): Promise<string | null
   return note;
 }
 
+/** One-time data fix: forget ghost results at the 20x clip (false prints from side pools, v0.1.31). */
+export async function pmDropWicks() {
+  const pm = await load();
+  let n = 0;
+  for (const sl of SLEEVES) {
+    const g = pm[sl].g || [];
+    const keep = g.filter((x) => x < 2.99);
+    n += g.length - keep.length;
+    pm[sl].g = keep;
+  }
+  if (n) await redis().set(KEY, pm);
+  return n;
+}
+
 export async function pmView() {
   const pm = await load();
   const now = Date.now();

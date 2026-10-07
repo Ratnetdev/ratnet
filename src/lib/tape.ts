@@ -5,7 +5,7 @@
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
 import { bondingCurvePda, conn, parsedTxsAny, pmap } from "./solana";
-import { streamLog } from "./streamlog";
+import { streamLog, tradesFlowing } from "./streamlog";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
 const JITO = new Set([
@@ -150,6 +150,8 @@ const SAMPLE = { early: 28, recent: 14 };
  * snipe), and no token accounts (insiders are read from the chain only when the desk buys, see desk enter()).
  */
 export function tapeFromStream(mint: string, creator: string, createdAt: number, sample = SAMPLE, at = Date.now()): Tape | null {
+  // only while trades are actually arriving (a stream that delivers launches but no trades gives empty tapes)
+  if (!tradesFlowing(at)) return null;
   const l = streamLog(mint, createdAt);
   if (!l) return null;
   const slotOf = (t: number) => Math.max(0, Math.floor((t - l.t0) / 400));

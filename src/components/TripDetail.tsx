@@ -120,6 +120,7 @@ const RULE: Record<string, string> = {
   early_read_bond: "Early read said BOND",
   nano_agrees: "Nano check",
   curve_window: "Curve inside the buy window",
+  curve_not_late: "Curve not already late at the call (a learned prior)",
   dev_not_serial: "Dev not a serial launcher",
   dev_buy_sane: "Dev buy sane",
   dev_not_selling: "Dev not selling (info only on memes)",

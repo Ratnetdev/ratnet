@@ -16,7 +16,7 @@ const ok = (c: boolean, m: string) => {
   await R.set(K.deskExam, { at: Date.now(), live: false, passed: 3, total: 5, checks: [] }, { ex: 600 });
   const { getDesk } = await import("../src/lib/desk");
   const d: any = await getDesk();
-  ok(Array.isArray(d.exam?.checks) && d.exam.checks.length === 5, `desk payload has the full exam (${d.exam?.checks?.length} checks)`);
+  ok(Array.isArray(d.exam?.checks) && d.exam.checks.length === 6, `desk payload has the full exam (${d.exam?.checks?.length} checks)`);
   const summary: any = await R.get(K.deskExam);
   ok(summary && summary.total === 5 && !summary.ex, "the homepage summary is left as it was");
   const again: any = await getDesk();

@@ -561,7 +561,8 @@ const PARSE_FAILS = new Map<string, number>();
 export async function ingestStream(items: { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number }[]) {
   return lane.run(1, async () => {
     const r = redis();
-    const fresh = items.filter((x) => x.mint && x.sig);
+    // a launch without its signature is still stored (only the backfill's "already seen" mark needs the signature)
+    const fresh = items.filter((x) => x.mint);
     if (!fresh.length) return { dug: 0 };
     // never overwrite a launch already dug (the chain backfill may have it)
     const have = await r.mget<(Launch | null)[]>(...fresh.map((x) => K.launch(x.mint))).catch(() => [] as (Launch | null)[]);
@@ -569,7 +570,7 @@ export async function ingestStream(items: { mint: string; sig: string; creator: 
     const markSeen = async (xs: typeof fresh) => {
       if (!xs.length) return;
       const p = r.pipeline();
-      for (const x of xs) p.set(SEEN_SIG(x.sig), 1, { ex: 3 * 3600 });
+      for (const x of xs) if (x.sig) p.set(SEEN_SIG(x.sig), 1, { ex: 3 * 3600 });
       await p.exec().catch(() => {});
     };
     await markSeen(fresh.filter((_, i) => !!have[i]));

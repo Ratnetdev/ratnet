@@ -124,7 +124,7 @@ export const DEFAULT_SETTINGS = {
     momoMaxOpen: 3,
     momoCooldownMin: 45, // minutes before the same coin can be signalled again
     momoInitials: 40, // % up: sell the initials (until MOMO's own record sets it)
-    momoSl: -20, // stop loss before initials
+    momoSl: -25, // stop loss before initials (in the first 10 minutes it widens to the coin's own swing, up to -45%)
     momoTimeStop: 40, // minutes without initials: out
     // CATCH (the sender catcher): coins moving like the ones that ran to $300K+, fast migrators and slow ones.
     // auto/on = trade its signals (prior score until its model has 300 labels, then the model's own cutoff); off = never
@@ -166,6 +166,7 @@ export const DEFAULT_SETTINGS = {
     maxPriorityLamports: 3_000_000, // cap on the priority fee per trade (0.003 SOL)
     jitoTipMinSol: 0.0003,
     jitoTipMaxSol: 0.002, // tip = 0.4% of the trade, between these two
+    paperPrioritySol: 0.0005, // priority fee paper pays per transaction (live pays Helius's live estimate, capped above)
     flowWaitMs: 1500, // FLOW watches the curve this long before a King buy (tweet coins: no wait)
     ghostSol: 0.1, // ghost desk: fixed size per trade (not counted anywhere, only learned from)
     slippageBps: 1500,

@@ -9,7 +9,7 @@ type Tile = { k: string; v: string; s: string; level: "ok" | "warn" | "bad" | "i
 const lvl = (ok: boolean, warn: boolean): Tile["level"] => (ok ? "ok" : warn ? "warn" : "bad");
 
 export default function StatusBoard() {
-  const alive = usePoll<{ parts: { name: string; age: number | null; ok: boolean; stalled: boolean }[]; rpc?: { at: number; plan: number; capNow: number; perSec: number; throttled1m: number; lanes: { lane: string; perSec: number; waitMs: number; queued: number }[] } | null; x?: { budget: number; thisHour: number; lastHour: number; rules: number; paidAccounts: number } | null; rpcDay?: { today: number; perMonth: number; perSecLive: number; budget: number; pace: number; histCap: number; byLane: Record<string, number> } | null; worker?: { boots: number; bootAt: number | null; exits: { at: number; why: string }[]; takeovers: number; takeoverAt: number | null; streamReconnects: number } | null }>("/api/alive", 5000).data;
+  const alive = usePoll<{ parts: { name: string; age: number | null; ok: boolean; stalled: boolean }[]; rpc?: { at: number; plan: number; capNow: number; perSec: number; throttled1m: number; lanes: { lane: string; perSec: number; waitMs: number; queued: number }[] } | null; x?: { budget: number; thisHour: number; lastHour: number; rules: number; paidAccounts: number } | null; rpcDay?: { today: number; perMonth: number; perSecLive: number; budget: number; pace: number; histCap: number; byLane: Record<string, number> } | null; worker?: { boots: number; bootAt: number | null; exits: { at: number; why: string }[]; takeovers: number; takeoverAt: number | null; streamReconnects: number; streamNote?: { at: number; text: string } | null } | null }>("/api/alive", 5000).data;
   const day = alive?.rpcDay || null;
   const wk = alive?.worker || null;
   const ago = (t: number | null | undefined) => (!t ? "never" : (() => { const s = Math.round((Date.now() - t) / 1000); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : s < 172800 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; })());
@@ -43,7 +43,13 @@ export default function StatusBoard() {
         { k: "Chain budget (today)", v: day ? M(day.today) : "…", s: day ? `${day.budget ? `of ${M(day.budget)} a day, on pace ${M(day.pace)} by now` : "no daily cap set"} · at this minute's rate ~${M(day.perMonth)} a month · historian ${M(Number(day.byLane?.historian || 0))} of ${M(day.histCap)}` : "", level: day ? (day.budget ? lvl(day.today <= day.pace * 1.05, day.today <= day.budget * 1.15) : lvl(day.perMonth <= 10_000_000, day.perMonth <= 15_000_000)) : "idle" },
         { k: "Worker", v: wk?.bootAt ? `up ${ago(wk.bootAt).replace(" ago", "")}` : "…", s: wk ? `${wk.boots} starts${lastExit ? ` · last restart ${ago(lastExit.at)}: ${lastExit.why}` : ""}${wk.takeovers ? ` · minute ping took over ${wk.takeovers}x, last ${ago(wk.takeoverAt)}` : ""}${wk.streamReconnects ? ` · stream reconnected ${wk.streamReconnects}x` : ""}` : "", level: wk?.bootAt ? lvl(!lastExit || Date.now() - lastExit.at > 3600_000, true) : "idle" },
         { k: "Desk heartbeat", v: beatAge != null ? `${beatAge}s` : "…", s: "positions re-read twice a second", level: beatAge == null ? "idle" : lvl(beatAge <= 5, beatAge <= 30) },
-        { k: "Live stream", v: parts.find((p) => p.name === "stream")?.age != null ? `${parts.find((p) => p.name === "stream")!.age}s` : "…", s: "PumpPortal: launches, trades, migrations", level: (() => { const a = parts.find((p) => p.name === "stream")?.age; return a == null ? "idle" : lvl(a <= 30, a <= 90); })() },
+        (() => {
+          const st = parts.find((p) => p.name === "stream");
+          const m = /lastTradeSec:(\d+|never)/.exec((st as any)?.note || "");
+          const tr = m ? (m[1] === "never" ? null : Number(m[1])) : undefined;
+          const tradesOk = tr != null && tr <= 60;
+          return { k: "Live stream", v: st?.age != null ? `${st.age}s` : "…", s: `PumpPortal: launches, trades, migrations${tr === undefined ? "" : tradesOk ? ` · last trade ${tr}s ago` : " · NO TRADES arriving: tapes read from the chain"}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : !tradesOk && tr !== undefined ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
+        })(),
       ],
     },
     {

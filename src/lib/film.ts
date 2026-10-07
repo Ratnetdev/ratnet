@@ -80,7 +80,8 @@ export async function filmStep(max = 12) {
   const by: Record<string, Decision> = {};
   ids.forEach((id, i) => recs[i] && (by[id] = recs[i]!));
   const mints = Array.from(new Set(Object.values(by).map((d) => d.mint)));
-  const [curves, pools] = await Promise.all([getCurves(mints).catch(() => ({} as any)), readPools(mints).catch(() => ({} as any))]);
+  let readFailed = false;
+  const [curves, pools] = await Promise.all([getCurves(mints).catch(() => ((readFailed = true), {} as any)), readPools(mints).catch(() => ((readFailed = true), {} as any))]);
   const out: { text: string; tone: string; mint: string; symbol: string }[] = [];
   const p = r.pipeline();
   for (const item of due) {
@@ -92,7 +93,15 @@ export async function filmStep(max = 12) {
     const onCurve = !!cv && !cv.complete && cv.priceSol > 0;
     const px = onCurve ? cv.priceSol : pool?.px || 0;
     const bonded = !!pool?.px && !onCurve;
-    const lr = px ? ret(px, d.px0) : Math.log(0.05); // no price at all: treat as dead (-95%)
+    // dead only when the chain says so; a failed read or no account at all is "no read" and is tried again later
+    const dead = !px && !readFailed && !!cv && cv.complete && !pool;
+    if (!px && !dead) {
+      const h = FILM_H.find((x) => x.k === k);
+      if (h && now - (d.at + h.ms) < 3600_000) p.zadd(DUE, { score: now + 5 * 60_000, member: item });
+      else p.hincrby(RULES, `${d.rule}:${k}:noread`, 1);
+      continue;
+    }
+    const lr = px ? ret(px, d.px0) : Math.log(0.05); // dead: -95%
     const pc = Math.round((Math.exp(lr) - 1) * 1000) / 10;
     // a skip was right when the coin went nowhere or down; wrong when it ran 30%+ or bonded
     const wrong = pc >= 30 || bonded;

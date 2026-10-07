@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.1.31 · Honest paper desk (Run 4)
+- Paper pays what live pays (lib/costs.ts), in the real desk, the ghost desk and the exit lab:
+  - venue fee 1.25% on the curve, PumpSwap's market-cap tiers after migration (1.25% down to 0.30%);
+  - Jito tip, priority fee (paperPrioritySol, 0.0005 SOL) and base fee on every transaction;
+  - token-account rent on the buy, refunded on the full exit (live now closes the empty account);
+  - slippage from the trade's size against the curve or pool, plus a 1% latency slip, on buys and sells.
+  Before: a flat 1% fee and 2% slip per side, no fixed costs. At 0.05 SOL a curve round trip really costs ~8%.
+- Fills at a fresh price read after VET, SHIELD, FLOW and BUZZ. A coin that ran past the slippage limit during the checks is not chased, and a paper buy past the limit is refused, as live would be.
+- The exam, on one window (the last 30 round trips):
+  - realized profit after every cost;
+  - profit factor without the best trade (one 10x can no longer pass it alone);
+  - win rate and worst drawdown on the same 30.
+  Equity is the liquidation value of the bags, after costs, not the mid price.
+- False prints: a stream price more than 3x away from the last chain read is not used until the chain confirms it. On 7 Oct a ghost position "sold" $XP at ~1,400x on a side-pool print (a $1.7B wick). That trade is removed from the exit lab, PM and the ghost record.
+- DexScreener prices (fallback only) never count as a migration and are never learned from. Shadows, COACH's after-exit paths, COACH and FILM follow-ups tell "no read" (tried again) apart from "dead" (the chain says so). A failed read used to be scored as -100%.
+- Learning switches flip only on evidence, with hysteresis:
+  - dev and sell-off exits: Wilson interval;
+  - priors: two-sample t (1.5 to overrule, 1.0 to restore);
+  - pullback and early entries: a lower bar to stay on than to switch on.
+  Dev-sell and sell-off moments are scored the same way whether the desk sold or held: the price 30 minutes later.
+- COACH's after-exit review waits for a 2x or the full window. A 40% dip used to decide it ($FLY: "exit held up", then +688%). The trail steps the same size both ways.
+- Exit lab:
+  - every replay pays the trade's costs;
+  - it re-learns only on new paths;
+  - a new setting must also win on the newest third of paths, held out;
+  - it alone owns the trail once it has learned a bucket.
+- $FLY findings:
+  - The King's BOND 99 call was skipped at 74% curve ("curve window"). That limit is now a learned prior (curve_not_late), followed in shadow.
+  - MOMO stops sit outside the coin's own last-minute swing for the first 10 minutes (1.2x, up to -45%; default -25%).
+  - A MOMO or King trade stopped out is bought back once if the coin reclaims its entry within 30 minutes. Re-entries switch themselves off if their last 20 average below zero.
+- Ops:
+  - settings from the admin apply within 5 seconds;
+  - close-all stays on until the book is empty;
+  - a reset stops a running desk session before it can write old books back.
+- Redis: a position's price path is its own append-only list. The position is written without it.
+- The paper desk resets once (under the desk lock, never while live). The old track record is archived. Everything learned is kept.
+- Stream trades: since v0.1.28, tapes have come from the PumpPortal stream's trades. On 7 Oct the stream delivered launches but no trades, so every stream tape held just the dev's buy ("1 trade, 1 trader") and the King scored launches on an empty picture. Now:
+  - with no trade message in the last minute, stream tapes are refused and the chain is read instead;
+  - /status shows when the last trade arrived, PumpPortal's own notices, and the field names of the messages it sends (to see a format change);
+  - parsing tolerates a renamed type or signature field, and a launch without its signature is still stored;
+  - PUMPPORTAL_API_KEY (optional) connects to PumpPortal's keyed stream.
+
 ## v0.1.30 · Hotfix: version 1 transactions
 - Since early October most pump.fun creates and many trades are version 1 transactions. web3.js only asks for version 0, so the RPC refused them ("Transaction version (1) is not supported"). Every one of them was lost or retried:
   - the rats' backfill failed on ~2 of 3 launches and retried each one 3 times (~30 chain calls a second, most of the day's budget);

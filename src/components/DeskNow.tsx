@@ -21,6 +21,7 @@ const RULE: Record<string, string> = {
   king_or_nano_bond: "not a BOND call",
   nano_agrees: "nano disagreed",
   curve_window: "curve outside the buy window",
+  curve_not_late: "curve already late at the call",
   dev_not_serial: "serial dev with no graduations",
   dev_buy_sane: "dev bought too much",
   dev_not_selling: "dev already selling",

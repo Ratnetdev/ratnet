@@ -52,9 +52,11 @@ export async function coachStep(solUsd: number | null, max = 8) {
   const byId: Record<string, Follow> = {};
   ids.forEach((id, i) => recs[i] && (byId[id] = recs[i]!));
   const mints = Array.from(new Set(Object.values(byId).map((f) => f.mint)));
+  // a failed read is "no read", never "dead" (v0.1.31): before, an RPC hiccup scored the coin as -100% after our exit
+  let readFailed = false;
   const [curves, pools, mkt] = await Promise.all([
-    getCurves(mints).catch(() => ({} as Awaited<ReturnType<typeof getCurves>>)),
-    readPools(mints).catch(() => ({} as Awaited<ReturnType<typeof readPools>>)),
+    getCurves(mints).catch(() => ((readFailed = true), {} as Awaited<ReturnType<typeof getCurves>>)),
+    readPools(mints).catch(() => ((readFailed = true), {} as Awaited<ReturnType<typeof readPools>>)),
     getMarket(mints).catch(() => ({} as Awaited<ReturnType<typeof getMarket>>)),
   ]);
   const out: { text: string; tone: string; mint: string; symbol: string }[] = [];
@@ -68,7 +70,16 @@ export async function coachStep(solUsd: number | null, max = 8) {
     const pool = pools[f.mint];
     const onCurve = !!cv && !cv.complete && cv.priceSol > 0;
     const px = onCurve ? cv!.priceSol : pool?.px || 0;
-    // no price at all: curve full but never migrated, or nothing left to read. counts as gone (-100%)
+    // dead only when the chain says so (the curve completed and no pool exists); no curve and no pool, or a failed
+    // read, is "no read": tried again in 5 minutes, for up to an hour past the check time
+    const dead = !px && !readFailed && !!cv && cv.complete && !pool;
+    if (!px && !dead) {
+      const h = HORIZONS.find((x) => x.k === k);
+      if (h && now - (f.closedAt + h.ms) < 3600_000) p.zadd(DUE, { score: now + 5 * 60_000, member: d });
+      else p.hincrby(STAT, `${k}:noread`, 1);
+      continue;
+    }
+    // no price and the chain says dead: counts as gone (-100%)
     const vsExit = px ? pct(px, f.exitPx) : -100;
     const vsEntry = px ? pct(px, f.entryPx) : -100;
     const m = mkt[f.mint];
