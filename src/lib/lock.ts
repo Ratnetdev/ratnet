@@ -25,3 +25,33 @@ export async function renew(l: Lock, ttlMs: number) {
 export async function release(l: Lock) {
   await redis().eval(RELEASE, [l.key], [l.token]).catch(() => 0);
 }
+
+/** True while this process still holds the lock (checked with one GET, for right before an irreversible step). */
+export async function holds(l: Lock) {
+  const v = await redis().get<string>(l.key).catch(() => null);
+  return v === l.token;
+}
+
+export type Held = { lock: Lock; lost: () => boolean };
+
+/**
+ * Run `fn` under an owned lock that renews itself every third of its TTL for as long as `fn` runs, then is released.
+ * Returns `busy` when someone else holds it. `held.lost()` turns true the moment a renewal finds the lock gone, so long
+ * work can stop before it does something a second holder would also do.
+ */
+export async function withLock<T>(key: string, ttlMs: number, fn: (h: Held) => Promise<T>): Promise<T | { skipped: "busy" }> {
+  const l = await acquire(key, ttlMs);
+  if (!l) return { skipped: "busy" };
+  let lost = false;
+  const t = setInterval(() => {
+    renew(l, ttlMs).then((ok) => {
+      if (!ok) lost = true;
+    });
+  }, Math.max(1000, Math.floor(ttlMs / 3)));
+  try {
+    return await fn({ lock: l, lost: () => lost });
+  } finally {
+    clearInterval(t);
+    await release(l);
+  }
+}

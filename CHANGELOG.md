@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.25 · One system, no overlaps
+- A second system ran on every page visit: each open page POSTed /api/dig every 15s, which ran a full dig on Vercel next to the worker, on its own lock and its own RPC limiter. Due checkpoints, lessons and calls could be processed twice, and the two limiters together went far over the Helius plan (the 429 storms). The page nudge is gone; the fallback dig only runs while the worker is down and then holds the worker's own lane locks.
+- The minute ping (/api/desk/run) now steps aside whenever the worker process is up (it restarts itself when a loop hangs) or a desk holds the lock. Before, a late desk beat during a 429 storm made it start a whole second system on Vercel. Takeovers are counted on /status.
+- Desk lock: renewed on its own 10s timer, not only once per beat (a beat with a 120s swap confirmation could outlive the 75s lock and let a second desk in). Every real-money swap checks the lock in Redis first, and a desk that lost its lock never writes the books.
+- Owned locks everywhere: MIND, LENS, OVERSEER, the historian and both rat lanes use renewing, owner-only locks. A session that ran long used to delete the next session's lock, so two or three ran side by side.
+- Model training never runs without its lock: when the trainer is busy, lessons are parked and the next holder learns them (before, it trained unlocked after 3s, the lost-lessons bug again). A trainer that lost its lock mid-way parks its lessons instead of overwriting.
+- Every outside call has a deadline (20s unless it sets its own): a hung price API or Telegram call used to freeze a whole worker lane. Upstash retries once instead of five times.
+- Worker: the watchdog never restarts in the middle of a real-money swap (waits up to 3 minutes), every restart is recorded with its reason, stray errors are logged and counted instead of crashing. The swap confirmation no longer reads a failed block-height call as height 0.
+- Live stream: 30s without a PumpPortal message means a dead socket; it reconnects (before, a half-open socket stopped FLASH, intake and the live tape while /status stayed green). Only pump.fun launches are taken from the stream. A J7 drop ends its session at once instead of a silent gap.
+- Chain reads per day per lane, with the monthly pace, on /status. The historian has a daily cap (HISTORIAN_CALLS_PER_DAY, default 400K).
+- Telegram alert in the private ideas chat when a loop stalls, and one line when it is back.
+- /status: worker tile (uptime, starts, last restart and why, minute-ping takeovers, stream reconnects). Tweet-link reads count against the X budget too.
+
 ## v0.1.24 · Watertight: no starved loops, sell-off exit fixed, X budget, link preview
 - Sell-off exit: it sold $EVE at +5.5% on a healthy pullback ("sellers took over: curve -22% in 40s") while the price sat only a few % under its high, then the coin ran to 22K. The exit now needs the price to confirm it (15%+ off its 40-second high, SOL leaving the curve, and the position under +25%). COACH scores every sell-off exit per strategy (did the coin run 30%+ after?) and switches it off for a strategy once holding through pullbacks does better; while off it keeps scoring what selling would have done, so it can switch back on.
 - Chain reads: the plan was oversubscribed and three loops starved. The desk and the rats could take 70% + 80% of the plan between them, so CATCH, HOUND, MIND, the rats' slow lane and the historian waited for minutes (silent 6-19m on /status). Every lane now has a guaranteed floor (desk 30%, rats 30%, agents 20%, historian 10%), the rest goes by priority.

@@ -54,3 +54,26 @@ export async function aliveView() {
     return { name: k, age, ok: !!x && x.ok, stalled: age == null || age > EXPECT[k] * 3, note: x?.note || "" };
   });
 }
+
+/**
+ * Telegram alert (the private ideas chat, never the public channel) when a part stalls, once per incident, and one
+ * line when it is back. Called by the worker every 20s.
+ */
+export async function stallAlerts() {
+  const { tgSend, ideasChat, esc } = await import("./tgbot");
+  const chat = ideasChat();
+  if (!chat || !process.env.TELEGRAM_BOT_TOKEN) return;
+  const r = redis();
+  const parts = await aliveView();
+  const open = ((await r.hgetall<Record<string, number>>("rn:alert:stall")) || {}) as Record<string, number>;
+  for (const p of parts) {
+    // a minute of grace after a worker boot: everything reports late once
+    if (p.stalled && !open[p.name] && (p.age == null || p.age > EXPECT[p.name] * 4)) {
+      await r.hset("rn:alert:stall", { [p.name]: Date.now() });
+      await tgSend(chat, `⚠️ <b>${esc(p.name)}</b> is stalled: last finished pass ${p.age == null ? "never" : `${Math.round(p.age / 60)}m ago`}. ${esc(p.note).slice(0, 120)}`).catch(() => null);
+    } else if (!p.stalled && open[p.name]) {
+      await r.hdel("rn:alert:stall", p.name);
+      await tgSend(chat, `✅ <b>${esc(p.name)}</b> is running again (down ${Math.round((Date.now() - Number(open[p.name])) / 60_000)}m)`).catch(() => null);
+    }
+  }
+}

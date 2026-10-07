@@ -17,6 +17,8 @@
 // Post-bond runs come from GeckoTerminal hourly candles and teach the runner model the milestone ladder.
 
 import { PublicKey } from "@solana/web3.js";
+import { historianCapped } from "./rpcday";
+import { acquire, holds, release, renew } from "./lock";
 import { CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, hourKey, redis } from "./redis";
 import { canonicalPool, readPools } from "./pool";
@@ -269,10 +271,20 @@ async function historianInner(budgetMs: number) {
   const s = await getSettings();
   const cfg = s.history;
   if (!cfg.on) return { history: "off" };
-  const got = await r.set(HK.lock, Date.now(), { nx: true, ex: Math.ceil(budgetMs / 1000) + 300 });
-  if (!got) return { history: "busy" };
+  // its daily share of the RPC plan (HISTORIAN_CALLS_PER_DAY): spare capacity is not free capacity, every call is billed
+  if (await historianCapped()) return { history: "daily cap reached" };
+  const lk = await acquire(HK.lock, 120_000);
+  if (!lk) return { history: "busy" };
+  const lkRenew = setInterval(() => renew(lk, 120_000).catch(() => false), 30_000);
   const t0 = Date.now();
-  const st = await loadState(cfg.days);
+  let st: Awaited<ReturnType<typeof loadState>>;
+  try {
+    st = await loadState(cfg.days);
+  } catch (e) {
+    clearInterval(lkRenew);
+    await release(lk);
+    throw e;
+  }
   const log: string[] = [];
   try {
     ensureSolHistory().catch(() => {});
@@ -527,8 +539,10 @@ async function historianInner(budgetMs: number) {
     st.lastError = safeErr(e);
     return { history: "error", error: st.lastError };
   } finally {
-    await r.set(HK.state, st);
-    await r.del(HK.lock);
+    clearInterval(lkRenew);
+    // only the holder saves its state: a second historian (the lock was lost) must not overwrite the first one's progress
+    if (await holds(lk)) await r.set(HK.state, st);
+    await release(lk);
   }
 }
 

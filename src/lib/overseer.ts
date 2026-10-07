@@ -9,6 +9,7 @@
 //     /no 12 why, or /later 12; it learns what kind of ideas you take. Approved ideas wait in admin for the team.
 // It proposes; it never changes the protocol by itself.
 import { redis } from "./redis";
+import { acquire, release, renew } from "./lock";
 import { ask, json, llmOn } from "./llm";
 import { agentLog } from "./agents";
 import { tgSend, ideasChat } from "./tgbot";
@@ -238,7 +239,11 @@ export async function decide(id: number, status: Idea["status"], note?: string) 
 
 export async function overseerSession(ms: number) {
   const r = redis();
-  if (!(await r.set(LOCK, 1, { nx: true, ex: Math.ceil(ms / 1000) + 5 }))) return { overseer: "busy" };
+  // an owned lock that renews itself while the session works (a plain SET NX with a short TTL expired mid-session and
+  // the late session's DEL then removed the next holder's lock: two or three sessions ran side by side)
+  const lk = await acquire(LOCK, 60_000);
+  if (!lk) return { overseer: "busy" };
+  const lkRenew = setInterval(() => renew(lk, 60_000).catch(() => false), 20_000);
   try {
     // explore a little every 10 minutes, think every 6 hours
     const out: Record<string, unknown> = {};
@@ -246,7 +251,8 @@ export async function overseerSession(ms: number) {
     Object.assign(out, await think().catch((e) => ({ think: `error ${e?.message || e}` })));
     return out;
   } finally {
-    await r.del(LOCK).catch(() => {});
+    clearInterval(lkRenew);
+    await release(lk);
   }
 }
 

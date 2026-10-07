@@ -8,7 +8,6 @@ import "./globals.css";
 import RatMark from "@/components/RatMark";
 import Nav, { XButton } from "@/components/Nav";
 import CaBar from "@/components/CaBar";
-import Heartbeat from "@/components/Heartbeat";
 import RatCam from "@/components/RatCam";
 import { LiveProvider } from "@/components/Live";
 import Alerts from "@/components/Alerts";
@@ -34,7 +33,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <WalletProvider>
         <LiveProvider>
-          <Heartbeat />
           <RatCam />
           <CmdK />
           <header className="top">

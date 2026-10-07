@@ -1,19 +1,18 @@
 import { dig } from "@/lib/digger";
 import { isCron } from "@/lib/admin";
-import { fail, ipOf, json, limit, tooMany } from "@/lib/http";
+import { fail, json } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// POST: heartbeat from open pages (lock-protected, one run at a time).
-// GET with ?key=CRON_SECRET: external pinger that keeps the rats digging 24/7.
-// Pages only nudge: the answer is a bare ok (no internals), and one IP can nudge at most 6 times a minute.
-export async function POST(req: Request) {
-  if (!(await limit(`dig:${ipOf(req)}`, 6, 60))) return tooMany();
-  const r = await dig();
-  return json({ ok: (r as any)?.ok !== false });
+// POST: old pages used to nudge a dig here every 15s. That ran a second dig on Vercel next to the worker (v0.1.25
+// removed it); the answer stays a bare ok so a page still open from before the update does no harm.
+export async function POST() {
+  return json({ ok: true });
 }
 
+// GET with the cron key: an outside pinger can still keep the rats digging when the worker is down. dig() steps aside
+// by itself while the worker is alive.
 export async function GET(req: Request) {
   if (!isCron(req)) return fail("unauthorized", 401);
   return json(await dig());

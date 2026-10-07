@@ -9,6 +9,9 @@ import { digFast, digSlow, ingestStream, streamComplete } from "../src/lib/digge
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
 import { lane, rpcView } from "../src/lib/solana";
+import { swapsInFlight } from "../src/lib/exec";
+import { flushRpcDay } from "../src/lib/rpcday";
+import { stallAlerts } from "../src/lib/alive";
 import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 
@@ -24,20 +27,35 @@ const SESSION_MS = Number(process.env.WORKER_SESSION_MS || 55_000);
 const DESK_MS = Number(process.env.WORKER_DESK_MS || 300_000);
 let sessionAt = Date.now();
 let deskAt = Date.now();
+// A restart is the only way to free a hung promise, but never in the middle of a real-money swap: the watchdog waits up
+// to 3 minutes for swaps in flight to settle. Every restart is recorded with its reason (shown on /status).
+let restartWanted = 0;
+async function restart(why: string) {
+  if (swapsInFlight() > 0 && (!restartWanted || Date.now() - restartWanted < 180_000)) {
+    restartWanted ||= Date.now();
+    return console.log(`watchdog: ${why}; waiting for ${swapsInFlight()} swap(s) in flight before restarting`);
+  }
+  console.log(`watchdog: ${why}, restarting`, JSON.stringify(rpcView()));
+  const r = redis();
+  await r.lpush("rn:worker:exits", { at: Date.now(), why }).catch(() => {});
+  await r.ltrim("rn:worker:exits", 0, 49).catch(() => {});
+  process.exit(1);
+}
+
 async function beat() {
   const stuck = Date.now() - sessionAt;
   const deskStuck = Date.now() - deskAt;
-  if (Date.now() - fastAt > 150_000 || Date.now() - slowAt > 300_000 || Date.now() - histAt > 900_000) {
-    console.log(`watchdog: ${Date.now() - fastAt > 150_000 ? "the rats' fast lane" : Date.now() - slowAt > 300_000 ? "the rats' slow lane" : "the historian"} is stuck, restarting`, JSON.stringify(rpcView()));
-    process.exit(1);
-  }
-  redis().set("rn:rpc", { at: Date.now(), ...rpcView() }, { ex: 120 }).catch(() => {});
-  if (stuck > SESSION_MS * 5 || deskStuck > DESK_MS + 180_000) {
-    console.log(`watchdog: ${deskStuck > DESK_MS + 180_000 ? "desk" : "agent"} loop stuck (${Math.round(Math.max(stuck, deskStuck) / 1000)}s), restarting`);
-    process.exit(1);
-  }
-  if (stuck > SESSION_MS * 3 || deskStuck > DESK_MS + 90_000) return console.log("watchdog: a loop is running long, heartbeat paused");
+  // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView() }, { ex: 120 }).catch(() => {});
+  flushRpcDay().catch(() => {});
+  stallAlerts().catch(() => {});
+  if (Date.now() - fastAt > 150_000) return restart("the rats' fast lane is stuck");
+  if (Date.now() - slowAt > 300_000) return restart("the rats' slow lane is stuck");
+  if (Date.now() - histAt > 900_000) return restart("the historian is stuck");
+  if (deskStuck > DESK_MS + 180_000) return restart(`the desk loop is stuck (${Math.round(deskStuck / 1000)}s)`);
+  if (stuck > SESSION_MS * 5) return restart(`the agents loop is stuck (${Math.round(stuck / 1000)}s)`);
+  restartWanted = 0;
 }
 
 // PumpPortal, one connection for everything the agents need the second it happens:
@@ -50,6 +68,7 @@ const TAPE = new Map<string, Trade[]>(); // last 60 seconds of trades per coin
 const SEEN = new Map<string, Set<string>>(); // every wallet seen trading the coin since we started watching it
 const LAST = new Map<string, { mc: number; at: number }>();
 let watched = new Set<string>();
+let lastMsgAt = Date.now();
 let lastStreamMark = 0;
 
 function onTrade(m: any, kick: () => void) {
@@ -97,7 +116,8 @@ async function flushTape() {
   const now = Date.now();
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
-    markAlive("stream", { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size }).catch(() => {});
+    const quiet = Math.round((now - lastMsgAt) / 1000);
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, lastMsgSec: quiet }).catch(() => {});
   }
   const out: Record<string, unknown> = {};
   for (const [mint, w] of TAPE) {
@@ -189,6 +209,7 @@ function pumpportal() {
       console.log("pumpportal: launches, migrations and live trades");
     };
     ws.onmessage = (ev: any) => {
+      lastMsgAt = Date.now();
       let msg: any = null;
       try {
         msg = JSON.parse(String(ev?.data || ""));
@@ -212,7 +233,9 @@ function pumpportal() {
         return onTrade(msg, kick);
       }
       // a new launch: to the rats now (batched every 300ms), and onto FLASH's first-seconds watch
-      if (tx === "create" || (!tx && msg.uri && msg.name)) {
+      // pump.fun launches only: PumpPortal also streams other launchpads (pool "bonk"...), which have no pump.fun
+      // curve and used to be dug, resolved as dead and counted in the base rate
+      if ((tx === "create" || (!tx && msg.uri && msg.name)) && (!msg.pool || msg.pool === "pump")) {
         const now = Date.now();
         const mint = String(msg.mint);
         INTAKE.push({ mint, sig: String(msg.signature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
@@ -232,6 +255,22 @@ function pumpportal() {
     ws.onerror = () => {};
   };
   open();
+  // a socket can die without ever closing (half-open): pump.fun launches every few seconds, so 30s of silence means
+  // the stream is dead. Close it and open a fresh one (before v0.1.25 FLASH, intake and the live tape just stopped
+  // while /status stayed green)
+  setInterval(() => {
+    const quiet = Date.now() - lastMsgAt;
+    if (quiet < 30_000) return;
+    console.log(`pumpportal: no message for ${Math.round(quiet / 1000)}s, reconnecting`);
+    lastMsgAt = Date.now();
+    redis().incr("rn:stream:reconnects").catch(() => 0);
+    try {
+      ws.onclose = null;
+      ws.close();
+    } catch {}
+    up = false;
+    open();
+  }, 5_000);
   setInterval(() => resync().catch(() => null), 15_000);
   setInterval(() => flushTape().catch(() => null), 1_000);
   setInterval(() => flushIntake().catch(() => null), 300);
@@ -331,7 +370,19 @@ async function agentLoop() {
   }
 }
 
+// a stray rejection or exception is logged and counted, never a silent crash
+process.on("unhandledRejection", (e: any) => {
+  console.log("unhandled rejection", e?.message || e);
+  redis().hincrby("rn:worker:errs", "rejection", 1).catch(() => 0);
+});
+process.on("uncaughtException", (e: any) => {
+  console.log("uncaught exception", e?.message || e);
+  redis().hincrby("rn:worker:errs", "exception", 1).catch(() => 0);
+});
+
 async function main() {
+  await redis().incr("rn:worker:boots").catch(() => 0);
+  await redis().set("rn:worker:bootAt", Date.now()).catch(() => null);
   console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
   pumpportal();
   setInterval(beat, 20_000);

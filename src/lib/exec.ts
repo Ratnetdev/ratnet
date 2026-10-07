@@ -125,8 +125,10 @@ async function confirm(sig: string, raw: Uint8Array, fast: boolean, lastValid: n
       await sendBoth(raw, fast);
     }
     if (late) {
-      const h = await c.getBlockHeight("confirmed").catch(() => 0);
-      if (h > lastValid) throw new Expired(sig);
+      // a failed height read proves nothing (it used to read as height 0, so a swap that may have landed was reported
+      // as unknown after 120s); only a real height past the blockhash's last valid height means it can never land
+      const h = await c.getBlockHeight("confirmed").catch(() => null);
+      if (h != null && h > lastValid) throw new Expired(sig);
       if (Date.now() - t0 > 120_000) throw new Error(`unknown state ${sig.slice(0, 8)}: check Solscan before retrying`);
       await new Promise((res) => setTimeout(res, 1500));
     }
@@ -140,8 +142,21 @@ export class Expired extends Error {
   }
 }
 
+let inFlight = 0;
+/** Swaps sent and not yet settled in this process (the worker's watchdog never restarts in the middle of one). */
+export const swapsInFlight = () => inFlight;
+
 /** Swap with the fast path. Returns the signature, Jupiter's quoted output and how long it took. */
 export async function fastSwap(kp: Keypair, inputMint: string, outputMint: string, amountRaw: bigint, slippageBps: number, cfg: ExecCfg = {}) {
+  inFlight++;
+  try {
+    return await fastSwapInner(kp, inputMint, outputMint, amountRaw, slippageBps, cfg);
+  } finally {
+    inFlight--;
+  }
+}
+
+async function fastSwapInner(kp: Keypair, inputMint: string, outputMint: string, amountRaw: bigint, slippageBps: number, cfg: ExecCfg = {}) {
   const t0 = Date.now();
   const quoteP = fetch(`${JUP}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}&restrictIntermediateTokens=true`, { headers: jupHeaders(), cache: "no-store", signal: T(3000) }).then(async (r) => {
     if (!r.ok) throw new Error(`no route (${r.status})`);

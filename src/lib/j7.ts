@@ -83,6 +83,13 @@ export async function j7Session(ms: number, onPosts: (t: XTweet[]) => Promise<un
     };
     sock.on("connect_error", fail);
     sock.on("auth_error", fail);
+    // a drop mid-session ends it at once (the next session reconnects within seconds), instead of a silent gap until
+    // the session timer runs out
+    sock.on("disconnect", (why: any) => {
+      if (done) return;
+      error = `disconnected: ${String(why || "")}`.slice(0, 80);
+      finish();
+    });
     setTimeout(finish, ms);
   });
 }

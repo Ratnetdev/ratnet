@@ -1,4 +1,7 @@
 import { Redis } from "@upstash/redis";
+import { installFetchGuard } from "./fetchguard";
+
+if (typeof window === "undefined") installFetchGuard();
 
 let _r: Redis | null = null;
 export function redis(): Redis {
@@ -8,7 +11,8 @@ export function redis(): Redis {
   const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (!url || !token) throw new Error("Redis is not configured");
-  _r = new Redis({ url, token });
+  // one retry, not Upstash's default five: during an outage five retries per command multiplied the load
+  _r = new Redis({ url, token, retry: { retries: 1, backoff: () => 300 } });
   // an empty pipeline is a no-op, not an error: Upstash throws "Pipeline is empty", which used to fail whole passes
   // (the slow lane's migration check on every beat where no coin had migrated yet)
   const client: any = _r;

@@ -18,6 +18,7 @@ import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
 import { enroll, Run, runnerPass } from "./runner";
 import { migrated, poolUsd, readPools } from "./pool";
 import { ensureEpoch } from "./epoch";
+import { acquire, holds, release, withLock, type Lock } from "./lock";
 import { trackFees, trackWeights } from "./fees";
 import { agentLog } from "./agents";
 import { enqueueLens } from "./lens";
@@ -261,15 +262,24 @@ export type NanoOp = { k: 0 | 1; x: number[]; y: boolean; pw?: number; sw?: numb
  * saved it over the others: whole batches of lessons were lost, and the training-loss chart jumped backwards
  * (the zigzag at the end of the line on /lab).
  */
-export async function applyNano(ops: NanoOp[]) {
-  if (!ops.length) return;
+const NANO_PENDING = "rn:nano:pending"; // lessons waiting for the trainer when the lock was busy
+export async function applyNano(ops0: NanoOp[]) {
+  if (!ops0.length) return;
   const r = redis();
-  let got = false;
-  for (let i = 0; i < 60 && !got; i++) {
-    got = !!(await r.set("rn:lock:nano", Date.now(), { nx: true, px: 8000 }));
-    if (!got) await new Promise((res) => setTimeout(res, 50));
+  let l: Lock | null = null;
+  for (let i = 0; i < 30 && !l; i++) {
+    l = await acquire("rn:lock:nano", 15_000);
+    if (!l) await new Promise((res) => setTimeout(res, 100));
+  }
+  if (!l) {
+    // never train without the lock (that was the lost-lessons bug): park the lessons, the next holder learns them
+    await r.rpush(NANO_PENDING, ...ops0).catch(() => {});
+    await r.ltrim(NANO_PENDING, -20_000, -1).catch(() => {});
+    return;
   }
   try {
+    const parked = ((await r.lpop<NanoOp[]>(NANO_PENDING, 2000).catch(() => null)) || []) as NanoOp[];
+    const ops = [...(Array.isArray(parked) ? parked : []), ...ops0];
     const [m, m1] = await Promise.all([loadModel(), loadModel(K.nano1)]);
     const logs: { n: number; loss: number; acc: number; pos: number; at: number }[] = [];
     let d0 = false;
@@ -289,9 +299,14 @@ export async function applyNano(ops: NanoOp[]) {
     if (d1) p.set(K.nano1, m1);
     for (const l of logs) p.rpush(K.nanoLog, l);
     if (logs.length) p.ltrim(K.nanoLog, -500, -1);
+    // a lock that expired mid-training: another trainer may have saved since; park these instead of overwriting it
+    if (!(await holds(l))) {
+      await r.rpush(NANO_PENDING, ...ops).catch(() => {});
+      return;
+    }
     await p.exec();
   } finally {
-    if (got) await r.del("rn:lock:nano").catch(() => {});
+    await release(l);
   }
 }
 
@@ -300,15 +315,26 @@ export async function loadModel(key: string = K.nano): Promise<NanoModel> {
   return m && Array.isArray(m.w) ? m : emptyModel();
 }
 
-/** One dig, on the RPC's middle lane: the desk's own calls always go first (see lib/solana.ts). */
+/** True while the always-on worker is running its loops (it writes rn:worker:at every 20s). */
+export async function workerAlive() {
+  if (process.env.RATNET_WORKER) return false; // the worker itself
+  const w = Number((await redis().get("rn:worker:at").catch(() => 0)) || 0);
+  return Date.now() - w < 90_000;
+}
+
+/**
+ * One full dig: the fallback for when the worker is down (the minute ping). It holds both of the worker's lane locks,
+ * so it can never run next to them. Before v0.1.25 every open page POSTed /api/dig every 15s and ran this on Vercel
+ * next to the worker, on its own lock and its own RPC limiter: due checkpoints and lessons were processed twice and
+ * the two limiters together went far over the plan (the 429 storms).
+ */
 export async function dig(): Promise<Record<string, unknown>> {
-  return lane.run(1, digInner);
+  if (await workerAlive()) return { skipped: "worker" };
+  const out = await withLock("rn:lock:digfast", 150_000, () => withLock("rn:lock:digslow", 300_000, () => lane.run(1, digInner)));
+  return out as Record<string, unknown>;
 }
 
 async function digInner(): Promise<Record<string, unknown>> {
-  const r = redis();
-  const got = await r.set(K.digLock, Date.now(), { nx: true, ex: 40 });
-  if (!got) return { skipped: "busy" };
   const started = Date.now();
   try {
     const ep = await ensureEpoch().catch((e) => ({ epochError: safeErr(e) }));
@@ -337,9 +363,6 @@ async function digInner(): Promise<Record<string, unknown>> {
     return { ok: true, ...(ep || {}), ...dug, ...tl, ...wire, ...due, ...hot, ...mig, ...les, ...run, ms: Date.now() - started };
   } catch (e) {
     return { ok: false, error: safeErr(e) };
-  } finally {
-    // Hold the lock a few seconds after each run so many open pages can't hammer the RPC.
-    await r.set(K.digLock, Date.now(), { ex: process.env.RATNET_WORKER ? 1 : 5 });
   }
 }
 
@@ -364,9 +387,7 @@ async function digPrep() {
  * and launches were dug ~12 minutes late, so the "minute-5" call was made at minute 12.
  */
 export async function digFast(): Promise<Record<string, unknown>> {
-  return lane.run(1, async () => {
-    const r = redis();
-    if (!(await r.set("rn:lock:digfast", Date.now(), { nx: true, ex: 150 }))) return { skipped: "busy" };
+  const out = await withLock("rn:lock:digfast", 60_000, () => lane.run(1, async () => {
     const t0 = Date.now();
     try {
       const model = await digPrep();
@@ -376,17 +397,14 @@ export async function digFast(): Promise<Record<string, unknown>> {
       return { ok: true, ...dug, ...wire, ...due, ms: Date.now() - t0 };
     } catch (e) {
       return { ok: false, error: safeErr(e) };
-    } finally {
-      await r.del("rn:lock:digfast").catch(() => {});
     }
-  });
+  }));
+  return out as Record<string, unknown>;
 }
 
 /** The worker's slow lane (every ~4s): hot curves re-read, migrations, lessons, runners, fees. */
 export async function digSlow(): Promise<Record<string, unknown>> {
-  return lane.run(1, async () => {
-    const r = redis();
-    if (!(await r.set("rn:lock:digslow", Date.now(), { nx: true, ex: 300 }))) return { skipped: "busy" };
+  const out = await withLock("rn:lock:digslow", 90_000, () => lane.run(1, async () => {
     const t0 = Date.now();
     try {
       const model = await digPrep();
@@ -404,10 +422,9 @@ export async function digSlow(): Promise<Record<string, unknown>> {
       return { ok: true, ...tl, ...hot, ...mig, ...les, ...run, ms: Date.now() - t0 };
     } catch (e) {
       return { ok: false, error: safeErr(e) };
-    } finally {
-      await r.del("rn:lock:digslow").catch(() => {});
     }
-  });
+  }));
+  return out as Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------- new launches

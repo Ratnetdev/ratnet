@@ -69,6 +69,7 @@ function pump() {
       lanesUsed.push([now, need, l]);
       if (l === 3) hist.push([now, need]);
       log1m.push([now, l, need, now - job.at]);
+      rpcStats.byLane[l] += need;
       job.go();
       served = true;
     }
@@ -92,6 +93,7 @@ function pump() {
       if (l === 3) hist.push([now, need]);
       q.shift();
       log1m.push([now, l, need, now - job.at]);
+      rpcStats.byLane[l] += need;
       job.go();
       served = true;
     }
@@ -104,7 +106,7 @@ const slot = (l: number, cost: number) =>
     queues[Math.max(0, Math.min(3, l))].push({ cost, go, at: Date.now() });
     pump();
   });
-export const rpcStats = { calls: 0, throttled: 0 };
+export const rpcStats = { calls: 0, throttled: 0, byLane: [0, 0, 0, 0] };
 const thr1m: number[] = [];
 /** The limiter's last minute, per lane: calls, average wait in the queue, what is waiting now, 429s, the live ceiling. */
 export function rpcView() {

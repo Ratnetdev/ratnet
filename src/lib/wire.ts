@@ -8,7 +8,7 @@ import { enqueueMind, noteKolCall, noteStudy } from "./mind";
 import { enqueueLens } from "./lens";
 import { redis } from "./redis";
 import { X_SEED } from "@/config/x-accounts";
-import { X_BUDGET, xCost, xSpend } from "./xcredits";
+import { X_BUDGET, xAllowed, xCost, xSpend } from "./xcredits";
 import { agentLog } from "./agents";
 import { K } from "./redis";
 import { getSettings } from "./settings";
@@ -428,7 +428,8 @@ export async function tweetLinks() {
   const byId: Record<string, XTweet> = {};
   ids.forEach((id, i) => cached[i] && (byId[id] = cached[i]!));
   const need = ids.filter((id) => !byId[id]);
-  if (need.length) {
+  // inside the hourly X budget like everything else that pays (posts already cached still count as matches)
+  if (need.length && (await xAllowed(0.95))) {
     const res = await fetch(`${API}/twitter/tweets?tweet_ids=${need.join(",")}`, { headers: { "X-API-Key": process.env.X_API_KEY! }, cache: "no-store" }).catch(() => null);
     const j: any = res?.ok ? await res.json().catch(() => null) : null;
     await xSpend("tweet links", xCost((j?.tweets || []).length));

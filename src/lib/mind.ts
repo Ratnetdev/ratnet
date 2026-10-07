@@ -13,6 +13,7 @@
 //  3. School. Every hour it reads what the KOLs and traders it follows posted and keeps the reusable lessons, and the
 //     admin can teach it directly (a thread, a video transcript, your own rules).
 import { K, redis } from "./redis";
+import { acquire, release, renew } from "./lock";
 import { getCurves, solUsd } from "./solana";
 import { readPools } from "./pool";
 import { agentLog } from "./agents";
@@ -591,7 +592,11 @@ export async function mindSession(ms: number) {
   const r = redis();
   const end = Date.now() + ms;
   if (!llmOn()) return { mind: "off (no ANTHROPIC_API_KEY)" };
-  if (!(await r.set(LOCK, 1, { nx: true, ex: Math.ceil(ms / 1000) + 5 }))) return { mind: "busy" };
+  // an owned lock that renews itself while the session works (a plain SET NX with a short TTL expired mid-session and
+  // the late session's DEL then removed the next holder's lock: two or three sessions ran side by side)
+  const lk = await acquire(LOCK, 60_000);
+  if (!lk) return { mind: "busy" };
+  const lkRenew = setInterval(() => renew(lk, 60_000).catch(() => false), 20_000);
   let judged = 0;
   let studied = 0;
   let followed = 0;
@@ -637,7 +642,8 @@ export async function mindSession(ms: number) {
       await new Promise((res) => setTimeout(res, 3000));
     }
   } finally {
-    await r.del(LOCK).catch(() => {});
+    clearInterval(lkRenew);
+    await release(lk);
   }
   return { mind: judged, studied, followed };
 }

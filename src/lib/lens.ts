@@ -4,6 +4,7 @@
 // the result is a dossier: a 0-100 score with the red flags and the good signs in plain words.
 // LENS informs; it does not block a buy. Its score rides along on every trade so COACH and FILM can learn what it is worth.
 import { safeFetch } from "./safefetch";
+import { acquire, release, renew } from "./lock";
 import { K, redis } from "./redis";
 import { agentLog } from "./agents";
 import { accountOf, xOn } from "./wire";
@@ -367,7 +368,11 @@ const fmtK = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? 
 export async function lensSession(ms: number) {
   const r = redis();
   const end = Date.now() + ms;
-  if (!(await r.set(LOCK, 1, { nx: true, ex: Math.ceil(ms / 1000) + 5 }))) return { lens: "busy" };
+  // an owned lock that renews itself while the session works (a plain SET NX with a short TTL expired mid-session and
+  // the late session's DEL then removed the next holder's lock: two or three sessions ran side by side)
+  const lk = await acquire(LOCK, 60_000);
+  if (!lk) return { lens: "busy" };
+  const lkRenew = setInterval(() => renew(lk, 60_000).catch(() => false), 20_000);
   let done = 0;
   try {
     while (Date.now() < end - 8000) {
@@ -402,7 +407,8 @@ export async function lensSession(ms: number) {
       await p.exec();
     }
   } finally {
-    await r.del(LOCK).catch(() => {});
+    clearInterval(lkRenew);
+    await release(lk);
   }
   return { lens: done };
 }

@@ -538,6 +538,8 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `X_CREDITS_PER_HOUR` | Optional. twitterapi.io credit budget per hour for all of RATNET (default `25000`). Live rules get about half (the seeds plus the found accounts with the best results), LENS stops at 80% of it. The burn shows on /status. |
 | `X_RULE_ACCOUNTS` | Optional. Hard cap on accounts watched through paid rules (default: what the budget pays for, about 100). |
 | `LENS_PER_HOUR` | Optional. LENS dossiers per hour (default `20`). |
+| `HISTORIAN_CALLS_PER_DAY` | Optional. Chain reads the historian may use per day (default `400000`). Every call is billed by Helius; /status shows calls today and the monthly pace. |
+| `FETCH_TIMEOUT_MS` | Optional. Deadline for any outside call that sets none of its own (default `20000`). |
 | `WORKER_DESK_MS` | Optional. Length of one desk session in the worker (default `300000`, 5 minutes). The desk runs in its own loop next to the agents. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 

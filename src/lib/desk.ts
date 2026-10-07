@@ -14,7 +14,7 @@ import { shield } from "./shield";
 import { labBest, labStep, notePath, tierOf, type ExitSet, type LabBest, type Tier } from "./exitlab";
 import { flashSignal } from "./flash";
 import { catchSignal } from "./catcher";
-import { acquire, release, renew } from "./lock";
+import { acquire, holds, release, renew, type Lock } from "./lock";
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { K, dayKey, redis } from "./redis";
@@ -338,7 +338,17 @@ const jupHeaders = (): Record<string, string> => (process.env.JUPITER_API_KEY ? 
 
 let EXEC_CFG: ExecCfg = {};
 /** Live swap: the fast path in lib/exec.ts (own tx, Helius priority fee, Jito tip, Sender), Jupiter's tx as fallback. */
+let DESK_LOCK: Lock | null = null;
+let DESK_LOST = false;
+/** Throws unless this process holds the desk lock right now (checked with Redis before every real-money swap). */
+async function mustHoldDesk() {
+  if (!DESK_LOCK || DESK_LOST || !(await holds(DESK_LOCK))) {
+    DESK_LOST = true;
+    throw new Error("desk lock lost: swap refused (another desk may be running)");
+  }
+}
 async function swap(kp: Keypair, inputMint: string, outputMint: string, amountRaw: bigint, slippageBps: number) {
+  await mustHoldDesk();
   const res = await fastSwap(kp, inputMint, outputMint, amountRaw, slippageBps, EXEC_CFG);
   LAST_EXEC = { ms: res.ms, landedMs: res.landedMs, path: res.path, tipSol: res.tipSol, at: Date.now() };
   await redis().lpush("rn:exec:log", LAST_EXEC).catch(() => {});
@@ -729,6 +739,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
   // owned lock, renewed every pass: a slow swap can't let a second desk in, and we never free someone else's lock
   const lock = await acquire("rn:lock:desk", LOCK_MS);
   if (!lock) return { skipped: "busy" };
+  // renewed on its own 10s timer as well as every beat: a beat can take minutes (a swap waiting 120s for its
+  // confirmation, several entries), and before v0.1.25 the lock could expire mid-beat and let a second desk in
+  DESK_LOCK = lock;
+  DESK_LOST = false;
+  const lockTimer = setInterval(() => {
+    renew(lock, LOCK_MS).then((ok) => {
+      if (!ok) DESK_LOST = true;
+    });
+  }, 10_000);
   const t0 = Date.now();
   let loops = 0;
   const b: Batch = { ev: [], trades: [] };
@@ -765,7 +784,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let walletSolC: number | null = null;
     while (Date.now() - t0 < budgetMs) {
       loops++;
-      if (!(await renew(lock, LOCK_MS))) {
+      if (DESK_LOST || !(await renew(lock, LOCK_MS))) {
         log(b, "LEDGER", "desk lock lost to another session; stopping this one", "info");
         break;
       }
@@ -1357,7 +1376,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         await r.rpush(K.deskEq, { t: now, eq: r4(eq2.value), live: state.live });
         await r.ltrim(K.deskEq, -3000, -1);
       }
-      await r.set(K.deskState, state);
+      // only the lock holder writes the books (a desk that lost its lock must not overwrite the new holder's state)
+      if (!DESK_LOST) await r.set(K.deskState, state);
       await r.set(BEAT_KEY, now);
       if (hadErr) {
         hadErr = false;
@@ -1389,6 +1409,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await flushLog(b).catch(() => {});
     return { error: safeErr(e), loops };
   } finally {
+    clearInterval(lockTimer);
+    DESK_LOCK = null;
     await release(lock);
   }
 }
