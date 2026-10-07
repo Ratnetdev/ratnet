@@ -1,6 +1,7 @@
 import { safeEq, secretFor } from "@/lib/admin";
 import { ingest, parseHook } from "@/lib/wire";
 import { fail, json } from "@/lib/http";
+import { xSpend } from "@/lib/xcredits";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const tweets = parseHook(body);
     if (!tweets.length) return json({ ok: true, stored: 0 });
+    await xSpend("watchlist posts", tweets.length * 15);
     return json({ ok: true, ...(await ingest(tweets)) });
   } catch (e) {
     return fail(e, 500);

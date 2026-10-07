@@ -5,11 +5,11 @@
 import { runSession } from "../src/lib/session";
 import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
-import { digFast, digSlow, ingestStream } from "../src/lib/digger";
+import { digFast, digSlow, ingestStream, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { lane } from "../src/lib/solana";
-import { markAlive } from "../src/lib/alive";
+import { lane, rpcView } from "../src/lib/solana";
+import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 
 process.env.RATNET_WORKER = "1";
@@ -27,10 +27,11 @@ let deskAt = Date.now();
 async function beat() {
   const stuck = Date.now() - sessionAt;
   const deskStuck = Date.now() - deskAt;
-  if (Date.now() - fastAt > 120_000) {
-    console.log("watchdog: the rats' fast lane is stuck, restarting");
+  if (Date.now() - fastAt > 150_000 || Date.now() - slowAt > 300_000 || Date.now() - histAt > 900_000) {
+    console.log(`watchdog: ${Date.now() - fastAt > 150_000 ? "the rats' fast lane" : Date.now() - slowAt > 300_000 ? "the rats' slow lane" : "the historian"} is stuck, restarting`, JSON.stringify(rpcView()));
     process.exit(1);
   }
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView() }, { ex: 120 }).catch(() => {});
   if (stuck > SESSION_MS * 5 || deskStuck > DESK_MS + 180_000) {
     console.log(`watchdog: ${deskStuck > DESK_MS + 180_000 ? "desk" : "agent"} loop stuck (${Math.round(Math.max(stuck, deskStuck) / 1000)}s), restarting`);
     process.exit(1);
@@ -196,6 +197,7 @@ function pumpportal() {
       const tx = String(msg.txType || "");
       if (tx === "migrate" || tx === "migration") {
         noteMigration(String(msg.mint)).catch(() => null);
+        streamComplete(String(msg.mint)).catch(() => null);
         kick();
         return;
       }
@@ -255,15 +257,33 @@ async function deskLoop() {
 // The rats, in two lanes of their own. Fast (about every second): launches the stream missed, WIRE picks, and the
 // minute-1 reads and minute-5 calls the moment they are due. Slow (every ~4 seconds): the hot curves re-read,
 // migrations, lessons, runners. Before v0.1.21 one combined pass ran every few minutes and fell ~12 minutes behind.
+// One pass at a time per lane. Before v0.1.24 a pass that ran past 45s was left running while the loop started the
+// next one: passes piled up on the same RPC lane, each made the others slower, and the slow lane starved for minutes.
+// Now the loop waits for its pass (it reports "still running" while it waits); a pass stuck past its limit restarts
+// the worker (the watchdog above), which is the only way to free a hung promise.
 let fastAt = Date.now();
+let slowAt = Date.now();
+let histAt = Date.now();
+async function waitFor<T>(name: string, p: Promise<T>, warnMs: number) {
+  const t0 = Date.now();
+  let done = false;
+  const tick = setInterval(() => {
+    if (!done) markBusy(name, Math.round((Date.now() - t0) / 1000)).catch(() => {});
+  }, warnMs);
+  try {
+    return await p;
+  } finally {
+    done = true;
+    clearInterval(tick);
+  }
+}
 async function digFastLoop() {
   for (;;) {
     const t0 = Date.now();
     fastAt = t0;
-    // a pass that waits too long is left to finish on its own: the lane moves on (its lock expires in 30s)
-    const r: any = await Promise.race([digFast().catch((e) => ({ error: e?.message || e })), new Promise((res) => setTimeout(() => res({ error: "fast pass ran past 45s" }), 45_000))]);
+    const r: any = await waitFor("rats_fast", digFast().catch((e) => ({ error: e?.message || e })), 20_000);
     await markAlive("rats_fast", r);
-    if (r?.error || (r?.dug && Math.random() < 0.05)) console.log(new Date().toISOString(), "dig fast", JSON.stringify(r).slice(0, 200));
+    if (r?.error || (r?.dug && Math.random() < 0.05) || Date.now() - t0 > 10_000) console.log(new Date().toISOString(), "dig fast", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify(r).slice(0, 200));
     await new Promise((res) => setTimeout(res, Math.max(150, 1000 - (Date.now() - t0))));
   }
 }
@@ -271,10 +291,11 @@ async function digSlowLoop() {
   let n = 0;
   for (;;) {
     const t0 = Date.now();
-    const r: any = await digSlow().catch((e) => ({ error: e?.message || e }));
+    slowAt = t0;
+    const r: any = await waitFor("rats_slow", digSlow().catch((e) => ({ error: e?.message || e })), 30_000);
     const f: any = await flashFollow().catch((e) => ({ flashError: e?.message || e }));
-    await markAlive("rats_slow", r);
-    if (n++ % 15 === 0 || r?.error) console.log(new Date().toISOString(), "dig slow", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ ...r, ...f }).slice(0, 300));
+    await markAlive("rats_slow", { ...r, ...(f?.flashError ? { flashError: f.flashError } : {}) });
+    if (n++ % 15 === 0 || r?.error || Date.now() - t0 > 30_000) console.log(new Date().toISOString(), "dig slow", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ ...r, ...f }).slice(0, 300));
     await new Promise((res) => setTimeout(res, Math.max(500, 4000 - (Date.now() - t0))));
   }
 }
@@ -285,7 +306,10 @@ async function historianLoop() {
   let n = 0;
   for (;;) {
     const t0 = Date.now();
-    const r: any = await Promise.race([historianSession(110_000).catch((e) => ({ history: "error", error: e?.message || e })), new Promise((res) => setTimeout(() => res({ history: "ran past 3 minutes" }), 180_000))]);
+    histAt = t0;
+    // waited for, never raced: a session left running in the background used to overlap the next one once its lock
+    // expired (two historians on one lane, both slower)
+    const r: any = await waitFor("historian", historianSession(110_000).catch((e) => ({ history: "error", error: e?.message || e })), 180_000);
     await markAlive("historian", r);
     if (n++ % 5 === 0 || r?.error) console.log(new Date().toISOString(), "historian", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify(r).slice(0, 240));
     // nothing to do (done, off, busy, waiting): look again in a few seconds instead of spinning

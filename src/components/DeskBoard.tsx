@@ -59,7 +59,7 @@ type Film = {
 type WireT = { id: string; h: string; at: number; text: string; terms: string[]; url: string; kind: string; picked: string | null };
 type WireA = { h: string; cat: string; tier: string; tweets: number; matches: number; sparks: number; picks: number; runs: number; pnl: number; w: number };
 type Rising = { term: string; now: number; usual: number; x: number; mood: string; posts15: number };
-type Wire = { on: boolean; j7?: { on: boolean; last: { at: number; got: number; error: string | null } | null; covered: number } | null; pulse?: { at: number; rising: Rising[]; warming?: number } | null; tweets: (WireT & { src?: string; ca?: string })[]; accounts: WireA[]; candidates: { h: string; pts: number }[] };
+type Wire = { on: boolean; j7?: { on: boolean; last: { at: number; got: number; error: string | null } | null; covered: number } | null; pulse?: { at: number; rising: Rising[]; warming?: number } | null; tweets: (WireT & { src?: string; ca?: string })[]; accounts: WireA[]; counts?: { total: number; active: number }; candidates: { h: string; pts: number }[] };
 type PmRow = { sleeve: string; trades: number; wins: number; winRate: number | null; avg: number | null; w: number; paused: number | null };
 type Desk = {
   ghost?: { open: number; fills: number; max: number } | null;
@@ -427,7 +427,7 @@ export default function DeskBoard() {
       </section>
       <section className="grid g-main mt">
         <div className="panel">
-          <div className="ph"><span><Info k="wire"><b>wire</b></Info> · X posts that spawn coins</span><span className="tiny muted">{d?.wire ? (d.wire.on ? `${Math.max(d.wire.j7?.covered ?? 0, d.wire.accounts.filter((a) => a.tier !== "muted").length).toLocaleString("en-US")} accounts${d.wire.j7?.on ? ` · J7 ${d.wire.j7.last?.error ? "error" : "live"}` : ""}` : "waiting for J7_JWT or X_API_KEY") : ""}</span></div>
+          <div className="ph"><span><Info k="wire"><b>wire</b></Info> · X posts that spawn coins</span><span className="tiny muted">{d?.wire ? (d.wire.on ? `${Math.max(d.wire.j7?.covered ?? 0, (d.wire.counts?.active ?? d.wire.accounts.filter((a) => a.tier !== "muted").length)).toLocaleString("en-US")} accounts${d.wire.j7?.on ? ` · J7 ${d.wire.j7.last?.error ? "error" : "live"}` : ""}` : "waiting for J7_JWT or X_API_KEY") : ""}</span></div>
           <div className="wire-list">
             {(d?.wire?.tweets || []).slice(0, 10).map((t) => (
               <div key={t.id} className="wire-t">

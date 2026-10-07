@@ -9,6 +9,18 @@ export function redis(): Redis {
   const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (!url || !token) throw new Error("Redis is not configured");
   _r = new Redis({ url, token });
+  // an empty pipeline is a no-op, not an error: Upstash throws "Pipeline is empty", which used to fail whole passes
+  // (the slow lane's migration check on every beat where no coin had migrated yet)
+  const client: any = _r;
+  for (const name of ["pipeline", "multi"]) {
+    const make = client[name].bind(client);
+    client[name] = (...a: any[]) => {
+      const p = make(...a);
+      const exec = p.exec;
+      p.exec = (o?: any) => (p.length() === 0 ? Promise.resolve([]) : exec(o));
+      return p;
+    };
+  }
   return _r;
 }
 

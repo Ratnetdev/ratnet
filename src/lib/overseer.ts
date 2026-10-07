@@ -13,6 +13,7 @@ import { ask, json, llmOn } from "./llm";
 import { agentLog } from "./agents";
 import { tgSend, ideasChat } from "./tgbot";
 import { xOn } from "./wire";
+import { xAllowed, xCost, xSpend } from "./xcredits";
 
 const FINDS = "rn:ov:finds";
 const SEEN = "rn:ov:seen";
@@ -94,12 +95,13 @@ const SOURCES: { name: string; run: () => Promise<Finding[]> }[] = [
   {
     name: "x",
     run: async () => {
-      if (!xOn()) return [];
+      if (!xOn() || !(await xAllowed(0.7))) return [];
       const qs = ["pump.fun strategy", "how I find memecoin runners", "smart money wallets solana", "new solana launchpad", "memecoin exit strategy"];
       const q = qs[Math.floor(Date.now() / 3600_000) % qs.length];
       await trail(`searching X: "${q}"`, `https://x.com/search?q=${encodeURIComponent(q)}&f=top`);
       const txt = await getJson(`https://api.twitterapi.io/twitter/tweet/advanced_search?query=${encodeURIComponent(`${q} min_faves:50`)}&queryType=Top`, { "X-API-Key": process.env.X_API_KEY! });
       const j: any = txt ? JSON.parse(txt) : null;
+      await xSpend("OVERSEER", xCost((j?.tweets || []).length));
       return (j?.tweets || []).slice(0, 10).map((t: any) => ({ src: `X @${t.author?.userName}`, title: String(t.text || "").slice(0, 200), url: t.url || "", text: String(t.text || "").slice(0, 600), at: Date.now() }));
     },
   },

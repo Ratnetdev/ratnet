@@ -31,6 +31,7 @@ import { enqueueMind } from "./mind";
 import { enqueueLens } from "./lens";
 import { GK } from "./graph";
 import { xOn } from "./wire";
+import { xCost, xSpend } from "./xcredits";
 
 const W = "rn:hd:w"; // wallet -> Wallet
 const FEED = "rn:hd:feed"; // latest buys
@@ -213,6 +214,7 @@ async function selfPosted(handle: string, w: string): Promise<string | null> {
   const q = encodeURIComponent(`from:${handle} ${w}`);
   const r = await fetch(`https://api.twitterapi.io/twitter/tweet/advanced_search?query=${q}&queryType=Latest`, { headers: { "X-API-Key": process.env.X_API_KEY! }, cache: "no-store" }).catch(() => null);
   const j: any = r?.ok ? await r.json().catch(() => null) : null;
+  await xSpend("HOUND", xCost((j?.tweets || []).length));
   const t = (j?.tweets || []).find((x: any) => String(x.text || "").includes(w));
   return t ? t.url || `https://x.com/${handle}/status/${t.id}` : null;
 }

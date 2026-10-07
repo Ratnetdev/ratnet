@@ -7,8 +7,8 @@ type Live = { live: { mint: string; links: { x: string; tg: string; pump: string
 export default function CaBar() {
   const data = useLive().data as Live | null;
   const [copied, setCopied] = useState(false);
-  const mint = data?.live.mint;
-  const l = data?.live.links;
+  const mint = data?.live?.mint;
+  const l = data?.live?.links;
   return (
     <div className="cabar">
       <div className="wrap">

@@ -8,6 +8,7 @@ import { enqueueMind, noteKolCall, noteStudy } from "./mind";
 import { enqueueLens } from "./lens";
 import { redis } from "./redis";
 import { X_SEED } from "@/config/x-accounts";
+import { X_BUDGET, xCost, xSpend } from "./xcredits";
 import { agentLog } from "./agents";
 import { K } from "./redis";
 import { getSettings } from "./settings";
@@ -298,11 +299,26 @@ export async function syncRules(force = false) {
   if (!xOn()) return { synced: false, note: "no X_API_KEY" };
   const r = redis();
   await ensureSeed();
-  if (!force && !(await r.get(DIRTY))) return { synced: false, note: "up to date" };
+  // v0.1.24 changed who gets a paid rule: resync once even if the list did not change
+  const lastSync = await r.get<any>("rn:x:synced");
+  if (!force && !(await r.get(DIRTY)) && lastSync?.v === 24) return { synced: false, note: "up to date" };
   const A = ((await r.hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>;
   // J7 already watches its feed and pool for free: twitterapi.io only pays for our accounts J7 doesn't cover
   const cov = await j7Covered().catch(() => new Set<string>());
-  const handles = Object.values(A).filter((a) => a.tier !== "muted" && a.tier !== "j7" && !cov.has(a.h.toLowerCase())).map((a) => a.h);
+  // paid watching is earned: the seeds, then found accounts by the weight their results gave them, up to what the
+  // hourly credit budget pays for. Before v0.1.24 every found account got a rule (~650 accounts, ~50 rules checked
+  // every minute: over 100K credits an hour). The rest are still read for free through J7 and tweet links
+  const S0 = ((await r.hgetall<Record<string, number>>(ST)) || {}) as Record<string, number>;
+  const interval = Math.max(10, Number(process.env.X_RULE_INTERVAL || 60));
+  // rules may use about half the budget: ~13 handles per rule, each rule billed 15 credits per check, plus the posts
+  const maxRules = Math.max(2, Math.floor((X_BUDGET * 0.5) / ((3600 / interval) * 15 + 13 * 3 * 15)));
+  const cap = Math.min(Number(process.env.X_RULE_ACCOUNTS || 1e9), maxRules * 13);
+  const handles = Object.values(A)
+    .filter((a) => a.tier !== "muted" && a.tier !== "j7" && !cov.has(a.h.toLowerCase()))
+    .filter((a) => a.tier === "seed" || Number(S0[`${a.h.toLowerCase()}:picks`] || 0) > 0 || Number(S0[`${a.h.toLowerCase()}:sparks`] || 0) >= 2 || (a.f ?? 0) >= 100_000)
+    .sort((a, b) => (b.tier === "seed" ? 1 : 0) - (a.tier === "seed" ? 1 : 0) || weightOf(b, S0) - weightOf(a, S0))
+    .slice(0, cap)
+    .map((a) => a.h);
   const chunks: string[] = [];
   let cur = "";
   for (const h of handles) {
@@ -316,7 +332,6 @@ export async function syncRules(force = false) {
   const head = { "X-API-Key": process.env.X_API_KEY!, "content-type": "application/json" };
   // how often twitterapi.io checks each rule. Every check is billed (15 credits minimum, more when posts come back), so
   // 25 rules at 20s burned ~200K credits an hour. 60s by default; J7 already covers the big accounts in real time
-  const interval = Math.max(10, Number(process.env.X_RULE_INTERVAL || 60));
   // remove EVERY rule of ours on the account, not only the ones we remember: a delete that failed once used to leave
   // its rule running (and billing) forever, and each later sync stacked a fresh set on top
   const listed: any = await fetch(`${API}/oapi/tweet_filter/get_rules`, { headers: head, cache: "no-store" }).then((x) => x.json()).catch(() => null);
@@ -336,7 +351,7 @@ export async function syncRules(force = false) {
     await fetch(`${API}/oapi/tweet_filter/update_rule`, { method: "POST", headers: head, body: JSON.stringify({ rule_id: res.rule_id, tag, value: chunks[i], interval_seconds: interval, is_effect: 1 }) }).catch(() => null);
   }
   await r.set(RULES, ids);
-  await r.set("rn:x:synced", { at: Date.now(), n: ids.length, accounts: handles.length, interval, removed, found: mine.length });
+  await r.set("rn:x:synced", { at: Date.now(), n: ids.length, accounts: handles.length, interval, removed, found: mine.length, v: 24 });
   await r.del(DIRTY);
   return { synced: true, rules: ids.length, accounts: handles.length, interval, removed, foundOnAccount: mine.length };
 }
@@ -361,7 +376,8 @@ export async function accountOf(h: string) {
 }
 
 /** Everything for the page: latest tracked posts with the coins they spawned, and the account board. */
-export async function wireView() {
+/** The board for the pages: the top `limit` accounts by results (the full list runs to thousands: ~1MB) plus counts. */
+export async function wireView(limit = 100) {
   const r = redis();
   await ensureSeed();
   const [tw, accs, st, found] = await Promise.all([r.lrange<XTweet>(TW, 0, 29), r.hgetall<Record<string, Acc>>(ACC), r.hgetall<Record<string, number>>(ST), r.hgetall<Record<string, number>>(FOUND)]);
@@ -375,7 +391,8 @@ export async function wireView() {
     .sort((a, b) => b.runs - a.runs || b.sparks - a.sparks || b.tweets - a.tweets);
   const cands = Object.entries((found || {}) as Record<string, number>).map(([h, pts]) => ({ h, pts: Number(pts) })).sort((a, b) => b.pts - a.pts).slice(0, 8);
   const [j7, pulse] = await Promise.all([j7State().catch(() => null), pulseView().catch(() => null)]);
-  return { on: xOn() || !!j7?.on, j7, pulse, tweets: tweets.map((t, i) => ({ ...t, picked: picks[i] || null })), accounts, candidates: cands };
+  const counts = { total: accounts.length, active: accounts.filter((a) => a.tier !== "muted").length };
+  return { on: xOn() || !!j7?.on, j7, pulse, tweets: tweets.map((t, i) => ({ ...t, picked: picks[i] || null })), accounts: accounts.slice(0, limit), counts, candidates: cands };
 }
 
 
@@ -414,6 +431,7 @@ export async function tweetLinks() {
   if (need.length) {
     const res = await fetch(`${API}/twitter/tweets?tweet_ids=${need.join(",")}`, { headers: { "X-API-Key": process.env.X_API_KEY! }, cache: "no-store" }).catch(() => null);
     const j: any = res?.ok ? await res.json().catch(() => null) : null;
+    await xSpend("tweet links", xCost((j?.tweets || []).length));
     for (const t of parseHook({ tweets: j?.tweets || [] })) {
       byId[t.id] = t;
       await r.set(TLC(t.id), t, { ex: 6 * 3600 });

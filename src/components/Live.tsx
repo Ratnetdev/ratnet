@@ -11,9 +11,10 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
   const busy = useRef(false);
   useEffect(() => {
     let stop = false;
-    const load = async () => {
-      // background tabs keep polling only when the viewer turned alerts on
-      if (busy.current || (document.visibilityState !== "visible" && !(window as any).__rnAlerts)) return;
+    const load = async (first?: boolean) => {
+      // background tabs keep polling only when the viewer turned alerts on (the first load always runs, so a page
+      // opened in a background tab is ready when it is shown)
+      if (busy.current || (!first && document.visibilityState !== "visible" && !(window as any).__rnAlerts)) return;
       busy.current = true;
       try {
         const r = await fetch("/api/live", { cache: "no-store" });
@@ -25,13 +26,14 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
         busy.current = false;
       }
     };
-    load();
-    const t = setInterval(load, 4000);
-    document.addEventListener("visibilitychange", load);
+    load(true);
+    const t = setInterval(() => load(), 4000);
+    const vis = () => load();
+    document.addEventListener("visibilitychange", vis);
     return () => {
       stop = true;
       clearInterval(t);
-      document.removeEventListener("visibilitychange", load);
+      document.removeEventListener("visibilitychange", vis);
     };
   }, []);
   return <LiveCtx.Provider value={state}>{children}</LiveCtx.Provider>;

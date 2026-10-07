@@ -7,6 +7,7 @@ import { safeFetch } from "./safefetch";
 import { K, redis } from "./redis";
 import { agentLog } from "./agents";
 import { accountOf, xOn } from "./wire";
+import { xAllowed, xCost, xSpend } from "./xcredits";
 import type { Launch } from "./digger";
 
 const Q = "rn:lens:q";
@@ -15,7 +16,7 @@ const HIST = "rn:lens:hist";
 const LOCK = "rn:lens:lock";
 const HOUR = (t: number) => `rn:lens:h:${Math.floor(t / 3600_000)}`;
 export const LENS_D = (m: string) => `rn:lens:d:${m}`;
-const MAX_PER_HOUR = 60; // dossiers per hour (each costs ~3 twitterapi.io reads)
+const MAX_PER_HOUR = Number(process.env.LENS_PER_HOUR || 20); // dossiers per hour (each ~3 twitterapi.io reads, up to ~400 credits)
 const MAX_AGE_MS = 20 * 60_000; // queued coins older than this are dropped
 const API = "https://api.twitterapi.io";
 const UA = "Mozilla/5.0 (compatible; RATNET-LENS/1.0)";
@@ -79,7 +80,9 @@ async function xApi<T = any>(path: string): Promise<T | null> {
   const r = await get(`${API}${path}`, 8000, { "X-API-Key": process.env.X_API_KEY! }).catch(() => null);
   if (!r?.ok) return null;
   try {
-    return JSON.parse(r.body) as T;
+    const j: any = JSON.parse(r.body);
+    await xSpend("LENS", xCost(Array.isArray(j?.tweets) ? j.tweets.length : 0, j?.data && !Array.isArray(j.data) ? 1 : 0));
+    return j as T;
   } catch {
     return null;
   }
@@ -370,6 +373,8 @@ export async function lensSession(ms: number) {
     while (Date.now() < end - 8000) {
       const hk = HOUR(Date.now());
       if (Number((await r.get(hk)) || 0) >= MAX_PER_HOUR) break;
+      // the hourly X credit budget: LENS stops at 80% so WIRE's live watching never runs dry
+      if (!(await xAllowed(0.8))) break;
       const top = (await r.zpopmax<string>(Q, 1)) as any[];
       if (!top?.length) {
         await new Promise((res) => setTimeout(res, 2000));

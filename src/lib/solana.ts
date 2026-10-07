@@ -12,9 +12,16 @@ import { K, redis } from "./redis";
 export const RPS = Math.max(1, Number(process.env.RPC_RPS || 10));
 export const lane = new AsyncLocalStorage<number>(); // 0 desk (default), 1 the rats (dig), 2 agents, 3 historian
 export const lowLane = { run: <T,>(_: boolean, fn: () => T) => lane.run(3, fn) };
-const queues: { cost: number; go: () => void }[][] = [[], [], [], []];
+const queues: { cost: number; go: () => void; at: number }[][] = [[], [], [], []];
+const log1m: [number, number, number, number][] = []; // [time, lane, calls, waited ms] over the last minute
 // strict rolling 1-second window (never a burst over the plan), 10% headroom
 const CAP = Math.max(1, Math.floor(RPS * 0.9));
+// the live ceiling: it drops by a fifth on every 429 (the plan's real limit is lower than RPC_RPS, or another process
+// shares the key) and climbs back one call per second every 10 quiet seconds. Before v0.1.24 a 429 only paused the
+// window for a second, so the worker kept hammering at the full rate and every lane slowed to a crawl
+let capNow = CAP;
+let lastThrottle = 0;
+let lastRaise = 0;
 const sent: [number, number][] = []; // [time, calls]
 const hist: [number, number][] = []; // historian share of the window
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -27,6 +34,7 @@ const used = (w: [number, number][], now: number) => {
 // then the agents (CATCH, HOUND, MOMO, LENS...), then the historian. Before v0.1.21 the agents shared the desk's lane
 // and one heavy agent (HOUND digging a breakout's whole curve) could keep the rats waiting for minutes.
 const SHARE = [0.7, 0.8, 0.5, 0.4];
+const RESERVE = [0.3, 0.3, 0.2, 0.1]; // guaranteed per lane each second, whatever the others want
 const lanesUsed: [number, number, number][] = []; // [time, calls, lane]
 const usedBy = (l: number, now: number) => {
   while (lanesUsed.length && now - lanesUsed[0][0] >= 1100) lanesUsed.shift();
@@ -34,25 +42,56 @@ const usedBy = (l: number, now: number) => {
 };
 function pump() {
   timer = null;
+  {
+    const now = Date.now();
+    if (capNow < CAP && now - lastThrottle > 10_000 && now - lastRaise > 10_000) {
+      capNow++;
+      lastRaise = now;
+    }
+  }
+  const CAPL = capNow;
   for (;;) {
     const now = Date.now();
     if (!queues.some((x) => x.length)) break;
-    if (used(sent, now) >= CAP) break;
+    if (used(sent, now) >= CAPL) break;
     let served = false;
+    // 1) every lane first gets its reserved floor, so none can starve (before v0.1.24 the desk and the rats could
+    // take 70% + 80% of the plan between them and the agents and the historian waited for minutes: CATCH, HOUND,
+    // MIND and the slow lane all went silent while the desk kept beating)
+    for (let l = 0; l < queues.length && !served; l++) {
+      const q = queues[l];
+      if (!q.length) continue;
+      const need = Math.min(q[0].cost, CAPL);
+      if (used(sent, now) + need > CAPL) break;
+      if (usedBy(l, now) >= Math.max(1, Math.floor(CAPL * RESERVE[l]))) continue;
+      const job = q.shift()!;
+      sent.push([now, need]);
+      lanesUsed.push([now, need, l]);
+      if (l === 3) hist.push([now, need]);
+      log1m.push([now, l, need, now - job.at]);
+      job.go();
+      served = true;
+    }
+    if (served) continue;
+    // 2) what is left goes by priority, each lane up to its ceiling while others wait
     for (let l = 0; l < queues.length && !served; l++) {
       const q = queues[l];
       if (!q.length) continue;
       const job = q[0];
-      const need = Math.min(job.cost, CAP);
-      if (used(sent, now) + need > CAP) break;
+      const need = Math.min(job.cost, CAPL);
+      if (used(sent, now) + need > CAPL) break;
       // alone, a lane may use the whole plan; with others waiting, only its share
       const othersWaiting = queues.some((x, i) => i !== l && x.length);
-      const cap = l === 3 ? Math.floor(CAP * (queues[0].length || queues[1].length ? 0.4 : 0.75)) : othersWaiting ? Math.floor(CAP * SHARE[l]) : CAP;
-      if (usedBy(l, now) + need > Math.max(1, cap)) continue;
+      const cap = l === 3 ? Math.floor(CAPL * (queues[0].length || queues[1].length ? 0.4 : 0.75)) : othersWaiting ? Math.floor(CAPL * SHARE[l]) : CAPL;
+      // a lane that has used nothing this second may always send one job, even one bigger than its ceiling (a big
+      // batch used to wait forever behind its own lane's ceiling while other lanes kept the plan busy)
+      const mine = usedBy(l, now);
+      if (mine > 0 && mine + need > Math.max(1, cap)) continue;
       sent.push([now, need]);
       lanesUsed.push([now, need, l]);
       if (l === 3) hist.push([now, need]);
       q.shift();
+      log1m.push([now, l, need, now - job.at]);
       job.go();
       served = true;
     }
@@ -62,18 +101,50 @@ function pump() {
 }
 const slot = (l: number, cost: number) =>
   new Promise<void>((go) => {
-    queues[Math.max(0, Math.min(3, l))].push({ cost, go });
+    queues[Math.max(0, Math.min(3, l))].push({ cost, go, at: Date.now() });
     pump();
   });
 export const rpcStats = { calls: 0, throttled: 0 };
+const thr1m: number[] = [];
+/** The limiter's last minute, per lane: calls, average wait in the queue, what is waiting now, 429s, the live ceiling. */
+export function rpcView() {
+  const now = Date.now();
+  while (log1m.length && now - log1m[0][0] > 60_000) log1m.shift();
+  while (thr1m.length && now - thr1m[0] > 60_000) thr1m.shift();
+  const names = ["desk", "rats", "agents", "historian"];
+  const by = names.map((name, l) => {
+    const xs = log1m.filter((x) => x[1] === l);
+    const calls = xs.reduce((a, x) => a + x[2], 0);
+    return { lane: name, perSec: Math.round((calls / 60) * 10) / 10, waitMs: xs.length ? Math.round(xs.reduce((a, x) => a + x[3], 0) / xs.length) : 0, queued: queues[l].length };
+  });
+  return { plan: RPS, cap: CAP, capNow, perSec: Math.round((log1m.reduce((a, x) => a + x[2], 0) / 60) * 10) / 10, throttled1m: thr1m.length, lanes: by };
+}
 const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 8000);
+const BATCH_MAX = 10;
 export async function limitedFetch(input: any, init?: any): Promise<Response> {
   const l = lane.getStore() ?? 0;
   let cost = 1;
+  let batch: unknown[] | null = null;
   try {
     const b = typeof init?.body === "string" ? init.body : "";
-    if (b.startsWith("[")) cost = Math.max(1, (JSON.parse(b) as unknown[]).length);
+    if (b.startsWith("[")) {
+      batch = JSON.parse(b) as unknown[];
+      cost = Math.max(1, batch.length);
+    }
   } catch {}
+  // a big JSON-RPC batch (a tape read asks for ~42 transactions at once) goes out in slices of 10: it fits every lane's
+  // share and never lands on the plan as one burst (the plan counts every call inside a batch)
+  if (batch && batch.length > BATCH_MAX) {
+    const out: unknown[] = [];
+    for (let i = 0; i < batch.length; i += BATCH_MAX) {
+      const res = await limitedFetch(input, { ...init, body: JSON.stringify(batch.slice(i, i + BATCH_MAX)) });
+      if (!res.ok) return res;
+      const j = await res.json();
+      if (!Array.isArray(j)) return new Response(JSON.stringify(j), { status: res.status, headers: { "content-type": "application/json" } });
+      out.push(...j);
+    }
+    return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
+  }
   for (let i = 0; ; i++) {
     await slot(l, cost);
     rpcStats.calls += cost;
@@ -84,7 +155,11 @@ export async function limitedFetch(input: any, init?: any): Promise<Response> {
     const res = await fetch(input, { ...(init || {}), signal });
     if (res.status !== 429 || i >= 4) return res;
     rpcStats.throttled++;
-    sent.push([Date.now(), CAP]); // everyone backs off for a second
+    const tnow = Date.now();
+    thr1m.push(tnow);
+    if (tnow - lastThrottle > 1000) capNow = Math.max(Math.ceil(CAP * 0.4), Math.floor(capNow * 0.8));
+    lastThrottle = tnow;
+    sent.push([tnow, CAP]); // everyone backs off for a second
     await new Promise((r) => setTimeout(r, 400 * 2 ** i + Math.random() * 250));
   }
 }

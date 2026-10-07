@@ -269,7 +269,7 @@ async function historianInner(budgetMs: number) {
   const s = await getSettings();
   const cfg = s.history;
   if (!cfg.on) return { history: "off" };
-  const got = await r.set(HK.lock, Date.now(), { nx: true, ex: Math.ceil(budgetMs / 1000) + 10 });
+  const got = await r.set(HK.lock, Date.now(), { nx: true, ex: Math.ceil(budgetMs / 1000) + 300 });
   if (!got) return { history: "busy" };
   const t0 = Date.now();
   const st = await loadState(cfg.days);
@@ -303,6 +303,7 @@ async function historianInner(budgetMs: number) {
         }
         const mchunk = (st.mSigs || []).slice(st.mPos ?? 0, (st.mPos ?? 0) + 80);
         st.mPos = (st.mPos ?? 0) + mchunk.length;
+        const failed: string[] = [];
         if (mchunk.length) {
           const WSOL_M = "So11111111111111111111111111111111111111112";
           const found = await pmap(mchunk, 16, async (sig) => {
@@ -314,9 +315,18 @@ async function historianInner(budgetMs: number) {
               const mint = bal.map((b) => String(b.mint || "")).find((m) => m && m !== WSOL_M && m.endsWith("pump")) || bal.map((b) => String(b.mint || "")).find((m) => m && m !== WSOL_M);
               return mint || null;
             } catch {
+              // rate-limited or timed out: read it again later (before v0.1.24 a failed read skipped that bond for good,
+              // which is how a burst of 429s left the bond scan at 0 found)
+              failed.push(sig);
               return null;
             }
           });
+          if (failed.length) {
+            st.mSigs = [...failed, ...(st.mSigs || []).slice(st.mPos ?? 0)];
+            st.mPos = 0;
+            // mostly failing: the plan is saturated, give it a breather instead of hammering it
+            if (failed.length * 2 > mchunk.length) await new Promise((res) => setTimeout(res, 3000));
+          }
           const mints = Array.from(new Set(found.filter((m): m is string => !!m)));
           if (mints.length) {
             const p = r.pipeline();

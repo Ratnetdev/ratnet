@@ -366,7 +366,7 @@ async function digPrep() {
 export async function digFast(): Promise<Record<string, unknown>> {
   return lane.run(1, async () => {
     const r = redis();
-    if (!(await r.set("rn:lock:digfast", Date.now(), { nx: true, ex: 30 }))) return { skipped: "busy" };
+    if (!(await r.set("rn:lock:digfast", Date.now(), { nx: true, ex: 150 }))) return { skipped: "busy" };
     const t0 = Date.now();
     try {
       const model = await digPrep();
@@ -386,7 +386,7 @@ export async function digFast(): Promise<Record<string, unknown>> {
 export async function digSlow(): Promise<Record<string, unknown>> {
   return lane.run(1, async () => {
     const r = redis();
-    if (!(await r.set("rn:lock:digslow", Date.now(), { nx: true, ex: 60 }))) return { skipped: "busy" };
+    if (!(await r.set("rn:lock:digslow", Date.now(), { nx: true, ex: 300 }))) return { skipped: "busy" };
     const t0 = Date.now();
     try {
       const model = await digPrep();
@@ -1246,6 +1246,25 @@ async function vampPicks(s: Awaited<ReturnType<typeof getSettings>>) {
 // A complete curve is not a graduation until the coin sits in its canonical PumpSwap pool (see lib/pool.ts).
 // pump.fun migrates within seconds; after MIGRATE_GRACE with no pool the coin is resolved as not bonded.
 export const MIGRATE_GRACE = 30 * 60_000;
+
+/**
+ * The stream saw the coin migrate. Marks the curve complete right away (the migration check then proves the pool), so
+ * a coin that bonded in minutes is labelled as bonded even when no rat re-read its curve in between. Before v0.1.24
+ * only a curve re-read set it, and fast bonders the rats never re-read were learned as misses (FLASH, King lessons).
+ */
+export async function streamComplete(mint: string, at = Date.now()) {
+  const r = redis();
+  const rec = await r.get<Launch>(K.launch(mint));
+  if (!rec || rec.completeAt || rec.outcome) return false;
+  rec.completeAt = at;
+  rec.pNow = 100;
+  rec.peak = Math.max(rec.peak ?? 0, 100);
+  const p = r.pipeline();
+  p.set(K.launch(mint), rec, { keepTtl: true });
+  p.zadd(K.migr, { score: at, member: mint });
+  await p.exec();
+  return true;
+}
 
 function completed(c: Ctx, rec: Launch, ttl?: number) {
   if (!rec.completeAt) {

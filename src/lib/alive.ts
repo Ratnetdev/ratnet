@@ -21,12 +21,24 @@ export async function markAlive(name: string, result?: unknown) {
   await redis().hset(KEY, { [name]: { at: Date.now(), ok: n.ok, note: n.note } }).catch(() => {});
 }
 
+/** A pass that is taking long: say so, but keep the time it last finished (so a stuck part still shows as stalled). */
+export async function markBusy(name: string, secs: number) {
+  const r = redis();
+  const cur = await r.hget<{ at: number; ok: boolean; note: string }>(KEY, name).catch(() => null);
+  await r.hset(KEY, { [name]: { at: cur?.at ?? 0, ok: false, note: `pass still running after ${secs}s` } }).catch(() => {});
+}
+
 /** Wrap a part: when it settles, it reports. */
 export function alive<T>(name: string, p: Promise<T>): Promise<T> {
   return p.then(
     (r) => (markAlive(name, r).catch(() => {}), r),
     (e) => (markAlive(name, { error: String(e?.message || e) }).catch(() => {}), Promise.reject(e)),
   );
+}
+
+/** The worker's RPC limiter over the last minute (written by the worker every 20s). */
+export async function rpcLive() {
+  return redis().get<any>("rn:rpc").catch(() => null);
 }
 
 export async function aliveView() {

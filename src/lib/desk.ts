@@ -103,6 +103,7 @@ export type Pos = {
   ghost?: string | null; // ghost desk position: why the real desk could not take it
   creator?: string;
   devSellPx?: number; // price when the dev sold past the line while we held (memes: we hold, COACH scores it)
+  drainPx?: number; // price when a confirmed sell-off would have fired while that exit is switched off (COACH scores it)
 };
 /** Everything known at the moment of the buy, kept for the public track record and for tuning by hand. */
 export type EntryCtx = {
@@ -188,6 +189,7 @@ export type Learn = {
   // dev sells: on memes the dev selling is normal. The desk holds through it and COACH scores what an exit would have done.
   devExitOn: boolean;
   devStat: { n: number; saved: number; cost: number }; // trades where the dev sold while held: an exit then would have saved / cost
+  drainBy?: Record<string, DevRec>; // the sell-off exit, learned per strategy: on while selling into a sell-off beats holding
   devBy?: Record<Kind, DevRec>; // the same, learned separately for tech coins and memes
   // PRIOR "holding floor": skip a coin that already dumped far from its high. A starting hint from the dev, not a law:
   // every coin it skips is followed in shadow, and COACH drops the rule if those coins do better than the ones bought.
@@ -206,6 +208,8 @@ export type Learn = {
 };
 export const LEARN_RULES = {
   devMin: 15, // dev-sell cases before the dev exit can switch itself on
+  drainMin: 10, // sell-off cases per strategy before the sell-off exit can switch itself off (or back on)
+  drainSaved: 0.5, // share of cases where selling into the sell-off beat holding
   devSaved: 0.6, // share of cases where selling with the dev beat holding
   floorMax: 40, // % under the coin's high (since launch) where the floor prior skips it
   floorMin: 30, // skipped cases before COACH can overrule the floor prior
@@ -247,7 +251,7 @@ function emptyLearn(): Learn {
 
 type ArmTrack = { hi: number; lo: number; armed: boolean; fill: number | null };
 type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" | "socials" | "traction" };
-type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string; entryPx?: number; openedAt?: number; tier?: Tier; pts?: [number, number][]; reviewed?: boolean; devExit?: Kind };
+type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string; entryPx?: number; openedAt?: number; tier?: Tier; pts?: [number, number][]; reviewed?: boolean; devExit?: Kind; drainExit?: string };
 type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean };
 
 // the desk lock lives this long past its last renewal (one pass, including a swap waiting for confirmation)
@@ -270,7 +274,7 @@ async function loadState(start: number): Promise<DeskState> {
 async function loadLearn(): Promise<Learn> {
   const l = await redis().get<Learn>(K.deskLearn);
   const e = emptyLearn();
-  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn, traction: { ...e.traction, ...(l.traction || {}) }, tractionOn: l.tractionOn ?? e.tractionOn, trailBy: { ...(l.trailBy || {}) }, devBy: { tech: { ...e.devBy!.tech, ...(l.devBy?.tech || {}) }, meme: { ...e.devBy!.meme, ...(l.devBy?.meme || {}), ...(l.devBy?.meme ? {} : { on: !!l.devExitOn }) } } } : e;
+  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn, traction: { ...e.traction, ...(l.traction || {}) }, tractionOn: l.tractionOn ?? e.tractionOn, trailBy: { ...(l.trailBy || {}) }, drainBy: { ...(l.drainBy || {}) }, devBy: { tech: { ...e.devBy!.tech, ...(l.devBy?.tech || {}) }, meme: { ...e.devBy!.meme, ...(l.devBy?.meme || {}), ...(l.devBy?.meme ? {} : { on: !!l.devExitOn }) } } } : e;
 }
 
 /** The paper desk mirrors the real desk wallet, so the start on the site is the real balance. */
@@ -391,12 +395,44 @@ const usdS = (n: number) => (n >= 1e6 ? `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}
 
 // ---------------------------------------------------------------- exam
 
+/** The desk wallet's SOL for the pages: one chain read per 20s for every visitor, and a failed read shows the last
+ * known balance instead of 0 (which flipped the exam's funded-wallet check to red for a moment). */
+async function cachedBalance(addr: string): Promise<number | null> {
+  const r = redis();
+  const c = await r.get<{ at: number; sol: number }>("rn:desk:wsol").catch(() => null);
+  if (c && Date.now() - c.at < 20_000) return c.sol;
+  const lam = await conn().getBalance(new PublicKey(addr)).catch(() => null);
+  if (lam == null) return c?.sol ?? null;
+  const sol = lam / 1e9;
+  await r.set("rn:desk:wsol", { at: Date.now(), sol }, { ex: 3600 }).catch(() => {});
+  return sol;
+}
+
 export async function exam(state: DeskState, walletSol: number | null): Promise<Exam> {
-  const trades = ((await redis().lrange<Trade>(K.deskTrades, 0, 499)) || []).filter((t) => t.side === "sell" && !t.live && t.pnlSol != null);
-  // a position can close in several sells; group by mint to count each round trip once
-  const byPos: Record<string, number> = {};
-  for (const t of trades) byPos[t.mint] = (byPos[t.mint] || 0) + (t.pnlSol || 0);
-  const rounds = Object.values(byPos);
+  // a round trip is a closed position: bought, then sold to the last token. A position still open after its initials
+  // does not count yet (before v0.1.24 its first partial sell did, so the exam ran ahead of the track record), and a
+  // coin bought twice counts twice. Only paper trades since this desk's start count.
+  const [all0, openMints] = await Promise.all([redis().lrange<Trade>(K.deskTrades, 0, 1999), redis().hkeys(K.deskPos).catch(() => [] as string[])]);
+  const all = ((all0 || []) as Trade[]).filter((t) => !t.live && t.at >= (state.startedAt || 0)).sort((a, b) => a.at - b.at);
+  const open = new Set(openMints || []);
+  const list: { mint: string; pnl: number; sells: number; at: number }[] = [];
+  const cur: Record<string, { mint: string; pnl: number; sells: number; at: number }> = {};
+  for (const t of all) {
+    if (t.side === "buy") {
+      cur[t.mint] = { mint: t.mint, pnl: 0, sells: 0, at: t.at };
+      list.push(cur[t.mint]);
+    } else if (t.side === "sell" && t.pnlSol != null) {
+      const rd = cur[t.mint] || (cur[t.mint] = { mint: t.mint, pnl: 0, sells: 0, at: t.at });
+      if (!list.includes(rd)) list.push(rd);
+      rd.pnl += t.pnlSol || 0;
+      rd.sells++;
+      rd.at = t.at;
+    }
+  }
+  const rounds = list
+    .filter((rd) => rd.sells > 0 && !(open.has(rd.mint) && cur[rd.mint] === rd))
+    .sort((a, b) => b.at - a.at)
+    .map((rd) => rd.pnl);
   const last = rounds.slice(0, 50);
   const wins = last.filter((x) => x > 0).length;
   const winRate = last.length ? (wins / last.length) * 100 : 0;
@@ -474,6 +510,19 @@ function devCase(l: Learn, kind: Kind, saved: boolean) {
   const was = d.on;
   if (d.n >= LEARN_RULES.devMin) d.on = d.saved / d.n >= LEARN_RULES.devSaved;
   l.devExitOn = l.devBy.meme.on; // legacy field, the King lane's VET line reads it
+  return was !== d.on;
+}
+
+/** One sell-off case for a strategy. The exit starts on; once a strategy has its cases it stays on only while selling
+ * into a sell-off beat holding. Returns true on a switch. */
+function drainCase(l: Learn, sl: string, saved: boolean) {
+  l.drainBy ||= {};
+  const d = (l.drainBy[sl] ||= { n: 0, saved: 0, cost: 0, on: true });
+  d.n++;
+  if (saved) d.saved++;
+  else d.cost++;
+  const was = d.on;
+  if (d.n >= LEARN_RULES.drainMin) d.on = d.saved / d.n >= LEARN_RULES.drainSaved;
   return was !== d.on;
 }
 
@@ -628,6 +677,14 @@ function reviewExit(l: Learn, a: After, b: Batch): boolean {
     const flip = devCase(l, a.devExit, saved);
     log(b, "COACH", `$${a.symbol} (${a.devExit}) sold with the dev: ${saved ? "right, it never came back" : `wrong, it ran ${(a.hi / a.exitPx).toFixed(1)}x after`}. ${l.devBy![a.devExit].saved}/${l.devBy![a.devExit].n} ${a.devExit} cases favour the dev exit`, saved ? "ok" : "bad", coin);
     if (flip) log(b, "COACH", l.devBy![a.devExit].on ? `dev exit switched on for ${a.devExit} coins` : `dev exit switched off for ${a.devExit} coins: holding through dev sells is doing better`, "win");
+  }
+  if (a.drainExit) {
+    // we sold into a sell-off: right if it never got 30% above our exit, wrong if it ran
+    const saved = a.hi < a.exitPx * 1.3;
+    const flip = drainCase(l, a.drainExit, saved);
+    const d = l.drainBy![a.drainExit];
+    log(b, "COACH", `$${a.symbol} (${a.drainExit}) sold into a sell-off: ${saved ? "right, it never came back" : `wrong, it ran ${(a.hi / a.exitPx).toFixed(1)}x after`}. ${d.saved}/${d.n} ${a.drainExit} cases favour the sell-off exit`, saved ? "ok" : "bad", coin);
+    if (flip) log(b, "COACH", d.on ? `sell-off exit back on for ${a.drainExit}: selling into sell-offs has been better` : `sell-off exit off for ${a.drainExit}: holding through pullbacks is doing better`, "win");
   }
   l.reviews++;
   const gaveBack = a.peakHeld > 0 ? 1 - a.exitPx / a.peakHeld : 0;
@@ -836,6 +893,16 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         // selling pressure: SOL leaving the curve over the last ~40s
         const back = rs.filter((x) => now - x[0] <= 40_000);
         const drain = back.length > 3 && back[0][2] > 0 ? pct(q.real, back[0][2]) : 0;
+        // the price has to show the sell-off too: SOL leaving the curve while the price sits near its 40s high is a bad
+        // read (or buys and sells netting out), and a healthy pullback on a young coin is not sellers taking over
+        const hi40 = back.reduce((a, x) => Math.max(a, x[1]), q.px);
+        const pxOff = hi40 > 0 ? pct(q.px, hi40) : 0;
+        const drainHit = drain <= -(c2.drainPct ?? 20) && pxOff <= -(c2.drainPxDrop ?? 15) && gain < (c2.drainMaxGain ?? 25);
+        const drainOn = learnS.drainBy?.[sl]?.on ?? true;
+        if (drainHit && !drainOn && !p.drainPx) {
+          p.drainPx = q.px;
+          log(b, "RISK", `$${p.symbol}${gt}: sell-off (curve ${drain.toFixed(0)}%, price ${pxOff.toFixed(0)}% in 40s). holding: for ${sl} coins holding through these has paid. COACH scores it`, "info", p);
+        }
         const keep = cfg.moonbag * p.tokens0;
         const toBag = p.tokens > keep ? (p.tokens - keep) / p.tokens : 0;
         let sellFrac = 0;
@@ -855,7 +922,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           [sellFrac, reason] = [1, `insiders dumped ${Math.round((1 - p.ins) * 100)}% of their bags (${p.insSold}% of supply: bundle, snipers, top buyers), price ${Math.round((q.px / p.peakPx - 1) * 100)}% off the peak`];
         else if (!p.tp1Done) {
           if (gain <= stopAt) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
-          else if (drain <= -20) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}% in 40s`];
+          else if (drainHit && drainOn) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}%, price ${pxOff.toFixed(0)}% in 40s`];
           // CATCH send ladder, step 1: 40% at the initials (2x to start, the exit lab tunes it), 60% rides
           else if (gain >= initialsAt) [sellFrac, reason] = [ca ? c2.catchFirstFrac ?? 0.4 : cfg.initialsFrac, `${ca ? "send ladder: " : ""}initials at ${mult.toFixed(1)}x${pf?.medPk && initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf.medPk}x)` : ""}, cost is back`];
           else if (q.grad && !p.gradSeen) {
@@ -929,9 +996,19 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               if (flip) log(b, "COACH", ds.on ? `dev exit switched on for ${k} coins: selling with the dev has been better` : `dev exit switched off for ${k} coins: holding through dev sells is doing better`, "win");
               await r.set(K.deskLearn, learnS);
             }
+            if (ok && p.tokens <= 0 && p.drainPx) {
+              // COACH: would selling into the sell-off have beaten holding?
+              const sl0 = sleeveOf(p.how, p.wire?.vamp);
+              const saved = q.px < p.drainPx;
+              const flip = drainCase(learnS, sl0, saved);
+              const d0 = learnS.drainBy![sl0];
+              log(b, "COACH", `$${p.symbol} (${sl0}) sell-off review: ${saved ? "selling into it would have been better" : "holding through it paid"} (${(q.px / p.drainPx).toFixed(2)}x since). ${d0.saved}/${d0.n} ${sl0} cases favour the sell-off exit`, saved ? "bad" : "ok", p);
+              if (flip) log(b, "COACH", d0.on ? `sell-off exit back on for ${sl0}` : `sell-off exit off for ${sl0}: holding through pullbacks is doing better`, "win");
+              await r.set(K.deskLearn, learnS);
+            }
             if (ok && p.tokens <= 0) {
               // COACH follows the coin after we leave it
-              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}) } satisfies After });
+              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After });
             }
           }
           if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
@@ -968,8 +1045,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               devCase(learnS, p.kind || "meme", q.px < p.devSellPx);
               learnDirty = true;
             }
+            if (closed && p.drainPx) {
+              drainCase(learnS, sleeveOf(p.how, p.wire?.vamp), q.px < p.drainPx);
+              learnDirty = true;
+            }
             // COACH reviews ghost exits like real ones (trail too tight or too loose)
-            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}) } satisfies After });
+            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(d.reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After });
           }
           if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
           else await r.hdel(GHOST_POS, p.mint);
@@ -1849,7 +1930,7 @@ export async function getDesk() {
   const state: DeskState = st || (await loadState(s.desk.start));
   const learnS = await loadLearn();
   const addr = deskWalletAddress();
-  const walletSol = addr ? (await conn().getBalance(new PublicKey(addr)).catch(() => 0)) / 1e9 : null;
+  const walletSol = addr ? await cachedBalance(addr) : null;
   const ex = await exam(state, walletSol);
   const arms = ARMS.map((a) => {
     const x = learnS.arms[String(a)];
@@ -1879,7 +1960,7 @@ export async function getDesk() {
       const [open, n] = await Promise.all([r.hlen(GHOST_POS), r.llen(GHOST_TRADES)]);
       return { open: open || 0, fills: n || 0, max: GHOST_MAX };
     })().catch(() => null),
-    wire: await wireView().catch(() => null),
+    wire: await wireView(40).catch(() => null),
     learn: { ...learnS, arms, shadows: nShadow || 0, reviewing: nAfter || 0, rules: LEARN_RULES, xConnected: !!process.env.X_BEARER_TOKEN },
     now: await rightNow(learnS).catch(() => null),
   };
