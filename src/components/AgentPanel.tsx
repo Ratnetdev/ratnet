@@ -53,7 +53,7 @@ export const PROFILE: Record<string, { what: string; how: string[] }> = {
     how: ["Paper: the real price at that moment, with fees and slippage", "Live: real swaps from the desk's own wallet, every fill on Solscan"],
   },
   RISK: {
-    what: "Manages every open position, every 2 seconds.",
+    what: "Manages every open position, twice a second.",
     how: ["Stop loss until the cost is back", "Takes the cost back at 2x, the rest rides", "Sells slices at market cap milestones only when the next one looks unlikely", "A trailing stop that widens as the coin runs", "Out instantly if the insiders (bundle, snipers, top buyers) dump", "Dev sells are normal on memes: it holds through them and COACH scores the call"],
   },
   COACH: {
@@ -71,6 +71,10 @@ export const PROFILE: Record<string, { what: string; how: string[] }> = {
   PULSE: {
     what: "Reads the room. Counts what every tracked post on X is about, minute by minute, and spots the narratives taking off right now.",
     how: ["Every post from the J7 feed and WIRE's own accounts is split into the words a coin would be named after", "Counted in 5-minute and hourly windows, weighted by the author's reach", "Rising = running at 3x+ its usual pace over the last 24 hours", "Mood per narrative from trench words (send, ape, rug, dump...)", "Tells the King (+5 for a launch named after a rising narrative) and logs every new one"],
+  },
+  SHIELD: {
+    what: "The scam guard. Every buy from every strategy passes SHIELD right before the money moves.",
+    how: ["Hard blocks: mint or freeze authority still set, Token-2022 traps (transfer fee, hook, permanent delegate, non-transferable), no route back to SOL for our size (honeypot), 20+ buys and not one sell", "Soft stops: a price drawn in a straight smooth line with no pullbacks (bots walking it up), one wallet with 12%+ or the top 10 with 45%+, a block-0 farm or bundle", "Every coin it stops is followed by FILM, so the record shows what each check saved or cost"],
   },
   CATCH: {
     what: "The sender catcher. The King asks whether a coin will bond; CATCH asks whether it will send: reach $300K (or double, whichever is higher) within 6 hours. It looks again and again, on hot curves, at migration and for two hours after, so it catches the fast migrators and the slow grinders.",

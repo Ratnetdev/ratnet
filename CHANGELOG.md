@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.18 · SHIELD
+- SHIELD (24th agent): the scam guard. Every buy from every strategy passes it right before the money moves. Hard blocks: mint or freeze authority still set; Token-2022 traps (transfer fee, transfer hook, permanent delegate, non-transferable, frozen by default); no route back to SOL for our size or under half back (honeypot, Jupiter quote); 20+ buys and not one sell (live tape or MOMO's counts). Soft stops (starting priors, FILM follows every coin they stop): a price drawn in a straight smooth line with no pullbacks (1-minute candles: fit >= 0.97, dips < 5%, < 15% red candles, +30%), one wallet holding 12%+ or the top 10 45%+, a block-0 farm or bundle. Every stop is on the coin's BOARD (stance -1) and in the agent log.
+- Positions are re-read twice a second on a paid RPC plan (was once a second).
+- Tests: sim/shieldtest.ts.
+
 ## v0.1.17 · Never stall
 - Found why the desk froze with the worker "running": the worker's heartbeat was a timer, not proof of work, and RPC calls had no deadline. One stalled Helius connection could hang the desk loop forever (no price updates, no exits, no entries) while the heartbeat kept the Vercel ping standing aside. Now: every chain read has an 8s deadline (RPC_TIMEOUT_MS); every part of a session has a cap, so a slow agent is left to finish on its own instead of holding the loop; the worker's heartbeat only beats while sessions complete, pauses past 3x a session and the process restarts itself past 5x (Railway starts a fresh one); the Vercel minute ping steps aside only while the desk itself is beating, so it takes the desk over within a minute of any stall (the desk lock keeps it to one desk).
 - Positions never go blind: if the chain read fails, open positions are priced from DexScreener for that beat, and any coin with no curve and no canonical pool (another pool or launchpad) falls back to DexScreener's deepest SOL pair.

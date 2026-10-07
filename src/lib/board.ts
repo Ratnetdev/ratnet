@@ -25,6 +25,7 @@ export const FAMILY: Record<string, string> = {
   GRAPH: "wallets", HOUND: "wallets",
   WIRE: "social", PULSE: "social", BUZZ: "social",
   LENS: "look", MIND: "look",
+  SHIELD: "safety",
 };
 
 const TONE: Record<string, number> = { win: 1, ok: 0.6, info: 0, bad: -0.6, loss: -0.6 };

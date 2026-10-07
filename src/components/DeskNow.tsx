@@ -64,7 +64,7 @@ export default function DeskNow({ now, live, open, closed, exam }: { now: DeskNo
     detail = now.beatAt ? `Last heartbeat ${ago(now.beatAt)} ago. It runs every minute when the scheduler pings it.` : "It starts on the first ping of the minute scheduler.";
   } else if (open > 0) {
     headline = `Holding ${open} ${live ? "" : "paper "}position${open > 1 ? "s" : ""}.`;
-    detail = "Every position is re-checked every 2 seconds against its exits: initials, trail, insider dumps.";
+    detail = "Every position is re-checked twice a second (paid RPC) against its exits: initials, trail, insider dumps.";
   } else if (live) {
     headline = "Trading its own wallet. Waiting for the next clean BOND call.";
     detail = "It buys the moment a King call passes every check.";

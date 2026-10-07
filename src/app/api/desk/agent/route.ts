@@ -3,7 +3,7 @@ import { cached, fail } from "@/lib/http";
 import { publicEv, publicEvs } from "@/lib/private";
 
 export const dynamic = "force-dynamic";
-const NAMES = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "WIRE", "PM", "PULSE", "LENS", "MIND", "HOUND", "OVERSEER", "MOMO", "CATCH"];
+const NAMES = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "WIRE", "PM", "PULSE", "LENS", "MIND", "HOUND", "OVERSEER", "MOMO", "CATCH", "SHIELD"];
 
 // One agent's history and counters, for the agent panel on /desk.
 export async function GET(req: Request) {

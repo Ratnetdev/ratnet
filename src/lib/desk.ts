@@ -10,6 +10,7 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { shield } from "./shield";
 import { labBest, labStep, notePath, tierOf, type ExitSet, type LabBest, type Tier } from "./exitlab";
 import { catchSignal } from "./catcher";
 import { acquire, release, renew } from "./lock";
@@ -254,7 +255,7 @@ export const EXAM = { trades: 30, winRate: 40, pnlPct: 10, maxDD: 30, minWallet:
 const FEE = 0.01; // pump.fun fee per side
 const PAPER_SLIP = 0.02; // assumed slippage per side on paper
 const WSOL = "So11111111111111111111111111111111111111112";
-const LOOP_MS = RPS >= 40 ? 1000 : 2000; // positions re-read every second on a paid RPC plan
+const LOOP_MS = RPS >= 40 ? 500 : RPS >= 20 ? 1000 : 2000; // positions re-read twice a second on a paid RPC plan
 const SUPPLY = 1e9; // pump.fun tokens have a fixed 1B supply
 
 // ---------------------------------------------------------------- state
@@ -1334,6 +1335,22 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   }
   log(b, "SIZE", `${size.toFixed(3)} SOL on $${rec.symbol} (${cfg.sizePct}% of desk, ${how} entry)`, "info", coin);
   if (!px) return;
+  // SHIELD: the scam guard, for every strategy, right before the money moves
+  const cvNow = (await getCurves([rec.mint]).catch(() => ({} as Record<string, CurveView | null>)))[rec.mint];
+  const grad = !cvNow || cvNow.complete;
+  const mo = how === "momo" ? await momoSignal(rec.mint).catch(() => null) : null;
+  const sh = await shield({ mint: rec.mint, symbol: rec.symbol, grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / px) * 1e6))), tape: rec.tape, buys5: mo?.b5, sells5: mo?.s5 }).catch(() => null);
+  if (sh && !sh.ok) {
+    const f = (sh.hardFail || sh.softFail)!;
+    log(b, "VET", `SHIELD stopped $${rec.symbol} (${how}): ${f.rule.replace(/_/g, " ")} (${f.v})${f.hard ? "" : ". FILM follows it"}`, "bad", coin);
+    const p = r.pipeline();
+    agentLog(p, [{ agent: "SHIELD", at: Date.now(), mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol}: ${f.hard ? "blocked" : "stopped"}, ${f.rule.replace(/_/g, " ")} (${f.v})`, tone: "bad", stance: f.hard ? -1 : -0.7 }]);
+    await p.exec();
+    await r.set(`rn:shield:${rec.mint}`, { at: Date.now(), checks: sh.checks }, { ex: 7 * 86400 });
+    await logSkip(`shield_${f.rule}`, f.v, rec.mint, rec.symbol, px).catch(() => {});
+    return;
+  }
+  if (sh) await r.set(`rn:shield:${rec.mint}`, { at: Date.now(), checks: sh.checks }, { ex: 7 * 86400 });
   const pos = await buy(b, state, rec, size, px, cfg.slippageBps, kp, real, how);
   if (!pos) return;
   // RISK watches the insiders' bags from here: dev, bundle wallets, snipers, top early buyers

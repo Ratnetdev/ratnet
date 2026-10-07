@@ -108,6 +108,7 @@ const ROLES: [string, string][] = [
   ["HOUND", "tracks FOMO, KOL and smart wallets"],
   ["MOMO", "runners pulling volume after migration"],
   ["CATCH", "catches senders before they send"],
+  ["SHIELD", "blocks scams, honeypots and drawn lines"],
   ["OVERSEER", "explores, proposes improvements"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
@@ -313,7 +314,7 @@ export default function DeskBoard() {
 
       <section className="grid g2 mt">
         <div className="panel">
-          <div className="ph"><span><Info k="t_open"><b>open positions</b></Info></span><span className="tiny muted">re-checked every 2s</span></div>
+          <div className="ph"><span><Info k="t_open"><b>open positions</b></Info></span><span className="tiny muted">re-checked every 0.5s</span></div>
           <div className="scroll">
             <table className="tbl">
               <thead><tr><th>Coin</th><th>Chart</th><th>P&amp;L</th><th><Info k="mcap">Mcap</Info></th><th><Info k="pnext">P(next)</Info></th><th><Info k="trail">Trail</Info></th><th><Info k="insiders">Insiders</Info></th><th>Age</th></tr></thead>
