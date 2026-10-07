@@ -1074,3 +1074,26 @@ img, canvas, video, iframe { max-width: 100%; }
 .status-t.is-ok .status-v { color: var(--rat); }
 .status-t.is-bad .status-v { color: var(--dust); }
 .status-s { font-size: 11px; color: var(--mute); margin-top: 2px; overflow-wrap: anywhere; }
+
+/* v0.1.33: the live feed and the alert popups never cover the page.
+   1880px and up: there is a margin of 350px+ beside the 1180px page, so the live feed docks in the right margin and
+   alerts in the left one. Below that: the live feed starts as the small LIVE dot (bottom right) and one compact alert
+   sits at the bottom, above the dot, instead of a stack over the top of the page. */
+@media (min-width: 1880px) {
+  .lt { top: 106px; bottom: auto; right: 16px; width: min(380px, calc((100vw - 1180px) / 2 - 32px)); }
+  .toasts { top: 106px; left: 16px; right: auto; width: min(392px, calc((100vw - 1180px) / 2 - 32px)); max-height: calc(100dvh - 130px); }
+}
+@media (max-width: 1879px) {
+  .toasts { top: auto; bottom: 64px; right: 16px; left: auto; width: min(360px, calc(100vw - 32px)); max-height: 45vh; }
+}
+@media (max-width: 900px) {
+  .toasts { bottom: calc(124px + env(safe-area-inset-bottom)); right: 10px; left: 10px; width: auto; }
+}
+
+/* sortable track-record columns (v0.1.33) */
+th.sortable { padding: 0; }
+th.sortable button { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; width: 100%; padding: inherit; padding: 8px 10px; cursor: pointer; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; white-space: nowrap; }
+th.sortable button:hover, th.sortable.on button { color: var(--rat); }
+th.sortable button:focus-visible { outline: 1px solid var(--rat); outline-offset: -2px; }
+.sort-ic { font-size: 10px; opacity: 0.45; min-width: 8px; }
+th.sortable.on .sort-ic { opacity: 1; }

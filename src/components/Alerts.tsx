@@ -74,6 +74,16 @@ export default function Alerts() {
   const [s, setS] = useState<Settings>(DEF);
   const [open, setOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // wide screens dock alerts in the empty left margin (3 at a time); elsewhere one compact alert above the bottom edge
+  const [wide, setWide] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(min-width: 1880px)");
+    if (!mq) return;
+    const on = () => setWide(mq.matches);
+    on();
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
   // keep the alert stack just under the header on every screen (header height differs per device and wraps)
   useEffect(() => {
     const set = () => {
@@ -285,7 +295,7 @@ export default function Alerts() {
       </span>
 
       <div className="toasts" aria-live="polite">
-        {toasts.slice(0, 3).map((t, i) => (
+        {toasts.slice(0, wide ? 3 : 1).map((t, i) => (
           <AlertCard
             key={t.id}
             t={t}
@@ -299,9 +309,9 @@ export default function Alerts() {
             onRaise={() => setToasts((x) => [t, ...x.filter((y) => y.id !== t.id)])}
           />
         ))}
-        {toasts.length > 3 && (
-          <button className="ac-more" onClick={() => setToasts((x) => x.slice(0, 3))}>
-            +{toasts.length - 3} more · clear
+        {toasts.length > (wide ? 3 : 1) && (
+          <button className="ac-more" onClick={() => setToasts((x) => x.slice(0, wide ? 3 : 1))}>
+            +{toasts.length - (wide ? 3 : 1)} more · clear
           </button>
         )}
       </div>

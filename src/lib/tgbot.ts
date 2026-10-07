@@ -40,8 +40,9 @@ export async function setupHook() {
 const allowed = (m: any) => {
   const admins = (process.env.TELEGRAM_ADMIN_IDS || "").split(",").map((x) => x.trim()).filter(Boolean);
   const inIdeas = ideasChat() != null && String(m.chat?.id) === String(ideasChat());
-  if (admins.length) return (m.from?.id != null && admins.includes(String(m.from.id))) || (inIdeas && m.chat?.type === "channel");
-  return inIdeas;
+  // v0.1.33: without TELEGRAM_ADMIN_IDS nobody may command the bot (it used to accept anyone in the ideas chat)
+  if (!admins.length) return false;
+  return (m.from?.id != null && admins.includes(String(m.from.id))) || (inIdeas && m.chat?.type === "channel");
 };
 
 export async function handleUpdate(u: any) {

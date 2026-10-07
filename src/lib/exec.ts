@@ -28,14 +28,85 @@ const ALLOWED = new Set([
   "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
 ]);
 
-/** Refuse to sign anything that isn't paid by the desk wallet or touches a program outside the allowlist. */
-export function vetTx(tx: VersionedTransaction, payer: PublicKey) {
-  const keys = tx.message.staticAccountKeys;
-  if (!keys[0]?.equals(payer)) throw new Error("tx payer is not the desk wallet");
+const SYSTEM = "11111111111111111111111111111111";
+const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN22 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+const ATA_PROG = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+/** The wallet's associated token account for a mint, under the classic token program and under Token-2022. */
+export function ownAtas(owner: PublicKey, mint: string) {
+  const m = new PublicKey(mint);
+  const ata = (prog: string) => PublicKey.findProgramAddressSync([owner.toBuffer(), new PublicKey(prog).toBuffer(), m.toBuffer()], new PublicKey(ATA_PROG))[0].toBase58();
+  return new Set([ata(TOKEN), ata(TOKEN22)]);
+}
+
+/**
+ * Refuse to sign anything that could send value anywhere but back to the desk wallet (v0.1.33, stricter):
+ *  - paid by the desk wallet; every program on the allowlist
+ *  - a top-level SOL transfer only to a Jito tip account or the wallet's own wSOL account
+ *  - top-level token instructions only to sync, open or close the wallet's own accounts (the rent back to the wallet),
+ *    never a transfer, an approval or an authority change
+ *  - associated-account creation only for the wallet itself
+ *  - the swap's output must land in the wallet's own account for the output mint
+ * Every address is resolved through the lookup tables, so nothing hides behind a table index.
+ */
+export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: AddressLookupTableAccount[] = [], outputMint?: string) {
+  const keys = tx.message.getAccountKeys({ addressLookupTableAccounts: lookups });
+  if (!keys.get(0)?.equals(payer)) throw new Error("tx payer is not the desk wallet");
+  const me = payer.toBase58();
+  const wsolAtas = ownAtas(payer, WSOL_MINT);
+  const tips = new Set(TIP);
+  const outAtas = outputMint ? ownAtas(payer, outputMint) : null;
+  let outSeen = !outAtas || (outputMint === WSOL_MINT); // selling to SOL: the proceeds arrive as lamports on the wallet itself
   for (const ix of tx.message.compiledInstructions) {
-    const pid = keys[ix.programIdIndex]?.toBase58();
+    const pid = keys.get(ix.programIdIndex)?.toBase58();
     if (!pid || !ALLOWED.has(pid)) throw new Error(`tx touches an unexpected program ${pid?.slice(0, 6)}`);
+    const acc = (i: number) => keys.get(ix.accountKeyIndexes[i])?.toBase58() || "";
+    const data = Buffer.from(ix.data);
+    if (outAtas && ix.accountKeyIndexes.some((k) => outAtas.has(keys.get(k)?.toBase58() || ""))) outSeen = true;
+    if (pid === SYSTEM) {
+      const kind = data.length >= 4 ? data.readUInt32LE(0) : -1;
+      if (kind === 2) {
+        if (acc(0) !== me || !(tips.has(acc(1)) || wsolAtas.has(acc(1)))) throw new Error("SOL transfer to an address that is not a tip or the wallet's own wSOL account");
+      } else if (kind === 0 || kind === 3) {
+        if (acc(0) !== me) throw new Error("account creation not paid by the desk wallet");
+      } else throw new Error(`unexpected system instruction ${kind}`);
+    } else if (pid === TOKEN || pid === TOKEN22) {
+      const t = data[0];
+      if (t === 17) continue; // sync native
+      if (t === 1 || t === 16 || t === 18) continue; // initialize account (temporary wSOL accounts)
+      if (t === 9) {
+        if (acc(1) !== me || acc(2) !== me) throw new Error("token account closed to someone other than the desk wallet");
+        continue;
+      }
+      throw new Error(`top-level token instruction ${t} refused (transfer, approval or authority change)`);
+    } else if (pid === ATA_PROG) {
+      if (acc(0) !== me || acc(2) !== me) throw new Error("associated account created for someone other than the desk wallet");
+    }
   }
+  if (!outSeen) throw new Error("the swap's output does not go to the desk wallet's own account");
+}
+
+/**
+ * What a confirmed swap really did to the wallet (v0.1.33): lamports in or out (tip, fees and rent included) and the
+ * token change for the mint. The books use these instead of Jupiter's quote.
+ */
+export async function realDelta(sig: string, owner: PublicKey, mint: string) {
+  const { parsedTx } = await import("./solana");
+  for (let i = 0; i < 4; i++) {
+    const tx: any = await parsedTx(sig).catch(() => null);
+    if (tx?.meta) {
+      const keys = tx.transaction.message.accountKeys;
+      const me = owner.toBase58();
+      const wi = keys.findIndex((k: any) => k.pubkey.toBase58() === me);
+      const sol = wi >= 0 ? ((tx.meta.postBalances[wi] || 0) - (tx.meta.preBalances[wi] || 0)) / 1e9 : null;
+      const sum = (arr: any[]) => (arr || []).filter((b) => b.mint === mint && b.owner === me).reduce((a, b) => a + Number(b.uiTokenAmount?.uiAmount || 0), 0);
+      const tok = sum(tx.meta.postTokenBalances) - sum(tx.meta.preTokenBalances);
+      return { sol, tok };
+    }
+    await new Promise((res) => setTimeout(res, 800));
+  }
+  return null;
 }
 
 const T = (ms: number) => AbortSignal.timeout(ms);
@@ -193,7 +264,7 @@ async function fastSwapInner(kp: Keypair, inputMint: string, outputMint: string,
     ];
     const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: bh.blockhash, instructions: ixs }).compileToV0Message(lookup);
     const tx = new VersionedTransaction(msg);
-    vetTx(tx, kp.publicKey);
+    vetTx(tx, kp.publicKey, lookup, outputMint);
     tx.sign([kp]);
     const raw = tx.serialize();
     const sig58 = bs58.encode(tx.signatures[0]);
@@ -214,7 +285,8 @@ async function fastSwapInner(kp: Keypair, inputMint: string, outputMint: string,
     if (!s.ok) throw new Error(`swap build failed (${s.status})`);
     const { swapTransaction, lastValidBlockHeight } = await s.json();
     const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
-    vetTx(tx, kp.publicKey);
+    const lk = await alts((tx.message.addressTableLookups || []).map((x) => x.accountKey.toBase58()));
+    vetTx(tx, kp.publicKey, lk, outputMint);
     tx.sign([kp]);
     const raw = tx.serialize();
     const sig58 = bs58.encode(tx.signatures[0]);

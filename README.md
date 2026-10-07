@@ -540,6 +540,8 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `LENS_PER_HOUR` | Optional. LENS dossiers per hour (default `20`). |
 | `HISTORIAN_CALLS_PER_DAY` | Optional. Chain reads the historian may use per day (default `60000`). Every call is billed by Helius; /status shows calls today and the monthly pace. |
 | `PUMPPORTAL_API_KEY` | Optional. A funded PumpPortal key (0.01 SOL per 10,000 messages). Without it, trades come from the Helius feed. |
+| `X_HOOK_SECRET` | Optional. Own secret for the X webhook URL (`/api/x/hook?key=...`). Without it, only twitterapi.io's X-API-Key header (your X_API_KEY) is accepted. |
+| `DESK_ON_VERCEL` | Leave unset. The desk wallet key (DESK_WALLET_SECRET) belongs on Railway only; Vercel ignores it unless this is 1. |
 | `HELIUS_WS_URL` | Optional. Helius websocket URL for the trade feed; by default derived from `HELIUS_RPC_URL` (https → wss). |
 | `RPC_CALLS_PER_DAY` | Optional. Total chain reads per day for the worker (default `300000`, a 10M-a-month Helius plan over 30 days). Paced through the day: historian, agents and rats pause in that order when ahead of pace; the desk may go 15% over. `0` turns the cap off. |
 | `FETCH_TIMEOUT_MS` | Optional. Deadline for any outside call that sets none of its own (default `20000`). |

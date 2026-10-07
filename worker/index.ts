@@ -8,9 +8,9 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { lane, parsedTx, rpcView } from "../src/lib/solana";
+import { budgetState, lane, parsedTx, rpcView } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
-import { logCreate, logTrade, pruneStream, streamSize, youngMints } from "../src/lib/streamlog";
+import { logCreate, logTrade, pruneStream, streamQuote, streamSize, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
@@ -154,7 +154,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never", feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} addrs ${FEED.view().trades} trades${FEED.view().error ? ` err ${FEED.view().error}` : ""}` : PP_KEY ? "pumpportal key" : "off" }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never", feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} addrs ${FEED.view().trades} trades ~${Math.round(FEED.view().perDay / 1000)}K credits/day${FEED.view().error ? ` err ${FEED.view().error}` : ""}` : PP_KEY ? "pumpportal key" : "off" }).catch(() => {});
   }
   // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};
@@ -194,6 +194,31 @@ async function wantList() {
   // every launch for its first ~7 minutes: the minute-1 and minute-5 tapes are built from these trades (no chain reads)
   for (const m of youngMints(now)) want.add(m);
   pruneStream(want, now);
+  return want;
+}
+
+/**
+ * What the Helius feed follows (v0.1.33). Its data is billed by volume (~0.2 credits per trade), and following every
+ * hot coin was ~300 trades a second (~5M credits a day, half the month's plan). So, in order:
+ *  - open positions, real and ghost (their prices and exits): always
+ *  - every launch for its first ~100 seconds (FLASH reads the first seconds)
+ *  - a launch up to its minute-5 tape (7 minutes) only once its curve has ~3% in it: most launches never get there
+ * While the day's credits run ahead of pace, only the first two. Hot curves and migrated coins are read from the chain
+ * by CATCH and the rats as before.
+ */
+async function feedWant() {
+  const r = redis();
+  const now = Date.now();
+  const [pos, ghosts] = await Promise.all([r.hkeys(K.deskPos).catch(() => [] as string[]), r.hkeys("rn:ghost:pos").catch(() => [] as string[])]);
+  const want = new Set([...(pos || []), ...(ghosts || [])].map(String).filter(Boolean));
+  for (const m of FLW.keys()) want.add(m);
+  const b = budgetState();
+  if (!b.budget || b.used < b.pace) {
+    for (const m of youngMints(now)) {
+      const q = streamQuote(m, 10 * 60_000);
+      if (q && (q.real ?? 0) >= 2.5) want.add(m);
+    }
+  }
   return want;
 }
 
@@ -472,7 +497,7 @@ async function main() {
   console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
   pumpportal();
   // trades for every followed coin from Helius (no PumpPortal key needed): the same handler as PumpPortal's trades
-  if (!PP_KEY) FEED = heliusFeed({ want: wantList, onTrade: (t) => TRADE_IN(t), log: (x) => console.log(x) });
+  if (!PP_KEY) FEED = heliusFeed({ want: feedWant, onTrade: (t) => TRADE_IN(t), log: (x) => console.log(x) });
   setInterval(beat, 20_000);
   await beat();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);

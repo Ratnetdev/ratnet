@@ -3,7 +3,7 @@
 // The King calls at minute 5 and SCOUT reads at minute 1. That is late for the coins that matter most: the fast
 // migrators fill their curve in seconds to a few minutes, and by minute 5 the price is already a multiple of where it
 // started. FLASH reads every launch from the live trade stream at 15, 45 and 90 seconds (no chain reads at all: the
-// worker hands it the trades it already streams) and asks the King's question early: will it bond within the hour?
+// worker hands it the trades it already streams) and asks early: will it double from here and still hold that price an hour after launch (v0.1.33 label)?
 //
 // What it sees at each look: how far the curve is, how many wallets bought and sold, net SOL in, the dev's buy and
 // whether the dev already sold, how much of the buying came in the first two seconds (snipers and bundles), how
@@ -36,6 +36,12 @@ const VIEW = "rn:fl:view";
 const HIST = "rn:fl:hist";
 export const FL_SIG = (m: string) => `rn:fl:sig:${m}`;
 const LABEL_MS = 60 * 60_000;
+/** Pump curve market cap in SOL at a fill % (30 SOL virtual, 1.073B virtual tokens, 793.1M sold at 100%). */
+function curveMcSol(progress: number) {
+  const vTok = 1073.0e6 - (Math.max(0, Math.min(100, progress)) / 100) * 793.1e6;
+  const vSol = (30 * 1073.0e6) / vTok;
+  return (vSol / vTok) * 1e9;
+}
 const LR = 0.03;
 const L2 = 1e-4;
 export const FL_MIN = 300;
@@ -44,7 +50,7 @@ export type FlashStats = { age: number; prog: number; mcSol: number; buys: numbe
 export type FlashLook = { mint: string; stage: FlStage; at: number; createdAt: number; st: FlashStats; sym?: string };
 type Model = { w: number[]; mu: number[]; m2: number[]; n: number; pos: number };
 type Snap = { id: string; mint: string; sym: string; stage: FlStage; at: number; createdAt: number; mcSol: number; x: number[]; p: number; prior: number };
-export type FlashSig = { mint: string; sym: string; at: number; stage: FlStage; p: number; prior: number; by: "model" | "on"; mcSol: number; prog: number; why: string[] };
+export type FlashSig = { mint: string; sym: string; at: number; stage: FlStage; p: number; prior: number; by: "model" | "on"; mcSol: number; prog: number; why: string[]; first2s?: number; top3?: number; devSold?: boolean; uniq?: number };
 
 const clip = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Number.isFinite(v) ? v : 0));
 const l1 = (v: number) => Math.log10(1 + Math.max(0, v || 0));
@@ -158,7 +164,7 @@ export async function flashLook(looks: FlashLook[]) {
     const byModel = mode !== "off" && !!cut && p >= cut.band;
     const byOn = mode === "on" && !cut && pr.score >= (c.flashPriorMin ?? 75);
     const clean = !lk.st.devSold && lk.st.first2s < 0.7 && !(rec && rec.devN >= 5 && !rec.devB);
-    if ((byModel || byOn) && clean) sigs.push({ mint: lk.mint, sym, at: Date.now(), stage: lk.stage, p: Math.round(p * 1000) / 1000, prior: pr.score, by: byModel ? "model" : "on", mcSol: lk.st.mcSol, prog: lk.st.prog, why: pr.why });
+    if ((byModel || byOn) && clean) sigs.push({ mint: lk.mint, sym, at: Date.now(), stage: lk.stage, p: Math.round(p * 1000) / 1000, prior: pr.score, by: byModel ? "model" : "on", mcSol: lk.st.mcSol, prog: lk.st.prog, why: pr.why, first2s: lk.st.first2s, top3: lk.st.top3, devSold: lk.st.devSold, uniq: lk.st.uniq });
   }
   pipe.ltrim("rn:lat:flash", 0, 199);
   if (view.length) {
@@ -169,7 +175,7 @@ export async function flashLook(looks: FlashLook[]) {
   for (const g of sigs.slice(0, 3)) {
     pipe.set(FL_SIG(g.mint), g, { ex: 600 });
     pipe.zadd(K.deskQ, { score: g.at, member: `f:${g.mint}` });
-    agentLog(pipe, [{ agent: "FLASH", at: g.at, mint: g.mint, symbol: g.sym, text: `$${g.sym} at ${g.stage}s: ${g.by === "model" ? `P(bond) ${Math.round(g.p * 100)}%` : `score ${g.prior}`}, curve ${Math.round(g.prog)}%${g.why.length ? `, ${g.why.slice(0, 2).join(", ")}` : ""}. sent to the desk`, tone: "ok", stance: 0.8 }]);
+    agentLog(pipe, [{ agent: "FLASH", at: g.at, mint: g.mint, symbol: g.sym, text: `$${g.sym} at ${g.stage}s: ${g.by === "model" ? `P(2x, held) ${Math.round(g.p * 100)}%` : `score ${g.prior}`}, curve ${Math.round(g.prog)}%${g.why.length ? `, ${g.why.slice(0, 2).join(", ")}` : ""}. sent to the desk`, tone: "ok", stance: 0.8 }]);
   }
   await pipe.exec();
   return { looks: looks.length, sent: sigs.length };
@@ -179,12 +185,18 @@ export async function flashSignal(m: string) {
   return redis().get<FlashSig>(FL_SIG(m));
 }
 
-/** Label every look whose hour is up: did the coin bond (curve complete, not stuck) within 60 minutes of launch? */
+/** Label every look whose hour is up: did the coin double from the look and still hold the look's price at 1 hour? */
 export async function flashFollow() {
   const r = redis();
   const now = Date.now();
   if (now - Number((await r.get("rn:fl:at")) || 0) < 25_000) return { flash: "not due" };
   await r.set("rn:fl:at", now);
+  // v0.1.33: the label changed (2x and held, not "bonded within an hour"): the record starts over, the old one is kept
+  if (await r.set("rn:fl:recv2", 1, { nx: true })) {
+    const old = await r.hgetall<Record<string, number>>(REC);
+    if (old && Object.keys(old).length) await r.hset("rn:fl:rec:v1", old);
+    await r.del(REC);
+  }
   const ids = ((await r.zrange<string[]>(DUE, 0, now, { byScore: true, offset: 0, count: 600 })) || []) as string[];
   if (!ids.length) return { labelled: 0 };
   const snaps = ((await r.hmget<Record<string, Snap>>(SNAP, ...ids)) || {}) as Record<string, Snap | null>;
@@ -201,8 +213,14 @@ export async function flashFollow() {
     if (!sp) continue;
     const rec = recBy[sp.mint];
     // a full curve that later proved stuck (never migrated) is a miss, whatever order the flags arrived in
+    // v0.1.33 label: did the coin double from the look AND still hold the look's price an hour after launch (or bond)?
+    // "Bonded within an hour" taught FLASH to buy coins that pumped, bonded and dumped below its entry; a trade needs
+    // the move and the hold. Curve market caps from the dig's curve checkpoints (peak and the 1-hour read).
     const bonded = !!rec?.completeAt && !rec.stuck && rec.outcome !== "DIED" && rec.completeAt - sp.createdAt <= LABEL_MS + 60_000;
-    const y = bonded ? 1 : 0;
+    const pkMc = bonded ? curveMcSol(100) : curveMcSol(Number(rec?.peak ?? 0));
+    const h1Mc = bonded ? curveMcSol(100) : curveMcSol(Number((rec?.cp as any)?.h1?.p ?? rec?.pNow ?? 0));
+    const held2x = pkMc >= 2 * sp.mcSol && h1Mc >= sp.mcSol;
+    const y = held2x ? 1 : 0;
     // graded on the score it gave at the look (what the desk acted on). Before v0.1.28 it was today's model's score,
     // so the record described a model that never made those calls
     const band = Math.min(9, Math.floor(sp.p * 10));

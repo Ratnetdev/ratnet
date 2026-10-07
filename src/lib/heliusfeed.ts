@@ -64,7 +64,7 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onTrade: (t
   const WS: any = (globalThis as any).WebSocket;
   const http = process.env.HELIUS_RPC_URL || "";
   const url = process.env.HELIUS_WS_URL || (http.startsWith("http") ? http.replace(/^http/, "ws") : "");
-  const state = { up: false, subs: 0, msgs: 0, trades: 0, lastAt: 0, addrs: 0, error: "" };
+  const state = { up: false, subs: 0, msgs: 0, trades: 0, lastAt: 0, addrs: 0, error: "", bytes: 0, since: Date.now(), perDay: 0 };
   if (!WS || !url) {
     state.error = !WS ? "no WebSocket in this Node version" : "HELIUS_RPC_URL not set";
     return { ...state, nudge: () => {}, view: () => ({ ...state }) };
@@ -115,6 +115,11 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onTrade: (t
     ws.onmessage = (ev: any) => {
       const data = String(ev?.data || "");
       noteStreamBytes(data.length);
+      state.bytes += data.length;
+      // credits a day at the rate since the last reset (2 credits per 100,000 bytes), window restarted hourly
+      const el = Date.now() - state.since;
+      if (el > 3600_000) Object.assign(state, { bytes: data.length, since: Date.now() });
+      else if (el > 30_000) state.perDay = Math.round((state.bytes / el) * 86_400_000 / 50_000);
       state.msgs++;
       let j: any = null;
       try {

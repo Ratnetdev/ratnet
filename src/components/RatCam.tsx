@@ -401,7 +401,23 @@ function LiveToasts({ onOpen }: { onOpen: () => void }) {
   const live = useLive();
   const [cards, setCards] = useState<Toast[]>([]);
   const [paused, setPaused] = useState(false);
-  const [hidden, setHidden] = useState(false);
+  // v0.1.33: on screens without room beside the page (under 1880px) the feed starts folded into the small LIVE dot,
+  // so it never sits on top of the page; on wide screens it docks in the empty right margin. The choice is remembered.
+  const [hidden, setHidden0] = useState(false);
+  const setHidden = (h: boolean) => {
+    setHidden0(h);
+    try {
+      localStorage.setItem("rn:lt:hidden", h ? "1" : "0");
+    } catch {}
+  };
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem("rn:lt:hidden");
+    } catch {}
+    const wide = typeof window !== "undefined" && window.matchMedia?.("(min-width: 1880px)").matches;
+    setHidden0(saved != null ? saved === "1" : !wide);
+  }, []);
   const [waiting, setWaiting] = useState(0);
   const queue = useRef<Toast[]>([]);
   const seen = useRef<Set<string>>(new Set());

@@ -52,10 +52,33 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
   );
 }
 
+type SortKey = "opened" | "entry" | "exit" | "move" | "pnl" | "held";
+const SORTS: Record<SortKey, (t: Trip) => number | null> = {
+  opened: (t) => t.openedAt,
+  entry: (t) => t.entryMc ?? null,
+  exit: (t) => (t.open ? t.nowMc : t.exitMc) ?? null,
+  move: (t) => moveOf(t),
+  pnl: (t) => t.pnlSol,
+  held: (t) => t.holdMs,
+};
+/** A sortable column header: first click sorts high to low (newest, largest), the next one low to high. */
+function SortTh({ k, sort, set, children }: { k: SortKey; sort: { k: SortKey; dir: 1 | -1 }; set: (s: { k: SortKey; dir: 1 | -1 }) => void; children: React.ReactNode }) {
+  const on = sort.k === k;
+  return (
+    <th className={`sortable ${on ? "on" : ""}`} aria-sort={on ? (sort.dir === -1 ? "descending" : "ascending") : "none"}>
+      <button type="button" onClick={() => set({ k, dir: on ? (sort.dir === -1 ? 1 : -1) : -1 })}>
+        {children}
+        <span className="sort-ic" aria-hidden>{on ? (sort.dir === -1 ? "↓" : "↑") : "↕"}</span>
+      </button>
+    </th>
+  );
+}
+
 /** The desk's public track record. `compact` for the homepage, full table on /desk. Click any trade for every detail. */
 export default function TrackRecord({ compact = false }: { compact?: boolean }) {
   const [tab, setTab] = useState<"all" | "open" | "closed" | "ghost">("all");
   const [chart, setChart] = useState<RecKey | null>(null);
+  const [sort, setSort] = useState<{ k: SortKey; dir: 1 | -1 }>({ k: "opened", dir: -1 });
   // each number opens its chart (full track record only)
   const st = (k: RecKey) => (compact ? {} : { className: `rec-stat-btn ${chart === k ? "on" : ""}`, role: "button" as const, tabIndex: 0, onClick: () => setChart(chart === k ? null : k), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter") setChart(chart === k ? null : k); } });
   const admin = useAdmin();
@@ -63,7 +86,18 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
   const isGhost = tab === "ghost";
   const s = d?.summary;
   const trips = (d?.trips || []).filter((t) => (tab === "all" || tab === "ghost" ? true : tab === "open" ? t.open : !t.open));
-  const shown = compact ? trips.slice(0, 6) : trips;
+  // sorted by the chosen column (newest first by default); trades without a value for it go last either way
+  const sorted = compact
+    ? trips
+    : trips.slice().sort((a, b) => {
+        const va = SORTS[sort.k](a);
+        const vb = SORTS[sort.k](b);
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        return (va - vb) * sort.dir;
+      });
+  const shown = compact ? trips.slice(0, 6) : sorted;
   return (
     <section className="panel mt record" id="record">
       <div className="ph">
@@ -90,12 +124,23 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
           <thead>
             <tr>
               <th>Coin</th>
-              {!compact && <th>Opened</th>}
-              <th><Info k="entrymc">Entry MC</Info></th>
-              <th><Info k="exitmc">Exit / now MC</Info></th>
-              <th><Info k="move">Change</Info></th>
-              <th><Info k="result">P&amp;L</Info></th>
-              {!compact && <th>Held</th>}
+              {compact ? (
+                <>
+                  <th><Info k="entrymc">Entry MC</Info></th>
+                  <th><Info k="exitmc">Exit / now MC</Info></th>
+                  <th><Info k="move">Change</Info></th>
+                  <th><Info k="result">P&amp;L</Info></th>
+                </>
+              ) : (
+                <>
+                  <SortTh k="opened" sort={sort} set={setSort}>Opened</SortTh>
+                  <SortTh k="entry" sort={sort} set={setSort}>Entry MC</SortTh>
+                  <SortTh k="exit" sort={sort} set={setSort}>Exit / now MC</SortTh>
+                  <SortTh k="move" sort={sort} set={setSort}>Change</SortTh>
+                  <SortTh k="pnl" sort={sort} set={setSort}>P&amp;L</SortTh>
+                  <SortTh k="held" sort={sort} set={setSort}>Held</SortTh>
+                </>
+              )}
               {!compact && <th><Info k="why">Exit</Info></th>}
             </tr>
           </thead>

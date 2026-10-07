@@ -1,5 +1,5 @@
 // Unit check of the fast execution path with stand-ins for Jupiter, Helius and the RPC.
-import { Keypair, SystemProgram, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, TransactionInstruction, VersionedTransaction } from "@solana/web3.js";
 const kp = Keypair.generate();
 const sent: { via: string; tx: VersionedTransaction }[] = [];
 (globalThis as any).__rnConn = {
@@ -9,7 +9,8 @@ const sent: { via: string; tx: VersionedTransaction }[] = [];
   getSignatureStatuses: async () => ({ value: [{ confirmationStatus: "confirmed", err: null }] }),
 };
 process.env.HELIUS_RPC_URL = "https://rpc.example/?api-key=k";
-const ix = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: Keypair.generate().publicKey, lamports: 1 });
+const MINT = Keypair.generate().publicKey.toBase58();
+let ix: TransactionInstruction = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: Keypair.generate().publicKey, lamports: 1 });
 const asJup = (i: any) => ({ programId: i.programId.toBase58(), accounts: i.keys.map((k: any) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable })), data: Buffer.from(i.data).toString("base64") });
 (globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
@@ -20,8 +21,15 @@ const asJup = (i: any) => ({ programId: i.programId.toBase58(), accounts: i.keys
   return { ok: false, json: async () => ({}) };
 };
 async function main() {
-  const { fastSwap } = await import("../src/lib/exec");
-  const r = await fastSwap(kp, "So11111111111111111111111111111111111111112", "Mint111111111111111111111111111111111111111", 200_000_000n, 1500, { maxPriorityLamports: 3_000_000 });
+  const { fastSwap, ownAtas } = await import("../src/lib/exec");
+  // a route that sends SOL to a stranger is refused before signing (and nothing is sent)
+  let refused = "";
+  await fastSwap(kp, "So11111111111111111111111111111111111111112", MINT, 200_000_000n, 1500, {}).catch((e) => (refused = String(e.message)));
+  console.log(refused && !sent.length ? "PASS a transfer to a stranger is never signed" : `FAIL stranger transfer: ${refused} sent ${sent.length}`);
+  // a Jupiter route whose output lands in the wallet's own token account
+  const ata = [...ownAtas(kp.publicKey, MINT)][0];
+  ix = new TransactionInstruction({ programId: new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"), keys: [{ pubkey: kp.publicKey, isSigner: true, isWritable: true }, { pubkey: new PublicKey(ata), isSigner: false, isWritable: true }], data: Buffer.from([1, 2, 3]) });
+  const r = await fastSwap(kp, "So11111111111111111111111111111111111111112", MINT, 200_000_000n, 1500, { maxPriorityLamports: 3_000_000 });
   console.log("path", r.path, "tip", r.tipSol, "priority µlamports/CU", r.priority, "out", String(r.outRaw), "ms", r.ms);
   const tx = sent[0].tx;
   console.log("sent via", [...new Set(sent.map((s) => s.via))].join("+"), "· instructions", tx.message.compiledInstructions.length, "· signed", tx.signatures[0].some((b) => b !== 0));

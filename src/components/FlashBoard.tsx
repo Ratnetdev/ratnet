@@ -38,7 +38,7 @@ export default function FlashBoard() {
         </table>
         <div className="tiny muted mt">Looking at now{v?.live ? ` · ${ago(v.live.at)} ago` : ""}</div>
         <table className="tbl">
-          <thead><tr><th>Coin</th><th>Look</th><th>Curve</th><th>Wallets</th><th>{ready ? "P(bond)" : "Score"}</th><th className="hide-m">Why</th></tr></thead>
+          <thead><tr><th>Coin</th><th>Look</th><th>Curve</th><th>Wallets</th><th>{ready ? "P(2x, held)" : "Score"}</th><th className="hide-m">Why</th></tr></thead>
           <tbody>
             {(v?.live?.top || []).slice(0, 10).map((x) => (
               <tr key={`${x.mint}${x.stage}`}>

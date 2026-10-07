@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.1.33 · Live-safe execution and scam walls (Run 5)
+- Signing:
+  - every swap is checked before the key touches it, with every address resolved through the lookup tables;
+  - SOL may only go to a Jito tip account or the wallet's own wSOL account;
+  - top-level token instructions may only sync, open or close the wallet's own accounts (no transfers, approvals or authority changes);
+  - associated accounts may only be created for the wallet;
+  - the swap's output must land in the wallet's own account.
+- Books from the chain: a live buy books the tokens received and the SOL really spent (tip, fees and rent included); a live sell books the SOL really received. Jupiter's quote is only a fallback.
+- A pending record is written before every live swap. While one is unsettled no new buy is made, and the wallet check settles it.
+- Wallet check (live): every balance read tells deposits and withdrawals apart from trades (they move the drawdown baseline, not the P&L). Every 5 minutes the wallet's tokens are compared with the open positions: a position the wallet no longer holds is closed, a wrong amount is corrected, unknown tokens are reported.
+- A failed balance read keeps the last good balance. It used to read as 0, which looked like a -100% wallet and demoted the desk.
+- The wallet key works on the worker only. Vercel ignores DESK_WALLET_SECRET (unless DESK_ON_VERCEL=1). A process without the key never "sells" a live position on paper and never buys while live.
+- FLASH scam walls from the first seconds of trades: share bought in the first 2 seconds, top-3 buyers' share, number of wallets, dev holding. A check that could not be read counts as failed.
+- FLASH's label is now "doubled from the look and still held it at one hour" (it was "bonded within an hour", which rewarded coins that bonded and then dumped below the entry). Its record starts over; the old one is kept.
+- Webhooks:
+  - the X hook accepts twitterapi.io's X-API-Key header or an own X_HOOK_SECRET, no longer a key derived from CRON_SECRET (a forged post could make WIRE buy). Refused calls are counted on /status;
+  - the Telegram bot takes commands only from TELEGRAM_ADMIN_IDS.
+- Trade feed cost: following every hot coin was ~300 trades a second (~5M credits a day). The feed now follows open positions, every launch for its first ~100 seconds, and a launch up to its minute-5 tape only once its curve has ~3% in it. When the day runs ahead of pace, only positions and first seconds. /status shows the feed's credits a day.
+- Track record: the Opened, Entry MC, Exit / now MC, Change, P&L and Held columns sort on click (newest or largest first, click again to reverse).
+- The live feed and alert popups no longer cover the page:
+  - on screens 1880px and wider they dock in the empty margins (live feed right, alerts left);
+  - on smaller screens the live feed starts as the small LIVE dot (remembered), and one compact alert sits at the bottom.
+
 ## v0.1.32 · Hotfix: trade feed from Helius
 - PumpPortal now streams trades only to a funded API key: "'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL", at 0.01 SOL per 10,000 messages (about 1 SOL a day for what RATNET follows). Since that change no trades arrived: stream tapes held only the dev's buy, the desk had no stream prices, and FLASH and CATCH's live tape were blind.
 - New trade feed (lib/heliusfeed.ts) on the Helius plan already paid for:
