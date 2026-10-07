@@ -6,7 +6,8 @@ export const SITE = {
   tagline: "Pretraining the first model raised in the trenches.",
   sub: "From scratch. On nothing but what its rats dig up.",
   // the live domain; NEXT_PUBLIC_SITE_URL overrides it (local dev: set it to http://localhost:3000)
-  url: process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://www.ratnet.network"),
+  // trailing slashes stripped: "https://site/" + "/api/tg/hook" made a // address that redirects, and Telegram refuses redirects
+  url: (process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://www.ratnet.network")).trim().replace(/\/+$/, ""),
   x: "https://x.com/Ratnetdev",
   handle: "@Ratnetdev",
 };

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.29 · CATCH off the curve, King v1.1 (nano rebuilt)
+- 7 Oct, 22:00 to 23:15: the paper desk went from +32% to -19%. Almost all of it was CATCH: 20 real trades, 1 winner, -0.21 SOL. It bought $5K-20K curve coins on its starting score, before its model had earned anything, and those coins dumped 60-80% within seconds (stops filled at -40% to -80%). MOMO and WIRE were flat to positive.
+  - CATCH trades real money only on what it has proven: migrated coins once its model has earned a score band, and curve coins only once its last 30 closed curve trades (ghost and real, after fees) average +5% or better with 30%+ winners. It locks again as soon as they fall below that. The ghost desk keeps following every signal, so the record keeps building. Progress shows on every skipped signal.
+  - CATCH's old record counted every look (one coin, 12 looks, 12 hits) and graded today's model. It is moved aside (rn:ct:rec:v1) and starts over on the v0.1.28 honest grading.
+  - No double buys: one coin can only be entered once at a time ($MEMEBER was bought twice within a second).
+  - CATCH and FLASH buys are labelled as such (they showed as "King undefined undefined").
+- Chain reads:
+  - The desk is never stopped by the daily budget. It must always price and exit what it holds.
+  - The rats' backfill only reads launches at least 20s old. v0.1.28 read the youngest ones while the stream was still storing them, so most launches were paid for twice. Failed reads show their reason on /status. The strike counter of failing reads is never wiped.
+- King v1.1, the nano learner rebuilt (Run 3):
+  - Inputs are standardized, so a 0-1 flag and a log count weigh on the same scale.
+  - Adam with a small rate and a hard cap per step (v1: rate 0.05 x class weight up to 50 x boost 2.5, so one bond could swing the model).
+  - One class weight for every source (live, replays, historian), from the model's own base rate.
+  - Non-finite inputs or steps are refused, shorter inputs are padded, weights are never truncated.
+  - The market-shift boost needs a real shift on the class-weighted loss, lasts 200 lessons and fires at most once a day.
+  - Migration once at worker boot: v1 models kept (rn:nano:v1, rn:nano1:v1), v2 warm-started on the last 4,000 live lessons. The historian walks its window again with the clean labels. The runner model starts over on the same learner.
+  - New calibration and board version v1.1. v0 rules make the calls until v1.1's own lines are calibrated (1,500 lessons with 15 bonds in the last 7 days). v1.0's record stays on the board.
+  - The runner model is trained only under its own lock, on the latest copy (the slow lane and the historian used to overwrite each other's lessons).
+- The site address is trimmed of a trailing slash (NEXT_PUBLIC_SITE_URL ending in "/" broke the Telegram webhook with a // redirect).
+
 ## v0.1.28 · Stream first, fits the 10M plan, clean data
 - Helius ran at ~39 calls a second (~100M a month) on a 10M-a-month plan. Most of it was paid for data the PumpPortal stream already delivers. Now:
   - Launch tapes (minute-1 and minute-5 trades) are built from the stream's own trades for every launch the worker saw from birth: no chain reads. The chain is read only for launches the stream missed, and for the insider check when the desk buys.

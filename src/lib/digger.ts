@@ -5,7 +5,7 @@ import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, l
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
-import { contributions, emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN } from "./nano";
+import { contributions, emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN, NANO_V } from "./nano";
 import { readTape, Tape } from "./tape";
 import { whyOf, type Why } from "./why";
 import { noteCall } from "./receipts";
@@ -24,7 +24,7 @@ import { agentLog } from "./agents";
 import { enqueueLens } from "./lens";
 import { enqueueMind } from "./mind";
 import { addVamp, featOf, loadW, notePickSet, pickedOn, pickLessons, scoreOf, vampWatch, VAMP_MAX, type Cand } from "./picker";
-import { computeCal, loadCal, noteCal, posWeight, v1Verdict, type Cal } from "./kingcal";
+import { KING_V1, computeCal, loadCal, noteCal, posWeight, v1Verdict, type Cal } from "./kingcal";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
@@ -278,6 +278,7 @@ export async function applyNano(ops0: NanoOp[]) {
     return;
   }
   try {
+    await migrateNanoHeld();
     const parked = ((await r.lpop<NanoOp[]>(NANO_PENDING, 2000).catch(() => null)) || []) as NanoOp[];
     const ops = [...(Array.isArray(parked) ? parked : []), ...ops0];
     const [m, m1] = await Promise.all([loadModel(), loadModel(K.nano1)]);
@@ -308,6 +309,52 @@ export async function applyNano(ops0: NanoOp[]) {
   } finally {
     await release(l);
   }
+}
+
+/**
+ * King v1.1 (v0.1.29): move nano and nano-1 to the v2 learner, once. The v1 models are kept (rn:nano:v1, rn:nano1:v1).
+ * The new ones start warm: the last 4,000 live lessons are learned once in order (counted) and twice more shuffled
+ * (replays), so they are useful from the first call instead of starting at zero. The historian then replays its
+ * window again with the v0.1.28 clean labels, and the runner model starts over on the same learner.
+ */
+export async function migrateNano() {
+  const l = await acquire("rn:lock:nano", 60_000);
+  if (!l) return { nano: "busy" };
+  try {
+    return await migrateNanoHeld();
+  } finally {
+    await release(l);
+  }
+}
+async function migrateNanoHeld() {
+  const r = redis();
+  const cur = await r.get<NanoModel>(K.nano);
+  if (cur?.v === NANO_V) return { nano: "v2" };
+  const lessons = (((await r.lrange<Lesson>(REPLAY_KEY, 0, -1).catch(() => [])) || []) as Lesson[]).reverse(); // oldest first
+  const m = emptyModel();
+  const m1 = emptyModel();
+  for (const l of lessons) {
+    if (l.x) learn(m, l.x, l.y === 1);
+    if (l.x1) learn(m1, l.x1, l.y === 1);
+  }
+  for (let e = 0; e < 2; e++) {
+    const sh = lessons.slice().sort(() => Math.random() - 0.5);
+    for (const l of sh) {
+      if (l.x) learn(m, l.x, l.y === 1, undefined, 0.5, true);
+      if (l.x1) learn(m1, l.x1, l.y === 1, undefined, 0.5, true);
+    }
+  }
+  const old1 = await r.get<NanoModel>(K.nano1);
+  const p = r.pipeline();
+  if (cur) p.set("rn:nano:v1", cur);
+  if (old1) p.set("rn:nano1:v1", old1);
+  p.set(K.nano, m);
+  p.set(K.nano1, m1);
+  // the historian walks its window again (clean labels since v0.1.28), the runner model starts over on v2
+  p.del("rn:h:state2", "rn:h:q2", "rn:h:seen", "rn:runner", K.nanoLog);
+  p.lpush(K.deskEv, { agent: "KING", at: Date.now(), text: `King v1.1: nano rebuilt (standardized inputs, small capped steps, one class weight). warm start on ${lessons.length} recent lessons, ${m.pos} bonds. v0 rules call until v1.1's own lines are calibrated`, tone: "info" });
+  await p.exec();
+  return { nano: "migrated", lessons: lessons.length };
 }
 
 export async function loadModel(key: string = K.nano): Promise<NanoModel> {
@@ -442,7 +489,13 @@ async function digNew(model: NanoModel) {
   if (!raw.length) return { dug: 0 };
   if (cursor && raw.length >= 1000) await r.hincrby(K.stat, "gaps", 1);
 
-  const oldestFirst = [...raw].reverse();
+  // only launches at least 20s old: the stream delivers and stores a launch within a few seconds, and the backfill is
+  // for the ones it missed. v0.1.28 read the youngest ones while the stream was still storing them, so most launches
+  // were paid for twice (part of the ~18 calls a second on the rats' lane)
+  const all = [...raw].reverse();
+  const young = all.findIndex((x) => !x.blockTime || Date.now() - x.blockTime * 1000 < 20_000);
+  const oldestFirst = young < 0 ? all : all.slice(0, young);
+  if (!oldestFirst.length) return { dug: 0, waiting: all.length };
   // the stream normally delivers every launch within a second: the chain read only fills what it missed, so a
   // launch the stream already brought costs nothing here (no parse, no RPC) and the backfill keeps up easily
   const seen = await r.mget<(number | null)[]>(...oldestFirst.map((x) => SEEN_SIG(x.signature))).catch(() => [] as (number | null)[]);
@@ -464,7 +517,8 @@ async function digNew(model: NanoModel) {
         x.signature,
         await conn().getParsedTransaction(x.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" })
       );
-    } catch {
+    } catch (e) {
+      LAST_PARSE_ERR = safeErr(e);
       return FAIL as any;
     }
   });
@@ -476,12 +530,13 @@ async function digNew(model: NanoModel) {
     const at = oldestFirst.indexOf(ok[failIdx]);
     cursor2 = at > 0 ? oldestFirst[at - 1].signature : cursor || "";
   }
-  if (PARSE_FAILS.size > 500) PARSE_FAILS.clear();
+  // forget the oldest strikes only (a full clear used to restart the 3 strikes of every failing tx, an endless retry)
+  if (PARSE_FAILS.size > 500) for (const k of Array.from(PARSE_FAILS.keys()).slice(0, 250)) PARSE_FAILS.delete(k);
   const setCursor = () => (cursor2 ? r.set(K.cursor, cursor2) : Promise.resolve(null));
   const launches = txs.filter((x): x is NonNullable<ReturnType<typeof parseCreateTx>> => !!x && x !== FAIL);
   if (!launches.length) {
     await setCursor();
-    return { dug: 0, scanned: batch.length, ...(failIdx >= 0 ? { retry: txs.filter((t) => t === FAIL).length } : {}) };
+    return { dug: 0, scanned: batch.length, ...(failIdx >= 0 ? { retry: txs.filter((t) => t === FAIL).length, why: LAST_PARSE_ERR.slice(0, 60) } : {}) };
   }
   const res = await ingest(model, launches, "chain");
   // marked seen only once the launch is stored: a failed ingest is dug again on the next pass
@@ -493,8 +548,9 @@ async function digNew(model: NanoModel) {
   lagP.ltrim(LAT("intake_rpc"), 0, 199);
   await lagP.exec().catch(() => {});
   await setCursor();
-  return { ...res, scanned: batch.length, behind: raw.length - batch.length, ...(failIdx >= 0 ? { retry: txs.filter((t) => t === FAIL).length } : {}) };
+  return { ...res, scanned: batch.length, behind: raw.length - batch.length, ...(failIdx >= 0 ? { retry: txs.filter((t) => t === FAIL).length, why: LAST_PARSE_ERR.slice(0, 60) } : {}) };
 }
+let LAST_PARSE_ERR = "";
 const PARSE_FAILS = new Map<string, number>();
 
 /** Launches straight from the PumpPortal stream (worker): dug about a second after they are born, no chain read. */
@@ -1066,8 +1122,8 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   const bigPost = !!rec.wire && ((rec.wire.f ?? 0) >= 100_000 || rec.wire.how === "posted the CA");
   const kv = v1
     ? farm || !(bigPost && sc.verdict === "BOND" && v1 !== "BOND")
-      ? { score: nano!.score, verdict: (farm ? "DUST" : v1) as Verdict, version: "v1.0" }
-      : { score: sc.score, verdict: "BOND" as Verdict, version: "v1.0" }
+      ? { score: nano!.score, verdict: (farm ? "DUST" : v1) as Verdict, version: KING_V1 }
+      : { score: sc.score, verdict: "BOND" as Verdict, version: KING_V1 }
     : { score: sc.score, verdict: sc.verdict, version: KING_VERSION };
   const counted = c.now - rec.createdAt <= CALL_ON_TIME_MS;
   rec.call = {
@@ -1399,7 +1455,7 @@ async function lessons(model: NanoModel) {
   }
   const shifted = c.model.shiftAt && c.model.shiftAt >= c.now - 15_000;
   if (shifted) {
-    const ev = { agent: "COACH", at: c.now, text: `market shift: nano's recent loss ${(c.model.lossFast ?? 0).toFixed(3)} vs ${c.model.loss.toFixed(3)} long-run. learning ${2.5}x faster for the next 400 lessons`, tone: "info" };
+    const ev = { agent: "COACH", at: c.now, text: `market shift: nano's recent loss ${(c.model.lossFast ?? 0).toFixed(3)} vs ${(c.model.lossW ?? c.model.loss).toFixed(3)} long-run. learning 2x faster for the next 200 lessons`, tone: "info" };
     c.p.lpush(K.deskEv, ev);
     c.feed.push({ kind: "resolve", rat: "COACH", mint: "", symbol: "", name: "", at: c.now, text: ev.text });
   }

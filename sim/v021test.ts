@@ -12,7 +12,7 @@ let parsed = 0;
 (globalThis as any).__rnConn = {
   getMultipleAccountsInfo: async (keys: any[]) => keys.map(() => null),
   getAccountInfo: async () => null,
-  getSignaturesForAddress: async () => SIGS.map((s) => ({ signature: s, err: null, blockTime: Math.floor(NOW / 1000) - 3 })),
+  getSignaturesForAddress: async () => SIGS.map((s) => ({ signature: s, err: null, blockTime: Math.floor(NOW / 1000) - 60 })),
   getParsedTransaction: async () => {
     parsed++;
     return null;

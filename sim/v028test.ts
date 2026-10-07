@@ -53,7 +53,7 @@ const ok = (c: boolean, m: string) => {
   sol.seedDayUsed(day, 100_000);
   ok(!sol.laneOpen(1) && sol.laneOpen(0), "at the full day's budget only the desk reads");
   sol.seedDayUsed(day, 116_000);
-  ok(!sol.laneOpen(0), "past 115% even the desk stops");
+  ok(sol.laneOpen(0), "past 115% the desk still reads (v0.1.29: the desk is never budget-blocked)");
   sol.seedDayUsed("2000-01-01", 999_999);
   ok(sol.budgetState().used === 116_000, "a seed from another day is ignored");
   let threw = "";

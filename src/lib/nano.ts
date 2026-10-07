@@ -50,10 +50,32 @@ export const NANO_FEATURES = [
 ] as const;
 
 export const NANO_MIN = 200; // labelled samples before nano starts making counted calls
-const LR = 0.05;
+
+// v2 learner (v0.1.29, King v1.1). What changed and why:
+//  - inputs standardized (running mean and spread per input): a 0-1 flag and a log count now move the score on the
+//    same scale; before, a few large inputs decided almost everything
+//  - Adam with a small rate and a hard cap per step: v1 took steps of rate 0.05 x class weight up to 50 x boost 2.5,
+//    so a single bond could swing the whole model
+//  - one class weight for every source (live, replay, historian), from the model's own base rate (capped at 30)
+//  - non-finite inputs and steps are refused; a shorter input is padded, weights are never truncated
+//  - the market-shift boost needs a real shift on the class-weighted loss, lasts 200 lessons and fires at most once a
+//    day (v1 sat in boost mode almost permanently)
+export const NANO_V = 2;
+const LR2 = 0.01;
+const STEP_CAP = 0.05;
+const GRAD_CAP = 5;
+const Z_CAP = 5;
+const PW_CAP = 30;
 const L2 = 1e-4;
-const POS_WEIGHT = 8; // bonds are rare; weigh them up so the model does not just say "dies"
 const EMA = 0.01;
+const B1 = 0.9;
+const B2 = 0.999;
+const SLOW = 0.005;
+const FAST = 0.05;
+const SHIFT_RATIO = 1.3;
+const BOOST_LESSONS = 200;
+const BOOST_X = 2;
+const SHIFT_GAP_MS = 24 * 3600_000;
 
 export type NanoModel = {
   w: number[];
@@ -62,17 +84,18 @@ export type NanoModel = {
   loss: number; // EMA of log loss
   acc: number; // EMA of accuracy at 0.5
   updatedAt: number;
-  lossFast?: number; // fast EMA of log loss: when it runs well above the slow one, the market has shifted
-  boost?: number; // lessons left at a raised learning rate after a shift
+  lossFast?: number; // fast EMA of the class-weighted loss
+  lossW?: number; // slow EMA of the class-weighted loss
+  boost?: number; // lessons left at a raised rate after a shift
   shifts?: number;
   shiftAt?: number;
+  v?: number; // learner version (2 = standardized inputs + Adam)
+  mu?: number[]; // running mean per input
+  va?: number[]; // running variance per input
+  am?: number[]; // Adam first moment
+  av?: number[]; // Adam second moment
+  t?: number; // Adam steps
 };
-
-// Faster learning when the market moves (drift detection, as in ADWIN/Page-Hinkley but cheap):
-const FAST = 0.05;
-const SHIFT_RATIO = 1.3;
-const BOOST_LESSONS = 400;
-const BOOST_LR = 2.5;
 
 export type FeatureInput = {
   curve5: number;
@@ -99,8 +122,32 @@ export type FeatureInput = {
   pulseX?: number;
 };
 
-export function emptyModel(): NanoModel {
-  return { w: NANO_FEATURES.map(() => 0), n: 0, pos: 0, loss: Math.log(2), acc: 0.5, updatedAt: 0 };
+export function emptyModel(d: number = NANO_FEATURES.length): NanoModel {
+  const z = () => Array.from({ length: d }, () => 0);
+  return { w: z(), n: 0, pos: 0, loss: Math.log(2), acc: 0.5, updatedAt: 0, v: NANO_V, mu: z(), va: Array.from({ length: d }, () => 1), am: z(), av: z(), t: 0, lossW: Math.log(2), lossFast: Math.log(2), boost: 0, shifts: 0 };
+}
+
+const fin = (v: number) => (Number.isFinite(v) ? v : 0);
+/** Make the model's arrays at least d long (new inputs start neutral); never shortens anything. */
+function fit(m: NanoModel, d: number) {
+  const grow = (a: number[] | undefined, fill: number) => {
+    const out = Array.isArray(a) ? a.slice() : [];
+    while (out.length < d) out.push(fill);
+    return out;
+  };
+  m.w = grow(m.w, 0);
+  m.mu = grow(m.mu, 0);
+  m.va = grow(m.va, 1);
+  m.am = grow(m.am, 0);
+  m.av = grow(m.av, 0);
+}
+/** Standardized input i (the bias stays 1). */
+function zOf(m: NanoModel, x: number[], i: number) {
+  if (i === 0) return 1;
+  const v = fin(x[i] ?? 0);
+  if (m.v !== NANO_V) return v;
+  const z = (v - (m.mu?.[i] ?? 0)) / Math.sqrt((m.va?.[i] ?? 1) + 1e-6);
+  return Math.max(-Z_CAP, Math.min(Z_CAP, z));
 }
 
 export function features(i: FeatureInput): number[] {
@@ -156,7 +203,8 @@ const sigmoid = (z: number) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))
 
 export function predict(m: NanoModel, x: number[]) {
   let z = 0;
-  for (let i = 0; i < x.length; i++) z += (m.w[i] || 0) * x[i];
+  const d = Math.max(x.length, m.w.length);
+  for (let i = 0; i < d; i++) z += fin(m.w[i] || 0) * zOf(m, x, i);
   return sigmoid(z);
 }
 
@@ -164,24 +212,60 @@ export function nanoScore(m: NanoModel, x: number[]) {
   return Math.round(predict(m, x) * 100);
 }
 
-/** One SGD step on one resolved launch. Mutates and returns the model. */
-export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = POS_WEIGHT, sampleWeight = 1, replay = false): NanoModel {
-  if (m.w.length !== x.length) m.w = x.map((_, i) => m.w[i] || 0);
+/**
+ * One lesson. `posWeight` is kept in the signature for old callers and ignored: v2 uses one class weight for every
+ * source. A model from the v1 learner is started over (its weights were on raw inputs and do not carry over); the
+ * nano models are migrated once at boot with a warm start (lib/digger.ts migrateNano).
+ */
+export function learn(m: NanoModel, x0: number[], bonded: boolean, _posWeight?: number, sampleWeight = 1, replay = false): NanoModel {
+  if (m.v !== NANO_V) Object.assign(m, emptyModel(Math.max(x0.length, m.w?.length || 0)));
+  const x = x0.map(fin);
+  const d = Math.max(x.length, m.w.length);
+  fit(m, d);
   const p = predict(m, x);
   const y = bonded ? 1 : 0;
-  const wt = (bonded ? posWeight : 1) * sampleWeight;
-  const g = (p - y) * wt;
-  for (let i = 0; i < x.length; i++) {
-    const reg = i === 0 ? 0 : L2 * m.w[i];
-    m.w[i] = m.w[i] - LR * (m.boost && m.boost > 0 ? BOOST_LR : 1) * (g * x[i] + reg);
+  const pi = (m.pos + 1) / (m.n + 2);
+  const pw = bonded ? Math.max(1, Math.min(PW_CAP, (1 - pi) / pi)) : 1;
+  const wt = pw * Math.max(0, fin(sampleWeight));
+  // running input stats (new lessons only): fast at first, then a slow 0.1% drift so the scale follows the market
+  if (!replay) {
+    const a = Math.max(1 / (m.n + 2), 0.001);
+    for (let i = 1; i < d; i++) {
+      const dlt = x[i] - m.mu![i];
+      m.mu![i] += a * dlt;
+      m.va![i] = Math.max(1e-4, (1 - a) * (m.va![i] + a * dlt * dlt));
+    }
   }
+  const lr = LR2 * (m.boost && m.boost > 0 ? BOOST_X : 1);
+  const t = (m.t || 0) + 1;
+  const nw = m.w.slice();
+  const nm = m.am!.slice();
+  const nv = m.av!.slice();
+  for (let i = 0; i < d; i++) {
+    const zi = zOf(m, x, i);
+    let g = (p - y) * wt * zi + (i === 0 ? 0 : L2 * m.w[i]);
+    g = Math.max(-GRAD_CAP, Math.min(GRAD_CAP, g));
+    nm[i] = B1 * nm[i] + (1 - B1) * g;
+    nv[i] = B2 * nv[i] + (1 - B2) * g * g;
+    const mh = nm[i] / (1 - Math.pow(B1, t));
+    const vh = nv[i] / (1 - Math.pow(B2, t));
+    const step = Math.max(-STEP_CAP, Math.min(STEP_CAP, (lr * mh) / (Math.sqrt(vh) + 1e-8)));
+    nw[i] = m.w[i] - step;
+  }
+  if (!nw.every(Number.isFinite) || !nm.every(Number.isFinite) || !nv.every(Number.isFinite)) return m; // refuse a broken step
+  m.w = nw;
+  m.am = nm;
+  m.av = nv;
+  m.t = t;
   if (replay) return m; // replays sharpen the weights; they are not new lessons
   const eps = 1e-7;
   const ll = -(y * Math.log(p + eps) + (1 - y) * Math.log(1 - p + eps));
   m.loss = m.loss * (1 - EMA) + ll * EMA;
-  m.lossFast = (m.lossFast ?? m.loss) * (1 - FAST) + ll * FAST;
+  const llw = Math.min(10, ll * pw);
+  m.lossW = (m.lossW ?? llw) * (1 - SLOW) + llw * SLOW;
+  m.lossFast = (m.lossFast ?? llw) * (1 - FAST) + llw * FAST;
   if (m.boost && m.boost > 0) m.boost--;
-  else if (m.n > 500 && m.lossFast > m.loss * SHIFT_RATIO) {
+  else if (m.n > 1000 && m.lossFast > (m.lossW ?? m.lossFast) * SHIFT_RATIO && Date.now() - (m.shiftAt || 0) > SHIFT_GAP_MS) {
     m.boost = BOOST_LESSONS;
     m.shifts = (m.shifts || 0) + 1;
     m.shiftAt = Date.now();
@@ -196,7 +280,7 @@ export function learn(m: NanoModel, x: number[], bonded: boolean, posWeight = PO
 /** What pushed one nano score: each feature's pull on the logit (w x), strongest first. For the scorecard. */
 export function contributions(m: NanoModel, x: number[], n = 8): [string, number][] {
   return x
-    .map((v, i) => [NANO_FEATURES[i]?.label || `f${i}`, Math.round((m.w[i] || 0) * v * 100) / 100] as [string, number])
+    .map((_, i) => [NANO_FEATURES[i]?.label || `f${i}`, Math.round((m.w[i] || 0) * zOf(m, x, i) * 100) / 100] as [string, number])
     .filter(([l, c], i) => i > 0 && c !== 0)
     .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
     .slice(0, n);

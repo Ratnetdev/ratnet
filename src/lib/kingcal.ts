@@ -5,8 +5,11 @@
 // at least twice the base rate. Recomputed every 10 minutes, public on /lab, the reasoning in the Strategy tab.
 import { redis } from "./redis";
 
-const DAY = (t: number) => `rn:kcal:${new Date(t).toISOString().slice(0, 10)}`;
-const CAL = "rn:kcal:now";
+// v1.1 (v0.1.29): the rebuilt nano (standardized inputs, Adam) gets its own calibration from scratch. v1.0's lines were
+// drawn on the old model's scores and mean nothing for the new one; v1.0's record stays on the board under its name.
+export const KING_V1 = "v1.1";
+const DAY = (t: number) => `rn:kcal2:${new Date(t).toISOString().slice(0, 10)}`;
+const CAL = "rn:kcal2:now";
 const MIN_N = 1500; // labelled lessons in the window before v1 takes over
 const MIN_POS = 15; // bonds among them
 const MIN_ABOVE = 30; // lessons at or above a cutoff before it can be chosen

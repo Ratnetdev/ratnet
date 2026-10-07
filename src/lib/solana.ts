@@ -102,8 +102,7 @@ function pump() {
   if (queues.some((x) => x.length) && !timer) timer = setTimeout(pump, sent.length ? Math.max(15, 1100 - (Date.now() - sent[0][0]) + 2) : 20);
 }
 // The daily credit budget (RPC_CALLS_PER_DAY, default 300K: the 10M-a-month plan spread over 30 days). Spending is
-// paced through the UTC day: the historian stops first, then the agents, then the rats; the desk may go 15% over so
-// it can always price and exit. Before v0.1.28 nothing capped the total and the plan's month was gone in 3 days.
+// paced through the UTC day: the historian stops first, then the agents, then the rats; the desk is never stopped. Before v0.1.28 nothing capped the total and the plan's month was gone in 3 days.
 export const DAY_BUDGET = Math.max(0, Number(process.env.RPC_CALLS_PER_DAY ?? 300_000));
 const budget = { day: "", used: 0 };
 const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
@@ -121,7 +120,9 @@ export class BudgetError extends Error {}
 function budgetBlocks(l: number) {
   if (!DAY_BUDGET) return false;
   const b = budgetState();
-  const lim = [DAY_BUDGET * 1.15, b.pace * 1.05, b.pace, b.pace * 0.9][Math.max(0, Math.min(3, l))];
+  // the desk is never locked out: it must always be able to price and exit what it holds (v0.1.28 stopped it at 115%
+  // of the day, so late in a heavy day it could not see its own positions). It is counted, and it is the smallest lane.
+  const lim = [Infinity, b.pace * 1.05, b.pace, b.pace * 0.9][Math.max(0, Math.min(3, l))];
   return b.used >= lim;
 }
 /** Whether a lane may still read the chain today (loops check before a pass instead of failing call by call). */

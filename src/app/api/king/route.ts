@@ -1,3 +1,4 @@
+import { KING_V1 } from "@/lib/kingcal";
 import { getCalls, getGrads, getResolvedCalls, getStats } from "@/lib/stats";
 import { loadModel } from "@/lib/digger";
 import { WEIGHTS, VERDICTS, KING_VERSION } from "@/lib/king";
@@ -29,7 +30,7 @@ export async function GET(req: Request) {
         stats,
         weights: WEIGHTS,
         verdicts: VERDICTS,
-        version: cal?.ready ? "v1.0" : KING_VERSION,
+        version: cal?.ready ? KING_V1 : KING_VERSION,
         // King v1 (nano leads, lines calibrated on the last 7 days): public status only, the lines are admin only
         v1: cal ? { ready: cal.ready, lessons: cal.n, bonds: cal.pos, base: cal.base, at: cal.at } : null,
         nano: { n: model.n, pos: model.pos, min: NANO_MIN, loss: model.loss },

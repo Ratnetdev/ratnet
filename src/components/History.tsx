@@ -67,7 +67,7 @@ export default function History() {
       <div className="panel">
         <div className="ph">
           <span><b>season</b> · <Info k="season">the market right now</Info></span>
-          <span className="tiny muted">{dr?.boost ? <span className="green">shift: learning 2.5x</span> : `${dr?.shifts ?? 0} shifts seen`}</span>
+          <span className="tiny muted">{dr?.boost ? <span className="green">shift: learning 2x</span> : `${dr?.shifts ?? 0} shifts seen`}</span>
         </div>
         <div className="mkt" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
           <div><span className="k"><Info k="sol24">SOL 24h</Info></span><b style={{ color: (se?.sol24 ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{sg(se?.sol24)}</b></div>

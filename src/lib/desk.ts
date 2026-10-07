@@ -10,6 +10,7 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { memo } from "./memo";
 import { shield } from "./shield";
 import { labBest, labStep, notePath, tierOf, type ExitSet, type LabBest, type Tier } from "./exitlab";
 import { flashSignal } from "./flash";
@@ -1498,6 +1499,18 @@ type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
+  // never the same coin twice: two signals for one coin in the same beat (CATCH and the King, or a repeat signal) used
+  // to buy it twice within a second ($MEMEBER on 7 Oct, both stopped out)
+  if (ENTERING.has(rec.mint) || (await loadPositions(K.deskPos))[rec.mint]) return;
+  ENTERING.add(rec.mint);
+  try {
+    await enterInner(b, state, rec, px, real, eqValue, walletSol, kp, cfg, how, xm, r, coin);
+  } finally {
+    ENTERING.delete(rec.mint);
+  }
+}
+const ENTERING = new Set<string>();
+async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null, r: ReturnType<typeof redis>, coin: { mint: string; symbol: string }) {
   enqueueLens(r, rec.mint, "buy");
   // RISK: at the bag cap, the quietest house-money bag makes room (cash and attention go to the new signal)
   const held = Object.values(await loadPositions(K.deskPos));
@@ -1608,7 +1621,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     state.cash -= sol;
   }
   const now = Date.now();
-  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
+  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
@@ -1720,6 +1733,7 @@ async function catchEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg
   } catch {}
   const sol = (await solUsdCached()) || 150;
   const mcNow = q.px * SUPPLY * sol;
+  const curveRec = q.grad ? { n: 0, avg: 0, win: 0, earned: false } : await catchStageRecord("curve");
   const checks = [
     { rule: "catch_signal", ok: true, v: `${g.by === "model" ? `P ${Math.round(g.p * 100)}%` : `score ${g.prior}`}: ${g.why.slice(0, 3).join(", ")}` },
     { rule: "fresh_signal", ok: now - g.at < 90_000, v: `${Math.round((now - g.at) / 1000)}s old` },
@@ -1730,6 +1744,11 @@ async function catchEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg
     { rule: "liquidity_ok", ok: q.grad ? q.real >= (c.catchMinPoolSol ?? 30) : q.real >= 5, v: q.grad ? `${Math.round(q.real)} SOL in the pool` : `${q.real.toFixed(1)} SOL in the curve` },
     { rule: "open_slots", ok: open < (c.catchMaxOpen ?? 3) && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${c.catchMaxOpen ?? 3} CATCH slots` },
     { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
+    // v0.1.29: real money only on what CATCH has proven. On 7 Oct it bought $5K-20K curve coins on its starting score:
+    // 20 real trades, 1 winner, most stopped out at -20% to -80% within seconds (rugs move faster than any stop). The
+    // ghost desk still follows these, so the record keeps building; the real desk joins once the model earns a band.
+    { rule: "catch_earned", ok: g.by === "model", v: g.by === "model" ? `model band, P ${Math.round(g.p * 100)}%` : "starting score only, the model has not earned a band yet" },
+    { rule: "migrated_only", ok: !!q.grad || curveRec.earned, v: q.grad ? "migrated" : curveRec.earned ? `curve trades earned it: last ${curveRec.n} averaged ${curveRec.avg}%, ${curveRec.win}% winners` : `on the curve ($${Math.round(mcNow / 1000)}K): locked until CATCH's last ${CURVE_UNLOCK.n} curve trades average +${CURVE_UNLOCK.avg}% (now ${curveRec.n} trades, ${curveRec.avg}%, ${curveRec.win}% winners)` },
   ];
   const fails = checks.filter((x) => !x.ok);
   const fail = fails[0];
@@ -1738,7 +1757,7 @@ async function catchEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg
   const dk = DAY_KEY(now);
   await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
   await r.hincrby(dk, "seen", 1);
-  const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule)) && !posMap[m];
+  const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule) || x.rule === "catch_earned" || x.rule === "migrated_only") && !posMap[m];
   if (fail && !deskBlock) {
     log(b, "VET", `skipped CATCH's $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
     if (fail.rule !== "fresh_signal") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
@@ -1895,6 +1914,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   log(b, "RISK", `${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, pnl >= 0 ? "win" : "loss", coin);
   if (p.tokens <= 1e-9) {
     p.tokens = 0;
+    await noteStageResult(p).catch(() => {});
     // keep the whole trade for the public track record: chart, the call behind it, peak while held
     const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
     const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
@@ -1931,7 +1951,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const tokens = (sol * (1 - FEE)) / fillPx;
   const now = Date.now();
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
-  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}`;
+  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}`;
   (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];
@@ -1958,6 +1978,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   log(b, "RISK", `ghost: ${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, "info", coin);
   if (p.tokens > 1e-9) return false;
   p.tokens = 0;
+  await noteStageResult(p).catch(() => {});
   const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
   const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
   await redis().lpush(GHOST_TRIPS, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: await withLens(p.ctx, p.mint) } satisfies TripMeta);
@@ -2089,6 +2110,27 @@ const TRIPS_KEY = "rn:desk:trips"; // closed trades with their chart and context
 // and exits. Ghost trades never touch the balance, the exam or the track record; COACH, FILM and the priors learn
 // from them, so the desk keeps learning on its worst and busiest days.
 export const GHOST_POS = "rn:ghost:pos";
+// CATCH on the curve: real money only once its own closed trades there (ghost and real, after fees and slippage)
+// prove it. Every closed CATCH trade adds its result to the list for its stage; the curve stage unlocks at 30+ trades
+// averaging +5% or better with 30%+ winners, and locks again the moment the last 30 fall below that.
+const STAGE_RES = (stage: "curve" | "pool") => `rn:ct:res:${stage}`;
+async function noteStageResult(p: Pos) {
+  if (p.how !== "catch" || !(p.costSol > 0)) return;
+  const stage = p.ctx?.curve != null && !p.gradSeen ? "curve" : "pool";
+  const r = redis();
+  await r.lpush(STAGE_RES(stage), Math.round(((p.soldSol / p.costSol) - 1) * 1000) / 10);
+  await r.ltrim(STAGE_RES(stage), 0, 59);
+}
+export const CURVE_UNLOCK = { n: 30, avg: 5, win: 0.3 };
+export async function catchStageRecord(stage: "curve" | "pool") {
+  return memo(`ct:stage:${stage}`, 60_000, async () => {
+    const xs = ((await redis().lrange<number>(STAGE_RES(stage), 0, 29).catch(() => [])) || []).map(Number).filter(Number.isFinite);
+    const n = xs.length;
+    const avg = n ? xs.reduce((a, x) => a + x, 0) / n : 0;
+    const win = n ? xs.filter((x) => x > 0).length / n : 0;
+    return { n, avg: Math.round(avg * 10) / 10, win: Math.round(win * 100), earned: n >= CURVE_UNLOCK.n && avg >= CURVE_UNLOCK.avg && win >= CURVE_UNLOCK.win };
+  });
+}
 const GHOST_TRADES = "rn:ghost:trades";
 const GHOST_TRIPS = "rn:ghost:trips";
 const GHOST_MAX = 10;

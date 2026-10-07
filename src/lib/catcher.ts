@@ -260,12 +260,31 @@ function cutoff(rec: Record<string, number>, minHitAbs: number, minN = 25) {
   return null;
 }
 
+/**
+ * v0.1.29: the record from before v0.1.28 counted every look (one coin looked at 12 times as it ran was 12 hits) and
+ * graded today's model instead of the score given at the time. That inflated record is what let CATCH trade. It is
+ * moved aside once (kept as rn:ct:rec:v1 for reference) and the record starts over, honest. The models keep their
+ * weights; only the record that decides whether they may trade starts again.
+ */
+async function resetRecordOnce() {
+  const r = redis();
+  if (await r.get("rn:ct:recv")) return;
+  if (!(await r.set("rn:ct:recv", 2, { nx: true }))) return;
+  const [a, b] = await Promise.all([r.hgetall<Record<string, number>>(REC), r.hgetall<Record<string, number>>(REC2)]);
+  const p = r.pipeline();
+  if (a && Object.keys(a).length) p.hset("rn:ct:rec:v1", a);
+  if (b && Object.keys(b).length) p.hset("rn:ct:rec2:v1", b);
+  p.del(REC, REC2, RECM, RECM2);
+  await p.exec();
+}
+
 /** One pass: find candidates, snapshot them, score, signal the desk. Then follow peaks and learn from labels. */
 export async function catchPass(force = false) {
   const r = redis();
   const now = Date.now();
   if (!force && now - Number((await r.get(AT)) || 0) < 5_000) return { catch: "not due" };
   await r.set(AT, now);
+  await resetRecordOnce();
   const s = await getSettings();
   const c: any = s.desk;
   if (c.catchMode === "off") return { catch: "off" };

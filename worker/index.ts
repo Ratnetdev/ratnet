@@ -5,7 +5,7 @@
 import { runSession } from "../src/lib/session";
 import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
-import { digFast, digSlow, ingestStream, streamComplete } from "../src/lib/digger";
+import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
 import { conn, lane, rpcView } from "../src/lib/solana";
@@ -434,6 +434,8 @@ async function main() {
   await redis().incr("rn:worker:boots").catch(() => 0);
   await redis().set("rn:worker:bootAt", Date.now()).catch(() => null);
   await seedRpcDay().catch(() => null);
+  // King v1.1: nano moves to the v2 learner once (warm start on recent lessons); a no-op afterwards
+  console.log("nano", JSON.stringify(await migrateNano().catch((e) => ({ nano: "error", error: String(e?.message || e) }))));
   console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
   pumpportal();
   setInterval(beat, 20_000);

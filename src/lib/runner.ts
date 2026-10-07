@@ -8,6 +8,7 @@ import { redis } from "./redis";
 import { getMarket } from "./market";
 import { poolUsd, readPools } from "./pool";
 import { emptyModel, learn, NanoModel, predict } from "./nano";
+import { acquire, holds, release, type Lock } from "./lock";
 import { creditMillion } from "./graph";
 
 export const MILESTONES = [25e3, 50e3, 1e5, 2.5e5, 5e5, 1e6, 2.5e6, 5e6, 1e7, 2.5e7, 5e7];
@@ -131,6 +132,40 @@ export function levelOf(usd: number) {
   return i;
 }
 
+export type RunnerOp = { x: number[]; y: boolean; sw?: number };
+const RUN_PENDING = "rn:runner:pending";
+/**
+ * The only way the runner model is trained (v0.1.29): under its lock, on the latest saved copy. Before, the slow lane
+ * and the historian each loaded it, trained their own copy and saved it over the other's lessons.
+ */
+export async function applyRunnerOps(ops0: RunnerOp[]) {
+  if (!ops0.length) return;
+  const r = redis();
+  let l: Lock | null = null;
+  for (let i = 0; i < 20 && !l; i++) {
+    l = await acquire("rn:lock:runner", 15_000);
+    if (!l) await new Promise((res) => setTimeout(res, 100));
+  }
+  if (!l) {
+    await r.rpush(RUN_PENDING, ...ops0).catch(() => {});
+    await r.ltrim(RUN_PENDING, -5000, -1).catch(() => {});
+    return;
+  }
+  try {
+    const parked = ((await r.lpop<RunnerOp[]>(RUN_PENDING, 1000).catch(() => null)) || []) as RunnerOp[];
+    const ops = [...(Array.isArray(parked) ? parked : []), ...ops0];
+    const m = await loadRunner();
+    for (const o of ops) learn(m, o.x, o.y, undefined, o.sw ?? 1);
+    if (!(await holds(l))) {
+      await r.rpush(RUN_PENDING, ...ops).catch(() => {});
+      return;
+    }
+    await r.set(RK.model, m);
+  } finally {
+    await release(l);
+  }
+}
+
 export async function loadRunner(): Promise<NanoModel> {
   const m = await redis().get<NanoModel>(RK.model);
   return m && Array.isArray(m.w) ? m : emptyModel();
@@ -154,7 +189,7 @@ export async function enroll(p: { set: Function; zadd: Function }, run: Run) {
   else p.zadd(RK.pre, { score: run.createdAt, member: run.mint });
 }
 
-type Ctx = { model: NanoModel; dirty: boolean; emp: Record<string, number>; log: string[] };
+type Ctx = { model: NanoModel; dirty: boolean; emp: Record<string, number>; log: string[]; ops: RunnerOp[] };
 
 function step(c: Ctx, p: any, run: Run, usd: number, at: number) {
   if (!(usd > 0)) return;
@@ -194,7 +229,7 @@ function settle(c: Ctx, p: any, run: Run, i: number) {
   const t1 = run.upAt?.[i + 1];
   const up = t1 != null && t1 - t0 <= HORIZON_MS;
   (run.done ||= {})[i] = true;
-  learn(c.model, run.xs[i], up, 1.5);
+  c.ops.push({ x: run.xs[i], y: up });
   c.dirty = true;
   p.hincrby(RK.emp, `n${i}`, 1);
   if (up) p.hincrby(RK.emp, `u${i}`, 1);
@@ -252,7 +287,7 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
     postSet.length && solUsd ? readPools(postSet).catch(() => ({} as Record<string, any>)) : Promise.resolve({} as Record<string, any>),
     postMints.length ? quick(getMarket(postMints), 1500, {} as Record<string, any>) : Promise.resolve({} as Record<string, any>),
   ]);
-  const c: Ctx = { model, dirty: false, emp: emp || {}, log: [] };
+  const c: Ctx = { model, dirty: false, emp: emp || {}, log: [], ops: [] };
   const p = r.pipeline();
   p.zremrangebyscore(RK.pre, 0, now - 2 * 86400_000); // curve coins we never heard back from
   all.forEach((m, i) => {
@@ -283,10 +318,10 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
     if (run.bondedAt && now - run.bondedAt > FOLLOW_MS) return close(c, p, run);
     p.set(RK.run(m), run, { keepTtl: true });
   });
-  if (c.dirty) p.set(RK.model, c.model);
   for (const l of c.log) p.lpush(RK.log, { at: now, text: l });
   if (c.log.length) p.ltrim(RK.log, 0, 99);
   await p.exec();
+  if (c.ops.length) await applyRunnerOps(c.ops);
   return { followed: all.length };
 }
 

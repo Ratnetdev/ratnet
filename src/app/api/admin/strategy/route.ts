@@ -1,3 +1,4 @@
+import { KING_V1 } from "@/lib/kingcal";
 import { getDesk, LEARN_RULES, EXAM } from "@/lib/desk";
 import { getNano } from "@/lib/stats";
 import { feedbackSummary } from "@/lib/feedback";
@@ -44,7 +45,7 @@ export async function GET() {
       profiles,
       speed: { worker: Date.now() - worker < 90_000, rps: Number(process.env.RPC_RPS || 10), exec: execLog, avgMs: execLog.length ? Math.round(execLog.reduce((a, x) => a + x.ms, 0) / execLog.length) : null, fast: execLog.filter((x) => x.path === "fast").length },
       learned: { trailBy: l.trailBy || {}, trailK: l.trailK, reviews: l.reviews, early: l.early, late: l.late, good: l.good, stalkOn: l.stalkOn, stalkArm: l.stalkArm, earlyOn: l.earlyOn, earlyStat: l.earlyStat, arms: l.arms, shadows: l.shadows, reviewing: l.reviewing },
-      king: { version: cal?.ready ? "v1.0" : KING_VERSION, verdicts: VERDICTS, rules: WEIGHTS, cal, honest: (stats as any).honest },
+      king: { version: cal?.ready ? KING_V1 : KING_VERSION, verdicts: VERDICTS, rules: WEIGHTS, cal, honest: (stats as any).honest },
       mind: { on: llmOn(), model: llmModel(), record: mrec, unlock, lessons: book },
       nano: {
         n: nano.model.n,

@@ -28,10 +28,10 @@ import { agentLog } from "./agents";
 import { bondingCurvePda, conn, fetchOffchain, getCurves, limitedFetch, parseCreateTx, pmap, safeErr } from "./solana";
 import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "./tape";
 import { creditMillion, creditResolve, funderOf, GK } from "./graph";
-import { features, learn, nanoScore, NANO_MIN } from "./nano";
+import { features, nanoScore, NANO_MIN } from "./nano";
 import { score, verdictOf } from "./king";
 import { applyNano, loadModel, LABEL_MS, type NanoOp } from "./digger";
-import { features as runFeatures, MILESTONES, MILLION, RK, Run, loadRunner } from "./runner";
+import { applyRunnerOps, features as runFeatures, MILESTONES, MILLION, RK, Run, type RunnerOp } from "./runner";
 import { ensureSolHistory, RG, regimeAt, seasonNow } from "./regime";
 import { getSettings } from "./settings";
 import { curveMcSol, learnHistory, peakIn } from "./catcher";
@@ -309,9 +309,9 @@ async function historianInner(budgetMs: number) {
     const model = await loadModel();
     const model1 = await loadModel(K.nano1);
     const nanoOps: NanoOp[] = [];
-    const runner = await loadRunner();
     let dirty = false;
     let runDirty = false;
+    const runnerOps: RunnerOp[] = [];
     const half = Math.max(1, cfg.halfLife || 21);
 
     while (st.phase === "scan" && Date.now() - t0 < budgetMs) {
@@ -529,7 +529,7 @@ async function historianInner(budgetMs: number) {
               // teaches nothing (before v0.1.28 it was an instant "yes", and the ladder looked steeper than it is)
               if (first[i + 1] != null && first[i + 1] === first[i]) continue;
               const up = first[i + 1] != null && first[i + 1] - first[i] <= 6 * 3600_000;
-              learn(runner, runFeatures(run, i, first[i]), up, 1.5, season);
+              runnerOps.push({ x: runFeatures(run, i, first[i]), y: up, sw: season });
               p.hincrby(RK.emp, `n${i}`, 1);
               if (up) p.hincrby(RK.emp, `u${i}`, 1);
               st.runnerLessons++;
@@ -549,7 +549,7 @@ async function historianInner(budgetMs: number) {
     // the historian's lessons go into the live models under the shared lock, on their latest copy (it used to save
     // its own 45-second-old copy over everything the rats had learned meanwhile)
     if (dirty && nanoOps.length) await applyNano(nanoOps.splice(0));
-    if (runDirty) await r.set(RK.model, runner);
+    if (runDirty && runnerOps.length) await applyRunnerOps(runnerOps.splice(0));
     for (const l of log.slice(0, 10)) await r.lpush(HK.log, { at: Date.now(), text: l });
     await r.ltrim(HK.log, 0, 49);
     if (log.length) await r.lpush(K.deskEv, ...log.slice(0, 5).map((text) => ({ agent: "HISTORIAN", at: Date.now(), text, tone: "info" })));
