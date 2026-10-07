@@ -13,6 +13,7 @@ import LensCam from "./LensCam";
 import MindBoard from "./MindBoard";
 import MomoBoard from "./MomoBoard";
 import CatchBoard from "./CatchBoard";
+import FlashBoard from "./FlashBoard";
 import HoundBoard from "./HoundBoard";
 import { TradeIcons } from "./venues";
 import { fullUrl, useAdmin } from "./useAdmin";
@@ -109,6 +110,7 @@ const ROLES: [string, string][] = [
   ["MOMO", "runners pulling volume after migration"],
   ["CATCH", "catches senders before they send"],
   ["SHIELD", "blocks scams, honeypots and drawn lines"],
+  ["FLASH", "reads every launch at 15, 45 and 90 seconds"],
   ["OVERSEER", "explores, proposes improvements"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
@@ -159,7 +161,7 @@ function EquityChart({ pts, start }: { pts: Desk["equity"]; start: number }) {
   );
 }
 
-const SLEEVE_NAME: Record<string, string> = { king: "King calls", early: "Early reads", wire: "Tweet coins", vamp: "Vamps", momo: "MOMO runners", mind: "MIND calls", catch: "CATCH senders" };
+const SLEEVE_NAME: Record<string, string> = { king: "King calls", early: "Early reads", wire: "Tweet coins", vamp: "Vamps", momo: "MOMO runners", mind: "MIND calls", catch: "CATCH senders", flash: "FLASH first seconds" };
 
 export default function DeskBoard() {
   const admin = useAdmin();
@@ -247,6 +249,7 @@ export default function DeskBoard() {
         })}
       </section>
 
+      <FlashBoard />
       <CatchBoard />
       <MomoBoard />
       <MindBoard />

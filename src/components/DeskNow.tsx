@@ -11,7 +11,9 @@ export type DeskNowData = {
   early: { n: number; min: number; on: boolean };
   stalkOn: boolean;
   history: { phase: string; done: number; lessons: number; clock: number | null } | null;
+  speed?: { call: Lat; early: Lat; flash: Lat; chain: Lat; fill: Lat } | null;
 };
+type Lat = { p50: number; n: number } | null;
 
 type Check = { label: string; need: string; now: string; ok: boolean };
 
@@ -99,6 +101,16 @@ export default function DeskNow({ now, live, open, closed, exam }: { now: DeskNo
           );
         })}
       </ol>
+
+      {now?.speed && (now.speed.flash || now.speed.call) ? (
+        <div className="dn-speed tiny">
+          <span className="muted">speed, after a launch is born:</span>
+          {now.speed.flash ? <span>first read <b>{now.speed.flash.p50}s</b></span> : null}
+          {now.speed.early ? <span>minute-1 read <b>{now.speed.early.p50}s</b></span> : null}
+          {now.speed.call ? <span>King call <b>{now.speed.call.p50}s</b></span> : null}
+          {now.speed.fill ? <span>signal to fill <b>{now.speed.fill.p50}s</b></span> : null}
+        </div>
+      ) : null}
 
       <div className="dn-grid">
         <div className="dn-main">

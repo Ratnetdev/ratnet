@@ -261,7 +261,7 @@ function cutoff(rec: Record<string, number>, minHitAbs: number, minN = 25) {
 export async function catchPass(force = false) {
   const r = redis();
   const now = Date.now();
-  if (!force && now - Number((await r.get(AT)) || 0) < 10_000) return { catch: "not due" };
+  if (!force && now - Number((await r.get(AT)) || 0) < 5_000) return { catch: "not due" };
   await r.set(AT, now);
   const s = await getSettings();
   const c: any = s.desk;
@@ -540,7 +540,7 @@ export async function catchSession(ms = 50_000) {
   while (Date.now() - t0 < ms - 3_000) {
     last = await catchPass().catch((e) => ({ catch: "error", error: String(e?.message || e) }));
     passes++;
-    await new Promise((res) => setTimeout(res, 12_000));
+    await new Promise((res) => setTimeout(res, 6_000));
   }
   return { passes, ...(last || {}) };
 }

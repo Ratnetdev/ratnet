@@ -121,24 +121,36 @@ async function holderCheck(mint: string): Promise<ShieldCheck | null> {
   return { rule: "holders_spread", ok: top1 < 12 && top10 < 45, v: `largest holder ${top1.toFixed(1)}%, top 10 ${top10.toFixed(1)}%`, hard: false };
 }
 
-export type ShieldInput = { mint: string; symbol: string; grad: boolean; sol: number; tokensRaw: bigint; tape?: any; buys5?: number; sells5?: number };
+export type ShieldInput = { mint: string; symbol: string; grad: boolean; sol: number; tokensRaw: bigint; tape?: any; buys5?: number; sells5?: number; ageMs?: number };
 
 /** Run every check in parallel (about one second). */
 export async function shield(x: ShieldInput): Promise<ShieldResult> {
   const r = redis();
   const rt = (await r.hget<any>("rn:rt", x.mint).catch(() => null)) as any;
+  // a mint that passed its authority checks once stays clean (authorities can be revoked, never added back), so the
+  // result is cached: a second signal on the same coin skips the chain read
+  const mk = `rn:shield:mint:${x.mint}`;
+  const cachedMint = (await r.get<ShieldCheck[]>(mk).catch(() => null)) as ShieldCheck[] | null;
+  const young = !x.grad && x.ageMs != null && x.ageMs < 3 * 60_000;
   const [mintC, sellC, lineC, holdC] = await Promise.all([
-    mintChecks(x.mint).catch(() => [] as ShieldCheck[]),
+    cachedMint ? Promise.resolve(cachedMint) : mintChecks(x.mint).then(async (c) => {
+      if (c.length && c.every((k) => k.ok) && !c.some((k) => /skipped/.test(k.v))) await r.set(mk, c, { ex: 6 * 3600 }).catch(() => {});
+      return c;
+    }).catch(() => [] as ShieldCheck[]),
     x.grad ? sellCheck(x.mint, x.tokensRaw, x.sol) : Promise.resolve(null), // the pump curve always buys back
     x.grad ? lineCheck(x.mint) : Promise.resolve(null),
-    holderCheck(x.mint).catch(() => null),
+    // on a curve a few minutes old the curve holds nearly everything and a handful of first buyers always look
+    // "concentrated": the holder read says nothing yet and costs a slow chain call, so it waits until minute 3
+    young ? Promise.resolve(null) : holderCheck(x.mint).catch(() => null),
   ]);
   const checks: ShieldCheck[] = [...mintC];
   if (sellC) checks.push(sellC);
   // nobody selling: the live tape (worker) or MOMO's 5-minute counts
   const b = rt && Date.now() - rt.at < 60_000 ? rt.b20 : x.buys5;
   const s = rt && Date.now() - rt.at < 60_000 ? rt.s20 : x.sells5;
-  if (b != null && s != null) checks.push({ rule: "sells_happen", ok: !(b >= 20 && s === 0), v: `${b} buys, ${s} sells`, hard: true });
+  // in a launch's first minutes nobody has sold yet as a rule (everyone is still buying): the honeypot test only
+  // means something once the coin is a few minutes old or migrated
+  if (b != null && s != null && !young) checks.push({ rule: "sells_happen", ok: !(b >= 20 && s === 0), v: `${b} buys, ${s} sells`, hard: true });
   if (lineC) checks.push(lineC);
   if (holdC) checks.push(holdC);
   const t = x.tape;

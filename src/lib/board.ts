@@ -20,7 +20,7 @@ export type Post = { a: string; at: number; s: number; t: string; sym?: string }
 
 // agents that hold a view on a coin, by family (independent sources of evidence)
 export const FAMILY: Record<string, string> = {
-  KING: "model", SCOUT: "model", CATCH: "model",
+  KING: "model", SCOUT: "model", CATCH: "model", FLASH: "model",
   TAPE: "flow", FLOW: "flow", MOMO: "flow",
   GRAPH: "wallets", HOUND: "wallets",
   WIRE: "social", PULSE: "social", BUZZ: "social",

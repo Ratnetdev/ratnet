@@ -12,6 +12,7 @@
 
 import { shield } from "./shield";
 import { labBest, labStep, notePath, tierOf, type ExitSet, type LabBest, type Tier } from "./exitlab";
+import { flashSignal } from "./flash";
 import { catchSignal } from "./catcher";
 import { acquire, release, renew } from "./lock";
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
@@ -82,7 +83,7 @@ export type Pos = {
   nano: number | null;
   live: boolean;
   series: Sample[];
-  how?: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch";
+  how?: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash";
   wire?: { h: string; tid: string; text: string; vamp?: boolean } | null; // the post a tweet coin was born from
   peakAt?: number; // when the price peaked while held (exit profiles)
   tier?: Tier; // market cap tier at entry (exit lab buckets)
@@ -496,6 +497,7 @@ function labDefault(cfg: Cfg, sl: string, _tier: Tier): ExitSet {
   const c: any = cfg;
   if (sl === "momo") return { stop: c.momoSl ?? -20, time: c.momoTimeStop ?? 40, initials: c.momoInitials ?? 40, trailK: 0.6 };
   if (sl === "catch") return { stop: c.catchSl ?? -18, time: c.catchTimeStop ?? 30, initials: c.catchInitials ?? 100, trailK: 0.8 };
+  if (sl === "flash") return { stop: c.flashSl ?? -30, time: c.flashTimeStop ?? 12, initials: c.flashInitials ?? 100, trailK: 1 };
   return { stop: cfg.sl, time: cfg.timeStop, initials: cfg.initialsAt, trailK: 1 };
 }
 
@@ -752,7 +754,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       const ghosts = Object.values(((await r.hgetall<Record<string, Pos>>(GHOST_POS)) || {}) as Record<string, Pos>);
       // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
-      const pxList = Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrc]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]));
+      const pxList = Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrcf]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]));
       // positions first: if the RPC is busy or down, open positions still get a price (DexScreener) and their exits
       // keep working; everything else waits for the next beat
       const px: Record<string, Px> = await priceOf(pxList).catch(async (e) => {
@@ -812,10 +814,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         // MOMO coins move fast both ways: tighter starting exits until their own record says otherwise
         const mo = sl === "momo";
         const ca = sl === "catch"; // CATCH: senders get room to run, but a fake start is cut fast
+        const fl = sl === "flash"; // FLASH: in at seconds old, wide stop (the first minutes swing hard), short clock
         const c2: any = cfg;
-        const initialsAt = lb?.initials ?? pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 100 : cfg.initialsAt);
-        const timeStop = lb?.time ?? pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : cfg.timeStop);
-        const stopAt = lb?.stop ?? (mo ? c2.momoSl ?? -20 : ca ? c2.catchSl ?? -18 : cfg.sl);
+        const initialsAt = lb?.initials ?? pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 100 : fl ? c2.flashInitials ?? 100 : cfg.initialsAt);
+        const timeStop = lb?.time ?? pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : fl ? c2.flashTimeStop ?? 12 : cfg.timeStop);
+        const stopAt = lb?.stop ?? (mo ? c2.momoSl ?? -20 : ca ? c2.catchSl ?? -18 : fl ? c2.flashSl ?? -30 : cfg.sl);
         const trailK = lb ? lb.trailK * (learnS.trailBy?.[sl] ?? 1) : learnS.trailBy?.[sl] ?? (mo ? 0.6 : ca ? 0.8 : learnS.trailK);
         rs.push([now, q.px, q.real]);
         while (rs.length && now - rs[0][0] > 60_000) rs.shift();
@@ -989,7 +992,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const mindSig = q0.startsWith("m:");
           const momoSig = q0.startsWith("r:");
           const catchSig = q0.startsWith("c:");
-          const m = wireSig || mindSig || momoSig || catchSig ? q0.slice(2) : q0;
+          const flashSig = q0.startsWith("f:");
+          const m = wireSig || mindSig || momoSig || catchSig || flashSig ? q0.slice(2) : q0;
+          if (flashSig) {
+            if (px[m]) await flashEntry(b, state, m, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `FLASH signal: ${safeErr(e)}`, "bad"));
+            continue;
+          }
           if (catchSig) {
             if (px[m]) await catchEntry(b, state, m, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `CATCH signal: ${safeErr(e)}`, "bad"));
             continue;
@@ -1310,7 +1318,7 @@ function fallbackRun(p: Pos): Run {
 
 type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 
-async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch", xm: number | null) {
+async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
   enqueueLens(r, rec.mint, "buy");
@@ -1364,7 +1372,7 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   const cvNow = (await getCurves([rec.mint]).catch(() => ({} as Record<string, CurveView | null>)))[rec.mint];
   const grad = !cvNow || cvNow.complete;
   const mo = how === "momo" ? await momoSignal(rec.mint).catch(() => null) : null;
-  const sh = await shield({ mint: rec.mint, symbol: rec.symbol, grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / px) * 1e6))), tape: rec.tape, buys5: mo?.b5, sells5: mo?.s5 }).catch(() => null);
+  const sh = await shield({ mint: rec.mint, symbol: rec.symbol, grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / px) * 1e6))), tape: rec.tape, buys5: mo?.b5, sells5: mo?.s5, ageMs: Date.now() - rec.createdAt }).catch(() => null);
   if (sh && !sh.ok) {
     const f = (sh.hardFail || sh.softFail)!;
     log(b, "VET", `SHIELD stopped $${rec.symbol} (${how}): ${f.rule.replace(/_/g, " ")} (${f.v})${f.hard ? "" : ". FILM follows it"}`, "bad", coin);
@@ -1564,6 +1572,54 @@ async function catchEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg
   await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "catch", null);
 }
 
+/** FLASH: a launch seconds old whose first-seconds read earned a trade. Few checks (there is little to check yet),
+ *  each one cheap: no chain reads beyond the price the desk already has. */
+async function flashEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null, posMap: Record<string, Pos>) {
+  const r = redis();
+  const now = Date.now();
+  const c: any = cfg;
+  const g = await flashSignal(m);
+  if (!g) return;
+  const rec = await r.get<Launch>(K.launch(m));
+  if (!rec) return;
+  const coin = { mint: m, symbol: rec.symbol };
+  const open = Object.values(posMap).filter((p) => p.how === "flash" && takesSlot(p)).length;
+  const prog = q.curve?.progress ?? g.prog;
+  const checks = [
+    { rule: "flash_signal", ok: true, v: `${g.stage}s look, ${g.by === "model" ? `P(bond) ${Math.round(g.p * 100)}%` : `score ${g.prior}`}` },
+    // a first-seconds signal is worth nothing a few seconds later: the price has moved on
+    { rule: "fresh_signal", ok: now - g.at < (c.flashFreshMs ?? 6000), v: `${((now - g.at) / 1000).toFixed(1)}s old` },
+    { rule: "on_the_curve", ok: !q.grad && prog <= (c.flashMaxCurve ?? 65), v: q.grad ? "already migrated" : `curve ${Math.round(prog)}%` },
+    { rule: "not_chased", ok: g.mcSol <= 0 || q.px * SUPPLY <= g.mcSol * (1 + (c.flashMaxChase ?? 40) / 100), v: g.mcSol > 0 ? `${Math.round((q.px * SUPPLY / g.mcSol - 1) * 100)}% since the look` : "n/a" },
+    { rule: "dev_not_serial", ok: !(rec.devN >= cfg.serialDev && !rec.devB), v: `dev ${rec.devN} launches, ${rec.devB} bonded` },
+    { rule: "open_slots", ok: open < (c.flashMaxOpen ?? 3) && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${c.flashMaxOpen ?? 3} FLASH slots` },
+    { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
+  ];
+  const fails = checks.filter((x) => !x.ok);
+  const fail = fails[0];
+  await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
+  await r.set(VET_KEY(m), { at: now, checks, passed: !fail }, { ex: 7 * 86400 });
+  const dk = DAY_KEY(now);
+  await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
+  await r.hincrby(dk, "seen", 1);
+  const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule)) && !posMap[m];
+  if (fail && !deskBlock) {
+    log(b, "VET", `skipped FLASH's $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
+    if (fail.rule !== "fresh_signal") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
+    return;
+  }
+  await r.set(ENTRY_KEY(m), { checks, flow: `curve ${Math.round(prog)}% at ${g.stage}s`, buzz: `FLASH: ${g.why.join(", ")}`, chase: 0 }, { ex: 3 * 3600 });
+  if (deskBlock) {
+    log(b, "VET", `FLASH's $${rec.symbol} passes; the desk is blocked (${fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", ")}). ghost desk follows it`, "info", coin);
+    await ghostEnter(b, rec, q.px, q.real, "flash", fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", "), cfg);
+    return;
+  }
+  await r.lpush("rn:lat:sig2fill", Math.round((now - g.at) / 100) / 10).catch(() => 0);
+  await r.ltrim("rn:lat:sig2fill", 0, 199).catch(() => {});
+  log(b, "VET", `FLASH's $${rec.symbol} clean: ${checks.slice(0, 3).map((x) => x.v).join(", ")}`, "ok", coin);
+  await enter(b, state, rec, q.px, q.real, eqValue, walletSol, kp, cfg, "flash", null);
+}
+
 async function solUsdCached() {
   return solUsd().catch(() => null);
 }
@@ -1743,6 +1799,11 @@ const DAY_KEY = (t: number) => `rn:desk:day:${new Date(t).toISOString().slice(0,
 async function rightNow(learnS: Learn) {
   const r = redis();
   const now = Date.now();
+  const lat = async (k: string) => {
+    const xs = ((await r.lrange<number>(`rn:lat:${k}`, 0, 99).catch(() => [])) || []).map(Number).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    return xs.length ? { p50: xs[Math.floor(xs.length / 2)], n: xs.length } : null;
+  };
+  const speedP = Promise.all([lat("call"), lat("early"), lat("flash"), lat("intake_rpc"), lat("sig2fill")]).then(([call, early, flash, chain, fill]) => ({ call, early, flash, chain, fill }));
   const [beat, day, hist, nano, st] = await Promise.all([
     r.get<number>(BEAT_KEY),
     r.hgetall<Record<string, number>>(DAY_KEY(now)),
@@ -1765,6 +1826,8 @@ async function rightNow(learnS: Learn) {
     early: { n: learnS.earlyStat.n, min: LEARN_RULES.earlyMin, on: learnS.earlyOn },
     stalkOn: learnS.stalkOn,
     history: hist ? { phase: hist.phase, done: hist.done ?? 0, lessons: hist.lessons ?? 0, clock: hist.clock ?? null } : null,
+    // how fast the protocol is: seconds after a launch is born (median of the last 100)
+    speed: await speedP.catch(() => null),
   };
 }
 
@@ -1836,7 +1899,7 @@ const GHOST_TRIPS = "rn:ghost:trips";
 const GHOST_MAX = 10;
 const DESK_RULES = new Set(["daily_loss_ok", "open_slots"]);
 // strategies with their own slot count (the King's lane never fills up with them, nor they with the King's)
-const OWN_LANE = new Set(["wire", "mind", "momo", "catch"]);
+const OWN_LANE = new Set(["wire", "mind", "momo", "catch", "flash"]);
 /**
  * A position takes a slot only while its cost is at risk. Once initials are taken the rest is house money: it rides on
  * the trail and frees the slot, so a handful of moonbags can never freeze the desk (seen in the 12h sim: 7 bags held

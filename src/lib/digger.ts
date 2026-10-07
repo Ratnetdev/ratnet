@@ -299,11 +299,80 @@ async function digInner(): Promise<Record<string, unknown>> {
   }
 }
 
+/** Shared state for a dig pass (models, SOL price, calibration). */
+async function digPrep() {
+  await ensureEpoch().catch(() => null);
+  const model = await loadModel();
+  M1 = await loadModel(K.nano1);
+  SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
+  await recordSol(SOL_USD).catch(() => {});
+  CAL = await loadCal().catch(() => CAL);
+  if (Date.now() - CAL_AT > 600_000) {
+    CAL_AT = Date.now();
+    CAL = await computeCal().catch(() => CAL);
+  }
+  return model;
+}
+
+/**
+ * The worker's fast lane (every ~1s): fill launches the stream missed, WIRE picks, and the minute-1 reads and
+ * minute-5 calls the moment they are due. Before v0.1.21 all of this waited behind the slow work below in one pass,
+ * and launches were dug ~12 minutes late, so the "minute-5" call was made at minute 12.
+ */
+export async function digFast(): Promise<Record<string, unknown>> {
+  return lane.run(1, async () => {
+    const r = redis();
+    if (!(await r.set("rn:lock:digfast", Date.now(), { nx: true, ex: 30 }))) return { skipped: "busy" };
+    const t0 = Date.now();
+    try {
+      const model = await digPrep();
+      const dug = await digNew(model).catch((e) => ({ digError: safeErr(e) }));
+      const wire = await wirePicks().catch((e) => ({ wireError: safeErr(e) }));
+      const due = await processDue(model);
+      return { ok: true, ...dug, ...wire, ...due, ms: Date.now() - t0 };
+    } catch (e) {
+      return { ok: false, error: safeErr(e) };
+    } finally {
+      await r.del("rn:lock:digfast").catch(() => {});
+    }
+  });
+}
+
+/** The worker's slow lane (every ~4s): hot curves re-read, migrations, lessons, runners, fees. */
+export async function digSlow(): Promise<Record<string, unknown>> {
+  return lane.run(1, async () => {
+    const r = redis();
+    if (!(await r.set("rn:lock:digslow", Date.now(), { nx: true, ex: 60 }))) return { skipped: "busy" };
+    const t0 = Date.now();
+    try {
+      const model = await digPrep();
+      const tl = await tweetLinks().catch((e) => ({ tlinkError: safeErr(e) }));
+      const hot = await hotWatch(model);
+      const mig = await migrations(model).catch((e) => ({ migError: safeErr(e) }));
+      const les = await lessons(model);
+      // the runner pass takes the events gathered since its last run (from both lanes), then starts a fresh list
+      const ev = RUN_EV;
+      const cu = CURVE_USD;
+      RUN_EV = { bonded: [], died: [], stuck: [] };
+      CURVE_USD = {};
+      const run = await runnerPass(cu, ev, SOL_USD).catch((e) => ({ runnerError: safeErr(e) }));
+      await Promise.all([trackFees().catch(() => null), trackWeights().catch(() => null)]);
+      return { ok: true, ...tl, ...hot, ...mig, ...les, ...run, ms: Date.now() - t0 };
+    } catch (e) {
+      return { ok: false, error: safeErr(e) };
+    } finally {
+      await r.del("rn:lock:digslow").catch(() => {});
+    }
+  });
+}
+
 // ---------------------------------------------------------------- new launches
+
+export const LAT = (k: string) => `rn:lat:${k}`; // last 200 latencies (seconds) per step, for the speed panel
+const SEEN_SIG = (sig: string) => `rn:sig:${sig}`; // create txs the PumpPortal stream already delivered
 
 async function digNew(model: NanoModel) {
   const r = redis();
-  const s = await getSettings();
   const cursor = (await r.get<string>(K.cursor)) || undefined;
   const raw = await conn().getSignaturesForAddress(new PublicKey(PUMP_MINT_AUTHORITY), {
     until: cursor,
@@ -313,9 +382,19 @@ async function digNew(model: NanoModel) {
   if (cursor && raw.length >= 1000) await r.hincrby(K.stat, "gaps", 1);
 
   const oldestFirst = [...raw].reverse();
-  const batch = oldestFirst.slice(0, MAX_TX_PER_RUN);
-  const newCursor = batch[batch.length - 1].signature;
+  // the stream normally delivers every launch within a second: the chain read only fills what it missed, so a
+  // launch the stream already brought costs nothing here (no parse, no RPC) and the backfill keeps up easily
+  const seen = await r.mget<(number | null)[]>(...oldestFirst.map((x) => SEEN_SIG(x.signature))).catch(() => [] as (number | null)[]);
+  const unseen = oldestFirst.filter((x, i) => !seen[i]);
+  const batch = unseen.slice(0, MAX_TX_PER_RUN);
+  // cursor: past everything the stream covered, up to the last tx we parse now
+  const lastIdx = batch.length ? oldestFirst.indexOf(batch[batch.length - 1]) : oldestFirst.length - 1;
+  const newCursor = oldestFirst[unseen.length > MAX_TX_PER_RUN ? lastIdx : oldestFirst.length - 1].signature;
   const ok = batch.filter((x) => !x.err);
+  if (!ok.length) {
+    await r.set(K.cursor, newCursor);
+    return { dug: 0, scanned: oldestFirst.length, fromStream: oldestFirst.length - unseen.length };
+  }
 
   const txs = await pmap(ok, 6, async (x) => {
     try {
@@ -332,10 +411,46 @@ async function digNew(model: NanoModel) {
     await r.set(K.cursor, newCursor);
     return { dug: 0, scanned: batch.length };
   }
+  // the chain path: how late the rats saw these (the stream path is ~1s)
+  const lagP = r.pipeline();
+  for (const l of launches) {
+    lagP.lpush(LAT("intake_rpc"), Math.round((Date.now() - l.createdAt) / 1000));
+    lagP.set(SEEN_SIG(l.sig), 1, { ex: 3 * 3600 });
+  }
+  lagP.ltrim(LAT("intake_rpc"), 0, 199);
+  await lagP.exec().catch(() => {});
+  const res = await ingest(model, launches, "chain");
+  await r.set(K.cursor, newCursor);
+  return { ...res, scanned: batch.length, behind: raw.length - batch.length };
+}
 
+/** Launches straight from the PumpPortal stream (worker): dug about a second after they are born, no chain read. */
+export async function ingestStream(items: { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number }[]) {
+  return lane.run(1, async () => {
+    const r = redis();
+    const fresh = items.filter((x) => x.mint && x.sig);
+    if (!fresh.length) return { dug: 0 };
+    // never overwrite a launch already dug (the chain backfill may have it)
+    const have = await r.mget<(Launch | null)[]>(...fresh.map((x) => K.launch(x.mint))).catch(() => [] as (Launch | null)[]);
+    const todo = fresh.filter((_, i) => !have[i]);
+    const p = r.pipeline();
+    for (const x of fresh) p.set(SEEN_SIG(x.sig), 1, { ex: 3 * 3600 });
+    await p.exec().catch(() => {});
+    if (!todo.length) return { dug: 0 };
+    const model = await loadModel();
+    if (!SOL_USD) SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
+    return ingest(model, todo, "stream");
+  });
+}
+
+/** Every new launch, from the stream or the chain: metadata, dev record, WIRE and PULSE matches, the checkpoints. */
+async function ingest(model: NanoModel, launches: { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number }[], via: "stream" | "chain") {
+  const r = redis();
+  const s = await getSettings();
   const creators = Array.from(new Set(launches.map((l) => l.creator).filter(Boolean)));
   const [off, curves, devN, devB] = await Promise.all([
-    pmap(launches, 8, (l) => fetchOffchain(l.uri, 2000)),
+    // metadata (IPFS): 1.5s at most, a slow gateway never holds the launch back (socials stay empty, LENS reads them later)
+    pmap(launches, 12, (l) => fetchOffchain(l.uri, 1500)),
     getCurves(launches.map((l) => l.mint)),
     creators.length ? r.hmget<Record<string, number>>(K.devN, ...creators) : Promise.resolve(null),
     creators.length ? r.hmget<Record<string, number>>(K.devB, ...creators) : Promise.resolve(null),
@@ -431,11 +546,10 @@ async function digNew(model: NanoModel) {
   p.hincrby(K.day(dayKey()), "dug", launches.length);
   p.expire(K.day(dayKey()), 60 * 60 * 24 * 40);
   const lastL = launches[launches.length - 1];
-  agentLog(p, [{ agent: "SCOUT", at: c.now, mint: lastL.mint, symbol: lastL.symbol, text: `dug ${launches.length} new launch${launches.length > 1 ? "es" : ""}, latest $${lastL.symbol}`, tone: "info" }]);
-  p.set(K.cursor, newCursor);
+  if (via === "chain" || Math.random() < 0.2) agentLog(p, [{ agent: "SCOUT", at: c.now, mint: lastL.mint, symbol: lastL.symbol, text: `dug ${launches.length} new launch${launches.length > 1 ? "es" : ""}${via === "stream" ? " the second they were born" : " the chain path caught"}, latest $${lastL.symbol}`, tone: "info" }]);
   await flush(c);
   await recordWork(work.counts, last, work.real);
-  return { dug: launches.length, scanned: batch.length, behind: raw.length - batch.length };
+  return { dug: launches.length, via };
 }
 
 // ---------------------------------------------------------------- resolution
@@ -828,6 +942,8 @@ function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   const sc = c.model1.n >= NANO_MIN ? nanoScore(c.model1, x) : v0.score;
   const verdict = verdictOf(sc);
   rec.early = { at: c.now, score: sc, verdict, curve: curveNow, x };
+  c.p.lpush(LAT("early"), Math.round((c.now - rec.createdAt) / 1000));
+  c.p.ltrim(LAT("early"), 0, 199);
   c.p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
   if (ex.tape) {
     rec.tape = ex.tape;
@@ -845,6 +961,8 @@ function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
 }
 
 function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
+  c.p.lpush(LAT("call"), Math.round((c.now - rec.createdAt) / 1000));
+  c.p.ltrim(LAT("call"), 0, 199);
   if (ex.tape) {
     rec.tape = ex.tape;
     rec.g = ex.g;

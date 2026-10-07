@@ -4,7 +4,8 @@
 // ping steps aside on its own (it sees the worker's heartbeat) and comes back if the worker stops.
 import { runSession } from "../src/lib/session";
 import { deskSession } from "../src/lib/desk";
-import { dig } from "../src/lib/digger";
+import { digFast, digSlow, ingestStream } from "../src/lib/digger";
+import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 
@@ -23,6 +24,10 @@ let deskAt = Date.now();
 async function beat() {
   const stuck = Date.now() - sessionAt;
   const deskStuck = Date.now() - deskAt;
+  if (Date.now() - fastAt > 120_000) {
+    console.log("watchdog: the rats' fast lane is stuck, restarting");
+    process.exit(1);
+  }
   if (stuck > SESSION_MS * 5 || deskStuck > DESK_MS + 180_000) {
     console.log(`watchdog: ${deskStuck > DESK_MS + 180_000 ? "desk" : "agent"} loop stuck (${Math.round(Math.max(stuck, deskStuck) / 1000)}s), restarting`);
     process.exit(1);
@@ -111,13 +116,39 @@ async function wantList() {
   ]);
   const want = new Set([...(pos || []), ...(radar || []), ...(mig || [])].map(String).filter(Boolean));
   for (const m of cw || []) if (want.size < 400) want.add(String(m));
+  for (const m of FLW.keys()) want.add(m); // launches in their first ~100 seconds (FLASH)
   return want;
+}
+
+// FLASH: every new launch is streamed for its first ~100 seconds and read at 15s, 45s and 90s, from the trades
+// alone (no chain reads). The create message also goes straight to the rats (dug ~1 second after birth).
+const FLW = new Map<string, FlCoin>();
+let INTAKE: any[] = [];
+
+function flashTick() {
+  const now = Date.now();
+  const looks: FlashLook[] = [];
+  for (const [mint, c] of FLW) {
+    for (const st of FL_STAGES) {
+      if (c.done.includes(st) || now - c.t0 < st * 1000) continue;
+      c.done.push(st);
+      looks.push({ mint, stage: st, at: now, createdAt: c.t0, sym: c.sym, st: streamStats(c, now) });
+    }
+    if (now - c.t0 > 100_000) FLW.delete(mint);
+  }
+  if (looks.length) flashLook(looks).catch((e) => console.log("flash error", e?.message || e));
+}
+
+async function flushIntake() {
+  if (!INTAKE.length) return;
+  const items = INTAKE;
+  INTAKE = [];
+  await ingestStream(items).catch((e) => console.log("intake error", e?.message || e));
 }
 
 function pumpportal() {
   const WS: any = (globalThis as any).WebSocket;
   if (!WS) return console.log("no WebSocket in this Node version: launches are found by polling (Node 22+ recommended)");
-  let lastDig = 0;
   let lastCatch = 0;
   let ws: any = null;
   let up = false;
@@ -160,11 +191,25 @@ function pumpportal() {
         kick();
         return;
       }
-      if (tx === "buy" || tx === "sell") return onTrade(msg, kick);
-      // a new launch
-      if (Date.now() - lastDig < 1500) return;
-      lastDig = Date.now();
-      dig().catch(() => null);
+      if (tx === "buy" || tx === "sell") {
+        const fc = FLW.get(String(msg.mint));
+        if (fc) {
+          fc.trades.push({ t: Date.now(), side: tx, sol: Number(msg.solAmount) || 0, w: String(msg.traderPublicKey || "") });
+          if (Number(msg.vSolInBondingCurve) > 0) fc.vSol = Number(msg.vSolInBondingCurve);
+          if (Number(msg.vTokensInBondingCurve) > 0) fc.vTok = Number(msg.vTokensInBondingCurve);
+          if (Number(msg.marketCapSol) > 0) fc.mcSol = Number(msg.marketCapSol);
+        }
+        return onTrade(msg, kick);
+      }
+      // a new launch: to the rats now (batched every 300ms), and onto FLASH's first-seconds watch
+      if (tx === "create" || (!tx && msg.uri && msg.name)) {
+        const now = Date.now();
+        const mint = String(msg.mint);
+        INTAKE.push({ mint, sig: String(msg.signature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
+        FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
+        if (up) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
+        watched.add(mint);
+      }
     };
     // reconnect once per drop, 3s later (errors are always followed by a close)
     let again = false;
@@ -178,7 +223,9 @@ function pumpportal() {
   };
   open();
   setInterval(() => resync().catch(() => null), 15_000);
-  setInterval(() => flushTape().catch(() => null), 2_000);
+  setInterval(() => flushTape().catch(() => null), 1_000);
+  setInterval(() => flushIntake().catch(() => null), 300);
+  setInterval(flashTick, 500);
 }
 
 async function deskLoop() {
@@ -186,13 +233,37 @@ async function deskLoop() {
     const t0 = Date.now();
     deskAt = t0;
     try {
-      const r: any = await deskSession(DESK_MS, () => dig());
+      const r: any = await deskSession(DESK_MS); // the rats dig in their own lanes below
       if (r?.skipped) await new Promise((res) => setTimeout(res, 2000)); // another desk holds the lock: wait for it
       else console.log(new Date().toISOString(), `desk ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify(r).slice(0, 200));
     } catch (e: any) {
       console.log("desk error", e?.message || e);
       await new Promise((res) => setTimeout(res, 2000));
     }
+  }
+}
+
+// The rats, in two lanes of their own. Fast (about every second): launches the stream missed, WIRE picks, and the
+// minute-1 reads and minute-5 calls the moment they are due. Slow (every ~4 seconds): the hot curves re-read,
+// migrations, lessons, runners. Before v0.1.21 one combined pass ran every few minutes and fell ~12 minutes behind.
+let fastAt = Date.now();
+async function digFastLoop() {
+  for (;;) {
+    const t0 = Date.now();
+    fastAt = t0;
+    const r: any = await digFast().catch((e) => ({ error: e?.message || e }));
+    if (r?.error || (r?.dug && Math.random() < 0.05)) console.log(new Date().toISOString(), "dig fast", JSON.stringify(r).slice(0, 200));
+    await new Promise((res) => setTimeout(res, Math.max(150, 1000 - (Date.now() - t0))));
+  }
+}
+async function digSlowLoop() {
+  let n = 0;
+  for (;;) {
+    const t0 = Date.now();
+    const r: any = await digSlow().catch((e) => ({ error: e?.message || e }));
+    const f: any = await flashFollow().catch((e) => ({ flashError: e?.message || e }));
+    if (n++ % 15 === 0 || r?.error) console.log(new Date().toISOString(), "dig slow", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ ...r, ...f }).slice(0, 300));
+    await new Promise((res) => setTimeout(res, Math.max(500, 4000 - (Date.now() - t0))));
   }
 }
 
@@ -211,10 +282,10 @@ async function agentLoop() {
 }
 
 async function main() {
-  console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, side by side`);
+  console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
   pumpportal();
   setInterval(beat, 20_000);
   await beat();
-  await Promise.all([deskLoop(), agentLoop()]);
+  await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop()]);
 }
 main();

@@ -112,7 +112,7 @@ export async function labStep(defaults: (sl: string, tier: Tier) => ExitSet) {
   await r.set("rn:lab:at", Date.now());
   const cur = await labBest();
   const out: { key: string; best: LabBest }[] = [];
-  for (const sl of ["king", "early", "wire", "vamp", "momo", "mind", "catch"]) {
+  for (const sl of ["king", "early", "wire", "vamp", "momo", "mind", "catch", "flash"]) {
     for (const tier of ["micro", "small", "large"] as Tier[]) {
       const key = `${sl}:${tier}`;
       const c = cur[key] || defaults(sl, tier);
@@ -127,6 +127,6 @@ export async function labView() {
   const best = await labBest();
   const r = redis();
   const counts: Record<string, number> = {};
-  for (const sl of ["king", "early", "wire", "vamp", "momo", "mind", "catch"]) for (const t of ["micro", "small", "large"]) counts[`${sl}:${t}`] = Number(await r.llen(PATHS(`${sl}:${t}`)).catch(() => 0));
+  for (const sl of ["king", "early", "wire", "vamp", "momo", "mind", "catch", "flash"]) for (const t of ["micro", "small", "large"]) counts[`${sl}:${t}`] = Number(await r.llen(PATHS(`${sl}:${t}`)).catch(() => 0));
   return { best, counts, minN: MIN_N };
 }

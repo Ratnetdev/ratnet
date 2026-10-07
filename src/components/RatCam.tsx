@@ -393,7 +393,7 @@ function toastOf(f: FeedItem): Toast {
   return { id: `${f.at}-${f.mint}-${f.kind}`, tag, color, sym: f.symbol ? `$${f.symbol}` : "", mint: f.mint || undefined, text: f.text.split(" · ").slice(0, 2).join(" · "), href: f.mint ? `/c/${f.mint}` : undefined, at: f.at, weight };
 }
 
-const AG_COL: Record<string, string> = { EXEC: "#ff7ab6", RISK: "#ffb547", KING: "#ffb547", MOMO: "#ff9f5a", CATCH: "#ffe066", SHIELD: "#ff6b6b", MIND: "#c79bff", WIRE: "#7fd1ff", LEDGER: "#8cff5a", HOUND: "#ffd36b", PM: "#9ff0c8" };
+const AG_COL: Record<string, string> = { EXEC: "#ff7ab6", RISK: "#ffb547", KING: "#ffb547", MOMO: "#ff9f5a", CATCH: "#ffe066", SHIELD: "#ff6b6b", FLASH: "#9ef0ff", MIND: "#c79bff", WIRE: "#7fd1ff", LEDGER: "#8cff5a", HOUND: "#ffd36b", PM: "#9ff0c8" };
 const SHOW_MS = 2600; // one new card every 2.6s at most, so every line can be read
 const MAX_BACKLOG = 14;
 

@@ -125,6 +125,17 @@ export const DEFAULT_SETTINGS = {
     // CATCH (the sender catcher): coins moving like the ones that ran to $300K+, fast migrators and slow ones.
     // auto/on = trade its signals (prior score until its model has 300 labels, then the model's own cutoff); off = never
     catchMode: "on" as "auto" | "on" | "off",
+    // FLASH (first-seconds reads at 15s, 45s, 90s from the live stream): auto = a look time trades only once its own
+    // record earns a band (30+ looks, 10%+ and 5x the base rate bonded within the hour); on = the starting score too
+    flashMode: "auto" as "auto" | "on" | "off",
+    flashMaxOpen: 3,
+    flashFreshMs: 6000, // a first-seconds signal older than this is stale
+    flashMaxCurve: 65, // % curve at entry
+    flashMaxChase: 40, // % the price may have run between the look and the entry
+    flashPriorMin: 75, // "on" mode only
+    flashSl: -30,
+    flashTimeStop: 12,
+    flashInitials: 100,
     catchTargetUsd: 300000, // a "sender": reaches max(this, 2x the market cap at the look) within the horizon
     catchHorizonH: 6,
     catchPriorMin: 72, // prior score (0-100) needed before the model is ready
