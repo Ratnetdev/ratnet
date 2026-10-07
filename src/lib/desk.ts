@@ -17,7 +17,7 @@ import { conn, getCurves, safeErr, CurveView, solUsd } from "./solana";
 import { getMarket } from "./market";
 import { readPools, type PoolRead } from "./pool";
 import { getSettings } from "./settings";
-import { tokenAmounts, progressFromSol } from "./tape";
+import { tokenAmounts, progressFromSol, readTape } from "./tape";
 import { xMentions } from "./buzz";
 import { levelOf, loadRunner, MILESTONES, pNext, RK, Run } from "./runner";
 import { NANO_MIN, type NanoModel } from "./nano";
@@ -29,6 +29,7 @@ import { accountOf, notePnl, wireView } from "./wire";
 import { getHistory } from "./historian";
 import { enqueueLens, lensDossier } from "./lens";
 import { mindJudgement } from "./mind";
+import { momoSignal } from "./momo";
 import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
@@ -75,7 +76,7 @@ export type Pos = {
   nano: number | null;
   live: boolean;
   series: Sample[];
-  how?: "direct" | "stalk" | "early" | "wire" | "mind";
+  how?: "direct" | "stalk" | "early" | "wire" | "mind" | "momo";
   wire?: { h: string; tid: string; text: string; vamp?: boolean } | null; // the post a tweet coin was born from
   peakAt?: number; // when the price peaked while held (exit profiles)
   msHi?: number; // highest milestone the ladder has acted on
@@ -661,7 +662,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const ghosts = Object.values(((await r.hgetall<Record<string, Pos>>(GHOST_POS)) || {}) as Record<string, Pos>);
       // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
       const px = await priceOf(
-        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wm]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
+        Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmr]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]))
       );
       if (now - lastRunsAt > 10_000) {
         lastRunsAt = now;
@@ -703,9 +704,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         // this strategy's own exit profile (initials, time stop) and COACH's trail scale for it
         const sl = sleeveOf(p.how, p.wire?.vamp);
         const pf = prof[sl];
-        const initialsAt = pf?.initials ?? cfg.initialsAt;
-        const timeStop = pf?.timeStop ?? cfg.timeStop;
-        const trailK = learnS.trailBy?.[sl] ?? learnS.trailK;
+        // MOMO coins move fast both ways: tighter starting exits until their own record says otherwise
+        const mo = sl === "momo";
+        const c2: any = cfg;
+        const initialsAt = pf?.initials ?? (mo ? c2.momoInitials ?? 40 : cfg.initialsAt);
+        const timeStop = pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : cfg.timeStop);
+        const stopAt = mo ? c2.momoSl ?? -20 : cfg.sl;
+        const trailK = learnS.trailBy?.[sl] ?? (mo ? 0.6 : learnS.trailK);
         rs.push([now, q.px, q.real]);
         while (rs.length && now - rs[0][0] > 60_000) rs.shift();
         const lastS = p.series[p.series.length - 1];
@@ -735,7 +740,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         else if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && learnS.devExitOn) [sellFrac, reason] = [1, `dev sold ${Math.round((1 - p.dev) * 100)}% of their bag (dev exit earned by COACH)`];
         else if (p.ins != null && p.ins <= 1 - cfg.insiderExit / 100) [sellFrac, reason] = [1, `insiders dumped ${Math.round((1 - p.ins) * 100)}% (bundle, snipers, top buyers)`];
         else if (!p.tp1Done) {
-          if (gain <= cfg.sl) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
+          if (gain <= stopAt) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
           else if (drain <= -20) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}% in 40s`];
           else if (gain >= initialsAt) [sellFrac, reason] = [cfg.initialsFrac, `initials at ${mult.toFixed(1)}x${initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf!.medPk}x)` : ""}, cost is back`];
           else if (q.grad && !p.gradSeen) {
@@ -849,7 +854,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         await r.zrem(K.deskQ, q0);
         const wireSig = q0.startsWith("w:");
         const mindSig = q0.startsWith("m:");
-        const m = wireSig || mindSig ? q0.slice(2) : q0;
+        const momoSig = q0.startsWith("r:");
+        const m = wireSig || mindSig || momoSig ? q0.slice(2) : q0;
+        if (momoSig) {
+          await r.zrem(K.deskQ, q0);
+          if (px[m]) await momoEntry(b, state, m, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `MOMO signal: ${safeErr(e)}`, "bad"));
+          continue;
+        }
         const rec = await r.get<Launch>(K.launch(m));
         // MIND may buy after migration too; everything else trades the curve only
         if (!rec || (rec.outcome && !(mindSig && rec.outcome === "BONDED"))) continue;
@@ -867,6 +878,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         // tweet coins have their own slots, so the King's positions never crowd them out (and the reverse)
         const liveNow = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
         const open = liveNow.filter((p) => (wireSig ? p.how === "wire" : p.how !== "wire" && p.how !== "mind")).length;
+        // a BOND call the rats could not tape in time: read its trades now, before VET (desk lane, ~1s)
+        if (!rec.tape && !wireSig) {
+          const tp = await readTape(m, rec.creator, rec.createdAt).catch(() => null);
+          if (tp) {
+            rec.tape = tp;
+            await r.set(K.launch(m), rec, { keepTtl: true });
+            log(b, "TAPE", `$${rec.symbol}: read at the desk: ${tp.n} trades, ${tp.uniq} traders, bundle ${Math.round(tp.bundleShare * 100)}%${tp.farm?.farm ? `, FARM: ${tp.farm.why}` : ""}`, tp.farm?.farm ? "bad" : "info", coin);
+          }
+        }
         const t = rec.tape;
         const g = rec.g;
         const callPx = rec.call?.px || 0;
@@ -1117,7 +1137,7 @@ function fallbackRun(p: Pos): Run {
 
 type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 
-async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind", xm: number | null) {
+async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo", xm: number | null) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
   enqueueLens(r, rec.mint, "buy");
@@ -1198,7 +1218,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     state.cash -= sol;
   }
   const now = Date.now();
-  const why = how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
+  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? "" : " (paper)"}`, "ok", coin);
@@ -1227,6 +1247,61 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     // bought after migration: the migration rules do not apply
     ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}),
   };
+}
+
+/** A MOMO signal: a pump.fun coin pulling real volume right now (usually after migration). Its own checks and slots. */
+async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null, posMap: Record<string, Pos>) {
+  const r = redis();
+  const now = Date.now();
+  const c: any = cfg;
+  const h = await momoSignal(m);
+  if (!h) return;
+  const known = await r.get<Launch>(K.launch(m));
+  // a coin the rats may never have dug (launched before they watched, or long ago): enough to trade and to show
+  const rec: Launch = known || ({ mint: m, sig: "", createdAt: now - h.ageMin * 60_000, creator: "", name: h.name, symbol: h.symbol, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: now, dugBy: "MOMO", p0: 0, mcap0: 0, cp: {}, outcome: q.grad ? "BONDED" : undefined } as Launch);
+  rec.description = `$${Math.round(h.v5 / 1000)}K volume in 5m, ${h.buyers5} buyers vs ${h.sellers5} sellers`;
+  const coin = { mint: m, symbol: rec.symbol };
+  const open = Object.values(posMap).filter((p) => p.how === "momo").length;
+  // holder spread: top 10 token accounts, minus the pool vault (the biggest account once migrated)
+  let top10: number | null = null;
+  try {
+    const la = await conn().getTokenLargestAccounts(new PublicKey(m));
+    const amts = (la.value || []).map((x) => Number(x.uiAmount || 0)).sort((a, b2) => b2 - a);
+    const rest = q.grad ? amts.slice(1) : amts;
+    top10 = Math.round((rest.slice(0, 10).reduce((a, x) => a + x, 0) / 1e9) * 1000) / 10;
+  } catch {}
+  const wash = h.b5 + h.s5 > 0 && (h.buyers5 + h.sellers5) > 0 ? (h.b5 + h.s5) / (h.buyers5 + h.sellers5) : 0;
+  const checks = [
+    { rule: "traction", ok: h.v5 >= (c.momoMinVol5m ?? 25_000) && h.buyers5 >= (c.momoMinBuyers5m ?? 40), v: `$${Math.round(h.v5 / 1000)}K in 5m, $${Math.round(h.v1h / 1000)}K in 1h, ${h.buyers5} buyers` },
+    { rule: "buy_pressure", ok: h.buyers5 >= h.sellers5 * (c.momoMinBuyRatio ?? 1.05), v: `${h.buyers5} buyers vs ${h.sellers5} sellers` },
+    { rule: "not_a_farm", ok: wash < 6, v: `${wash.toFixed(1)} trades per trader` },
+    { rule: "holder_spread", ok: top10 == null || top10 <= (c.momoMaxTop10 ?? 35), v: top10 == null ? "not read" : `top 10 hold ${top10}%` },
+    { rule: "liquidity_ok", ok: !q.grad || q.real >= (c.momoMinPoolSol ?? 40), v: q.grad ? `${Math.round(q.real)} SOL in the pool` : `on the curve, ${q.curve?.progress ?? "?"}%` },
+    { rule: "fresh_signal", ok: now - h.at < 3 * 60_000, v: `${Math.round((now - h.at) / 1000)}s old` },
+    { rule: "open_slots", ok: open < (c.momoMaxOpen ?? 3) && !posMap[m], v: `${open}/${c.momoMaxOpen ?? 3} MOMO slots` },
+    { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
+  ];
+  const fails = checks.filter((x) => !x.ok);
+  const fail = fails[0];
+  await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
+  await r.set(VET_KEY(m), { at: now, checks, passed: !fail }, { ex: 7 * 86400 });
+  const dk = DAY_KEY(now);
+  await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
+  await r.hincrby(dk, "seen", 1);
+  const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule)) && !posMap[m];
+  if (fail && !deskBlock) {
+    log(b, "VET", `skipped MOMO's $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
+    if (fail.rule !== "fresh_signal") await logSkip(fail.rule, fail.v, m, rec.symbol, q.px).catch(() => {});
+    return;
+  }
+  await r.set(ENTRY_KEY(m), { checks, flow: `$${Math.round(h.v5 / 1000)}K volume in 5m, ${h.buyers5} buyers vs ${h.sellers5} sellers, ${h.ch5 > 0 ? "+" : ""}${Math.round(h.ch5)}% 5m`, buzz: null, chase: 0 }, { ex: 3 * 3600 });
+  if (deskBlock) {
+    log(b, "VET", `MOMO's $${rec.symbol} passes; the desk is blocked (${fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", ")}). ghost desk follows it`, "info", coin);
+    await ghostEnter(b, rec, q.px, q.real, "momo", fails.map((x) => `${x.rule.replace(/_/g, " ")} ${x.v}`).join(", "), cfg);
+    return;
+  }
+  log(b, "VET", `MOMO's $${rec.symbol} clean: ${checks.slice(0, 4).map((x) => x.v).join(", ")}`, "ok", coin);
+  await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "momo", null);
 }
 
 /** A MIND SEND signal: its own checks (no curve window, no floor: MIND may buy migrated coins), its own slots. */
@@ -1343,7 +1418,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const tokens = (sol * (1 - FEE)) / fillPx;
   const now = Date.now();
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
-  const why = how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}`;
+  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}`;
   (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];

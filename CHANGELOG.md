@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.12 · MOMO
+- MOMO (22nd agent): the runners after migration. Every minute it reads GeckoTerminal's trending Solana pools (5m and 1h) and PumpSwap's busiest pools, and sends the desk the pump.fun coins with real traction right now: $25K+ volume in 5 minutes, $100K+ in the hour, 40+ different buyers, more buyers than sellers, $20K+ liquidity, under 24 hours old, not falling and not already +60% in 5 minutes. Live table on /desk with why each coin is or is not taken.
+- The desk buys MOMO coins in their own sleeve (3 slots, PM sizing by record) after its own checks: holder spread (top 10 under 35%, pool excluded), wash trading, 40+ SOL in the pool. Starting exits are tighter (initials at +40%, stop -20%, out after 40 minutes without initials) until MOMO's own record sets them. MIND judges every MOMO coin too. All lines are in the desk JSON (momo*), every skip is followed by FILM.
+- BOND calls the rats could not tape in time are no longer kept from the desk: the desk reads the trades itself (its own fast lane) and runs VET on them. Farms are still caught.
+- Sim (4h): desk tape reads caught every farm sent to it; MOMO picked and traded rising migrated coins. 0 errors.
+
+
 ## v0.1.11 · HOUND and OVERSEER
 - HOUND (20th agent), the wallet book, in three parts:
   - FOMO traders (fomoapi.io): every leaderboard trader is profiled from their own closed trades (win rate, average win, average loss, expected value per trade, best trade, 10x+ count). Only two kinds are tracked, both with a positive EV: home-run hitters (40% win rate or less, 2+ trades of 10x, average win 3x+) and steady hands (60%+ win rate, smaller wins, small losses).

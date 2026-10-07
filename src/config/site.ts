@@ -102,6 +102,23 @@ export const DEFAULT_SETTINGS = {
     wireMinW: 0.2, // trust an account's posts must have before WIRE sends its coins to the desk (seeds start at 0.3 to 0.5)
     wireMaxCurve: 85, // tweet coins move fast: allowed up to this curve %
     wireMaxOpen: 2, // tweet-coin positions open at once
+    // MOMO (runners pulling real volume, mostly after migration): starting hints, FILM follows every skip
+    momoMode: "on" as "on" | "off",
+    momoMinVol5m: 25000, // USD volume in the last 5 minutes
+    momoMinVol1h: 100000, // USD volume in the last hour
+    momoMinBuyers5m: 40, // different buyers in the last 5 minutes
+    momoMinBuyRatio: 1.05, // buyers vs sellers in the last 5 minutes
+    momoMinLiq: 20000, // USD liquidity in the pool
+    momoMinPoolSol: 40, // SOL in the pool before the desk buys
+    momoMaxTop10: 35, // % of supply the top 10 holders may hold (pool excluded)
+    momoMaxCh5: 60, // % up in 5 minutes past which it is chasing
+    momoMaxAgeH: 24,
+    momoMaxMc: 30000000,
+    momoMaxOpen: 3,
+    momoCooldownMin: 45, // minutes before the same coin can be signalled again
+    momoInitials: 40, // % up: sell the initials (until MOMO's own record sets it)
+    momoSl: -20, // stop loss before initials
+    momoTimeStop: 40, // minutes without initials: out
     // MIND (the trader's mind): auto = trades its SEND calls only once its own record earns it; on = now; off = never
     mindMode: "auto" as "auto" | "on" | "off",
     mindMin: 75, // conviction MIND needs before a SEND goes to the desk

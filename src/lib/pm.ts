@@ -3,27 +3,28 @@
 //   early - minute-1 reads, once the early record earns them
 //   wire  - coins born from posts by tracked X accounts (WIRE)
 //   vamp  - a later copy on a hot post that out-pulls the first pick (WIRE vamp watch)
+//   momo  - migrated coins pulling real volume right now (MOMO)
 //   mind  - coins MIND (the trader's mind) calls SEND, once its own record has earned it (any age, curve or migrated)
 // PM sizes each sleeve by how well it has been doing for the risk it takes (mean over spread of its last 30 trades),
 // and pauses a sleeve for 2 hours after a bad run. More strategies that earn in different moments = a smoother curve.
 import { redis } from "./redis";
 
-export type Sleeve = "king" | "early" | "wire" | "vamp" | "mind";
-export const SLEEVES: Sleeve[] = ["king", "early", "wire", "vamp", "mind"];
+export type Sleeve = "king" | "early" | "wire" | "vamp" | "momo" | "mind";
+export const SLEEVES: Sleeve[] = ["king", "early", "wire", "vamp", "momo", "mind"];
 const KEY = "rn:desk:pm";
-const PRIOR: Record<Sleeve, number> = { king: 1, early: 0.7, wire: 0.8, vamp: 0.5, mind: 0.6 }; // weight before a sleeve has a record
+const PRIOR: Record<Sleeve, number> = { king: 1, early: 0.7, wire: 0.8, vamp: 0.5, momo: 0.8, mind: 0.6 }; // weight before a sleeve has a record
 const MIN_N = 6; // trades before the record moves the weight
 const PAUSE_MS = 2 * 3600_000;
 
 type S = { r: number[]; pausedUntil: number; n: number; wins: number; g?: number[] };
 type PM = Record<Sleeve, S>;
 
-export const sleeveOf = (how?: string, vamp?: boolean): Sleeve => (how === "early" ? "early" : how === "wire" ? (vamp ? "vamp" : "wire") : how === "mind" ? "mind" : "king");
+export const sleeveOf = (how?: string, vamp?: boolean): Sleeve => (how === "early" ? "early" : how === "wire" ? (vamp ? "vamp" : "wire") : how === "mind" ? "mind" : how === "momo" ? "momo" : "king");
 
 const empty = (): S => ({ r: [], pausedUntil: 0, n: 0, wins: 0 });
 async function load(): Promise<PM> {
   const x = ((await redis().get<PM>(KEY)) || {}) as Partial<PM>;
-  return { king: { ...empty(), ...(x.king || {}) }, early: { ...empty(), ...(x.early || {}) }, wire: { ...empty(), ...(x.wire || {}) }, vamp: { ...empty(), ...(x.vamp || {}) }, mind: { ...empty(), ...(x.mind || {}) } };
+  return { king: { ...empty(), ...(x.king || {}) }, early: { ...empty(), ...(x.early || {}) }, wire: { ...empty(), ...(x.wire || {}) }, vamp: { ...empty(), ...(x.vamp || {}) }, momo: { ...empty(), ...(x.momo || {}) }, mind: { ...empty(), ...(x.mind || {}) } };
 }
 
 function stats(s: S) {

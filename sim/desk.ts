@@ -342,6 +342,16 @@ process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "sim";
     }
     return { ok: true, json: async () => ({ content: [{ type: "text", text: JSON.stringify(out) }] }) };
   }
+  if (u.includes("geckoterminal")) {
+    // MOMO's view: bonded sim coins still rising look hot (volume grows with the run), falling ones do not
+    const hot = coins.filter((c) => c.bondAt && NOW > c.bondAt && !c.ghost && NOW - c.bondAt < 6 * 3600_000).slice(-40).map((c) => {
+      const mc = postUsd(c);
+      const rising = NOW < c.postPeakAt;
+      const v5 = rising ? mc * 0.4 : mc * 0.05;
+      return { attributes: { address: c.pool, name: `${c.symbol} / SOL`, pool_created_at: new Date(c.bondAt!).toISOString(), market_cap_usd: mc, reserve_in_usd: mc / 5, volume_usd: { m5: v5, h1: v5 * 6 }, transactions: { m5: { buys: rising ? 300 : 40, sells: rising ? 200 : 60, buyers: rising ? 150 : 25, sellers: rising ? 110 : 40 } }, price_change_percentage: { m5: rising ? 6 : -4, h1: rising ? 30 : -15, h6: 0 } }, relationships: { base_token: { data: { id: `solana_${c.mint}` } }, dex: { data: { id: "pumpswap" } } } };
+    });
+    return { ok: true, json: async () => ({ data: hot }) };
+  }
   if (u.includes("price/v3")) return { ok: true, json: async () => ({ So11111111111111111111111111111111111111112: { usdPrice: SOL_USD } }) };
   if (u.includes("dexscreener")) {
     const mints = u.split("/").pop()!.split(",");
@@ -369,6 +379,7 @@ async function main() {
   const { getRunner, topRunners } = await import("../src/lib/runner");
   const { ingest, parseHook } = await import("../src/lib/wire");
   const { mindSession, mindRecord, lessonBook } = await import("../src/lib/mind");
+  const { momoScan } = await import("../src/lib/momo");
   if (process.env.MIND !== "0") {
     const cur: any = R.kv.get("rn:settings") || {};
     R.kv.set("rn:settings", { ...cur, desk: { ...(cur.desk || {}), mindMode: "on" } });
@@ -399,6 +410,7 @@ async function main() {
       for (let k = 0; k < 2 + Math.floor(rand() * 4); k++) pendingCopies.push({ at: NOW + 30_000 + k * 20_000, tw: { name: k % 2 ? `${name} Official` : name, sym, url: null, real: false } });
     }
     for (let k = pendingCopies.length - 1; k >= 0; k--) if (pendingCopies[k].at <= NOW + 60_000) spawnCoin(pendingCopies.splice(k, 1)[0].tw);
+    if (process.env.MOMO !== "0") await momoScan().catch((e: any) => errs++ < 8 && console.log("MOMO ERR", String(e)));
     const res: any = await deskSession(50_000, async () => {
       const d: any = await dig();
       if (d.ok === false && errs++ < 5) console.log("DIG ERR", d.error);

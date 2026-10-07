@@ -11,6 +11,7 @@ import AgentPanel from "./AgentPanel";
 import { useState } from "react";
 import LensCam from "./LensCam";
 import MindBoard from "./MindBoard";
+import MomoBoard from "./MomoBoard";
 import HoundBoard from "./HoundBoard";
 import { TradeIcons } from "./venues";
 import { fullUrl, useAdmin } from "./useAdmin";
@@ -102,6 +103,7 @@ const ROLES: [string, string][] = [
   ["LENS", "opens the site, X and TG by hand"],
   ["MIND", "judges coins like a trader"],
   ["HOUND", "tracks FOMO, KOL and smart wallets"],
+  ["MOMO", "runners pulling volume after migration"],
   ["OVERSEER", "explores, proposes improvements"],
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
@@ -238,6 +240,7 @@ export default function DeskBoard() {
         })}
       </section>
 
+      <MomoBoard />
       <MindBoard />
       <HoundBoard />
       <LensCam />

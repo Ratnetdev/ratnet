@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.1.11-8cff5a?style=flat-square&labelColor=060807" alt="version">
+  <img src="https://img.shields.io/badge/version-v0.1.12-8cff5a?style=flat-square&labelColor=060807" alt="version">
   <img src="https://img.shields.io/badge/chain-Solana-8cff5a?style=flat-square&labelColor=060807" alt="Solana">
   <img src="https://img.shields.io/badge/source-pump.fun-ffb547?style=flat-square&labelColor=060807" alt="pump.fun">
   <img src="https://img.shields.io/badge/model-trained%20from%20scratch-7fd1ff?style=flat-square&labelColor=060807" alt="from scratch">
@@ -269,6 +269,7 @@ The Desk is a team of seventeen agents that turns calls and posts into trades an
 | COACH | Reviews every exit and every entry, follows each coin 5m, 15m, 1h, 2h, 6h, 1d and 7d after the exit with what moved it, and retunes the desk. |
 | LEDGER | Keeps the books. |
 | WIRE | The social monitor: tracks X accounts whose posts spawn coins, matches every launch against the last hour of posts, picks the real coin among the copies 30 seconds in, and hands it to the desk. Learns trust per account from results and grows its own account list. |
+| MOMO | The runners after migration: every minute the busiest pump.fun pools on GeckoTerminal; coins with real volume, many buyers and more buyers than sellers go to the desk in their own sleeve with tighter starting exits. |
 | HOUND | The wallet book: FOMO traders with a positive EV (home-run hitters, steady hands), KOL wallets with objective ownership proof, smart wallets found on chain from breakouts. Live buys via one Helius webhook, copy records per wallet and class, confluence sent to MIND. |
 | OVERSEER | Explores Reddit, GitHub, arXiv and X for ideas, reads the whole protocol every 6 hours, and proposes improvements on Telegram (/yes, /no, /later). Proposes only. |
 | MIND | The trader's mind: judges KOL calls, tweet coins, BOND calls, fresh migrations and narrative coins like a sharp memecoin trader (the meme and its image, the narrative, who is talking, copies, timing, the website and X) and says SEND, WATCH or PASS with a conviction and a thesis. Follows every call 24 hours; its SEND calls trade only once that record earns it. Keeps a lesson book from post-mortems, from what KOLs and traders post, and from what the admin teaches it. |

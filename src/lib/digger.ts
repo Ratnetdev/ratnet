@@ -933,8 +933,9 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     c.p.ltrim(BOND_CALLS, 0, 99);
   }
   if (counted && !farm && !rec.tape && (kv.verdict === "BOND" || nano?.verdict === "BOND")) {
-    // never hand the desk a coin nobody has read the trades of
-    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}, kept from the desk: no tape read in time`, tone: "info" };
+    // the rats had no time to read its trades: the desk reads them itself (on its own fast lane) before VET
+    c.p.zadd(K.deskQ, { score: c.now, member: rec.mint });
+    const ev = { agent: "KING", at: c.now, mint: rec.mint, symbol: rec.symbol, text: `$${rec.symbol} ${kv.verdict} ${kv.score}, sent to the desk (TAPE reads it there)`, tone: "ok" };
     c.p.lpush(K.deskEv, ev);
     agentLog(c.p, [ev]);
   }

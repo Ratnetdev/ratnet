@@ -12,7 +12,7 @@ type Recent = { mint: string; symbol: string; image?: string; at: number; why: s
 type View = { on: boolean; model: string; live: Live | null; recent: Recent[]; queued: number; record: Rec[]; unlock: { ok: boolean; n: number; mean: number; up: number; need: { n: number } }; lessons: { n: number; proven: number } };
 export type Judgement = { verdict: string; conviction: number; thesis: string; reasons: string[]; risks: string[]; narrative: string; meme: string; copy: string; horizon: string; at: number; why: string; mc: number | null; grad: boolean; sent?: boolean };
 
-const WHY: Record<string, string> = { wallets: "tracked wallets buying", kol: "a KOL posted it", wire: "tweet coin", bond: "BOND call", bonded: "just migrated", pulse: "rising narrative", lens: "LENS look" };
+const WHY: Record<string, string> = { momo: "MOMO runner", wallets: "tracked wallets buying", kol: "a KOL posted it", wire: "tweet coin", bond: "BOND call", bonded: "just migrated", pulse: "rising narrative", lens: "LENS look" };
 export const VCOL: Record<string, string> = { SEND: "var(--rat)", WATCH: "var(--watch)", PASS: "var(--mute)" };
 const img = (u?: string) => (u || "").replace(/^ipfs:\/\//, "https://ipfs.io/ipfs/");
 const usdK = (n: number | null) => (n == null ? "" : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(1)}K` : `$${n}`);

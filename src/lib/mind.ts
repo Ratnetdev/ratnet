@@ -43,7 +43,7 @@ const STUDY_PER_HOUR = 6; // post-mortems, school and teach calls per hour
 const HZ: [string, number][] = [["15m", 15 * 60_000], ["1h", 3600_000], ["6h", 6 * 3600_000], ["24h", 24 * 3600_000]];
 export const UNLOCK = { n: 20, mean6h: Math.log(1.15), upShare: 0.4 }; // SEND record at 6h needed before real money
 
-export const MIND_PRI = { kol: 5, wallets: 5, wire: 4, bond: 3, bonded: 3, pulse: 2, lens: 2 } as const;
+export const MIND_PRI = { kol: 5, wallets: 5, wire: 4, momo: 4, bond: 3, bonded: 3, pulse: 2, lens: 2 } as const;
 export type MindWhy = keyof typeof MIND_PRI;
 export type Verdict = "SEND" | "WATCH" | "PASS";
 
@@ -283,7 +283,7 @@ async function setLive(v: Record<string, unknown>) {
 
 async function judge(mint: string, why: MindWhy): Promise<Judgement | null> {
   const r = redis();
-  const rec = (await r.get<Launch>(K.launch(mint))) || (why === "kol" || why === "wallets" ? await stubLaunch(mint).catch(() => null) : null);
+  const rec = (await r.get<Launch>(K.launch(mint))) || (why === "kol" || why === "wallets" || why === "momo" ? await stubLaunch(mint).catch(() => null) : null);
   if (!rec) return null;
   const [px, sol] = await Promise.all([prices([mint]), solUsd().catch(() => null)]);
   const q = px[mint];
@@ -292,7 +292,7 @@ async function judge(mint: string, why: MindWhy): Promise<Judgement | null> {
   const blocks: Block[] = [];
   const img = ipfs(rec.image);
   if (/^https:\/\//.test(img)) blocks.push({ type: "image", source: { type: "url", url: img } });
-  blocks.push({ type: "text", text: `Why you are looking at it: ${why === "wallets" ? "tracked wallets (KOLs, FOMO traders, smart money) are buying it" : why === "kol" ? "a KOL or trader posted it" : why === "wire" ? "it was born from a tracked post" : why === "bond" ? "the Rat King called BOND" : why === "bonded" ? "it just migrated" : why === "pulse" ? "it is named after a rising narrative" : "LENS looked at it"}.\n\n${ctx.text}${img ? "\n\nThe image above is the coin's image." : ""}` });
+  blocks.push({ type: "text", text: `Why you are looking at it: ${why === "momo" ? "it is pulling real volume right now (MOMO)" : why === "wallets" ? "tracked wallets (KOLs, FOMO traders, smart money) are buying it" : why === "kol" ? "a KOL or trader posted it" : why === "wire" ? "it was born from a tracked post" : why === "bond" ? "the Rat King called BOND" : why === "bonded" ? "it just migrated" : why === "pulse" ? "it is named after a rising narrative" : "LENS looked at it"}.\n\n${ctx.text}${img ? "\n\nThe image above is the coin's image." : ""}` });
   await setLive({ mint, symbol: rec.symbol, name: rec.name, image: rec.image, why, stage: "thinking", facts: ctx.text.split("\n").slice(0, 10) });
   const ans = json<any>(await ask(SYSTEM, blocks, 700));
   if (!ans || !["SEND", "WATCH", "PASS"].includes(ans.verdict)) {

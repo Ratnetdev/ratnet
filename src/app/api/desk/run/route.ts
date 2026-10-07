@@ -10,6 +10,7 @@ import { pulseTick } from "@/lib/pulse";
 import { lensSession } from "@/lib/lens";
 import { mindSession } from "@/lib/mind";
 import { houndSession } from "@/lib/hound";
+import { momoScan } from "@/lib/momo";
 import { overseerSession } from "@/lib/overseer";
 import { agentLog } from "@/lib/agents";
 import { redis } from "@/lib/redis";
@@ -51,6 +52,8 @@ async function session() {
   // LENS: hands-on looks at the coins that matter (website, X, who is talking, Telegram), streamed to the LensCam
   // MIND: the trader's mind judges the coins that matter, follows its calls, does post-mortems and goes to school
   // HOUND: FOMO traders, KOL wallets, smart wallets from breakouts, the live webhook. OVERSEER: explore and propose
+  // MOMO: coins pulling real volume right now (GeckoTerminal), straight to the desk
+  const momo = momoScan().catch((e) => ({ momo: "error", error: String(e?.message || e) }));
   const hound = houndSession().catch((e) => ({ hound: "error", error: String(e?.message || e) }));
   const overseer = overseerSession(50_000).catch((e) => ({ overseer: "error", error: String(e?.message || e) }));
   const mind = mindSession(54_000).catch((e) => ({ mind: "error", error: String(e?.message || e) }));
@@ -62,7 +65,7 @@ async function session() {
     tg,
     wire,
   ]);
-  return { desk, history, receipts, telegram, wire: x, j7: await j7, lens: await lens, mind: await mind, hound: await hound, overseer: await overseer };
+  return { desk, history, receipts, telegram, wire: x, j7: await j7, lens: await lens, mind: await mind, hound: await hound, overseer: await overseer, momo: await momo };
 }
 
 // Ping every minute (cron-job.org). The ping gets an answer right away, and the work keeps running in the
