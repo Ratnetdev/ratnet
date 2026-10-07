@@ -254,11 +254,18 @@ async function kolSync() {
   const errs: string[] = [];
   if (process.env.MADEONSOL_API_KEY) {
     await live("reading the MadeOnSol KOL roster");
-    const res = await fetch("https://madeonsol.com/api/v1/kol/wallets?limit=500&active=true", { headers: { authorization: `Bearer ${process.env.MADEONSOL_API_KEY}` }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).catch(() => null);
-    if (!res?.ok) errs.push(`MadeOnSol answered ${res?.status || "nothing"}`);
-    const j: any = res?.ok ? await res.json().catch(() => null) : null;
-    const list: any[] = j?.wallets || j?.data || (Array.isArray(j) ? j : []);
-    for (const k of list) note(k.wallet_address || k.wallet || k.address, k.name || k.handle || "KOL", handleOf(k.twitter_url || k.twitter || k.handle), "MadeOnSol");
+    // the roster pages at 500: read up to 2,000
+    for (let off = 0; off < 2000; off += 500) {
+      const res = await fetch(`https://madeonsol.com/api/v1/kol/wallets?limit=500&offset=${off}&active=true`, { headers: { authorization: `Bearer ${process.env.MADEONSOL_API_KEY}` }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).catch(() => null);
+      if (!res?.ok) {
+        if (!off) errs.push(`MadeOnSol answered ${res?.status || "nothing"}`);
+        break;
+      }
+      const j: any = await res.json().catch(() => null);
+      const list: any[] = j?.wallets || j?.data || (Array.isArray(j) ? j : []);
+      for (const k of list) note(k.wallet_address || k.wallet || k.address, k.name || k.handle || "KOL", handleOf(k.twitter_url || k.twitter || k.handle), "MadeOnSol");
+      if (list.length < 500) break;
+    }
   }
   if (process.env.SOLANATRACKER_API_KEY) {
     await live("reading the Solana Tracker KOL roster");

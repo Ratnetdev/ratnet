@@ -102,7 +102,7 @@ export default function Admin() {
   const set = (patch: Partial<Settings>) => setS({ ...s, ...patch });
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
+    <div className="grid admin" style={{ gap: 16 }}>
       <div className="row between wrapx">
         <h2 className="crt green" style={{ fontSize: 34 }}>ADMIN</h2>
         <span className="strat-tabs">

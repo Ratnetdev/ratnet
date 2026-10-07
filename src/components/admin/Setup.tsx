@@ -22,11 +22,29 @@ export default function Setup() {
   useEffect(() => {
     load();
   }, [load]);
+  const [busy, setBusy] = useState<string | null>(null);
   const act = async (action: string, label: string) => {
+    if (busy) return;
+    setBusy(action);
     setMsg(`${label}…`);
-    const j = await fetch("/api/admin/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }).then((r) => r.json()).catch(() => ({ error: "failed" }));
-    setMsg(`${label}: ${j.error ? `failed (${j.error})` : JSON.stringify(j).slice(0, 160)}`);
-    load();
+    try {
+      const res = await fetch("/api/admin/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
+      const text = await res.text();
+      let j: any = null;
+      try {
+        j = JSON.parse(text);
+      } catch {}
+      if (!res.ok || !j) setMsg(`${label}: ${j?.error || `server answered ${res.status}${res.status === 504 ? " (timed out, the job may still have finished: check the row above)" : ""}`}`);
+      else if (j.error) setMsg(`${label}: failed (${j.error})`);
+      else setMsg(`${label}: ${j.note || "done"}`);
+      // background jobs: refresh the rows a few times while they run
+      if (j?.started) for (const t of [8000, 20000, 40000, 70000]) setTimeout(load, t);
+    } catch {
+      setMsg(`${label}: no answer (network). check the row above in a minute`);
+    } finally {
+      setBusy(null);
+      load();
+    }
   };
   if (!s) return <p className="muted">Loading…</p>;
   const st = s.status;
@@ -35,16 +53,16 @@ export default function Setup() {
     <div className="grid" style={{ gap: 16 }}>
       <section className="panel">
         <div className="ph"><span><b>Status</b></span><span className="tiny muted">{missing.length ? `${missing.length} required env vars missing` : "all required env vars set"}</span></div>
-        <table className="tbl">
+        <table className="tbl setup-tbl">
           <tbody>
             <tr><td>Worker (always-on)</td><td className={st.worker?.fresh ? "green" : "muted"}>{st.worker ? (st.worker.fresh ? `running · beat ${ago(st.worker.at)}` : `stopped · last beat ${ago(st.worker.at)}`) : "not deployed (Vercel minute ping runs the desk)"}</td><td /></tr>
             <tr><td>RPC plan</td><td className={/paid/.test(st.rpcPlan) ? "green" : "red"}>{st.rpcPlan}</td><td /></tr>
             <tr>
               <td>Telegram webhook</td>
               <td className={st.telegram?.ok ? "green" : "red"}>{!st.telegram ? "no bot token" : st.telegram.ok ? `connected${st.telegram.pending ? ` · ${st.telegram.pending} pending` : ""}` : st.telegram.url ? `points elsewhere: ${st.telegram.url}` : "not set"}{st.telegram?.lastError ? ` · last error: ${st.telegram.lastError}` : ""}</td>
-              <td><button className="btn sm" onClick={() => act("tg", "Telegram webhook")}>connect</button></td>
+              <td><button className="btn sm" disabled={!!busy} onClick={() => act("tg", "Telegram webhook")}>connect</button></td>
             </tr>
-            <tr><td>X watchlist (twitterapi.io rules)</td><td className={st.xRules ? "green" : "muted"}>{st.xRules ? `${st.xRules.n} rules · ${st.xRules.accounts} accounts · every ${st.xRules.interval || 20}s${st.xRules.removed ? ` · ${st.xRules.removed} old rules removed` : ""} · ${ago(st.xRules.at)}` : "never synced"}</td><td><button className="btn sm" onClick={() => act("xsync", "X sync")}>sync now</button></td></tr>
+            <tr><td>X watchlist (twitterapi.io rules)</td><td className={st.xRules ? "green" : "muted"}>{st.xRules ? `${st.xRules.n} rules · ${st.xRules.accounts} accounts · every ${st.xRules.interval || 20}s${st.xRules.removed ? ` · ${st.xRules.removed} old rules removed` : ""} · ${ago(st.xRules.at)}` : "never synced"}</td><td><button className="btn sm" disabled={!!busy} onClick={() => act("xsync", "X sync")}>sync now</button></td></tr>
             <tr>
               <td>HOUND wallet book</td>
               <td className={st.hound?.wallets ? "green" : "red"}>
@@ -52,9 +70,9 @@ export default function Setup() {
                 {st.hound?.fomo ? ` · FOMO: ${st.hound.fomo.ok ? `${st.hound.fomo.traders} traders read, ${st.hound.fomo.added} added` : st.hound.fomo.error} (${ago(st.hound.fomo.at)})` : " · FOMO: not run yet"}
                 {st.hound?.kol ? ` · KOL rosters: ${st.hound.kol.ok ? `${st.hound.kol.rosterWallets} listed, ${st.hound.kol.added} added` : st.hound.kol.error} (${ago(st.hound.kol.at)})` : " · KOL: not run yet"}
               </td>
-              <td><button className="btn sm" onClick={() => act("houndfill", "HOUND fill")}>fill now</button></td>
+              <td><button className="btn sm" disabled={!!busy} onClick={() => act("houndfill", "HOUND fill")}>fill now</button></td>
             </tr>
-            <tr><td>Helius wallet webhook (HOUND)</td><td className={st.heliusHook ? "green" : "muted"}>{st.heliusHook ? `${st.heliusHook.n} wallets · ${ago(st.heliusHook.at)}` : "not created"}</td><td><button className="btn sm" onClick={() => act("hound", "Helius webhook")}>sync now</button></td></tr>
+            <tr><td>Helius wallet webhook (HOUND)</td><td className={st.heliusHook ? "green" : "muted"}>{st.heliusHook ? `${st.heliusHook.n} wallets · ${ago(st.heliusHook.at)}` : "not created"}</td><td><button className="btn sm" disabled={!!busy} onClick={() => act("hound", "Helius webhook")}>sync now</button></td></tr>
           </tbody>
         </table>
         {msg ? <div className="tiny mt" style={{ wordBreak: "break-all" }}>{msg}</div> : null}

@@ -1,6 +1,7 @@
 // Admin > Setup: what is configured, what still needs doing, and one-click setup actions. Secrets are never echoed;
 // the only URL with a key in it is the twitterapi.io webhook (that service only accepts a URL), and its key is a
 // purpose-bound secret derived from CRON_SECRET, not CRON_SECRET itself.
+import { waitUntil } from "@vercel/functions";
 import { SITE } from "@/config/site";
 import { isAdmin, secretFor } from "@/lib/admin";
 import { fail, json } from "@/lib/http";
@@ -78,9 +79,19 @@ export async function POST(req: Request) {
   const { action } = await req.json().catch(() => ({ action: "" }));
   try {
     if (action === "tg") return json(await (await import("@/lib/tgbot")).setupHook());
-    if (action === "xsync") return json(await (await import("@/lib/wire")).syncRules(true));
+    // long jobs (dozens of API calls) run in the background: the button answers at once and the status rows above
+    // update when they finish, so a slow source can never time the request out and show a false "failed"
+    if (action === "xsync") {
+      const { syncRules } = await import("@/lib/wire");
+      waitUntil(syncRules(true).catch(() => null));
+      return json({ started: true, note: "X sync running, the row updates within a minute" });
+    }
     if (action === "hound") return json(await (await import("@/lib/hound")).syncHook(true));
-    if (action === "houndfill") return json(await (await import("@/lib/hound")).houndRefill());
+    if (action === "houndfill") {
+      const { houndRefill } = await import("@/lib/hound");
+      waitUntil(houndRefill().catch(() => null));
+      return json({ started: true, note: "HOUND fill running (FOMO, KOL rosters, then the Helius webhook), the rows update within a minute" });
+    }
     return fail("unknown action");
   } catch (e) {
     return fail(e, 500);

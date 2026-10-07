@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.20 · Admin fixes
+- Admin buttons can no longer break the layout on any admin tab: small buttons have their own size and never wrap or shrink, status tables wrap long text instead of pushing the buttons past the panel edge, wide tables scroll inside their panel, and on phones each status row stacks (label, value, button).
+- "fill now" (HOUND) and "sync now" (X) run in the background: the button answers at once and the rows refresh by themselves for a minute. Before, the fill ran longer than the request was allowed to (FOMO, every roster, proof checks, then the webhook), so the page showed "failed" even though the wallets were added and only the final webhook push was cut off. Any other error now shows the real reason (status code, timeout) instead of a bare "failed". Buttons are disabled while a job is starting.
+- MadeOnSol roster read up to 2,000 wallets (it pages at 500).
+
 ## v0.1.19 · Live flow, every pool, faster learning
 - Desk heartbeat fixed. The desk shared one session with every agent, so after each minute it sat idle until the slowest agent (historian, LENS, MIND) finished: gaps of 30-90 seconds with no price reads, exits or entries. The worker now runs the desk in its own loop (5-minute sessions, back to back) next to the agents' loop, and the watchdog checks both. Inside the desk, the learning pass (shadows, COACH reviews, the exit lab, FILM) runs beside the beat instead of in front of it, and its Redis writes go in one batch instead of one per item. The /desk page reads the desk through a 2s cache (it could show data up to 18s old).
 - X credits: twitterapi.io bills every rule check. A sync only deleted the rules it remembered, so a delete that failed once left old rules running and billing, and each later sync stacked a new set on top. Now every sync lists all rules on the account and deletes every ratnet-wire-* rule before adding the current set. Default check interval 60s (was 20s, X_RULE_INTERVAL). Admin > Setup shows the interval and how many old rules were removed.
