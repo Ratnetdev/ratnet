@@ -29,6 +29,7 @@ const GROUPS: Group[] = [
       { href: "/king?tab=fame", label: "Hall of fame", desc: "The BOND calls that ran furthest from the call" },
       { href: "/receipts", label: "Receipts", desc: "Every call sealed on-chain each hour. Verify it yourself" },
       { href: "/lab", label: "Lab", desc: "Models learning live, historian, season, weights" },
+      { href: "/status", label: "Status", desc: "Every system, its speed and health, live" },
     ],
   },
   {

@@ -180,6 +180,10 @@ function hrInc(c: Ctx, at: number, field: string, n = 1) {
   const k = K.hr(hourKey(at));
   c.p.hincrby(k, field, n);
   c.p.expire(k, HR_TTL);
+  // the same counter per day (kept 120 days) for the long-range charts on the feed
+  const dk = `rn:dayh:${new Date(at).toISOString().slice(0, 10)}`;
+  c.p.hincrby(dk, field, n);
+  c.p.expire(dk, 120 * 86400);
 }
 
 export type FeedItem = {

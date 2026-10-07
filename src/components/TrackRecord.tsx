@@ -9,6 +9,7 @@ import { fullUrl, useAdmin } from "./useAdmin";
 import { TradeIcons } from "./venues";
 import CoinImg from "./CoinImg";
 import LiveMc from "./LiveMc";
+import RecordCharts, { RecKey } from "./RecordCharts";
 
 type Rec = {
   live: boolean;
@@ -54,6 +55,9 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
 /** The desk's public track record. `compact` for the homepage, full table on /desk. Click any trade for every detail. */
 export default function TrackRecord({ compact = false }: { compact?: boolean }) {
   const [tab, setTab] = useState<"all" | "open" | "closed" | "ghost">("all");
+  const [chart, setChart] = useState<RecKey | null>(null);
+  // each number opens its chart (full track record only)
+  const st = (k: RecKey) => (compact ? {} : { className: `rec-stat-btn ${chart === k ? "on" : ""}`, role: "button" as const, tabIndex: 0, onClick: () => setChart(chart === k ? null : k), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter") setChart(chart === k ? null : k); } });
   const admin = useAdmin();
   const d = usePoll<Rec>(fullUrl(`/api/desk/record${tab === "ghost" ? "?book=ghost" : ""}`, admin && !compact), compact ? 10000 : 5000).data;
   const isGhost = tab === "ghost";
@@ -73,13 +77,14 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
         )}
       </div>
       <div className="rec-stats">
-        <div><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
-        <div><span className="k">Trades closed</span><b>{s?.closed ?? 0}</b><em>{s ? `${s.open} open now` : ""}</em></div>
-        <div><span className="k">Win rate</span><b>{s?.winRate != null ? `${s.winRate}%` : "–"}</b><em>{s ? `${s.wins} of ${s.closed} in profit` : ""}</em></div>
-        <div><span className="k">Realized</span><b style={{ color: col(s?.realizedSol ?? 0) }}>{s ? `${sgn(s.realizedSol, 3)} ◎` : "–"}</b><em>{s && s.open ? `${sgn(s.openSol, 3)} ◎ open` : "closed trades"}</em></div>
-        {!compact && <div><span className="k">Best / worst</span><b>{s?.best ? <span style={{ color: col(s.best.pnlPct) }}>{sgn(s.best.pnlPct, 0)}%</span> : "–"} <span className="muted">/</span> {s?.worst ? <span style={{ color: col(s.worst.pnlPct) }}>{sgn(s.worst.pnlPct, 0)}%</span> : "–"}</b><em>{s?.best ? `$${s.best.symbol} · $${s.worst?.symbol}` : ""}</em></div>}
-        {!compact && <div><span className="k">Avg hold</span><b>{s?.avgHoldMs ? dur(s.avgHoldMs) : "–"}</b><em>closed trades</em></div>}
+        <div {...st("return")}><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
+        <div {...st("trades")}><span className="k">Trades closed</span><b>{s?.closed ?? 0}</b><em>{s ? `${s.open} open now` : ""}</em></div>
+        <div {...st("winrate")}><span className="k">Win rate</span><b>{s?.winRate != null ? `${s.winRate}%` : "–"}</b><em>{s ? `${s.wins} of ${s.closed} in profit` : ""}</em></div>
+        <div {...st("realized")}><span className="k">Realized</span><b style={{ color: col(s?.realizedSol ?? 0) }}>{s ? `${sgn(s.realizedSol, 3)} ◎` : "–"}</b><em>{s && s.open ? `${sgn(s.openSol, 3)} ◎ open` : "closed trades"}</em></div>
+        {!compact && <div {...st("trades")}><span className="k">Best / worst</span><b>{s?.best ? <span style={{ color: col(s.best.pnlPct) }}>{sgn(s.best.pnlPct, 0)}%</span> : "–"} <span className="muted">/</span> {s?.worst ? <span style={{ color: col(s.worst.pnlPct) }}>{sgn(s.worst.pnlPct, 0)}%</span> : "–"}</b><em>{s?.best ? `$${s.best.symbol} · $${s.worst?.symbol}` : ""}</em></div>}
+        {!compact && <div {...st("hold")}><span className="k">Avg hold</span><b>{s?.avgHoldMs ? dur(s.avgHoldMs) : "–"}</b><em>closed trades</em></div>}
       </div>
+      {!compact && chart && d ? <RecordCharts which={chart} setWhich={setChart} trips={d.trips || []} start={d.summary.start} /> : null}
       <div className="scroll" style={compact ? undefined : { maxHeight: 900 }}>
         <table className="tbl rec-tbl">
           <thead>

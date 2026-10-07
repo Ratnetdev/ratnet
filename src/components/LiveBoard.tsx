@@ -9,6 +9,7 @@ import Info from "./Info";
 import CountUp from "./CountUp";
 import RadarTable, { RadarRow } from "./Radar";
 import GradList, { Grad } from "./Grads";
+import MetricCharts, { MetricKey } from "./MetricCharts";
 
 export type Stats = {
   since?: number | null;
@@ -38,20 +39,39 @@ export default function LiveBoard() {
   const { data: d, error } = useLive();
   const data = d as Live | null;
   const [callTab, setCallTab] = useState<"bond" | "all">("bond");
+  const [metric, setMetric] = useState<MetricKey | null>(null);
+  const [range, setRange] = useState<"24h" | "72h" | "30d">("24h");
+  // a stat card opens its chart below the row; clicking the open card again closes it
+  const card = (k: MetricKey, extra = "") => ({
+    className: `panel metric-card ${extra} ${metric === k ? "on" : ""}`,
+    role: "button" as const,
+    tabIndex: 0,
+    "aria-expanded": metric === k,
+    onClick: () => setMetric(metric === k ? null : k),
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        setMetric(metric === k ? null : k);
+      }
+    },
+  });
+  const hint = (k: MetricKey) => <span className="chart-hint">{metric === k ? "close ▴" : "chart ▾"}</span>;
   const s = data?.stats;
   const lift = s?.bond.rate != null && s?.baseRate ? Math.round((s.bond.rate / s.baseRate) * 10) / 10 : null;
 
   return (
     <>
       <section className="grid g4">
-        <div className="panel glow">
+        <div {...card("dug", "glow")}>
+          {hint("dug")}
           <div className="pb stat">
             <div className="k"><Info k="dug">Launches dug</Info></div>
             <div className="big rat"><CountUp value={s?.dug ?? 0} /></div>
             <div className="s">+{num(s?.dugToday ?? 0)} today · {num(s?.tracking ?? 0)} checkpoints queued</div>
           </div>
         </div>
-        <div className="panel">
+        <div {...card("king")}>
+          {hint("king")}
           <div className="pb stat">
             <div className="k"><Info k="hit">King hit rate (BOND calls)</Info>{s?.since ? <span className="since"> · since {new Date(s.since).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span> : null}</div>
             <div className="big" style={{ color: "var(--bond)" }}>{s?.bond.rate != null ? `${s.bond.rate}%` : "–"}</div>
@@ -61,14 +81,16 @@ export default function LiveBoard() {
             </div>
           </div>
         </div>
-        <div className="panel">
+        <div {...card("base")}>
+          {hint("base")}
           <div className="pb stat">
             <div className="k"><Info k="base">Trench base rate</Info></div>
             <div className="big">{s?.baseRate != null ? `${s.baseRate}%` : "–"}</div>
             <div className="s">of all dug launches graduated</div>
           </div>
         </div>
-        <div className="panel">
+        <div {...card("bonded")}>
+          {hint("bonded")}
           <div className="pb stat">
             <div className="k"><Info k="bond">Graduated</Info></div>
             <div className="big" style={{ color: "var(--bond)" }}><CountUp value={s?.bonded ?? 0} /></div>
@@ -76,6 +98,8 @@ export default function LiveBoard() {
           </div>
         </div>
       </section>
+
+      {metric ? <MetricCharts metric={metric} setMetric={setMetric} range={range} setRange={setRange} /> : null}
 
       <section className="grid g-main mt">
         <div className="panel">

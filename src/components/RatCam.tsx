@@ -425,6 +425,12 @@ function LiveToasts({ onOpen }: { onOpen: () => void }) {
       queue.current.forEach((t, i) => (t.weight < queue.current[k].weight ? (k = i) : null));
       queue.current.splice(k, 1);
     }
+    // show something the moment data arrives instead of a placeholder for the first interval
+    setCards((c) => {
+      if (c.length || !queue.current.length) return c;
+      const n = queue.current.shift()!;
+      return [n];
+    });
     setWaiting(queue.current.length);
   }, [live.tick, live.data]);
 

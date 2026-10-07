@@ -93,7 +93,7 @@ export default function CatchBoard() {
         {(bd?.coins || []).map((c) => (
           <div key={c.mint} className="board-row">
             <Link href={`/c/${c.mint}`} className="coin-a"><CoinImg mint={c.mint} sym={c.sym} size={18} /><b>${c.sym || c.mint.slice(0, 4)}</b></Link>
-            <span className={`board-n ${c.pos >= 3 ? "hot" : ""}`}>{c.pos} for{c.neg ? ` · ${c.neg} against` : ""}</span>
+            <span className={`board-n ${c.pos >= 3 ? "hot" : ""}`} title="independent agent families for / against (agents of the same family count once)">{c.pos} for{c.neg ? <em> · {c.neg} against</em> : null}</span>
             <span className="board-chips">
               {c.posts.slice(0, 8).map((p) => (
                 <span key={p.a} className="board-chip" title={p.t} style={{ borderColor: p.s > 0 ? AGENT_COLOR[p.a] || "var(--rat)" : "var(--dust)", color: p.s > 0 ? AGENT_COLOR[p.a] || "var(--rat)" : "var(--dust)" }}>

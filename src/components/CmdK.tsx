@@ -13,6 +13,7 @@ const PAGES: Item[] = [
   { label: "Graduations", hint: "every bond", href: "/king?tab=grads" },
   { label: "Rat King", hint: "every call + hit rate", href: "/king" },
   { label: "Lab", hint: "nano learning live", href: "/lab" },
+  { label: "Status", hint: "every system, speed and health", href: "/status" },
   { label: "Rats", hint: "spawn a rat", href: "/rats" },
   { label: "Sniff", hint: "score any CA", href: "/sniff" },
   { label: "Ledger", hint: "burns + payouts", href: "/ledger" },

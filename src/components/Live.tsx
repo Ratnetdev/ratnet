@@ -27,9 +27,11 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
     };
     load();
     const t = setInterval(load, 4000);
+    document.addEventListener("visibilitychange", load);
     return () => {
       stop = true;
       clearInterval(t);
+      document.removeEventListener("visibilitychange", load);
     };
   }, []);
   return <LiveCtx.Provider value={state}>{children}</LiveCtx.Provider>;
