@@ -8,6 +8,7 @@ import { enqueueMind, noteKolCall, noteStudy } from "./mind";
 import { enqueueLens } from "./lens";
 import { redis } from "./redis";
 import { X_SEED } from "@/config/x-accounts";
+import { memo, memoPatch } from "./memo";
 import { X_BUDGET, xAllowed, xCost, xSpend } from "./xcredits";
 import { agentLog } from "./agents";
 import { K } from "./redis";
@@ -81,6 +82,11 @@ export function parseHook(body: any): XTweet[] {
 }
 
 let seeded = 0;
+/** The whole account list, read at most once a minute per process (5,000+ accounts, about 800KB). */
+const accsAll = () => memo("wire:acc", 60_000, async () => ((await redis().hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>);
+/** WIRE's per-account counters, at most once a minute per process. */
+const statsAll = () => memo("wire:st", 60_000, async () => ((await redis().hgetall<Record<string, number>>(ST)) || {}) as Record<string, number>);
+
 export async function ensureSeed() {
   if (seeded === X_SEED.length) return;
   const r = redis();
@@ -89,7 +95,7 @@ export async function ensureSeed() {
     seeded = X_SEED.length;
     return;
   }
-  const have = ((await r.hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>;
+  const have = await accsAll();
   const now = Date.now();
   const obj: Record<string, Acc> = {};
   for (const s of X_SEED) {
@@ -98,6 +104,7 @@ export async function ensureSeed() {
   }
   if (Object.keys(obj).length) {
     await r.hset(ACC, obj);
+    memoPatch("wire:acc", obj);
     await r.set(DIRTY, 1);
   }
   await r.set("rn:x:seedn", X_SEED.length);
@@ -108,7 +115,7 @@ export async function ensureSeed() {
 export async function ingest(tweets: XTweet[]) {
   const r = redis();
   await ensureSeed();
-  const accs = ((await r.hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>;
+  const accs = await accsAll();
   const p = r.pipeline();
   const newAccs: Record<string, Acc> = {};
   const cas: XTweet[] = [];
@@ -136,7 +143,10 @@ export async function ingest(tweets: XTweet[]) {
     if (acc?.tier !== "muted" && t.kind !== "reply" && (acc?.tier === "seed" || t.f >= 50_000 || t.ca))
       agentLog(p, [{ agent: "WIRE", at: Date.now(), text: `@${t.h}${t.src && !["j7", "tapi"].includes(t.src) ? ` on ${t.src}` : ""}${t.kind === "rt" ? " reposted" : t.kind === "quote" ? " quoted" : ""}: "${t.text.slice(0, 90)}${t.text.length > 90 ? "…" : ""}"${t.ca ? " · posted a CA" : ` · watching launches for ${t.terms.slice(0, 4).join(", ") || "anything linked"}`}`, tone: t.ca ? "ok" : "info" }]);
   }
-  if (Object.keys(newAccs).length) p.hset(ACC, newAccs);
+  if (Object.keys(newAccs).length) {
+    p.hset(ACC, newAccs);
+    memoPatch("wire:acc", newAccs);
+  }
   p.ltrim(TW, 0, 399);
   await p.exec();
   for (const t of cas) await onCA(t).catch(() => {});
@@ -266,9 +276,14 @@ export function noteBondLink(p: { hincrby: Function }, twitterUrl: string) {
 export async function curate() {
   const r = redis();
   await ensureSeed();
-  const [accs, found, st] = await Promise.all([r.hgetall<Record<string, Acc>>(ACC), r.hgetall<Record<string, number>>(FOUND), r.hgetall<Record<string, number>>(ST)]);
+  // every 10 minutes is plenty for promoting and muting accounts (it read three big hashes every minute)
+  if (!(await r.set("rn:x:curate", 1, { nx: true, ex: 600 }))) return [];
+  const [accs, found, st] = await Promise.all([accsAll(), r.hgetall<Record<string, number>>(FOUND), statsAll()]);
   const A = (accs || {}) as Record<string, Acc>;
   const F = (found || {}) as Record<string, number>;
+  // @mentions of unknown handles pile up forever; keep the ones with real evidence
+  const weak = Object.entries(F).filter(([, v]) => Number(v) < 2).map(([h]) => h);
+  if (Object.keys(F).length > 3000 && weak.length) for (let i = 0; i < weak.length; i += 500) await r.hdel(FOUND, ...weak.slice(i, i + 500)).catch(() => 0);
   const S = (st || {}) as Record<string, number>;
   const now = Date.now();
   const changes: string[] = [];
@@ -288,6 +303,7 @@ export async function curate() {
   }
   if (Object.keys(upd).length) {
     await r.hset(ACC, upd);
+    memoPatch("wire:acc", upd);
     await r.hdel(FOUND, ...Object.keys(upd));
     await r.set(DIRTY, 1);
   }
@@ -371,7 +387,9 @@ export function weightOf(a: Acc | undefined, S: Record<string, number>) {
 
 export async function accountOf(h: string) {
   const r = redis();
-  const [a, st] = await Promise.all([r.hget<Acc>(ACC, h.toLowerCase()), r.hgetall<Record<string, number>>(ST)]);
+  // only the two counters the weight needs (it read every account's counters on each call)
+  const k = h.toLowerCase();
+  const [a, st] = await Promise.all([r.hget<Acc>(ACC, k), r.hmget<Record<string, number>>(ST, `${k}:picks`, `${k}:runs`)]);
   return { acc: a || undefined, w: weightOf(a || undefined, (st || {}) as Record<string, number>) };
 }
 
@@ -380,7 +398,7 @@ export async function accountOf(h: string) {
 export async function wireView(limit = 100) {
   const r = redis();
   await ensureSeed();
-  const [tw, accs, st, found] = await Promise.all([r.lrange<XTweet>(TW, 0, 29), r.hgetall<Record<string, Acc>>(ACC), r.hgetall<Record<string, number>>(ST), r.hgetall<Record<string, number>>(FOUND)]);
+  const [tw, accs, st, found] = await Promise.all([r.lrange<XTweet>(TW, 0, 29), accsAll(), statsAll(), memo("wire:found", 60_000, async () => ((await r.hgetall<Record<string, number>>(FOUND)) || {}) as Record<string, number>)]);
   const S = (st || {}) as Record<string, number>;
   const A = (accs || {}) as Record<string, Acc>;
   const tweets = ((tw || []) as XTweet[]).filter((t) => t.kind !== "reply").slice(0, 20);
@@ -438,7 +456,7 @@ export async function tweetLinks() {
       await r.set(TLC(t.id), t, { ex: 6 * 3600 });
     }
   }
-  const accs = ((await r.hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>;
+  const accs = await accsAll();
   const p = r.pipeline();
   const newAccs: Record<string, Acc> = {};
   let n = 0;
@@ -467,7 +485,10 @@ export async function tweetLinks() {
     agentLog(p, [{ agent: "WIRE", at: Date.now(), mint, symbol: rec.symbol, text: `$${rec.symbol} links a post by @${t.h} (${t.f >= 1000 ? `${Math.round(t.f / 1000)}k` : t.f} followers, ${lag}s before launch): "${t.text.slice(0, 80)}"`, tone: t.f >= 100_000 ? "ok" : "info" }]);
     n++;
   }
-  if (Object.keys(newAccs).length) p.hset(ACC, newAccs);
+  if (Object.keys(newAccs).length) {
+    p.hset(ACC, newAccs);
+    memoPatch("wire:acc", newAccs);
+  }
   p.ltrim(TW, 0, 399);
   await p.exec();
   return { tlinks: n };

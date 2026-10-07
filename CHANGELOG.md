@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.26 · Redis bandwidth diet, outage alerts
+- 7 Oct: Upstash hit its plan limit (60 GB of bandwidth in one day) and every page and loop went down. The causes, all fixed:
+  - Open positions (each carries its price path, ~20KB) and the ghost book were read whole and written back twice a second. They now live in the desk's memory between beats and go to Redis at most every 10s, at once after a trade. Entry checks use the same memory copy, so a coin bought earlier in the same beat is seen at once.
+  - WIRE read its whole account list (5,000+ accounts, ~800KB) on every post the J7 feed delivered, every slow-lane pass and every /desk page poll; per-account weights read every account's counters. The list is read at most once a minute per process, weights read only the two counters they need, account curation runs every 10 minutes, and the pile of one-off @mentions is pruned.
+  - The live tape hash was rewritten whole every second; only coins that traded are written now, and coins no longer watched are removed.
+  - The desk's shadow and after books (with price paths) were read about once a second; every 15s now.
+  - Page reads: the exam (up to 2,000 trades and 3,000 equity points) is computed once per 30s for all visitors, the track record once per 15s per server, the desk payload once per 2s per server, sparklines are sent with 90 points instead of 360, and HOUND's wallet book is cached for a minute.
+- Outage alerts in Telegram (the private ideas chat): Redis failing (with the exact error, like the plan limit), chain reads failing (more than half failing over 20s), the public site API failing. Two failed checks in a row open an incident, a reminder every 30 minutes while it lasts, one line when it is back. These run without Redis, so they work exactly when Redis is the problem. While Redis is down the worker does not restart itself (a restart cannot fix the database).
+
 ## v0.1.25 · One system, no overlaps
 - A second system ran on every page visit: each open page POSTed /api/dig every 15s, which ran a full dig on Vercel next to the worker, on its own lock and its own RPC limiter. Due checkpoints, lessons and calls could be processed twice, and the two limiters together went far over the Helius plan (the 429 storms). The page nudge is gone; the fallback dig only runs while the worker is down and then holds the worker's own lane locks.
 - The minute ping (/api/desk/run) now steps aside whenever the worker process is up (it restarts itself when a loop hangs) or a desk holds the lock. Before, a late desk beat during a 429 storm made it start a whole second system on Vercel. Takeovers are counted on /status.

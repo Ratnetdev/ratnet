@@ -338,6 +338,42 @@ const jupHeaders = (): Record<string, string> => (process.env.JUPITER_API_KEY ? 
 
 let EXEC_CFG: ExecCfg = {};
 /** Live swap: the fast path in lib/exec.ts (own tx, Helius priority fee, Jito tip, Sender), Jupiter's tx as fallback. */
+// Open positions live in this process's memory between beats and go to Redis at most every 10s (at once after a trade).
+// Each position carries its price path (up to 360 points, ~20KB): reading every position and ghost and writing each one
+// back twice a second was most of the Upstash bandwidth that took the site down on 7 Oct. The desk lock makes this
+// process the only writer, so the memory copy is the truth; a key removed in Redis (a reset) is dropped here too.
+const POSC: Record<string, Map<string, Pos>> = {};
+const WROTE = new Map<string, number>();
+async function loadPositions(key: string): Promise<Record<string, Pos>> {
+  const r = redis();
+  const m = (POSC[key] ||= new Map());
+  const keys = ((await r.hkeys(key)) || []) as string[];
+  const ks = new Set(keys);
+  for (const k of Array.from(m.keys())) if (!ks.has(k)) m.delete(k);
+  const miss = keys.filter((k) => !m.has(k));
+  if (miss.length) {
+    const got = ((await r.hmget<Record<string, Pos>>(key, ...miss)) || {}) as Record<string, Pos | null>;
+    for (const k of miss) if (got[k]) m.set(k, got[k] as Pos);
+  }
+  return Object.fromEntries(m);
+}
+async function savePos(key: string, p: Pos, force = false) {
+  (POSC[key] ||= new Map()).set(p.mint, p);
+  const w = `${key}|${p.mint}`;
+  if (!force && Date.now() - (WROTE.get(w) || 0) < 10_000) return;
+  WROTE.set(w, Date.now());
+  await redis().hset(key, { [p.mint]: p });
+}
+async function dropPos(key: string, mint: string) {
+  POSC[key]?.delete(mint);
+  WROTE.delete(`${key}|${mint}`);
+  await redis().hdel(key, mint);
+}
+/** Write every position held in memory (end of a desk session). */
+async function flushPositions() {
+  for (const [key, m] of Object.entries(POSC)) for (const p of Array.from(m.values())) await savePos(key, p, true).catch(() => {});
+}
+
 let DESK_LOCK: Lock | null = null;
 let DESK_LOST = false;
 /** Throws unless this process holds the desk lock right now (checked with Redis before every real-money swap). */
@@ -782,6 +818,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let digging: Promise<unknown> | null = null;
     let walletAt = 0;
     let walletSolC: number | null = null;
+    let lastSlowAt = 0;
     while (Date.now() - t0 < budgetMs) {
       loops++;
       if (DESK_LOST || !(await renew(lock, LOCK_MS))) {
@@ -797,13 +834,16 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         digging = onBeat().catch(() => null).finally(() => (digging = null));
       }
       if (kp && state.live) warm().catch(() => {}); // a fresh blockhash is always ready for the next trade
-      const posMap = (await r.hgetall<Record<string, Pos>>(K.deskPos)) || {};
+      const posMap = await loadPositions(K.deskPos);
       const positions = Object.values(posMap);
       // signals older than 3 minutes are stale by the desk's own rule: drop them quietly, newest calls first
       const stale = Number((await r.zremrangebyscore(K.deskQ, 0, now - 180_000)) || 0);
       if (stale) log(b, "VET", `dropped ${stale} stale signal${stale > 1 ? "s" : ""} (older than 3 minutes)`, "info");
       const queued = ((await r.zrange<string[]>(K.deskQ, 0, 9, { rev: true })) || []) as string[];
-      const slow = loops % 3 === 1 && !learning; // shadows and COACH every few beats, one pass at a time
+      // shadows and COACH every 15s, one pass at a time (every third beat read the whole shadow and after books, with
+      // their price paths, about once a second: a large share of the Redis bandwidth)
+      const slow = !learning && now - lastSlowAt >= 15_000;
+      if (slow) lastSlowAt = now;
       const shadows = slow ? (await r.hgetall<Record<string, Shadow>>(K.deskShadow)) || {} : {};
       const afters = slow ? (await r.hgetall<Record<string, After>>(K.deskAfter)) || {} : {};
       const stalks = (await r.hgetall<Record<string, Stalk>>(K.deskStalk)) || {};
@@ -828,7 +868,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const closeAll = !!(await r.get("rn:desk:closeall"));
       if (closeAll) await r.del("rn:desk:closeall");
 
-      const ghosts = Object.values(((await r.hgetall<Record<string, Pos>>(GHOST_POS)) || {}) as Record<string, Pos>);
+      const ghosts = Object.values(await loadPositions(GHOST_POS));
       // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
       const pxList = Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrcf]:/, "")), ...Object.keys(stalks), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint)]));
       // positions first: if the RPC is busy or down, open positions still get a price (DexScreener) and their exits
@@ -993,8 +1033,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             p.noPxSince ||= now;
             if (now - p.noPxSince > 30 * 60_000) {
               const ok = await sell(b, state, p, 1, 0, "curve full but never migrated: written off", cfg.slippageBps, kp);
-              if (ok) await r.hdel(K.deskPos, p.mint);
-            } else await r.hset(K.deskPos, { [p.mint]: p });
+              if (ok) await dropPos(K.deskPos, p.mint);
+            } else await savePos(K.deskPos, p);
             continue;
           }
           const { sellFrac, reason, tunable, lv } = decide(p, q);
@@ -1030,8 +1070,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After });
             }
           }
-          if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
-          else await r.hdel(K.deskPos, p.mint);
+          if (p.tokens > 0) await savePos(K.deskPos, p, sellFrac > 0);
+          else await dropPos(K.deskPos, p.mint);
         } catch (e) {
           const k = `rn:desk:poserr:${p.mint}`;
           const n = await r.incr(k).catch(() => 1);
@@ -1048,8 +1088,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             p.noPxSince ||= now;
             if (now - p.noPxSince > 30 * 60_000) {
               await ghostSell(b, p, 1, 0, "curve full but never migrated: written off");
-              await r.hdel(GHOST_POS, p.mint);
-            } else await r.hset(GHOST_POS, { [p.mint]: p });
+              await dropPos(GHOST_POS, p.mint);
+            } else await savePos(GHOST_POS, p);
             continue;
           }
           const d = decide(p, q, " (ghost)");
@@ -1071,8 +1111,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             // COACH reviews ghost exits like real ones (trail too tight or too loose)
             if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(d.reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After });
           }
-          if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
-          else await r.hdel(GHOST_POS, p.mint);
+          if (p.tokens > 0) await savePos(GHOST_POS, p, d.sellFrac > 0);
+          else await dropPos(GHOST_POS, p.mint);
         } catch (e) {
           log(b, "RISK", `ghost $${p.symbol}: exit check failed (${safeErr(e)})`, "bad");
         }
@@ -1122,7 +1162,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           if (!q) continue;
           const curve = q.curve?.progress ?? 0;
           // tweet coins have their own slots, so the King's positions never crowd them out (and the reverse)
-          const liveNow = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
+          const liveNow = Object.values(await loadPositions(K.deskPos));
           const open = liveNow.filter((p) => takesSlot(p) && (wireSig ? p.how === "wire" : !OWN_LANE.has(p.how || ""))).length;
           // a BOND call the rats could not tape in time: read its trades now, before VET (desk lane, ~1s)
           if (!rec.tape && !wireSig) {
@@ -1354,6 +1394,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       // --- the homepage shows how close the desk is to its own wallet (every ~30s)
       if (loops % 15 === 1) {
         const ex = await exam(state, walletSol);
+        await r.set("rn:desk:exam", { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
         await r.set(K.deskExam, { at: now, live: state.live, passed: ex.checks.filter((c) => c.ok).length, total: ex.checks.length, checks: ex.checks.map((c) => ({ l: c.label, ok: c.ok, now: c.now, need: c.need })), walletSol, wallet: kp ? kp.publicKey.toBase58() : null }, { ex: 600 });
       }
 
@@ -1410,6 +1451,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     return { error: safeErr(e), loops };
   } finally {
     clearInterval(lockTimer);
+    if (!DESK_LOST) await flushPositions();
     DESK_LOCK = null;
     await release(lock);
   }
@@ -1426,7 +1468,7 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   const coin = { mint: rec.mint, symbol: rec.symbol };
   enqueueLens(r, rec.mint, "buy");
   // RISK: at the bag cap, the quietest house-money bag makes room (cash and attention go to the new signal)
-  const held = Object.values(((await r.hgetall<Record<string, Pos>>(K.deskPos)) || {}) as Record<string, Pos>);
+  const held = Object.values(await loadPositions(K.deskPos));
   if (held.length >= ((cfg as any).maxBags ?? 12)) {
     const bag = held.filter((p) => p.tp1Done && p.mint !== rec.mint).sort((a, z) => (a.peakAt || a.openedAt) - (z.peakAt || z.openedAt))[0];
     if (!bag) {
@@ -1434,7 +1476,7 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
       return;
     }
     const ok = await sell(b, state, bag, 1, bag.lastPx, `bag cap: sold the quietest bag to make room for $${rec.symbol}`, cfg.slippageBps, kp);
-    if (ok && bag.tokens <= 0) await r.hdel(K.deskPos, bag.mint);
+    if (ok && bag.tokens <= 0) await dropPos(K.deskPos, bag.mint);
   }
   // SIZE: research on fat tails says small, equal bets; never size up on conviction
   const avail = state.live ? (walletSol ?? 0) - 0.02 : state.cash;
@@ -1498,11 +1540,11 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
     log(b, "RISK", `watching ${pos.watch.length} insider bags on $${rec.symbol}${pos.watch.some((w) => w.role === "dev") ? " incl. the dev" : ""}${held ? `, ${held} bundle/sniper/top wallets` : ""}`, "info", coin);
   }
   pos.xm = xm;
-  await r.hset(K.deskPos, { [rec.mint]: pos });
+  await savePos(K.deskPos, pos, true);
 }
 
 async function equity(state: DeskState, kp: Keypair | null, px: Record<string, { px: number }>) {
-  const pos = Object.values((await redis().hgetall<Record<string, Pos>>(K.deskPos)) || {}).filter((p) => p.live === state.live);
+  const pos = Object.values(await loadPositions(K.deskPos)).filter((p) => p.live === state.live);
   const held = pos.reduce((a, p) => a + p.tokens * (px[p.mint]?.px ?? p.lastPx) * (1 - FEE), 0);
   const cash = state.live && kp ? (await conn().getBalance(kp.publicKey).catch(() => 0)) / 1e9 : state.cash;
   return { value: cash + held, dayKey: dayKey() };
@@ -1860,7 +1902,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
     const amt = await tokenAmounts(ins.map((i) => i.acc)).catch(() => ({} as Record<string, number>));
     pos.watch = ins.map((i) => ({ acc: i.acc, role: i.role, base: amt[i.acc] ?? 0 })).filter((w) => w.base > 0);
   }
-  await r.hset(GHOST_POS, { [rec.mint]: pos });
+  await savePos(GHOST_POS, pos, true);
   log(b, "EXEC", `ghost desk bought $${rec.symbol} for ${sol} SOL (the real desk is blocked: ${blocked}). not counted, learned from`, "info", coin);
 }
 
@@ -1953,7 +1995,19 @@ export async function getDesk() {
   const learnS = await loadLearn();
   const addr = deskWalletAddress();
   const walletSol = addr ? await cachedBalance(addr) : null;
-  const ex = await exam(state, walletSol);
+  // the exam reads up to 2,000 trades (with their entry context) and 3,000 equity points: once per 30s for every
+  // visitor, not on every page poll
+  const exC = await r.get<{ at: number; ex: Exam }>("rn:desk:exam").catch(() => null);
+  const ex = exC && Date.now() - exC.at < 30_000 ? exC.ex : await exam(state, walletSol);
+  if (!exC || Date.now() - exC.at >= 30_000) await r.set("rn:desk:exam", { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
+  // the page draws a small sparkline: 90 points of each path are plenty (positions carry up to 360)
+  for (const k of Object.keys(pos || {})) {
+    const ser = pos[k]?.series;
+    if (Array.isArray(ser) && ser.length > 90) {
+      const step = Math.ceil(ser.length / 90);
+      pos[k].series = ser.filter((_: unknown, i: number) => i % step === 0 || i === ser.length - 1);
+    }
+  }
   const arms = ARMS.map((a) => {
     const x = learnS.arms[String(a)];
     return { arm: a, n: x.n, fills: x.fills, mean: x.n ? Math.round((Math.exp(x.sum / x.n) - 1) * 1000) / 10 : null };

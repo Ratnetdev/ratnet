@@ -18,6 +18,7 @@
 // followed 1h, 6h and 24h later, so each wallet and each class gets a copy-trade record of its own. MIND and RISK
 // see those records; nothing is followed blindly.
 import { postTo } from "./board";
+import { memo } from "./memo";
 import { safeEq, secretFor } from "./admin";
 import { K, redis } from "./redis";
 import { SITE } from "@/config/site";
@@ -575,7 +576,7 @@ export async function houndRefill() {
   const kol = await kolSync().catch((e) => `error ${e?.message || e}`);
   const hook = await syncHook(true).catch((e) => ({ hook: `error ${e?.message || e}` }));
   const st = ((await r.hgetall<Record<string, any>>(STATUS)) || {}) as Record<string, any>;
-  return { fomo, kol, hook, status: st, wallets: Object.keys(await book()).length };
+  return { fomo, kol, hook, status: st, wallets: Number((await redis().hlen(W)) || 0) };
 }
 
 export async function houndSession() {
@@ -590,7 +591,7 @@ export async function houndSession() {
 
 export async function houndView(full: boolean) {
   const r = redis();
-  const [feed, ws, ev, hook, lv, q, stt] = await Promise.all([r.lrange<Buy>(FEED, 0, 39), book(), r.hgetall<Record<string, number>>(EV), r.get<any>(HOOK), r.get<any>(LIVE), r.zcard(BQ), r.hgetall<Record<string, any>>(STATUS)]);
+  const [feed, ws, ev, hook, lv, q, stt] = await Promise.all([r.lrange<Buy>(FEED, 0, 39), memo("hound:book", 60_000, book), r.hgetall<Record<string, number>>(EV), r.get<any>(HOOK), r.get<any>(LIVE), r.zcard(BQ), r.hgetall<Record<string, any>>(STATUS)]);
   const E = (ev || {}) as Record<string, number>;
   const all = Object.values(ws);
   const counts = { total: all.length, fomo: all.filter((x) => x.cls.startsWith("fomo")).length, kol: all.filter((x) => x.cls === "kol").length, kolConfirmed: all.filter((x) => x.cls === "kol" && x.conf === "confirmed").length, smart: all.filter((x) => x.cls === "smart").length, admin: all.filter((x) => x.cls === "admin").length };

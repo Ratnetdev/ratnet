@@ -106,7 +106,7 @@ const slot = (l: number, cost: number) =>
     queues[Math.max(0, Math.min(3, l))].push({ cost, go, at: Date.now() });
     pump();
   });
-export const rpcStats = { calls: 0, throttled: 0, byLane: [0, 0, 0, 0] };
+export const rpcStats = { calls: 0, throttled: 0, byLane: [0, 0, 0, 0], fails: 0, lastError: "" };
 const thr1m: number[] = [];
 /** The limiter's last minute, per lane: calls, average wait in the queue, what is waiting now, 429s, the live ceiling. */
 export function rpcView() {
@@ -154,8 +154,25 @@ export async function limitedFetch(input: any, init?: any): Promise<Response> {
     // no platform timeout to save it)
     const deadline = AbortSignal.timeout(RPC_TIMEOUT_MS);
     const signal = init?.signal && (AbortSignal as any).any ? (AbortSignal as any).any([init.signal, deadline]) : deadline;
-    const res = await fetch(input, { ...(init || {}), signal });
-    if (res.status !== 429 || i >= 4) return res;
+    let res: Response;
+    try {
+      res = await fetch(input, { ...(init || {}), signal });
+    } catch (e: any) {
+      rpcStats.fails += cost;
+      rpcStats.lastError = String(e?.name === "TimeoutError" ? "timeout" : e?.message || e).replace(/https?:\/\/\S+/g, "[rpc]").slice(0, 80);
+      throw e;
+    }
+    if (res.status >= 400 && res.status !== 429) {
+      rpcStats.fails += cost;
+      rpcStats.lastError = `HTTP ${res.status}`;
+    }
+    if (res.status !== 429 || i >= 4) {
+      if (res.status === 429) {
+        rpcStats.fails += cost;
+        rpcStats.lastError = "HTTP 429 after 5 tries";
+      }
+      return res;
+    }
     rpcStats.throttled++;
     const tnow = Date.now();
     thr1m.push(tnow);

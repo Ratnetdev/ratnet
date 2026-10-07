@@ -12,6 +12,7 @@ import { lane, rpcView } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
 import { flushRpcDay } from "../src/lib/rpcday";
 import { stallAlerts } from "../src/lib/alive";
+import { criticalChecks, redisDown } from "../src/lib/critical";
 import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 
@@ -31,6 +32,7 @@ let deskAt = Date.now();
 // to 3 minutes for swaps in flight to settle. Every restart is recorded with its reason (shown on /status).
 let restartWanted = 0;
 async function restart(why: string) {
+  if (redisDown()) return console.log(`watchdog: ${why}, but Redis is down: not restarting (it would not help)`);
   if (swapsInFlight() > 0 && (!restartWanted || Date.now() - restartWanted < 180_000)) {
     restartWanted ||= Date.now();
     return console.log(`watchdog: ${why}; waiting for ${swapsInFlight()} swap(s) in flight before restarting`);
@@ -50,6 +52,7 @@ async function beat() {
   redis().set("rn:rpc", { at: Date.now(), ...rpcView() }, { ex: 120 }).catch(() => {});
   flushRpcDay().catch(() => {});
   stallAlerts().catch(() => {});
+  criticalChecks().catch(() => {});
   if (Date.now() - fastAt > 150_000) return restart("the rats' fast lane is stuck");
   if (Date.now() - slowAt > 300_000) return restart("the rats' slow lane is stuck");
   if (Date.now() - histAt > 900_000) return restart("the historian is stuck");
@@ -70,6 +73,8 @@ const LAST = new Map<string, { mc: number; at: number }>();
 let watched = new Set<string>();
 let lastMsgAt = Date.now();
 let lastStreamMark = 0;
+const FLUSHED = new Map<string, number>();
+let lastRtExpire = 0;
 
 function onTrade(m: any, kick: () => void) {
   const mint = String(m.mint);
@@ -119,16 +124,22 @@ async function flushTape() {
     const quiet = Math.round((now - lastMsgAt) / 1000);
     markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, lastMsgSec: quiet }).catch(() => {});
   }
+  // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};
   for (const [mint, w] of TAPE) {
     const l = LAST.get(mint);
-    if (!l || now - l.at > 90_000) continue;
+    if (!l || now - l.at > 90_000 || FLUSHED.get(mint) === l.at) continue;
+    FLUSHED.set(mint, l.at);
     out[mint] = { mc: l.mc, at: l.at, ...tapeOf(w, now) };
   }
+  for (const m of Array.from(FLUSHED.keys())) if (!TAPE.has(m)) FLUSHED.delete(m);
   if (Object.keys(out).length) {
     const r = redis();
     await r.hset("rn:rt", out).catch(() => {});
-    await r.expire("rn:rt", 180).catch(() => {});
+    if (now - lastRtExpire > 30_000) {
+      lastRtExpire = now;
+      await r.expire("rn:rt", 180).catch(() => {});
+    }
   }
 }
 
@@ -195,6 +206,7 @@ function pumpportal() {
     if (drop.length) {
       ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: drop }));
       drop.forEach((k) => (TAPE.delete(k), LAST.delete(k), SEEN.delete(k)));
+      redis().hdel("rn:rt", ...drop).catch(() => 0);
     }
     watched = want;
   };
