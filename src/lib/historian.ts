@@ -23,12 +23,12 @@ import { canonicalPool, readPools } from "./pool";
 import { lane } from "./solana";
 import { epochReady } from "./epoch";
 import { agentLog } from "./agents";
-import { bondingCurvePda, conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr } from "./solana";
+import { bondingCurvePda, conn, fetchOffchain, getCurves, limitedFetch, parseCreateTx, pmap, safeErr } from "./solana";
 import { buildTape, parsedTxs, parseTrade, progressFromSol, Tape, Trade } from "./tape";
 import { creditMillion, creditResolve, funderOf, GK } from "./graph";
 import { features, learn, nanoScore, NANO_MIN } from "./nano";
 import { score, verdictOf } from "./king";
-import { loadModel, LABEL_MS } from "./digger";
+import { applyNano, loadModel, LABEL_MS, type NanoOp } from "./digger";
 import { features as runFeatures, MILESTONES, MILLION, RK, Run, loadRunner } from "./runner";
 import { ensureSolHistory, RG, regimeAt, seasonNow } from "./regime";
 import { getSettings } from "./settings";
@@ -61,9 +61,18 @@ export type HState = {
   bt: { v0n: number; v0hit: number; nn: number; nhit: number; base: number; baseHit: number };
   errors: number;
   lastError?: string;
+  // bonds first: pump.fun's migration account, paged back in time (every bonded coin, without parsing every launch)
+  mCursor?: string | null;
+  mSigs?: string[];
+  mPos?: number;
+  mDone?: boolean;
+  mFound?: number;
+  mClock?: number;
 };
 
-type Job = { mint: string; curve: string; creator: string; createdAt: number; name: string; symbol: string; uri: string; devBuySol: number; w: number; bondedNow: boolean };
+type Job = { mint: string; curve: string; creator: string; createdAt: number; name: string; symbol: string; uri: string; devBuySol: number; w: number; bondedNow: boolean; fromMig?: boolean };
+const MIGRATION_ACCOUNT = "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg"; // pump.fun's migration account (signs every graduation)
+const SEEN = "rn:h:seen"; // mints already queued for a deep read
 
 const RENT = 0.0016;
 const CUT1 = CHECKPOINTS.t1;
@@ -126,7 +135,9 @@ export async function oldestSigs(address: string, untilMs: number, max = 3000): 
       const out: any[] = [];
       let token: string | undefined;
       for (let i = 0; i < 4 && out.length < max; i++) {
-        const res = await fetch(url, {
+        // through the shared RPC limiter (it used to bypass it, unpaced and with no deadline: one stalled call could
+        // freeze the historian for good)
+        const res = await limitedFetch(url, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransactionsForAddress", params: [address, { transactionDetails: "signatures", sortOrder: "asc", limit: 1000, ...(token ? { paginationToken: token } : {}) }] }),
@@ -158,7 +169,20 @@ export async function oldestSigs(address: string, untilMs: number, max = 3000): 
 /** Replay one launch at minute 1 and minute 5, from history only. */
 
 /** Replay one launch at minute 1 and minute 5, from history only. Record features are masked (see rule 2). */
-async function replay(job: Job) {
+/** A bond found through the migration account: read its launch (the curve's first transaction) to fill the job. */
+async function fillJob(job: Job): Promise<Job | null> {
+  if (job.createdAt) return job;
+  const first = (await oldestSigs(job.curve, Date.now(), 1000)).find((x) => !x.err);
+  if (!first) return null;
+  const tx = await conn().getParsedTransaction(first.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null);
+  const l = tx ? parseCreateTx(first.signature, tx) : null;
+  if (!l || l.mint !== job.mint) return null;
+  return { ...job, createdAt: l.createdAt, creator: l.creator, name: l.name, symbol: l.symbol, uri: l.uri, devBuySol: l.devBuySol };
+}
+
+async function replay(job0: Job) {
+  const job = await fillJob(job0);
+  if (!job) return null;
   const sigs = (await oldestSigs(job.curve, job.createdAt + CUT5 + 5000)).filter((x) => !x.err);
   if (!sigs.length) return null;
   const createSlot = sigs[0].slot;
@@ -237,7 +261,7 @@ async function postRun(mint: string): Promise<{ t: number; mc: number }[] | null
 export async function historianSession(budgetMs = 45_000) {
   // spare RPC capacity only: the desk and the rats always go first (see lowLane in lib/solana.ts)
   if (!(await epochReady())) return { history: "waiting for the data reset" };
-  return lane.run(2, () => historianInner(budgetMs));
+  return lane.run(3, () => historianInner(budgetMs));
 }
 
 async function historianInner(budgetMs: number) {
@@ -254,6 +278,7 @@ async function historianInner(budgetMs: number) {
     ensureSolHistory().catch(() => {});
     const model = await loadModel();
     const model1 = await loadModel(K.nano1);
+    const nanoOps: NanoOp[] = [];
     const runner = await loadRunner();
     let dirty = false;
     let runDirty = false;
@@ -261,6 +286,55 @@ async function historianInner(budgetMs: number) {
 
     while (st.phase === "scan" && Date.now() - t0 < budgetMs) {
       const qlen = (await r.llen(HK.queue)) || 0;
+      // --- 0. bonds first: every graduation from pump.fun's migration account, newest first. Bonds are the rare
+      // lessons the models need most; this finds a month of them with ~1 call per bond instead of parsing every launch
+      if (!st.mDone && qlen < Math.max(cfg.deepPerRun, 16) * 6) {
+        if ((st.mPos ?? 0) >= (st.mSigs?.length ?? 0)) {
+          const raw = await conn().getSignaturesForAddress(new PublicKey(MIGRATION_ACCOUNT), { before: st.mCursor ?? undefined, limit: 1000 });
+          if (!raw.length) st.mDone = true;
+          else {
+            st.mCursor = raw[raw.length - 1].signature;
+            const oldestT = (raw[raw.length - 1].blockTime || 0) * 1000;
+            st.mSigs = raw.filter((x) => !x.err && (x.blockTime || 0) * 1000 >= st.from).map((x) => x.signature);
+            st.mPos = 0;
+            st.mClock = oldestT;
+            if (oldestT < st.from && !st.mSigs.length) st.mDone = true;
+          }
+        }
+        const mchunk = (st.mSigs || []).slice(st.mPos ?? 0, (st.mPos ?? 0) + 80);
+        st.mPos = (st.mPos ?? 0) + mchunk.length;
+        if (mchunk.length) {
+          const WSOL_M = "So11111111111111111111111111111111111111112";
+          const found = await pmap(mchunk, 16, async (sig) => {
+            try {
+              const tx: any = await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+              const logs: string[] = tx?.meta?.logMessages || [];
+              if (!logs.some((l) => /Instruction: Migrate/i.test(l))) return null;
+              const bal: any[] = [...(tx?.meta?.postTokenBalances || []), ...(tx?.meta?.preTokenBalances || [])];
+              const mint = bal.map((b) => String(b.mint || "")).find((m) => m && m !== WSOL_M && m.endsWith("pump")) || bal.map((b) => String(b.mint || "")).find((m) => m && m !== WSOL_M);
+              return mint || null;
+            } catch {
+              return null;
+            }
+          });
+          const mints = Array.from(new Set(found.filter((m): m is string => !!m)));
+          if (mints.length) {
+            const p = r.pipeline();
+            for (const m of mints) p.sadd(SEEN, m);
+            const added = (await p.exec()) as number[];
+            const q = r.pipeline();
+            let n = 0;
+            mints.forEach((m, i) => {
+              if (!Number(added[i])) return;
+              n++;
+              q.rpush(HK.queue, { mint: m, curve: bondingCurvePda(m), creator: "", createdAt: 0, name: "", symbol: "", uri: "", devBuySol: 0, w: 1, bondedNow: true, fromMig: true } satisfies Job);
+            });
+            if (n) await q.exec();
+            st.mFound = (st.mFound || 0) + n;
+          }
+        }
+      }
+
       // --- 1. scan backwards: newest page first, parse create txs, keep dev records, queue deep reads
       if (qlen < Math.max(cfg.deepPerRun, 16) * 4) {
         if (st.pos >= st.sigs.length) {
@@ -301,6 +375,12 @@ async function historianInner(budgetMs: number) {
           // a full curve only counts if the coin really migrated into its canonical pool (see lib/pool.ts)
           const full = launches.filter((l) => curves[l.mint]?.complete).map((l) => l.mint);
           const pools = full.length ? await readPools(full) : {};
+          // bonds the migration scan already queued are not queued twice
+          const bondedMints = launches.filter((l) => curves[l.mint]?.complete && pools[l.mint] && pools[l.mint]!.sol > 0.5).map((l) => l.mint);
+          const sp = r.pipeline();
+          for (const m of bondedMints) sp.sadd(SEEN, m);
+          const newly = bondedMints.length ? ((await sp.exec()) as number[]) : [];
+          const already = new Set(bondedMints.filter((_, i) => !Number(newly[i])));
           const p = r.pipeline();
           for (const l of launches) {
             const bondedNow = !!curves[l.mint]?.complete && !!pools[l.mint] && pools[l.mint]!.sol > 0.5;
@@ -316,7 +396,7 @@ async function historianInner(budgetMs: number) {
               d.bonded++;
               p.hincrby(K.devB, l.creator, 1);
             }
-            if (bondedNow || st.scanned % cfg.sample === 0)
+            if ((bondedNow && !already.has(l.mint)) || (!bondedNow && st.scanned % cfg.sample === 0))
               p.rpush(HK.queue, { mint: l.mint, curve: bondingCurvePda(l.mint), creator: l.creator, createdAt: l.createdAt, name: l.name, symbol: l.symbol, uri: l.uri, devBuySol: l.devBuySol, w: bondedNow ? 1 : cfg.sample, bondedNow } satisfies Job);
           }
           await p.exec();
@@ -360,8 +440,8 @@ async function historianInner(budgetMs: number) {
           st.bt.nn += job.w;
           if (bonded) st.bt.nhit += job.w;
         }
-        learn(model, rep.x5, bonded, undefined, w);
-        if (rep.x1) learn(model1, rep.x1, bonded, undefined, w);
+        nanoOps.push({ k: 0, x: rep.x5, y: bonded, sw: w });
+        if (rep.x1) nanoOps.push({ k: 1, x: rep.x1, y: bonded, sw: w });
         dirty = true;
         st.deep++;
         st.lessons++;
@@ -419,10 +499,9 @@ async function historianInner(budgetMs: number) {
       await p.exec();
       if (catchItems.length) st.catchLessons = (st.catchLessons || 0) + (await learnHistory(catchItems).catch(() => 0));
     }
-    if (dirty) {
-      await r.set(K.nano, model);
-      await r.set(K.nano1, model1);
-    }
+    // the historian's lessons go into the live models under the shared lock, on their latest copy (it used to save
+    // its own 45-second-old copy over everything the rats had learned meanwhile)
+    if (dirty && nanoOps.length) await applyNano(nanoOps.splice(0));
     if (runDirty) await r.set(RK.model, runner);
     for (const l of log.slice(0, 10)) await r.lpush(HK.log, { at: Date.now(), text: l });
     await r.ltrim(HK.log, 0, 49);
@@ -470,6 +549,10 @@ export async function getHistory() {
     days,
     backtest: { base: rate(st.bt.baseHit, st.bt.base), v0: rate(st.bt.v0hit, st.bt.v0n), v0n: st.bt.v0n, nano: rate(st.bt.nhit, st.bt.nn), nanoN: st.bt.nn },
     errors: st.errors,
+    lastError: st.lastError ? String(st.lastError).slice(0, 120) : null,
+    bondsFound: st.mFound || 0,
+    bondsBackTo: st.mClock || null,
+    bondsDone: !!st.mDone,
     log: log || [],
     season,
     drift,

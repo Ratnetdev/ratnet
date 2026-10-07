@@ -1372,7 +1372,7 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   const cvNow = (await getCurves([rec.mint]).catch(() => ({} as Record<string, CurveView | null>)))[rec.mint];
   const grad = !cvNow || cvNow.complete;
   const mo = how === "momo" ? await momoSignal(rec.mint).catch(() => null) : null;
-  const sh = await shield({ mint: rec.mint, symbol: rec.symbol, grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / px) * 1e6))), tape: rec.tape, buys5: mo?.b5, sells5: mo?.s5, ageMs: Date.now() - rec.createdAt }).catch(() => null);
+  const sh = await shield({ mint: rec.mint, symbol: rec.symbol, grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / px) * 1e6))), tape: rec.tape, buys5: mo?.b5, sells5: mo?.s5, ageMs: Date.now() - rec.createdAt, v5: (mo as any)?.v5, mcUsd: (mo as any)?.mc }).catch(() => null);
   if (sh && !sh.ok) {
     const f = (sh.hardFail || sh.softFail)!;
     log(b, "VET", `SHIELD stopped $${rec.symbol} (${how}): ${f.rule.replace(/_/g, " ")} (${f.v})${f.hard ? "" : ". FILM follows it"}`, "bad", coin);

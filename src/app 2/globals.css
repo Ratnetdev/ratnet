@@ -1013,3 +1013,12 @@ img, canvas, video, iframe { max-width: 100%; }
 .btn { white-space: nowrap; }
 .row > .btn, .row > button, .row > a.btn { flex-shrink: 0; }
 .ds-main span, .ds-main b { overflow-wrap: anywhere; }
+.alive-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.alive-c { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); font-size: 12px; min-width: 0; }
+.alive-c span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.alive-c b { font-weight: 500; color: var(--dim); }
+.alive-c i { width: 7px; height: 7px; background: var(--rat); box-shadow: 0 0 6px var(--rat); flex: 0 0 auto; }
+.alive-c.is-warn i { background: var(--bond); box-shadow: 0 0 6px var(--bond); }
+.alive-c.is-bad i { background: var(--dust); box-shadow: 0 0 6px var(--dust); }
+.alive-c.is-bad b { color: var(--dust); }
+.red { color: var(--dust); }

@@ -218,6 +218,7 @@ type Ctx = {
   model1: NanoModel;
   model1Dirty: boolean;
   nanoLog: { n: number; loss: number; acc: number; pos: number; at: number }[];
+  ops: NanoOp[]; // lessons for the live models, applied atomically in flush (see applyNano)
 };
 
 // Models are loaded once per dig() and shared by every step of the run.
@@ -230,7 +231,7 @@ let CAL: Cal | null = null; // King v1 lines (lib/kingcal.ts), reloaded every di
 let CAL_AT = 0;
 
 function newCtx(model: NanoModel): Ctx {
-  return { p: redis().pipeline(), now: Date.now(), feed: [], stat: {}, model, modelDirty: false, model1: M1, model1Dirty: false, nanoLog: [] };
+  return { p: redis().pipeline(), now: Date.now(), feed: [], stat: {}, model, modelDirty: false, model1: M1, model1Dirty: false, nanoLog: [], ops: [] };
 }
 const inc = (c: Ctx, k: string, n = 1) => (c.stat[k] = (c.stat[k] || 0) + n);
 
@@ -244,11 +245,50 @@ async function flush(c: Ctx) {
     p.lpush(K.feed, ...c.feed);
     p.ltrim(K.feed, 0, 299);
   }
-  if (c.modelDirty) p.set(K.nano, c.model);
-  if (c.model1Dirty) p.set(K.nano1, c.model1);
-  for (const l of c.nanoLog) p.rpush(K.nanoLog, l);
-  if (c.nanoLog.length) p.ltrim(K.nanoLog, -500, -1);
   await p.exec();
+  if (c.ops.length) await applyNano(c.ops);
+}
+
+export type NanoOp = { k: 0 | 1; x: number[]; y: boolean; pw?: number; sw?: number; rp?: boolean };
+
+/**
+ * The only way the live models (nano and nano-1) are trained: under a lock, on the latest saved copy. Before
+ * v0.1.22 the rats' lanes and the historian each loaded the model, trained their own copy for up to a minute and
+ * saved it over the others: whole batches of lessons were lost, and the training-loss chart jumped backwards
+ * (the zigzag at the end of the line on /lab).
+ */
+export async function applyNano(ops: NanoOp[]) {
+  if (!ops.length) return;
+  const r = redis();
+  let got = false;
+  for (let i = 0; i < 60 && !got; i++) {
+    got = !!(await r.set("rn:lock:nano", Date.now(), { nx: true, px: 8000 }));
+    if (!got) await new Promise((res) => setTimeout(res, 50));
+  }
+  try {
+    const [m, m1] = await Promise.all([loadModel(), loadModel(K.nano1)]);
+    const logs: { n: number; loss: number; acc: number; pos: number; at: number }[] = [];
+    let d0 = false;
+    let d1 = false;
+    for (const o of ops) {
+      if (o.k === 0) {
+        learn(m, o.x, o.y, o.pw, o.sw ?? 1, !!o.rp);
+        d0 = true;
+        if (!o.rp && m.n % 25 === 0) logs.push({ n: m.n, loss: round4(m.loss), acc: round4(m.acc), pos: m.pos, at: Date.now() });
+      } else {
+        learn(m1, o.x, o.y, o.pw, o.sw ?? 1, !!o.rp);
+        d1 = true;
+      }
+    }
+    const p = r.pipeline();
+    if (d0) p.set(K.nano, m);
+    if (d1) p.set(K.nano1, m1);
+    for (const l of logs) p.rpush(K.nanoLog, l);
+    if (logs.length) p.ltrim(K.nanoLog, -500, -1);
+    await p.exec();
+  } finally {
+    if (got) await r.del("rn:lock:nano").catch(() => {});
+  }
 }
 
 export async function loadModel(key: string = K.nano): Promise<NanoModel> {
@@ -1275,16 +1315,11 @@ async function lessons(model: NanoModel) {
     if (x?.length) {
       // King v1 calibration: nano's score on this lesson BEFORE it learns from it
       noteCal(c.p, nanoScore(c.model, x), bonded);
-      learn(c.model, x, bonded, posWeight(c.model.n, c.model.pos));
-      c.modelDirty = true;
+      c.ops.push({ k: 0, x, y: bonded, pw: posWeight(c.model.n, c.model.pos) });
       n++;
-      if (c.model.n % 25 === 0) c.nanoLog.push({ n: c.model.n, loss: round4(c.model.loss), acc: round4(c.model.acc), pos: c.model.pos, at: c.now });
     }
     const x1 = rec.early?.x?.length ? rec.early.x : rec.xpre;
-    if (x1?.length) {
-      learn(c.model1, x1, bonded, posWeight(c.model1.n, c.model1.pos));
-      c.model1Dirty = true;
-    }
+    if (x1?.length) c.ops.push({ k: 1, x: x1, y: bonded, pw: posWeight(c.model1.n, c.model1.pos) });
     // same moment for winners and losers: wallet and cluster records, and the early-vs-King record that gates early entries
     if (rec.tape) {
       inc(c, "tape_n");
@@ -1333,16 +1368,14 @@ async function replay(model: NanoModel) {
   if (len < 200) return { replayed: 0 };
   const off = Math.floor(Math.random() * Math.max(1, len - REPLAY_PER_RUN));
   const batch = ((await r.lrange<Lesson>(REPLAY_KEY, off, off + REPLAY_PER_RUN - 1)) || []) as Lesson[];
-  const m1 = M1;
+  void model;
+  const ops: NanoOp[] = [];
   for (const l of batch) {
-    if (l.x) learn(model, l.x, l.y === 1, undefined, 0.5, true);
-    if (l.x1) learn(m1, l.x1, l.y === 1, undefined, 0.5, true);
+    if (l.x) ops.push({ k: 0, x: l.x, y: l.y === 1, sw: 0.5, rp: true });
+    if (l.x1) ops.push({ k: 1, x: l.x1, y: l.y === 1, sw: 0.5, rp: true });
   }
-  const p = r.pipeline();
-  p.set(K.nano, model);
-  p.set(K.nano1, m1);
-  p.hincrby(K.stat, "replayed", batch.length);
-  await p.exec();
+  await applyNano(ops);
+  await r.hincrby(K.stat, "replayed", batch.length);
   return { replayed: batch.length };
 }
 

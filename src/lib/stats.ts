@@ -216,8 +216,13 @@ export async function getCoin(mint: string) {
 }
 
 export async function getNano() {
-  const [model, log] = await Promise.all([loadModel(), redis().lrange(K.nanoLog, 0, -1)]);
-  return { model, log: log || [], min: NANO_MIN };
+  const [model, raw] = await Promise.all([loadModel(), redis().lrange<{ n: number; loss: number; acc: number; pos: number; at: number }>(K.nanoLog, 0, -1)]);
+  // one point per sample count, in sample order: a line chart must never run backwards (older logs written by
+  // overlapping trainers, before v0.1.22, could repeat or go back in n)
+  const byN = new Map<number, { n: number; loss: number; acc: number; pos: number; at: number }>();
+  for (const l of (raw || []) as any[]) if (l && Number.isFinite(l.n) && Number.isFinite(l.loss)) byN.set(l.n, l);
+  const log = [...byN.values()].sort((a, b) => a.n - b.n);
+  return { model, log, min: NANO_MIN };
 }
 
 export type Bucket = { lo: number; n: number; b: number; rate: number | null };

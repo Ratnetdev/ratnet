@@ -10,9 +10,9 @@ import { K, redis } from "./redis";
 // then the dig, then the historian on spare capacity only (at most 40%). A batched request costs one token per call
 // inside it (that is how Helius counts). A 429 empties the bucket so everyone slows down, then retries.
 export const RPS = Math.max(1, Number(process.env.RPC_RPS || 10));
-export const lane = new AsyncLocalStorage<number>(); // 0 desk (default), 1 dig, 2 historian
-export const lowLane = { run: <T,>(_: boolean, fn: () => T) => lane.run(2, fn) };
-const queues: { cost: number; go: () => void }[][] = [[], [], []];
+export const lane = new AsyncLocalStorage<number>(); // 0 desk (default), 1 the rats (dig), 2 agents, 3 historian
+export const lowLane = { run: <T,>(_: boolean, fn: () => T) => lane.run(3, fn) };
+const queues: { cost: number; go: () => void }[][] = [[], [], [], []];
 // strict rolling 1-second window (never a burst over the plan), 10% headroom
 const CAP = Math.max(1, Math.floor(RPS * 0.9));
 const sent: [number, number][] = []; // [time, calls]
@@ -22,34 +22,52 @@ const used = (w: [number, number][], now: number) => {
   while (w.length && now - w[0][0] >= 1100) w.shift(); // 1.1s: absorbs network jitter
   return w.reduce((a, x) => a + x[1], 0);
 };
+// Lanes, in priority order, each with a ceiling on its share of the plan while others are waiting, so no lane can
+// starve the rest: the desk (exits and entries) first, then the rats (new launches, minute-1 reads, minute-5 calls),
+// then the agents (CATCH, HOUND, MOMO, LENS...), then the historian. Before v0.1.21 the agents shared the desk's lane
+// and one heavy agent (HOUND digging a breakout's whole curve) could keep the rats waiting for minutes.
+const SHARE = [0.7, 0.8, 0.5, 0.4];
+const lanesUsed: [number, number, number][] = []; // [time, calls, lane]
+const usedBy = (l: number, now: number) => {
+  while (lanesUsed.length && now - lanesUsed[0][0] >= 1100) lanesUsed.shift();
+  return lanesUsed.reduce((a, x) => a + (x[2] === l ? x[1] : 0), 0);
+};
 function pump() {
   timer = null;
   for (;;) {
     const now = Date.now();
-    const q = queues.find((x) => x.length);
-    if (!q) break;
-    const job = q[0];
-    const need = Math.min(job.cost, CAP);
-    if (used(sent, now) + need > CAP) break;
-    // the historian gets 40% of the plan, or 75% while the desk and the rats have nothing waiting (it used to sit at
-    // 40% even when the rest of the plan was idle, which is why the 30-day replay crawled)
-    const idle = !queues[0].length && !queues[1].length;
-    if (q === queues[2] && used(hist, now) + need > Math.max(1, Math.floor(CAP * (idle ? 0.75 : 0.4)))) break;
-    sent.push([now, need]);
-    if (q === queues[2]) hist.push([now, need]);
-    q.shift();
-    job.go();
+    if (!queues.some((x) => x.length)) break;
+    if (used(sent, now) >= CAP) break;
+    let served = false;
+    for (let l = 0; l < queues.length && !served; l++) {
+      const q = queues[l];
+      if (!q.length) continue;
+      const job = q[0];
+      const need = Math.min(job.cost, CAP);
+      if (used(sent, now) + need > CAP) break;
+      // alone, a lane may use the whole plan; with others waiting, only its share
+      const othersWaiting = queues.some((x, i) => i !== l && x.length);
+      const cap = l === 3 ? Math.floor(CAP * (queues[0].length || queues[1].length ? 0.4 : 0.75)) : othersWaiting ? Math.floor(CAP * SHARE[l]) : CAP;
+      if (usedBy(l, now) + need > Math.max(1, cap)) continue;
+      sent.push([now, need]);
+      lanesUsed.push([now, need, l]);
+      if (l === 3) hist.push([now, need]);
+      q.shift();
+      job.go();
+      served = true;
+    }
+    if (!served) break;
   }
   if (queues.some((x) => x.length) && !timer) timer = setTimeout(pump, sent.length ? Math.max(15, 1100 - (Date.now() - sent[0][0]) + 2) : 20);
 }
 const slot = (l: number, cost: number) =>
   new Promise<void>((go) => {
-    queues[Math.max(0, Math.min(2, l))].push({ cost, go });
+    queues[Math.max(0, Math.min(3, l))].push({ cost, go });
     pump();
   });
 export const rpcStats = { calls: 0, throttled: 0 };
 const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 8000);
-async function limitedFetch(input: any, init?: any): Promise<Response> {
+export async function limitedFetch(input: any, init?: any): Promise<Response> {
   const l = lane.getStore() ?? 0;
   let cost = 1;
   try {

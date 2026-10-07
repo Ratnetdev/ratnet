@@ -16,6 +16,8 @@ import { catchSession } from "./catcher";
 import { overseerSession } from "./overseer";
 import { agentLog } from "./agents";
 import { redis } from "./redis";
+import { lane } from "./solana";
+import { alive } from "./alive";
 import { X_SEED } from "@/config/x-accounts";
 
 
@@ -26,7 +28,9 @@ function within<T>(p: Promise<T>, ms: number, label: string): Promise<T | { time
 
 /** One run of every agent. `ms` is how long the desk loop stays on (55s from the minute ping). The worker runs the
  * desk in its own loop (desk: false here), so the agents' minute never holds the desk back. */
-export async function runSession(ms = 55_000, opts: { desk?: boolean } = {}) {
+export async function runSession(ms = 55_000, opts: { desk?: boolean; historian?: boolean } = {}) {
+  // every agent below reads the chain in the agents' lane (behind the desk and the rats, see lib/solana.ts)
+  const ag = <T,>(f: () => Promise<T>) => lane.run(2, f);
   const withDesk = opts.desk !== false;
   const k = ms / 55_000;
   const tg = (async () => {
@@ -55,25 +59,25 @@ export async function runSession(ms = 55_000, opts: { desk?: boolean } = {}) {
     return { changes, j7acc, synced, rising: fresh.map((x) => x.term) };
   })();
   // J7 live feed for the whole minute run: posts land in WIRE within moments
-  const j7 = j7Session(Math.round(52_000 * k), (t) => ingest(t)).catch((e) => ({ on: true, error: String(e?.message || e) }));
+  const j7 = alive("j7", j7Session(Math.round(52_000 * k), (t) => ingest(t)).catch((e) => ({ on: true, error: String(e?.message || e) })));
   // LENS: hands-on looks at the coins that matter (website, X, who is talking, Telegram), streamed to the LensCam
   // MIND: the trader's mind judges the coins that matter, follows its calls, does post-mortems and goes to school
   // HOUND: FOMO traders, KOL wallets, smart wallets from breakouts, the live webhook. OVERSEER: explore and propose
   // MOMO: coins pulling real volume right now (GeckoTerminal), straight to the desk
-  const momo = momoScan().catch((e) => ({ momo: "error", error: String(e?.message || e) }));
+  const momo = alive("momo", ag(() => momoScan()).catch((e) => ({ momo: "error", error: String(e?.message || e) })));
   // CATCH: looks again and again at hot curves, migrations and the BOARD, for coins moving like senders
-  const caught = catchSession(Math.round(50_000 * k)).catch((e) => ({ catch: "error", error: String(e?.message || e) }));
-  const hound = houndSession().catch((e) => ({ hound: "error", error: String(e?.message || e) }));
-  const overseer = overseerSession(Math.round(50_000 * k)).catch((e) => ({ overseer: "error", error: String(e?.message || e) }));
-  const mind = mindSession(Math.round(54_000 * k)).catch((e) => ({ mind: "error", error: String(e?.message || e) }));
-  const lens = lensSession(Math.round(52_000 * k)).catch((e) => ({ lens: "error", error: String(e?.message || e) }));
+  const caught = alive("catch", ag(() => catchSession(Math.round(50_000 * k))).catch((e) => ({ catch: "error", error: String(e?.message || e) })));
+  const hound = alive("hound", ag(() => houndSession()).catch((e) => ({ hound: "error", error: String(e?.message || e) })));
+  const overseer = alive("overseer", ag(() => overseerSession(Math.round(50_000 * k))).catch((e) => ({ overseer: "error", error: String(e?.message || e) })));
+  const mind = alive("mind", ag(() => mindSession(Math.round(54_000 * k))).catch((e) => ({ mind: "error", error: String(e?.message || e) })));
+  const lens = alive("lens", ag(() => lensSession(Math.round(52_000 * k))).catch((e) => ({ lens: "error", error: String(e?.message || e) })));
   const cap = ms + 30_000; // nothing may hold the next session back by more than this
   const [desk, history, receipts, telegram, x] = await Promise.all([
     withDesk ? within(deskSession(ms, () => dig()), ms + 90_000, "desk") : Promise.resolve({ desk: "own loop" }),
-    within(historianSession(Math.round(45_000 * k)).catch((e) => ({ history: "error", error: String(e?.message || e) })), cap, "historian"),
-    within(sealDue().catch((e) => ({ sealed: 0, error: String(e?.message || e) })), cap, "receipts"),
-    within(tg, cap, "telegram"),
-    within(wire, cap, "wire"),
+    opts.historian === false ? Promise.resolve({ history: "own loop" }) : within(historianSession(Math.round(45_000 * k)).catch((e) => ({ history: "error", error: String(e?.message || e) })), cap, "historian"),
+    within(alive("receipts", sealDue().catch((e) => ({ sealed: 0, error: String(e?.message || e) }))), cap, "receipts"),
+    within(alive("telegram", tg), cap, "telegram"),
+    within(alive("wire", wire), cap, "wire"),
   ]);
   const rest = await Promise.all([j7, lens, mind, hound, overseer, momo, caught].map((p, i) => within(p as Promise<unknown>, 15_000, ["j7", "lens", "mind", "hound", "overseer", "momo", "catch"][i])));
   const [j7r, lensr, mindr, houndr, overseerr, momor, catchr] = rest;

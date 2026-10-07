@@ -151,7 +151,8 @@ export async function flashLook(looks: FlashLook[]) {
     const id = `${lk.mint}:${lk.stage}`;
     pipe.hset(SNAP, { [id]: { id, mint: lk.mint, sym, stage: lk.stage, at: lk.at, createdAt: lk.createdAt, mcSol: lk.st.mcSol, x, p, prior: pr.score } satisfies Snap });
     pipe.zadd(DUE, { score: lk.createdAt + LABEL_MS, member: id });
-    pipe.lpush("rn:lat:flash", Math.round((lk.at - lk.createdAt) / 1000));
+    // the speed panel shows when the first look lands (the 15s one), not the average of all three
+    if (lk.stage === 15) pipe.lpush("rn:lat:flash", Math.round((lk.at - lk.createdAt) / 1000));
     view.push({ mint: lk.mint, sym, stage: lk.stage, p: Math.round(p * 1000) / 1000, prior: pr.score, prog: Math.round(lk.st.prog), uniq: lk.st.uniq, why: pr.why });
     const cut = cuts[lk.stage];
     const byModel = mode !== "off" && !!cut && p >= cut.band;

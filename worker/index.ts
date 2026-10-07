@@ -3,10 +3,13 @@
 // GitHub repo with the same environment variables; start command: npm run worker. While it runs, the Vercel minute
 // ping steps aside on its own (it sees the worker's heartbeat) and comes back if the worker stops.
 import { runSession } from "../src/lib/session";
+import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
+import { lane } from "../src/lib/solana";
+import { markAlive } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 
 process.env.RATNET_WORKER = "1";
@@ -46,6 +49,7 @@ const TAPE = new Map<string, Trade[]>(); // last 60 seconds of trades per coin
 const SEEN = new Map<string, Set<string>>(); // every wallet seen trading the coin since we started watching it
 const LAST = new Map<string, { mc: number; at: number }>();
 let watched = new Set<string>();
+let lastStreamMark = 0;
 
 function onTrade(m: any, kick: () => void) {
   const mint = String(m.mint);
@@ -90,6 +94,10 @@ function tapeOf(w: Trade[], now: number) {
 
 async function flushTape() {
   const now = Date.now();
+  if (now - lastStreamMark > 10_000) {
+    lastStreamMark = now;
+    markAlive("stream", { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size }).catch(() => {});
+  }
   const out: Record<string, unknown> = {};
   for (const [mint, w] of TAPE) {
     const l = LAST.get(mint);
@@ -136,7 +144,7 @@ function flashTick() {
     }
     if (now - c.t0 > 100_000) FLW.delete(mint);
   }
-  if (looks.length) flashLook(looks).catch((e) => console.log("flash error", e?.message || e));
+  if (looks.length) flashLook(looks).then((r) => markAlive("flash", r)).catch((e) => (console.log("flash error", e?.message || e), markAlive("flash", { error: String(e?.message || e) })));
 }
 
 async function flushIntake() {
@@ -155,7 +163,7 @@ function pumpportal() {
   const kick = () => {
     if (Date.now() - lastCatch < 3000) return;
     lastCatch = Date.now();
-    catchPass(true).catch(() => null);
+    lane.run(2, () => catchPass(true)).catch(() => null);
   };
   const resync = async () => {
     if (!up) return;
@@ -234,6 +242,7 @@ async function deskLoop() {
     deskAt = t0;
     try {
       const r: any = await deskSession(DESK_MS); // the rats dig in their own lanes below
+      await markAlive("desk", r);
       if (r?.skipped) await new Promise((res) => setTimeout(res, 2000)); // another desk holds the lock: wait for it
       else console.log(new Date().toISOString(), `desk ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify(r).slice(0, 200));
     } catch (e: any) {
@@ -251,7 +260,9 @@ async function digFastLoop() {
   for (;;) {
     const t0 = Date.now();
     fastAt = t0;
-    const r: any = await digFast().catch((e) => ({ error: e?.message || e }));
+    // a pass that waits too long is left to finish on its own: the lane moves on (its lock expires in 30s)
+    const r: any = await Promise.race([digFast().catch((e) => ({ error: e?.message || e })), new Promise((res) => setTimeout(() => res({ error: "fast pass ran past 45s" }), 45_000))]);
+    await markAlive("rats_fast", r);
     if (r?.error || (r?.dug && Math.random() < 0.05)) console.log(new Date().toISOString(), "dig fast", JSON.stringify(r).slice(0, 200));
     await new Promise((res) => setTimeout(res, Math.max(150, 1000 - (Date.now() - t0))));
   }
@@ -262,8 +273,23 @@ async function digSlowLoop() {
     const t0 = Date.now();
     const r: any = await digSlow().catch((e) => ({ error: e?.message || e }));
     const f: any = await flashFollow().catch((e) => ({ flashError: e?.message || e }));
+    await markAlive("rats_slow", r);
     if (n++ % 15 === 0 || r?.error) console.log(new Date().toISOString(), "dig slow", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ ...r, ...f }).slice(0, 300));
     await new Promise((res) => setTimeout(res, Math.max(500, 4000 - (Date.now() - t0))));
+  }
+}
+
+// The historian replays the past around the clock in its own loop (it used to get 45 seconds of each agents'
+// session and nothing in between). Its RPC lane only takes what the desk and the rats leave free.
+async function historianLoop() {
+  let n = 0;
+  for (;;) {
+    const t0 = Date.now();
+    const r: any = await Promise.race([historianSession(110_000).catch((e) => ({ history: "error", error: e?.message || e })), new Promise((res) => setTimeout(() => res({ history: "ran past 3 minutes" }), 180_000))]);
+    await markAlive("historian", r);
+    if (n++ % 5 === 0 || r?.error) console.log(new Date().toISOString(), "historian", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify(r).slice(0, 240));
+    // nothing to do (done, off, busy, waiting): look again in a few seconds instead of spinning
+    if (Date.now() - t0 < 3000) await new Promise((res) => setTimeout(res, 5000));
   }
 }
 
@@ -272,8 +298,8 @@ async function agentLoop() {
     const t0 = Date.now();
     sessionAt = t0;
     try {
-      const r: any = await runSession(SESSION_MS, { desk: false });
-      console.log(new Date().toISOString(), `session ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ momo: r?.momo, mind: r?.mind, catch: r?.catch, hound: r?.hound }).slice(0, 400));
+      const r: any = await runSession(SESSION_MS, { desk: false, historian: false });
+      console.log(new Date().toISOString(), `session ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ momo: r?.momo, mind: r?.mind, lens: r?.lens, catch: r?.catch, hound: r?.hound, overseer: r?.overseer }).slice(0, 500));
     } catch (e: any) {
       console.log("session error", e?.message || e);
       await new Promise((res) => setTimeout(res, 3000));
@@ -286,6 +312,6 @@ async function main() {
   pumpportal();
   setInterval(beat, 20_000);
   await beat();
-  await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop()]);
+  await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);
 }
 main();

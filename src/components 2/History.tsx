@@ -20,6 +20,11 @@ type H = {
   season?: { sol24: number | null; sol7d: number | null; lrate: number | null; launches24: number; bonded24: number; gradRate24: number | null } | null;
   drift?: { shifts: number; boost: number; shiftAt: number | null; lossFast: number | null; loss: number };
   log: { at: number; text: string }[];
+  bondsFound?: number;
+  bondsBackTo?: number | null;
+  bondsDone?: boolean;
+  lastError?: string | null;
+  errors?: number;
 };
 const day = (t?: number) => (t ? new Date(t).toISOString().slice(0, 10) : "…");
 const sg = (n: number | null | undefined, d = 1) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n.toFixed(d)}%`);
@@ -51,6 +56,10 @@ export default function History() {
             <div><span className="k"><Info k="prequential">v0 BOND hit</Info></span><b>{bt?.v0 != null ? `${bt.v0}%` : "–"}</b></div>
             <div><span className="k"><Info k="prequential">nano BOND hit</Info></span><b style={{ color: "var(--rat)" }}>{bt?.nano != null ? `${bt.nano}%` : "–"}</b></div>
             <div><span className="k"><Info k="hqueue">Queue</Info></span><b>{h?.queue ?? 0}</b></div>
+          </div>
+          <div className="tiny muted mt">
+            bonds first: {(h?.bondsFound ?? 0).toLocaleString()} graduations found back to {day(h?.bondsBackTo ?? undefined)}{h?.bondsDone ? " (done)" : ""}
+            {h?.lastError ? <span> · last error: {h.lastError}</span> : null}
           </div>
           {!!h?.log?.length && <div className="tiny muted mt">{h.log.slice(0, 3).map((l) => <div key={l.at + l.text}>{ago(l.at)} · {l.text}</div>)}</div>}
         </div>

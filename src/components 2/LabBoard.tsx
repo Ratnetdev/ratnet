@@ -22,6 +22,9 @@ function LossChart({ log }: { log: Weights["log"] }) {
   const P = 30;
   if (log.length < 2)
     return <div className="muted small" style={{ height: H, display: "grid", placeItems: "center" }}>The loss curve draws itself as outcomes come in. First point after 25 resolved launches.</div>;
+  // never draw a line backwards: points in sample order, one per sample count
+  log = [...new Map(log.map((l) => [l.n, l] as const)).values()].sort((a, b) => a.n - b.n);
+  if (log.length < 2) return null;
   const xs = log.map((l) => l.n);
   const ys = log.map((l) => l.loss);
   const x0 = Math.min(...xs);

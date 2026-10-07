@@ -14,6 +14,7 @@ import MindBoard from "./MindBoard";
 import MomoBoard from "./MomoBoard";
 import CatchBoard from "./CatchBoard";
 import FlashBoard from "./FlashBoard";
+import AlivePanel from "./AlivePanel";
 import HoundBoard from "./HoundBoard";
 import { TradeIcons } from "./venues";
 import { fullUrl, useAdmin } from "./useAdmin";
@@ -249,6 +250,7 @@ export default function DeskBoard() {
         })}
       </section>
 
+      <AlivePanel />
       <FlashBoard />
       <CatchBoard />
       <MomoBoard />

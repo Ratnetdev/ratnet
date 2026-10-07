@@ -13,7 +13,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { conn } from "./solana";
 import { redis } from "./redis";
-import { canonicalPool } from "./pool";
+import { canonicalPool, readPools } from "./pool";
 
 const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN22 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
@@ -121,7 +121,7 @@ async function holderCheck(mint: string): Promise<ShieldCheck | null> {
   return { rule: "holders_spread", ok: top1 < 12 && top10 < 45, v: `largest holder ${top1.toFixed(1)}%, top 10 ${top10.toFixed(1)}%`, hard: false };
 }
 
-export type ShieldInput = { mint: string; symbol: string; grad: boolean; sol: number; tokensRaw: bigint; tape?: any; buys5?: number; sells5?: number; ageMs?: number };
+export type ShieldInput = { mint: string; symbol: string; grad: boolean; sol: number; tokensRaw: bigint; tape?: any; buys5?: number; sells5?: number; ageMs?: number; v5?: number; mcUsd?: number };
 
 /** Run every check in parallel (about one second). */
 export async function shield(x: ShieldInput): Promise<ShieldResult> {
@@ -144,6 +144,17 @@ export async function shield(x: ShieldInput): Promise<ShieldResult> {
     young ? Promise.resolve(null) : holderCheck(x.mint).catch(() => null),
   ]);
   const checks: ShieldCheck[] = [...mintC];
+  // a migrated coin must trade in the pool pump.fun's own migration created (its LP is burned by the migration). A
+  // pool someone opened by hand (any coin not launched on pump.fun, like $ALLOX: PumpSwap pool, 100% of the LP held
+  // by one wallet) can be emptied by its owner at any moment: a rug waiting to happen, however good the chart looks
+  if (x.grad) {
+    const pr = await readPools([x.mint]).catch(() => null);
+    const canon = pr?.[x.mint];
+    checks.push({ rule: "lp_burned", ok: !!canon && canon.sol > 0.5, v: canon && canon.sol > 0.5 ? `pump.fun migration pool, ${Math.round(canon.sol)} SOL` : "not a pump.fun migration pool: the liquidity is held by a wallet and can be pulled", hard: true });
+  }
+  // wash trading: 5-minute volume several times the whole market cap is bots trading with themselves (fake volume to
+  // pull buyers in), not demand
+  if (x.v5 != null && x.mcUsd != null && x.mcUsd > 0) checks.push({ rule: "real_volume", ok: x.v5 <= x.mcUsd * 4, v: `$${Math.round(x.v5 / 1000)}K volume in 5m on a $${Math.round(x.mcUsd / 1000)}K market cap (${(x.v5 / x.mcUsd).toFixed(1)}x)`, hard: false });
   if (sellC) checks.push(sellC);
   // nobody selling: the live tape (worker) or MOMO's 5-minute counts
   const b = rt && Date.now() - rt.at < 60_000 ? rt.b20 : x.buys5;
