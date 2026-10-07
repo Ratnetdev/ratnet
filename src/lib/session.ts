@@ -24,8 +24,10 @@ function within<T>(p: Promise<T>, ms: number, label: string): Promise<T | { time
   return Promise.race([p, new Promise<{ timeout: string }>((res) => setTimeout(() => res({ timeout: `${label} ran past ${Math.round(ms / 1000)}s` }), ms))]);
 }
 
-/** One run of every agent. `ms` is how long the desk loop stays on (55s from the minute ping; longer in the worker). */
-export async function runSession(ms = 55_000) {
+/** One run of every agent. `ms` is how long the desk loop stays on (55s from the minute ping). The worker runs the
+ * desk in its own loop (desk: false here), so the agents' minute never holds the desk back. */
+export async function runSession(ms = 55_000, opts: { desk?: boolean } = {}) {
+  const withDesk = opts.desk !== false;
   const k = ms / 55_000;
   const tg = (async () => {
     // Telegram: flush the call queue a few times during the minute so calls go out within ~15s
@@ -67,7 +69,7 @@ export async function runSession(ms = 55_000) {
   const lens = lensSession(Math.round(52_000 * k)).catch((e) => ({ lens: "error", error: String(e?.message || e) }));
   const cap = ms + 30_000; // nothing may hold the next session back by more than this
   const [desk, history, receipts, telegram, x] = await Promise.all([
-    within(deskSession(ms, () => dig()), ms + 90_000, "desk"),
+    withDesk ? within(deskSession(ms, () => dig()), ms + 90_000, "desk") : Promise.resolve({ desk: "own loop" }),
     within(historianSession(Math.round(45_000 * k)).catch((e) => ({ history: "error", error: String(e?.message || e) })), cap, "historian"),
     within(sealDue().catch((e) => ({ sealed: 0, error: String(e?.message || e) })), cap, "receipts"),
     within(tg, cap, "telegram"),

@@ -7,7 +7,7 @@ import { fullUrl, useAdmin } from "./useAdmin";
 import { CLS_COL } from "./HoundBoard";
 
 type B = { w: string; name: string; cls: string; conf: string; sol: number; at: number; copy6h: { n: number; avg: number | null } };
-const LABEL: Record<string, string> = { "fomo-homerun": "FOMO home-run", "fomo-steady": "FOMO steady", kol: "KOL", smart: "smart wallet", admin: "added by admin" };
+const LABEL: Record<string, string> = { "fomo-homerun": "FOMO home-run", "fomo-steady": "FOMO steady", "fomo-top": "FOMO top trader", kol: "KOL", smart: "smart wallet", admin: "added by admin" };
 
 export default function CoinBuyers({ mint }: { mint: string }) {
   const admin = useAdmin();

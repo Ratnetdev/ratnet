@@ -262,7 +262,7 @@ async function historianInner(budgetMs: number) {
     while (st.phase === "scan" && Date.now() - t0 < budgetMs) {
       const qlen = (await r.llen(HK.queue)) || 0;
       // --- 1. scan backwards: newest page first, parse create txs, keep dev records, queue deep reads
-      if (qlen < cfg.deepPerRun * 4) {
+      if (qlen < Math.max(cfg.deepPerRun, 16) * 4) {
         if (st.pos >= st.sigs.length) {
           const raw = await conn().getSignaturesForAddress(new PublicKey(PUMP_MINT_AUTHORITY), { before: st.cursor ?? undefined, limit: 1000 });
           if (!raw.length) {
@@ -286,9 +286,9 @@ async function historianInner(budgetMs: number) {
           }
           if (!st.sigs.length) continue; // still in the live era: keep paging back
         }
-        const chunk = st.sigs.slice(st.pos, st.pos + cfg.scanPerRun);
+        const chunk = st.sigs.slice(st.pos, st.pos + Math.max(cfg.scanPerRun, 400));
         st.pos += chunk.length;
-        const parsed = await pmap(chunk, 4, async (sig) => {
+        const parsed = await pmap(chunk, 16, async (sig) => {
           try {
             return parseCreateTx(sig, await conn().getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }));
           } catch {
@@ -324,13 +324,13 @@ async function historianInner(budgetMs: number) {
       }
 
       // --- 2. deep reads: rebuild minute 1 and 5, score first (prequential), then learn with season weight
-      const got2 = await r.lpop<Job[]>(HK.queue, cfg.deepPerRun);
+      const got2 = await r.lpop<Job[]>(HK.queue, Math.max(cfg.deepPerRun, 16));
       const list: Job[] = Array.isArray(got2) ? got2 : got2 ? [got2 as unknown as Job] : [];
       if (!list.length) {
         if (st.pos >= st.sigs.length && qlen === 0 && Date.now() - t0 > budgetMs / 2) break;
         continue;
       }
-      const results = await pmap(list, 3, async (job) => {
+      const results = await pmap(list, 6, async (job) => {
         try {
           const [bt, rep, funder] = await Promise.all([job.bondedNow ? bondTime(job.curve) : Promise.resolve(null), replay(job), funderOf(job.creator).catch(() => null)]);
           return { job, bt, rep, funder };
@@ -341,7 +341,7 @@ async function historianInner(budgetMs: number) {
         }
       });
       const p = r.pipeline();
-      const catchItems: { f: Record<string, number>; y: boolean; w: number }[] = [];
+      const catchItems: { f: Record<string, number>; y: boolean; y2?: boolean; w: number }[] = [];
       const target = Number((s.desk as any).catchTargetUsd ?? 300_000);
       const solNow = (await solUsd().catch(() => null)) || 150;
       for (const { job, bt, rep, funder } of results) {
@@ -378,15 +378,17 @@ async function historianInner(budgetMs: number) {
         };
         let catchPath: { t: number; mc: number }[] | null = null;
         if (bt && bt - job.createdAt <= 6 * 3600_000 && cfg.runner) catchPath = await postRun(job.mint);
-        if (!bt) catchItems.push({ f: f5, y: false, w: job.w * season }); // never bonded: it never got near $300K
+        if (!bt) catchItems.push({ f: f5, y: false, y2: false, w: job.w * season }); // never bonded: it never got near $300K
         else if (catchPath?.length) {
           const pk5 = peakIn(catchPath, job.createdAt, job.createdAt + 6 * 3600_000);
-          catchItems.push({ f: f5, y: pk5 >= Math.max(target, f5.mc * 2), w: job.w * season });
+          const pk52 = peakIn(catchPath, job.createdAt, job.createdAt + 2 * 3600_000);
+          catchItems.push({ f: f5, y: pk5 >= Math.max(target, f5.mc * 2), y2: pk52 >= Math.max(target, f5.mc * 2), w: job.w * season });
           const mcMig = curveMcSol(100) * solAt;
           const migMin = (bt - job.createdAt) / 60_000;
           const fm = { ...f5, pool: 1, mc: mcMig, ageMin: migMin, prog: 100, vel: 0, sol: 85, migMin };
           const pkM = peakIn(catchPath, bt, bt + 6 * 3600_000);
-          catchItems.push({ f: fm, y: pkM >= Math.max(target, mcMig * 2), w: job.w * season });
+          const pkM2 = peakIn(catchPath, bt, bt + 2 * 3600_000);
+          catchItems.push({ f: fm, y: pkM >= Math.max(target, mcMig * 2), y2: pkM2 >= Math.max(target, mcMig * 2), w: job.w * season });
         }
         if (bt && cfg.runner) {
           const path = catchPath ?? (await postRun(job.mint));

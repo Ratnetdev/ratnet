@@ -7,6 +7,7 @@ import { fail, json } from "@/lib/http";
 import { redis } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 type Need = "core" | "trade" | "agent" | "optional";
 const ENV: { k: string; need: Need; what: string; alt?: string[] }[] = [
@@ -46,11 +47,13 @@ async function tgInfo() {
 export async function GET() {
   if (!isAdmin()) return fail("unauthorized", 401);
   const r = redis();
-  const [worker, hook, xsync, tg] = await Promise.all([
+  const [worker, hook, xsync, tg, hst, hn] = await Promise.all([
     r.get("rn:worker:at").catch(() => null),
     r.get<any>("rn:hd:hook").catch(() => null),
     r.get<any>("rn:x:synced").catch(() => null),
     tgInfo(),
+    r.hgetall<Record<string, any>>("rn:hd:status").catch(() => null),
+    r.hlen("rn:hd:w").catch(() => 0),
   ]);
   const env = ENV.map((e) => ({ ...e, set: !!process.env[e.k] || !!e.alt?.some((a) => process.env[a]) }));
   const rps = Number(process.env.RPC_RPS || 0);
@@ -61,6 +64,7 @@ export async function GET() {
       worker: worker ? { at: Number(worker), fresh: Date.now() - Number(worker) < 90_000 } : null,
       rpcPlan: rps >= 40 ? `paid (${rps} rps)` : rps ? `${rps} rps` : "free tier (set RPC_RPS)",
       heliusHook: hook || null,
+      hound: { wallets: Number(hn || 0), fomo: hst?.fomo || null, kol: hst?.kol || null },
       xRules: xsync || null,
       telegram: tg,
     },
@@ -76,6 +80,7 @@ export async function POST(req: Request) {
     if (action === "tg") return json(await (await import("@/lib/tgbot")).setupHook());
     if (action === "xsync") return json(await (await import("@/lib/wire")).syncRules(true));
     if (action === "hound") return json(await (await import("@/lib/hound")).syncHook(true));
+    if (action === "houndfill") return json(await (await import("@/lib/hound")).houndRefill());
     return fail("unknown action");
   } catch (e) {
     return fail(e, 500);

@@ -6,7 +6,7 @@ import { CLS_COL } from "../HoundBoard";
 
 type Wl = { w: string; cls: string; name: string; handle?: string | null; conf: string; proof: string[]; src: string[]; stats?: any; sb?: any; off?: boolean; copy6h: { n: number; avg: number | null; x2: number } };
 type V = { counts: Record<string, number>; wallets?: Wl[]; sources: Record<string, boolean>; hook: { n: number; at: number } | null; live: { text: string } | null };
-const LABEL: Record<string, string> = { "fomo-homerun": "FOMO home-run", "fomo-steady": "FOMO steady", kol: "KOL", smart: "smart", admin: "admin" };
+const LABEL: Record<string, string> = { "fomo-homerun": "FOMO home-run", "fomo-steady": "FOMO steady", "fomo-top": "FOMO top", kol: "KOL", smart: "smart", admin: "admin" };
 
 export default function Wallets() {
   const { data: v, reload } = usePoll<V>("/api/hound?full=1", 15000);

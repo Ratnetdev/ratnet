@@ -7,7 +7,8 @@ export const dynamic = "force-dynamic";
 // The desk. Public: without its playbook. Admin with ?full=1: everything.
 export async function GET(req: Request) {
   try {
-    return serve(req, await getDesk(), publicDesk, 3);
+    // 2s on the CDN and no long stale window: the heartbeat and live positions must look live
+    return serve(req, await getDesk(), publicDesk, 2, 2);
   } catch (e) {
     return fail(e, 500);
   }

@@ -31,7 +31,10 @@ function pump() {
     const job = q[0];
     const need = Math.min(job.cost, CAP);
     if (used(sent, now) + need > CAP) break;
-    if (q === queues[2] && used(hist, now) + need > Math.max(1, Math.floor(CAP * 0.4))) break;
+    // the historian gets 40% of the plan, or 75% while the desk and the rats have nothing waiting (it used to sit at
+    // 40% even when the rest of the plan was idle, which is why the 30-day replay crawled)
+    const idle = !queues[0].length && !queues[1].length;
+    if (q === queues[2] && used(hist, now) + need > Math.max(1, Math.floor(CAP * (idle ? 0.75 : 0.4)))) break;
     sent.push([now, need]);
     if (q === queues[2]) hist.push([now, need]);
     q.shift();

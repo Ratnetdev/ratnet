@@ -46,10 +46,11 @@ const FOMO_AT = "rn:hd:fomoAt";
 const KOL_AT = "rn:hd:kolAt";
 const FOMO_P = "rn:hd:fp"; // handle -> profile (7 days)
 const LIVE = "rn:hd:live"; // what HOUND is doing right now
+export const STATUS = "rn:hd:status"; // the last run of each source: what came back, what got added, the error if any
 const WSOL = "So11111111111111111111111111111111111111112";
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-export type Cls = "fomo-homerun" | "fomo-steady" | "kol" | "smart" | "admin";
+export type Cls = "fomo-homerun" | "fomo-steady" | "fomo-top" | "kol" | "smart" | "admin";
 export type Wallet = {
   w: string;
   cls: Cls;
@@ -62,10 +63,11 @@ export type Wallet = {
   sb?: { n: number; sol: number; best: number } | null;
   at: number;
   off?: boolean;
+  checkedAt?: number;
 };
 export type Buy = { id: string; w: string; name: string; cls: Cls; conf: string; mint: string; symbol: string; sol: number; at: number; sig: string; side: "buy" | "sell" };
 
-export const CLASS_LABEL: Record<Cls, string> = { "fomo-homerun": "FOMO home-run", "fomo-steady": "FOMO steady", kol: "KOL", smart: "smart wallet", admin: "added by admin" };
+export const CLASS_LABEL: Record<Cls, string> = { "fomo-homerun": "FOMO home-run", "fomo-steady": "FOMO steady", "fomo-top": "FOMO top trader", kol: "KOL", smart: "smart wallet", admin: "added by admin" };
 
 const isAddr = (s: string) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s || "");
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -76,6 +78,10 @@ async function live(text: string) {
 
 export async function book(): Promise<Record<string, Wallet>> {
   return ((await redis().hgetall<Record<string, Wallet>>(W)) || {}) as Record<string, Wallet>;
+}
+
+async function status(src: string, v: Record<string, unknown>) {
+  await redis().hset(STATUS, { [src]: { at: Date.now(), ...v } }).catch(() => {});
 }
 
 async function upsert(list: Wallet[]) {
@@ -89,6 +95,7 @@ async function upsert(list: Wallet[]) {
     if (old?.cls === "admin" && x.cls !== "admin") continue;
     obj[x.w] = old ? { ...old, ...x, proof: Array.from(new Set([...(old.proof || []), ...x.proof])), src: Array.from(new Set([...(old.src || []), ...x.src])), off: old.off } : x;
   }
+  if (!Object.keys(obj).length) return;
   await r.hset(W, obj);
   await r.set(DIRTY, 1);
 }
@@ -97,9 +104,13 @@ async function upsert(list: Wallet[]) {
 
 const FOMO = "https://api.fomoapi.io";
 const fomoOn = () => !!process.env.FOMO_API_KEY;
+let fomoErr: string | null = null;
 async function fomo<T = any>(path: string): Promise<T | null> {
-  const r = await fetch(`${FOMO}${path}`, { headers: { authorization: `Bearer ${process.env.FOMO_API_KEY}` }, cache: "no-store" }).catch(() => null);
-  if (!r?.ok) return null;
+  const r = await fetch(`${FOMO}${path}`, { headers: { authorization: `Bearer ${process.env.FOMO_API_KEY}` }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).catch((e) => ({ ok: false, status: 0, e }) as any);
+  if (!r?.ok) {
+    fomoErr = r?.status === 402 ? "out of FOMO API credits (402)" : r?.status === 401 ? "FOMO API key rejected (401)" : `FOMO API answered ${r?.status || "nothing"} on ${path.split("?")[0]}`;
+    return null;
+  }
   return (await r.json().catch(() => null)) as T | null;
 }
 
@@ -130,21 +141,34 @@ async function fomoSync() {
   const r = redis();
   if (Date.now() - Number((await r.get(FOMO_AT)) || 0) < 6 * 3600_000) return 0;
   await r.set(FOMO_AT, Date.now());
-  await live("reading the FOMO leaderboards (30 days and all time)");
+  fomoErr = null;
+  await live("reading the FOMO leaderboards (30 days, all time, 7 days)");
   const seen = new Map<string, any>();
+  const top = new Set<string>(); // top 25 by PnL on the 30-day or 7-day board
   for (const win of ["30d", "all", "7d"]) {
     const lb = await fomo<{ traders: any[] }>(`/v2/leaderboard/${win}`);
-    for (const t of lb?.traders || []) if (t?.handle && !seen.has(t.handle)) seen.set(t.handle, t);
+    for (const t of lb?.traders || []) {
+      if (!t?.handle) continue;
+      if (!seen.has(t.handle)) seen.set(t.handle, t);
+      if (win !== "all" && Number(t.rank) <= 25 && Number(t.pnlUsd) > 0) top.add(t.handle);
+    }
+  }
+  if (!seen.size) {
+    // nothing came back: try again in 15 minutes instead of 6 hours
+    await r.set(FOMO_AT, Date.now() - 6 * 3600_000 + 15 * 60_000);
+    await status("fomo", { ok: false, error: fomoErr || "empty leaderboard" });
+    return 0;
   }
   const profiles = ((await r.hgetall<Record<string, any>>(FOMO_P)) || {}) as Record<string, any>;
-  // profile up to 12 traders per run that have no fresh profile (each costs one API call)
-  const todo = [...seen.values()].filter((t) => !profiles[t.handle] || Date.now() - profiles[t.handle].at > 7 * 86400_000).slice(0, 12);
+  const have = await book();
+  // profile up to 20 traders per run that have no fresh profile (each costs one API call), top traders first
+  const todo = [...seen.values()].filter((t) => !profiles[t.handle] || Date.now() - profiles[t.handle].at > 7 * 86400_000).sort((a, b) => Number(top.has(b.handle)) - Number(top.has(a.handle))).slice(0, 20);
   const add: Wallet[] = [];
   let n = 0;
   for (const t of todo) {
     await live(`profiling FOMO trader @${t.handle}: win rate, average win and loss, expected value`);
-    const res = await fomo<any>(`/v2/users/${encodeURIComponent(t.handle)}/trades`);
-    const trades = Array.isArray(res) ? res : res?.trades || res?.data || [];
+    const res = await fomo<any>(`/v2/users/${encodeURIComponent(t.userId || t.handle)}/positions?limit=200`);
+    const trades = Array.isArray(res) ? res : res?.positions || res?.trades || res?.data || [];
     const p = profileOf(trades);
     const cls = classify(p);
     await r.hset(FOMO_P, { [t.handle]: { at: Date.now(), ...p, cls } });
@@ -152,10 +176,22 @@ async function fomoSync() {
     const sol = t.wallets?.solana;
     if (cls && isAddr(sol)) add.push({ w: sol, cls, name: t.displayName || t.handle, handle: t.handle, conf: "confirmed", proof: ["FOMO profile wallet (fomoapi.io)"], src: ["fomo"], stats: p, at: Date.now() });
   }
+  // leaderboard top 25 with a Solana wallet: tracked as "top trader" even without a full profile. HOUND keeps a copy
+  // record per class, so the desk learns on its own whether following them pays
+  const inAdd = new Set(add.map((x) => x.w));
+  for (const h of top) {
+    const t = seen.get(h);
+    const sol = t?.wallets?.solana;
+    if (!isAddr(sol) || inAdd.has(sol) || (have[sol] && have[sol].cls !== "fomo-top")) continue;
+    const pr = profiles[h];
+    add.push({ w: sol, cls: "fomo-top", name: t.displayName || h, handle: h, conf: "confirmed", proof: [`FOMO leaderboard top 25 (rank ${t.rank}, $${Math.round(Number(t.pnlUsd) || 0).toLocaleString("en-US")} PnL)`], src: ["fomo"], stats: pr && pr.n ? { n: pr.n, wr: pr.wr, avgWin: pr.avgWin, avgLoss: pr.avgLoss, ev: pr.ev, best: pr.best, big: pr.big } : null, at: Date.now() });
+  }
   await upsert(add);
+  await status("fomo", { ok: true, traders: seen.size, profiled: n, added: add.length, error: fomoErr });
   if (add.length) {
     const p = r.pipeline();
-    agentLog(p, add.map((x) => ({ agent: "HOUND", at: Date.now(), text: `tracking FOMO trader ${x.name} (${CLASS_LABEL[x.cls]}): ${Math.round(x.stats!.wr * 100)}% win rate, avg win +${Math.round(x.stats!.avgWin * 100)}%, avg loss ${Math.round(x.stats!.avgLoss * 100)}%, EV ${x.stats!.ev > 0 ? "+" : ""}${Math.round(x.stats!.ev * 100)}% per trade`, tone: "ok" })));
+    agentLog(p, add.slice(0, 12).map((x) => ({ agent: "HOUND", at: Date.now(), text: x.stats ? `tracking FOMO trader ${x.name} (${CLASS_LABEL[x.cls]}): ${Math.round(x.stats.wr * 100)}% win rate, avg win +${Math.round(x.stats.avgWin * 100)}%, avg loss ${Math.round(x.stats.avgLoss * 100)}%, EV ${x.stats.ev > 0 ? "+" : ""}${Math.round(x.stats.ev * 100)}% per trade` : `tracking FOMO trader ${x.name} (${CLASS_LABEL[x.cls]})`, tone: "ok" })));
+    if (add.length > 12) agentLog(p, [{ agent: "HOUND", at: Date.now(), text: `and ${add.length - 12} more FOMO traders`, tone: "ok" }]);
     await p.exec();
   }
   return n;
@@ -204,7 +240,7 @@ export async function verifyKol(w: string, handle: string | null, rosters: strin
 
 async function kolSync() {
   const r = redis();
-  if (Date.now() - Number((await r.get(KOL_AT)) || 0) < 12 * 3600_000) return 0;
+  if (Date.now() - Number((await r.get(KOL_AT)) || 0) < 3600_000) return 0;
   await r.set(KOL_AT, Date.now());
   const found = new Map<string, { name: string; handle: string | null; src: string[] }>();
   const note = (w: string, name: string, handle: string | null, src: string) => {
@@ -214,27 +250,53 @@ async function kolSync() {
     cur.handle ||= handle;
     found.set(w, cur);
   };
+  const handleOf = (x: any) => String(x || "").replace(/^@|https?:\/\/(www\.)?(x|twitter)\.com\//g, "").split(/[/?]/)[0] || null;
+  const errs: string[] = [];
   if (process.env.MADEONSOL_API_KEY) {
     await live("reading the MadeOnSol KOL roster");
-    const res = await fetch("https://madeonsol.com/api/v1/kol/wallets", { headers: { authorization: `Bearer ${process.env.MADEONSOL_API_KEY}` }, cache: "no-store" }).catch(() => null);
+    const res = await fetch("https://madeonsol.com/api/v1/kol/wallets?limit=500&active=true", { headers: { authorization: `Bearer ${process.env.MADEONSOL_API_KEY}` }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).catch(() => null);
+    if (!res?.ok) errs.push(`MadeOnSol answered ${res?.status || "nothing"}`);
     const j: any = res?.ok ? await res.json().catch(() => null) : null;
-    for (const k of j?.data || j?.wallets || j || []) note(k.wallet || k.address, k.name || k.handle || "KOL", (k.twitter || k.handle || "").replace(/^@|https?:\/\/(x|twitter)\.com\//g, "") || null, "MadeOnSol");
+    const list: any[] = j?.wallets || j?.data || (Array.isArray(j) ? j : []);
+    for (const k of list) note(k.wallet_address || k.wallet || k.address, k.name || k.handle || "KOL", handleOf(k.twitter_url || k.twitter || k.handle), "MadeOnSol");
   }
   if (process.env.SOLANATRACKER_API_KEY) {
     await live("reading the Solana Tracker KOL roster");
-    const res = await fetch("https://data.solanatracker.io/v2/pnl/leaderboard/kols", { headers: { "x-api-key": process.env.SOLANATRACKER_API_KEY }, cache: "no-store" }).catch(() => null);
+    const res = await fetch("https://data.solanatracker.io/v2/pnl/leaderboard/kols", { headers: { "x-api-key": process.env.SOLANATRACKER_API_KEY }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).catch(() => null);
+    if (!res?.ok) errs.push(`Solana Tracker answered ${res?.status || "nothing"}`);
     const j: any = res?.ok ? await res.json().catch(() => null) : null;
-    for (const k of j?.wallets || j?.data || j || []) note(k.wallet || k.address, k.name || k.identity?.name || "KOL", (k.twitter || k.identity?.twitter || "").replace(/^@|https?:\/\/(x|twitter)\.com\//g, "") || null, "Solana Tracker");
+    const list: any[] = j?.wallets || j?.data || (Array.isArray(j) ? j : []);
+    for (const k of list) note(k.wallet || k.address, k.name || k.identity?.name || "KOL", handleOf(k.twitter || k.identity?.twitter), "Solana Tracker");
+  }
+  if (!found.size) {
+    await status("kol", { ok: false, error: errs.join(", ") || "no roster returned wallets" });
+    await r.set(KOL_AT, Date.now() - 3600_000 + 15 * 60_000);
+    return 0;
   }
   const have = await book();
-  const todo = [...found.entries()].filter(([w]) => !have[w] || (have[w].conf !== "confirmed" && Date.now() - have[w].at > 7 * 86400_000)).slice(0, 25);
+  // every roster wallet joins the book right away (two rosters agreeing = likely, one = unconfirmed); the proof
+  // check (SNS registry, their own X post) upgrades up to 10 wallets an hour, so the book fills in one run
   const add: Wallet[] = [];
+  for (const [w, k] of found) {
+    if (have[w]) continue;
+    add.push({ w, cls: "kol", name: k.name, handle: k.handle, conf: k.src.length >= 2 ? "likely" : "unconfirmed", proof: k.src.map((x) => `listed on the ${x} KOL roster`), src: k.src, at: Date.now() });
+  }
+  await upsert(add);
+  const fresh = await book();
+  const todo = [...found.entries()].filter(([w]) => fresh[w] && fresh[w].conf !== "confirmed" && !(fresh[w] as any).checkedAt).slice(0, 10);
+  const checked: Wallet[] = [];
   for (const [w, k] of todo) {
     await live(`checking ${k.name}'s wallet ${w.slice(0, 4)}…${w.slice(-4)}: SNS registry, their own posts, rosters`);
     const v = await verifyKol(w, k.handle, k.src);
-    add.push({ w, cls: "kol", name: k.name, handle: k.handle, conf: v.conf, proof: v.proof, src: k.src, at: Date.now() });
+    checked.push({ ...fresh[w], conf: v.conf, proof: v.proof, checkedAt: Date.now() } as Wallet);
   }
-  await upsert(add);
+  await upsert(checked);
+  await status("kol", { ok: true, rosterWallets: found.size, added: add.length, verified: checked.filter((x) => x.conf === "confirmed").length, error: errs.join(", ") || null });
+  if (add.length) {
+    const p = r.pipeline();
+    agentLog(p, [{ agent: "HOUND", at: Date.now(), text: `added ${add.length} KOL wallets from the rosters (${found.size} listed). checking their proof 10 an hour`, tone: "ok" }]);
+    await p.exec();
+  }
   return add.length;
 }
 
@@ -496,6 +558,17 @@ export async function buyersOf(mint: string) {
 
 // ---------------------------------------------------------------- session and views
 
+/** Admin "fill now": run the FOMO and KOL syncs right away (ignoring their timers), then push the webhook. */
+export async function houndRefill() {
+  const r = redis();
+  await r.del(FOMO_AT, KOL_AT);
+  const fomo = await fomoSync().catch((e) => `error ${e?.message || e}`);
+  const kol = await kolSync().catch((e) => `error ${e?.message || e}`);
+  const hook = await syncHook(true).catch((e) => ({ hook: `error ${e?.message || e}` }));
+  const st = ((await r.hgetall<Record<string, any>>(STATUS)) || {}) as Record<string, any>;
+  return { fomo, kol, hook, status: st, wallets: Object.keys(await book()).length };
+}
+
 export async function houndSession() {
   const out: Record<string, unknown> = {};
   out.fomo = await fomoSync().catch((e) => `error ${e?.message || e}`);
@@ -508,17 +581,19 @@ export async function houndSession() {
 
 export async function houndView(full: boolean) {
   const r = redis();
-  const [feed, ws, ev, hook, lv, q] = await Promise.all([r.lrange<Buy>(FEED, 0, 39), book(), r.hgetall<Record<string, number>>(EV), r.get<any>(HOOK), r.get<any>(LIVE), r.zcard(BQ)]);
+  const [feed, ws, ev, hook, lv, q, stt] = await Promise.all([r.lrange<Buy>(FEED, 0, 39), book(), r.hgetall<Record<string, number>>(EV), r.get<any>(HOOK), r.get<any>(LIVE), r.zcard(BQ), r.hgetall<Record<string, any>>(STATUS)]);
   const E = (ev || {}) as Record<string, number>;
   const all = Object.values(ws);
-  const counts = { fomo: all.filter((x) => x.cls.startsWith("fomo")).length, kol: all.filter((x) => x.cls === "kol").length, kolConfirmed: all.filter((x) => x.cls === "kol" && x.conf === "confirmed").length, smart: all.filter((x) => x.cls === "smart").length, admin: all.filter((x) => x.cls === "admin").length };
-  const classes = (["fomo-homerun", "fomo-steady", "kol", "smart", "admin"] as Cls[]).map((c) => ({ cls: c, label: CLASS_LABEL[c], h1: avgOf(E, `c:${c}`, "1h"), h6: avgOf(E, `c:${c}`, "6h"), h24: avgOf(E, `c:${c}`, "24h") }));
+  const counts = { total: all.length, fomo: all.filter((x) => x.cls.startsWith("fomo")).length, kol: all.filter((x) => x.cls === "kol").length, kolConfirmed: all.filter((x) => x.cls === "kol" && x.conf === "confirmed").length, smart: all.filter((x) => x.cls === "smart").length, admin: all.filter((x) => x.cls === "admin").length };
+  const classes = (["fomo-homerun", "fomo-steady", "fomo-top", "kol", "smart", "admin"] as Cls[]).map((c) => ({ cls: c, label: CLASS_LABEL[c], h1: avgOf(E, `c:${c}`, "1h"), h6: avgOf(E, `c:${c}`, "6h"), h24: avgOf(E, `c:${c}`, "24h") }));
   // public: names of KOLs and FOMO traders are public anyway; smart wallets stay anonymous and addresses are hidden
   const show = (b: Buy) => (full ? b : { ...b, w: b.cls === "smart" ? "" : b.w, name: b.cls === "smart" ? "smart wallet" : b.name });
   return {
     live: lv || null,
     hook: hook ? { n: hook.n, at: hook.at } : null,
     breakoutsQueued: q || 0,
+    // what each source returned on its last run (counts and errors only, no keys)
+    status: stt || {},
     counts,
     classes,
     feed: ((feed || []) as Buy[]).map(show),

@@ -87,7 +87,7 @@ const ENUMS: Record<string, string[]> = { mode: ["off", "paper", "auto", "live"]
 const BOUNDS: Record<string, [number, number]> = {
   start: [0.01, 1000], sizePct: [0.1, 25], minSol: [0.001, 5], maxSol: [0.001, 5], maxImpact: [0.1, 20], maxOpen: [0, 20],
   slippageBps: [50, 3000], maxPriorityLamports: [0, 20_000_000], jitoTipMinSol: [0, 0.01], jitoTipMaxSol: [0, 0.02],
-  dailyLoss: [1, 60], sl: [-90, -1], momoSl: [-90, -1], ghostSol: [0, 1], flowWaitMs: [0, 10_000],
+  dailyLoss: [1, 60], sl: [-90, -1], momoSl: [-90, -1], ghostSol: [0, 1], flowWaitMs: [0, 10_000], catchFirstFrac: [0.05, 1], catchSendFrac: [0, 1], catchSl: [-90, -1],
 };
 
 function cleanDesk(raw: Record<string, unknown>): Record<string, unknown> | string {

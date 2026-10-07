@@ -534,7 +534,8 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `MIND_MODEL` | Optional. Default `claude-sonnet-5-5`. `claude-haiku-4-5-20251001` is about 3x cheaper. |
 | `MIND_PER_HOUR` | Optional. Judgements per hour (default 30), plus up to 6 post-mortem and school calls. |
 | `X_API_KEY` | Optional. twitterapi.io key for WIRE and LENS (LENS uses it for X profiles, posts and the CA search; ~3 reads per coin, max 60 coins an hour). Without it LENS still reads websites, domains and Telegram. Set the webhook URL in the twitterapi.io dashboard to `https://www.ratnet.network/api/x/hook?key=<CRON_SECRET>`; WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `https://www.ratnet.network/api/x/sync?key=<CRON_SECRET>`). |
-| `X_RULE_INTERVAL` | Optional. Seconds between twitterapi.io rule checks (default `1`). Higher is cheaper and slower. |
+| `X_RULE_INTERVAL` | Optional. Seconds between twitterapi.io rule checks (default `60`). Every check is billed; lower is faster and costs more. |
+| `WORKER_DESK_MS` | Optional. Length of one desk session in the worker (default `300000`, 5 minutes). The desk runs in its own loop next to the agents. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 
 Ping `GET /api/desk/run?key=<CRON_SECRET>` every minute with any external scheduler. Each ping runs the rats, the desk and the HISTORIAN for ~55 seconds. The historian's pace (and RPC cost) is set on `/admin`.

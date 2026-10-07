@@ -18,10 +18,11 @@
 //
 // Starting numbers (target, horizon, cutoffs) are hints in the desk config (catch*). The model, its cutoff and the PM
 // sleeve size are learned. FILM follows every skip, the ghost desk takes what the desk can't.
+import { poolSnaps, poolWatch, asHot, type PoolSnap } from "./pools";
 import { K, redis } from "./redis";
 import { agentLog } from "./agents";
 import { getSettings } from "./settings";
-import { getCurves, solUsd } from "./solana";
+import { getCurves, pmap, solUsd } from "./solana";
 import { board, confluence, recentCoins } from "./board";
 import { buyersOf } from "./hound";
 import { momoView, type Hot } from "./momo";
@@ -29,7 +30,10 @@ import type { Launch } from "./digger";
 import { enqueueMind } from "./mind";
 import { enqueueLens } from "./lens";
 
-const W = "rn:ct:w2"; // model (v2: + hist flag)
+const W = "rn:ct:w2"; // model (v2: + hist flag; v0.1.19 grows it with live-tape and pool inputs, learned weights kept)
+const W2H = "rn:ct:w2h"; // the fast model: does it hit within 2 hours (labels 3x sooner)
+const REC2 = "rn:ct:rec2"; // its prequential record
+const DUE2 = "rn:ct:due2"; // id -> when its 2-hour horizon ends
 const SNAP = "rn:ct:s"; // id -> Snap (pending)
 const DUE = "rn:ct:due"; // id -> when its horizon ends
 const WATCH = "rn:ct:watch"; // mint -> { pk, until, sym }
@@ -48,6 +52,9 @@ export const CT_FEATURES = [
   "log_uniq", "log_organic", "buy_share", "bundle", "farm", "log_smart", "log_tracked",
   "king", "king_bond", "post", "log_wave", "narrative", "log_v5", "log_buyers5", "buy_ratio", "ch5", "ch1h",
   "conf_pos", "conf_neg", "dev_rate", "socials", "copy", "mind", "lens", "hist",
+  // v0.1.19: the live trade stream (worker, last 60 seconds) and the pool watch (every migration, once a minute)
+  "rt_live", "log_b60", "log_u60", "net60", "sell_share60", "log_new60", "log_big60", "mc_ch60",
+  "pool_seen", "log_liq", "log_v5_pool", "pool_buy_share",
 ] as const;
 const D = CT_FEATURES.length;
 export const CT_MIN = 300; // labels before the model trades
@@ -63,14 +70,22 @@ const l1 = (v: number) => Math.log10(1 + Math.max(0, v || 0));
 const sig = (z: number) => 1 / (1 + Math.exp(-clip(z, -30, 30)));
 const usdK = (n: number) => (n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : `$${Math.round(n / 1000)}K`);
 
-async function loadModel(): Promise<Model> {
-  const m = await redis().get<Model>(W);
+async function loadModel(key = W): Promise<Model> {
+  const m = await redis().get<Model>(key);
   if (m && m.w?.length === D) return m;
+  // a model from before new inputs were added keeps everything it learned; the new inputs start at zero weight
+  if (m && m.w?.length && m.w.length < D) {
+    const k = D - m.w.length;
+    return { ...m, w: [...m.w, ...new Array(k).fill(0)], mu: [...m.mu, ...new Array(k).fill(0)], m2: [...m.m2, ...new Array(k).fill(Math.max(1, m.n))] };
+  }
   return { w: new Array(D).fill(0), mu: new Array(D).fill(0), m2: new Array(D).fill(1), n: 0, pos: 0, ver: 1 };
 }
+/** Old snapshots were stored with fewer inputs: the missing ones read as 0. */
+const pad = (x: number[]) => (x.length >= D ? x : [...x, ...new Array(D - x.length).fill(0)]);
 
 /** Standardised input (running mean and variance per feature; bias stays 1). */
-function z(m: Model, x: number[]) {
+function z(m: Model, x0: number[]) {
+  const x = pad(x0);
   return x.map((v, i) => (i === 0 ? 1 : (v - m.mu[i]) / Math.sqrt(Math.max(1e-6, m.m2[i] / Math.max(1, m.n)) + 1e-6)));
 }
 export function predict(m: Model, x: number[]) {
@@ -78,7 +93,8 @@ export function predict(m: Model, x: number[]) {
   const zz = z(m, x);
   return sig(zz.reduce((a, v, i) => a + v * m.w[i], 0));
 }
-function learn(m: Model, x: number[], y: number, w = 1) {
+function learn(m: Model, x0: number[], y: number, w = 1) {
+  const x = pad(x0);
   // running stats first (Welford), then one SGD step with the rare class weighed up
   m.n++;
   for (let i = 1; i < D; i++) {
@@ -149,11 +165,13 @@ export function toX(f: Record<string, number>) {
     l1(f.uniq), l1(f.organic), f.buyShare, f.bundle, f.farm, l1(f.smart), l1(f.tracked),
     f.king / 100, f.kingBond, f.post, l1(f.wave), l1(f.narrative), l1(f.v5), l1(f.buyers5), clip(f.buyRatio, 0, 5), clip(f.ch5, -100, 300) / 100, clip(f.ch1h, -100, 1000) / 100,
     f.confPos, f.confNeg, f.devRate, f.socials, f.copy, f.mind, f.lens, f.hist || 0,
+    f.rtLive || 0, l1(f.rtB60), l1(f.rtU60), Math.sign(f.rtNet60 || 0) * l1(Math.abs(f.rtNet60 || 0)), clip(f.rtSellShare ?? 0.5, 0, 1), l1(f.rtNew60), l1(f.rtBig60), clip(f.rtMcCh60 || 0, -60, 200) / 100,
+    f.poolSeen || 0, l1(f.poolLiq), l1(f.poolV5), clip(f.poolBuyShare ?? 0.5, 0, 1),
   ];
 }
 
 /** Build one snapshot's features from everything the agents already know about the coin. */
-async function features(c: Cand, rec: Launch | null, sol: number, prev: any, rt?: any) {
+async function features(c: Cand, rec: Launch | null, sol: number, prev: any, rt?: any, pl?: PoolSnap | null) {
   const now = Date.now();
   const posts = await board(c.mint).catch(() => []);
   const cf = confluence(posts, now);
@@ -202,6 +220,20 @@ async function features(c: Cand, rec: Launch | null, sol: number, prev: any, rt?
     rtS: rt && now - rt.at < 30_000 ? rt.s20 : 0,
     rtU: rt && now - rt.at < 30_000 ? rt.u20 : 0,
     rtNet: rt && now - rt.at < 30_000 ? rt.bsol - rt.ssol : 0,
+    // the 60-second flow picture (model inputs from v0.1.19)
+    rtLive: rt && now - rt.at < 90_000 && rt.b60 != null ? 1 : 0,
+    rtB60: rt && now - rt.at < 90_000 ? rt.b60 || 0 : 0,
+    rtU60: rt && now - rt.at < 90_000 ? rt.u60 || 0 : 0,
+    rtNet60: rt && now - rt.at < 90_000 ? (rt.bsol60 || 0) - (rt.ssol60 || 0) : 0,
+    rtSellShare: rt && now - rt.at < 90_000 && (rt.b60 || 0) + (rt.s60 || 0) > 0 ? rt.s60 / (rt.b60 + rt.s60) : 0.5,
+    rtNew60: rt && now - rt.at < 90_000 ? rt.new60 || 0 : 0,
+    rtBig60: rt && now - rt.at < 90_000 ? rt.big60 || 0 : 0,
+    rtMcCh60: rt && now - rt.at < 90_000 ? rt.mcCh60 || 0 : 0,
+    // the pool watch: every migration's pool, once a minute
+    poolSeen: pl && now - pl.at < 3 * 60_000 ? 1 : 0,
+    poolLiq: pl ? pl.liq : 0,
+    poolV5: pl ? pl.v5 : 0,
+    poolBuyShare: pl && pl.b5 + pl.s5 > 0 ? pl.b5 / (pl.b5 + pl.s5) : 0.5,
   };
   const x = toX(f);
   return { f, x, mc, cf };
@@ -238,17 +270,19 @@ export async function catchPass(force = false) {
   const sol = (await solUsd().catch(() => null)) || 150;
 
   // --- candidates: hot curves (fast and slow), migrated coins MOMO sees, and coins the agents agree on
-  await r.zremrangebyscore(MIG, 0, now - 2 * 3600_000);
+  await r.zremrangebyscore(MIG, 0, now - 6 * 3600_000);
+  // POOL WATCH: every migration of the last 2 hours, read in its pool once a minute (not only MOMO's list)
+  await poolWatch().catch(() => null);
   const [radar, mv, recent, migRaw] = await Promise.all([
-    r.zrange<string[]>(K.radar, 0, (c.catchCurveTop ?? 40) - 1, { rev: true }),
+    r.zrange<string[]>(K.radar, 0, (c.catchCurveTop ?? 60) - 1, { rev: true }),
     momoView().catch(() => null),
     recentCoins(20 * 60_000, 40).catch(() => [] as string[]),
-    r.zrange<string[]>(MIG, 0, 29, { rev: true }),
+    r.zrange<string[]>(MIG, now - 2 * 3600_000, now, { byScore: true }),
   ]);
-  const migs = ((migRaw || []) as string[]).map(String);
+  const migs = ((migRaw || []) as string[]).map(String).reverse().slice(0, 150);
   const hotBy = new Map<string, Hot>();
   for (const h of mv?.hot || []) if (h.ageMin <= 24 * 60) hotBy.set(h.mint, h);
-  const mints = Array.from(new Set([...migs, ...(radar || []), ...hotBy.keys(), ...recent])).slice(0, 100);
+  const mints = Array.from(new Set([...migs, ...(radar || []), ...hotBy.keys(), ...recent])).slice(0, 240);
   if (!mints.length) {
     await follow(sol, target);
     return { catch: "no candidates" };
@@ -261,9 +295,14 @@ export async function catchPass(force = false) {
   ]);
   const rtBy = (rtAll || {}) as Record<string, any>;
   const last = (lastAll || {}) as Record<string, any>;
-  // fresh migrations MOMO has not listed yet: read their pool straight from the chain
   const migSet = new Set(migs);
-  const needPool = mints.filter((m) => migSet.has(m) && !hotBy.has(m) && !((curves as any)[m] && !(curves as any)[m].complete));
+  const pools = await poolSnaps(migs).catch(() => ({} as Record<string, PoolSnap | null>));
+  const plOf = (m: string) => {
+    const x = pools[m];
+    return x && now - x.at < 3 * 60_000 && x.mc > 0 ? x : null;
+  };
+  // fresh migrations neither MOMO nor the pool watch has yet: read their pool straight from the chain
+  const needPool = mints.filter((m) => migSet.has(m) && !hotBy.has(m) && !plOf(m) && !((curves as any)[m] && !(curves as any)[m].complete));
   const { priceOf } = await import("./desk");
   const poolPx = needPool.length ? await priceOf(needPool).catch(() => ({} as Record<string, any>)) : {};
   const model = await loadModel();
@@ -275,26 +314,41 @@ export async function catchPass(force = false) {
   const signals: CatchSig[] = [];
   let snaps = 0;
 
+  // candidates first, then every feature read in parallel (12 at a time): 200+ coins used to be read one by one
+  const todo: { m: string; rec: Launch | null; cand: Cand; prev: any; hot?: Hot; pl: PoolSnap | null }[] = [];
   for (let i = 0; i < mints.length; i++) {
     const m = mints[i];
     const rec = recs[i] || null;
     const cv = (curves as any)[m];
-    const hot = hotBy.get(m);
+    const pl = plOf(m);
+    const hot = hotBy.get(m) || (pl ? asHot(m, pl, rec?.createdAt) : undefined);
     let cand: Cand | null = null;
     if (cv && !cv.complete && cv.priceSol > 0) cand = { mint: m, stage: "curve", prog: cv.progress, real: cv.realSol, mcSol: cv.mcapSol, supply: cv.supply };
     else if (hot && (/pump/i.test(hot.dex) || m.endsWith("pump"))) cand = { mint: m, stage: "pool", hot };
     else if ((poolPx as any)[m]?.grad) cand = { mint: m, stage: "pool", real: (poolPx as any)[m].real, mcSol: (poolPx as any)[m].px * 1e9 };
     if (!cand) continue;
     if (cand.stage === "curve" && (cand.prog || 0) < (c.catchMinCurve ?? 15)) continue;
-    const prev = last[m];
-    // look again only when something moved: 8+ curve points, a new stage, or 4 minutes on the curve / 5 in the pool
-    const moved = !prev || prev.stage !== cand.stage || (cand.stage === "curve" ? Math.abs((cand.prog || 0) - prev.prog) >= 8 || now - prev.at >= 4 * 60_000 : now - prev.at >= 5 * 60_000);
-    const { f, x, mc, cf } = await features(cand, rec, sol, prev, rtBy[m]);
+    todo.push({ m, rec, cand, prev: last[m], hot, pl });
+  }
+  const feats = await pmap(todo, 12, (t) => features(t.cand, t.rec, sol, t.prev, rtBy[t.m], t.pl).catch(() => null));
+  const model2 = await loadModel(W2H);
+  const rec2 = ((await r.hgetall<Record<string, number>>(REC2)) || {}) as Record<string, number>;
+  const ready2 = model2.n >= CT_MIN && model2.pos >= 15;
+  const cut2 = ready2 ? cutoff(rec2, c.catchMinHit ?? 0.08) : null;
+
+  for (let j = 0; j < todo.length; j++) {
+    const { m, rec, cand, prev, hot } = todo[j];
+    const ft = feats[j];
+    if (!ft) continue;
+    // look again only when something moved: 8+ curve points, a new stage, or 4 minutes on the curve / 3 in the pool
+    const moved = !prev || prev.stage !== cand.stage || (cand.stage === "curve" ? Math.abs((cand.prog || 0) - prev.prog) >= 8 || now - prev.at >= 4 * 60_000 : now - prev.at >= 3 * 60_000);
+    const { f, x, mc, cf } = ft;
     pipe.hset(LAST, { [m]: { at: now, prog: cand.prog ?? 100, mc, stage: cand.stage } });
     const pr = priorScore(f);
     const p = predict(model, x);
+    const p2 = predict(model2, x);
     const sym = rec?.symbol || hot?.symbol || m.slice(0, 4);
-    scored.push({ mint: m, sym, stage: cand.stage, mc: Math.round(mc), p: Math.round(p * 1000) / 1000, prior: pr.score, why: pr.why, conf: cf.pos, age: Math.round(f.ageMin) });
+    scored.push({ mint: m, sym, stage: cand.stage, mc: Math.round(mc), p: Math.round(p * 1000) / 1000, p2: Math.round(p2 * 1000) / 1000, prior: pr.score, why: pr.why, conf: cf.pos, age: Math.round(f.ageMin), live: f.rtLive ? 1 : 0 });
     if (!moved || snaps >= (c.catchSnapsPerPass ?? 30) || mc <= 0) continue;
     // a snapshot to learn from (only while there is room to the target: a $280K coin "reaching $300K" teaches nothing)
     const goal = Math.max(target, mc * 2);
@@ -304,15 +358,20 @@ export async function catchPass(force = false) {
       const snap: Snap = { id, mint: m, sym, at: now, stage: cand.stage, mc: Math.round(mc), x, p, prior: pr.score, why: pr.why };
       pipe.hset(SNAP, { [id]: snap });
       pipe.zadd(DUE, { score: now + (c.catchHorizonH ?? 6) * 3600_000, member: id });
+      pipe.zadd(DUE2, { score: now + 2 * 3600_000, member: id });
       pipe.hset(WATCH, { [m]: { pk: mc, until: now + (c.catchHorizonH ?? 6) * 3600_000, sym } });
     }
     // the trade decision: the model once its record earned it, the prior before that
     const room = mc > 0 && mc <= goal / 2 && mc <= target / 2;
-    const byModel = !!cut && p >= cut.band;
-    // the prior keeps trading until the model has a band that earned it (a ready model with no good band yet is not
+    // either model trades once its own record earned a band: the 6-hour model, or the fast 2-hour one (which gets
+    // its labels 3x sooner, so it usually earns its band first)
+    const by6 = !!cut && p >= cut.band;
+    const by2 = !!cut2 && p2 >= cut2.band;
+    const byModel = by6 || by2;
+    // the prior keeps trading until a model has a band that earned it (a ready model with no good band yet is not
     // a reason to stop; the PM sleeve sizes CATCH by its real results either way)
-    const byPrior = !cut && pr.score >= (c.catchPriorMin ?? 72);
-    if (room && (byModel || byPrior) && !f.farm) signals.push({ mint: m, sym, at: now, stage: cand.stage, mc: Math.round(mc), p: Math.round(p * 1000) / 1000, prior: pr.score, by: byModel ? "model" : "prior", why: pr.why, target: Math.round(goal) });
+    const byPrior = !cut && !cut2 && pr.score >= (c.catchPriorMin ?? 72);
+    if (room && (byModel || byPrior) && !f.farm) signals.push({ mint: m, sym, at: now, stage: cand.stage, mc: Math.round(mc), p: Math.round((by2 && !by6 ? p2 : p) * 1000) / 1000, prior: pr.score, by: byModel ? "model" : "prior", why: pr.why, target: Math.round(goal) });
   }
 
   // SYNC: where 3+ agent families agree, MIND and LENS take a look too (once per coin per 2 hours), and every CATCH
@@ -325,7 +384,7 @@ export async function catchPass(force = false) {
   }
   for (const g of signals) enqueueMind(pipe, g.mint, "catch");
   scored.sort((a, b) => (ready ? b.p - a.p : b.prior - a.prior));
-  pipe.set(VIEW, { at: now, ready, n: model.n, pos: model.pos, cut, scanned: scored.length, top: scored.slice(0, 25) }, { ex: 600 });
+  pipe.set(VIEW, { at: now, ready, n: model.n, pos: model.pos, cut, fast: { ready: ready2, n: model2.n, pos: model2.pos, cut: cut2 }, scanned: scored.length, pools: todo.filter((t) => t.pl).length, live: scored.filter((x) => x.live).length, top: scored.slice(0, 25) }, { ex: 600 });
   await pipe.exec();
 
   // --- signals to the desk (one per coin per 30 minutes)
@@ -375,7 +434,16 @@ async function follow(sol: number, target: number) {
     const all = ((await r.zrange<string[]>(DUE, 0, -1)) || []) as string[];
     for (const id of all) if (hitMints.has(id.split(":")[0])) early.push(id);
   }
-  const ids = Array.from(new Set([...due, ...early])).slice(0, 400);
+  // the fast model's labels: 2 hours after the look (or the moment the coin hits)
+  const due2 = ((await r.zrange<string[]>(DUE2, 0, now, { byScore: true })) || []) as string[];
+  const early2: string[] = [];
+  if (hitMints.size) {
+    const all2 = ((await r.zrange<string[]>(DUE2, 0, -1)) || []) as string[];
+    for (const id of all2) if (hitMints.has(id.split(":")[0])) early2.push(id);
+  }
+  const ids2 = Array.from(new Set([...due2, ...early2])).slice(0, 400);
+  const ids6 = Array.from(new Set([...due, ...early])).slice(0, 400);
+  const ids = Array.from(new Set([...ids6, ...ids2]));
   if (!ids.length) return { labelled: 0 };
   const snaps = ((await r.hmget<Record<string, Snap>>(SNAP, ...ids)) || {}) as Record<string, Snap | null>;
   const model = await loadModel();
@@ -383,7 +451,34 @@ async function follow(sol: number, target: number) {
   const done: string[] = [];
   const hist: any[] = [];
   let labelled = 0;
-  for (const id of ids) {
+  // 2-hour labels first (they never delete the snapshot: the 6-hour label still needs it)
+  const model2 = await loadModel(W2H);
+  const inc2: Record<string, number> = {};
+  const done2: string[] = [];
+  let labelled2 = 0;
+  const due2Set = new Set(due2);
+  for (const id of ids2) {
+    const sp = snaps[id];
+    if (!sp) {
+      done2.push(id);
+      continue;
+    }
+    const hit = pk(sp.mint) >= Math.max(target, sp.mc * 2);
+    if (!hit && !due2Set.has(id)) continue;
+    const pb = Math.min(9, Math.floor(predict(model2, sp.x) * 10));
+    const k2 = (k: string) => (inc2[k] = (inc2[k] || 0) + 1);
+    k2(`p${pb}:n`);
+    k2("all:n");
+    if (hit) {
+      k2(`p${pb}:hit`);
+      k2("all:hit");
+    }
+    learn(model2, sp.x, hit ? 1 : 0);
+    labelled2++;
+    done2.push(id);
+  }
+  const due6Set = new Set(due);
+  for (const id of ids6) {
     const sp = snaps[id];
     if (!sp) {
       done.push(id);
@@ -392,7 +487,7 @@ async function follow(sol: number, target: number) {
     const goal = Math.max(target, sp.mc * 2);
     const peak = pk(sp.mint);
     const hit = peak >= goal;
-    const over = due.includes(id);
+    const over = due6Set.has(id);
     if (!hit && !over) continue; // early check only resolves positives
     const y = hit ? 1 : 0;
     // prequential: grade the score it gave *before* learning from this label
@@ -421,12 +516,15 @@ async function follow(sol: number, target: number) {
   }
   for (const [k, v] of Object.entries(inc)) p.hincrby(REC, k, v);
   if (labelled) p.set(W, model);
+  if (done2.length) p.zrem(DUE2, ...done2);
+  for (const [k, v] of Object.entries(inc2)) p.hincrby(REC2, k, v);
+  if (labelled2) p.set(W2H, model2);
   if (hist.length) {
     p.lpush(HIST, ...hist);
     p.ltrim(HIST, 0, 199);
   }
   await p.exec();
-  return { labelled, model: model.n };
+  return { labelled, labelled2h: labelled2, model: model.n, model2h: model2.n };
 }
 
 /** A coin just migrated: CATCH looks at it on the next pass (and the worker triggers that pass at once). */
@@ -454,13 +552,14 @@ export async function catchSignal(mint: string) {
 /** For the page: the model's state, its honest record by score band, what it is looking at, and recent labels. */
 export async function catchView() {
   const r = redis();
-  const [v, rec, labels, m] = await Promise.all([r.get<any>(VIEW), r.hgetall<Record<string, number>>(REC), r.lrange<any>(HIST, 0, 29), loadModel()]);
+  const [v, rec, labels, m, m2, rec2] = await Promise.all([r.get<any>(VIEW), r.hgetall<Record<string, number>>(REC), r.lrange<any>(HIST, 0, 29), loadModel(), loadModel(W2H), r.hgetall<Record<string, number>>(REC2)]);
+  const R2 = (rec2 || {}) as Record<string, number>;
   const R = (rec || {}) as Record<string, number>;
   const bands = Array.from({ length: 10 }, (_, b) => ({ b, n: Number(R[`p${b}:n`] || 0), hit: Number(R[`p${b}:hit`] || 0), qn: Number(R[`q${b}:n`] || 0), qhit: Number(R[`q${b}:hit`] || 0) }));
   const all = { n: Number(R["all:n"] || 0), hit: Number(R["all:hit"] || 0) };
   const hist = { n: Number(R["h:all:n"] || 0), hit: Number(R["h:all:hit"] || 0) };
   const stages = { curve: { n: Number(R["curve:n"] || 0), hit: Number(R["curve:hit"] || 0) }, pool: { n: Number(R["pool:n"] || 0), hit: Number(R["pool:hit"] || 0) } };
-  return { live: v || null, hist, model: { n: m.n, pos: m.pos, ready: m.n >= CT_MIN && m.pos >= 15, need: CT_MIN, w: m.w.map((x) => Math.round(x * 1000) / 1000) }, bands, all, stages, recent: labels || [], features: CT_FEATURES };
+  return { live: v || null, hist, model: { n: m.n, pos: m.pos, ready: m.n >= CT_MIN && m.pos >= 15, need: CT_MIN, w: m.w.map((x) => Math.round(x * 1000) / 1000) }, bands, all, stages, recent: labels || [], features: CT_FEATURES, fast: { n: m2.n, pos: m2.pos, ready: m2.n >= CT_MIN && m2.pos >= 15, all: { n: Number(R2["all:n"] || 0), hit: Number(R2["all:hit"] || 0) }, hist: { n: Number(R2["h:all:n"] || 0), hit: Number(R2["h:all:hit"] || 0) }, bands: Array.from({ length: 10 }, (_, b) => ({ b, n: Number(R2[`p${b}:n`] || 0), hit: Number(R2[`p${b}:hit`] || 0) })) } };
 }
 
 
@@ -480,13 +579,25 @@ export function curveMcSol(progress: number) {
  * flag on (so the model can tell replayed looks from live ones, where MOMO and the wallets also speak). History has
  * its own record (h:*), the live record stays live.
  */
-export async function learnHistory(items: { f: Record<string, number>; y: boolean; w: number }[]) {
+export async function learnHistory(items: { f: Record<string, number>; y: boolean; y2?: boolean; w: number }[]) {
   if (!items.length) return 0;
   const r = redis();
   const model = await loadModel();
+  const model2 = await loadModel(W2H);
   const inc: Record<string, number> = {};
+  const inc2: Record<string, number> = {};
   for (const it of items) {
     const x = toX({ ...it.f, hist: 1 });
+    if (it.y2 != null) {
+      const pb2 = Math.min(9, Math.floor(predict(model2, x) * 10));
+      inc2[`h:p${pb2}:n`] = (inc2[`h:p${pb2}:n`] || 0) + 1;
+      inc2["h:all:n"] = (inc2["h:all:n"] || 0) + 1;
+      if (it.y2) {
+        inc2[`h:p${pb2}:hit`] = (inc2[`h:p${pb2}:hit`] || 0) + 1;
+        inc2["h:all:hit"] = (inc2["h:all:hit"] || 0) + 1;
+      }
+      learn(model2, x, it.y2 ? 1 : 0, it.w);
+    }
     const pb = Math.min(9, Math.floor(predict(model, x) * 10));
     inc[`h:p${pb}:n`] = (inc[`h:p${pb}:n`] || 0) + 1;
     inc["h:all:n"] = (inc["h:all:n"] || 0) + 1;
@@ -499,6 +610,8 @@ export async function learnHistory(items: { f: Record<string, number>; y: boolea
   const p = r.pipeline();
   p.set(W, model);
   for (const [k, v] of Object.entries(inc)) p.hincrby(REC, k, v);
+  if (items.some((it) => it.y2 != null)) p.set(W2H, model2);
+  for (const [k, v] of Object.entries(inc2)) p.hincrby(REC2, k, v);
   await p.exec();
   return items.length;
 }

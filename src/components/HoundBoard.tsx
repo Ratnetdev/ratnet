@@ -11,7 +11,7 @@ type Buy = { id: string; w: string; name: string; cls: string; conf: string; min
 type H = { n: number; avg: number | null; x2: number };
 type View = { live: { at: number; text: string } | null; hook: { n: number; at: number } | null; breakoutsQueued: number; counts: { fomo: number; kol: number; kolConfirmed: number; smart: number; admin: number }; classes: { cls: string; label: string; h1: H; h6: H; h24: H }[]; feed: Buy[]; sources: Record<string, boolean> };
 
-export const CLS_COL: Record<string, string> = { "fomo-homerun": "var(--bond)", "fomo-steady": "var(--watch)", kol: "#ff8fd8", smart: "var(--rat)", admin: "var(--dim)" };
+export const CLS_COL: Record<string, string> = { "fomo-homerun": "var(--bond)", "fomo-steady": "var(--watch)", "fomo-top": "#ffd27a", kol: "#ff8fd8", smart: "var(--rat)", admin: "var(--dim)" };
 const pc = (n: number | null) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n}%`);
 
 export default function HoundBoard() {

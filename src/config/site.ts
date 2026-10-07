@@ -60,8 +60,8 @@ export const DEFAULT_SETTINGS = {
     on: true,
     days: 30, // how far back to replay (today first, then backwards)
     halfLife: 21, // days: a lesson this old weighs half (seasons change)
-    scanPerRun: 150, // create txs parsed per step (1 RPC credit each)
-    deepPerRun: 8, // launches fully rebuilt per step (~50 credits each)
+    scanPerRun: 400, // create txs parsed per step (1 RPC credit each), 16 at a time
+    deepPerRun: 16, // launches fully rebuilt per step (~50 credits each), 6 at a time
     sample: 10, // learn every bonded launch plus 1 in this many of the rest (weighted back up)
     runner: true, // post-bond candles from GeckoTerminal for the runner model
   },
@@ -136,7 +136,9 @@ export const DEFAULT_SETTINGS = {
     catchMaxTop10: 40, // % top 10 holders may hold (curve/pool excluded)
     catchMinPoolSol: 30,
     catchCooldownMin: 30,
-    catchInitials: 60, // % up: initials (until CATCH's own exit profile sets it)
+    catchInitials: 100, // % up: send ladder step 1 at 2x (until the exit lab learns CATCH's own number)
+    catchFirstFrac: 0.4, // send ladder: share sold at the initials
+    catchSendFrac: 0.3, // send ladder: share of the original bag sold at the target (catchTargetUsd); the rest trails
     catchSl: -18,
     catchTimeStop: 30,
     // MIND (the trader's mind): auto = trades its SEND calls only once its own record earns it; on = now; off = never

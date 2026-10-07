@@ -29,7 +29,7 @@ export async function limit(key: string, max: number, windowSec: number) {
 export const tooMany = () => NextResponse.json({ error: "Slow down a little." }, { status: 429, headers: { "cache-control": "no-store", "retry-after": "30" } });
 
 /** Public read: cached on Vercel's CDN so thousands of viewers cost one Redis read every few seconds. */
-export const cached = (data: unknown, seconds = 3) =>
+export const cached = (data: unknown, seconds = 3, swr = seconds * 5) =>
   NextResponse.json(data, {
-    headers: { "cache-control": `public, max-age=0, s-maxage=${seconds}, stale-while-revalidate=${seconds * 5}` },
+    headers: { "cache-control": `public, max-age=0, s-maxage=${seconds}, stale-while-revalidate=${swr}` },
   });

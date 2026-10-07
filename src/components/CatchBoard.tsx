@@ -10,7 +10,8 @@ import { AGENT_COLOR } from "./DenScene";
 
 type Top = { mint: string; sym: string; stage: "curve" | "pool"; mc: number; p: number; prior: number; why: string[]; conf: number; age: number };
 type V = {
-  live: { at: number; ready: boolean; n: number; pos: number; cut: { band: number; n: number; hit: number } | null; scanned: number; top: Top[] } | null;
+  live: { at: number; ready: boolean; n: number; pos: number; cut: { band: number; n: number; hit: number } | null; scanned: number; pools?: number; live?: number; top: Top[] } | null;
+  fast?: { n: number; pos: number; ready: boolean; all: { n: number; hit: number } };
   model: { n: number; pos: number; ready: boolean; need: number };
   bands: { b: number; n: number; hit: number; qn: number; qhit: number }[];
   all: { n: number; hit: number };
@@ -32,11 +33,11 @@ export default function CatchBoard() {
     <section className="panel mt catch">
       <div className="ph">
         <span><Info k="catch"><b>CATCH</b></Info> · the sender catcher: coins moving like the ones that ran to $300K+</span>
-        <span className="tiny muted">{v ? (ready ? `model live · ${v.model.n} labels` : `learning · ${v.model.n}/${v.model.need} labels, ${v.model.pos} senders`) : ""}{v?.hist?.n ? ` · ${v.hist.n} from replayed history` : ""}</span>
+        <span className="tiny muted">{v ? (ready ? `model live · ${v.model.n} labels` : `learning · ${v.model.n}/${v.model.need} labels, ${v.model.pos} senders`) : ""}{v?.hist?.n ? ` · ${v.hist.n} from replayed history` : ""}{v?.fast ? ` · 2h model ${v.fast.ready ? "live" : "learning"}, ${v.fast.n} labels` : ""}</span>
       </div>
       <div className="catch-grid">
         <div>
-          <div className="sc-h">Looking at now <span className="muted">· {v?.live ? `${v.live.scanned} coins, ${ago(v.live.at)} ago` : "waiting for the first pass"}</span></div>
+          <div className="sc-h">Looking at now <span className="muted">· {v?.live ? `${v.live.scanned} coins${v.live.pools ? `, ${v.live.pools} pools watched` : ""}${v.live.live ? `, ${v.live.live} on the live trade stream` : ""}, ${ago(v.live.at)} ago` : "waiting for the first pass"}</span></div>
           <table className="tbl catch-tbl">
             <thead><tr><th>Coin</th><th>Stage</th><th>MC</th><th>{ready ? "P(send)" : "Score"}</th><th className="hide-m">Why</th></tr></thead>
             <tbody>

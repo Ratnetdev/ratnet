@@ -314,11 +314,19 @@ export async function syncRules(force = false) {
   }
   if (cur) chunks.push(cur);
   const head = { "X-API-Key": process.env.X_API_KEY!, "content-type": "application/json" };
-  // how often twitterapi.io checks each rule. It bills every check, so 1s costs ~$20 a day; 20s is ~20x cheaper and J7 covers the big accounts in real time anyway
-  const interval = Math.max(5, Number(process.env.X_RULE_INTERVAL || 20));
-  // remove our old rules, then add the new set and switch each on
-  const old = ((await r.get<string[]>(RULES)) || []) as string[];
-  for (const id of old) await fetch(`${API}/oapi/tweet_filter/delete_rule`, { method: "DELETE", headers: head, body: JSON.stringify({ rule_id: id }) }).catch(() => null);
+  // how often twitterapi.io checks each rule. Every check is billed (15 credits minimum, more when posts come back), so
+  // 25 rules at 20s burned ~200K credits an hour. 60s by default; J7 already covers the big accounts in real time
+  const interval = Math.max(10, Number(process.env.X_RULE_INTERVAL || 60));
+  // remove EVERY rule of ours on the account, not only the ones we remember: a delete that failed once used to leave
+  // its rule running (and billing) forever, and each later sync stacked a fresh set on top
+  const listed: any = await fetch(`${API}/oapi/tweet_filter/get_rules`, { headers: head, cache: "no-store" }).then((x) => x.json()).catch(() => null);
+  const mine = ((listed?.rules || []) as any[]).filter((x) => String(x?.tag || "").startsWith("ratnet-wire-")).map((x) => String(x.rule_id));
+  const old = Array.from(new Set([...(((await r.get<string[]>(RULES)) || []) as string[]), ...mine]));
+  let removed = 0;
+  for (const id of old) {
+    const ok: any = await fetch(`${API}/oapi/tweet_filter/delete_rule`, { method: "DELETE", headers: head, body: JSON.stringify({ rule_id: id }) }).then((x) => x.json()).catch(() => null);
+    if (ok?.status === "success") removed++;
+  }
   const ids: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const tag = `ratnet-wire-${i}`;
@@ -328,9 +336,9 @@ export async function syncRules(force = false) {
     await fetch(`${API}/oapi/tweet_filter/update_rule`, { method: "POST", headers: head, body: JSON.stringify({ rule_id: res.rule_id, tag, value: chunks[i], interval_seconds: interval, is_effect: 1 }) }).catch(() => null);
   }
   await r.set(RULES, ids);
-  await r.set("rn:x:synced", { at: Date.now(), n: ids.length, accounts: handles.length });
+  await r.set("rn:x:synced", { at: Date.now(), n: ids.length, accounts: handles.length, interval, removed, found: mine.length });
   await r.del(DIRTY);
-  return { synced: true, rules: ids.length, accounts: handles.length };
+  return { synced: true, rules: ids.length, accounts: handles.length, interval, removed, foundOnAccount: mine.length };
 }
 
 /** Per-account record: the weight WIRE gives an account's posts. Seeds start trusted, found accounts earn it. */

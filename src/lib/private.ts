@@ -9,8 +9,8 @@ export function wantsFull(req: Request) {
 }
 
 /** Serve the full data to an admin who asked for it, the stripped copy (CDN-cached) to everyone else. */
-export function serve<T>(req: Request, data: T, strip: (d: T) => unknown, seconds = 3) {
-  return wantsFull(req) ? json({ ...(data as any), full: true }) : cached(strip(data), seconds);
+export function serve<T>(req: Request, data: T, strip: (d: T) => unknown, seconds = 3, swr = seconds * 5) {
+  return wantsFull(req) ? json({ ...(data as any), full: true }) : cached(strip(data), seconds, swr);
 }
 
 type Check = { rule: string; ok: boolean; v?: string };

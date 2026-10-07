@@ -7,7 +7,7 @@ type Env = { k: string; need: string; what: string; set: boolean };
 type S = {
   env: Env[];
   site: string;
-  status: { worker: { at: number; fresh: boolean } | null; rpcPlan: string; heliusHook: { n: number; at: number } | null; xRules: { at: number; n: number; accounts: number } | null; telegram: { url: string; pending: number; lastError: string | null; ok: boolean } | null };
+  status: { worker: { at: number; fresh: boolean } | null; rpcPlan: string; heliusHook: { n: number; at: number } | null; xRules: { at: number; n: number; accounts: number; interval?: number; removed?: number } | null; hound?: { wallets: number; fomo: any; kol: any }; telegram: { url: string; pending: number; lastError: string | null; ok: boolean } | null };
   xHookUrl: string | null;
   cron: { url: string; header: string };
 };
@@ -44,7 +44,16 @@ export default function Setup() {
               <td className={st.telegram?.ok ? "green" : "red"}>{!st.telegram ? "no bot token" : st.telegram.ok ? `connected${st.telegram.pending ? ` · ${st.telegram.pending} pending` : ""}` : st.telegram.url ? `points elsewhere: ${st.telegram.url}` : "not set"}{st.telegram?.lastError ? ` · last error: ${st.telegram.lastError}` : ""}</td>
               <td><button className="btn sm" onClick={() => act("tg", "Telegram webhook")}>connect</button></td>
             </tr>
-            <tr><td>X watchlist (twitterapi.io rules)</td><td className={st.xRules ? "green" : "muted"}>{st.xRules ? `${st.xRules.n} rules · ${st.xRules.accounts} accounts · ${ago(st.xRules.at)}` : "never synced"}</td><td><button className="btn sm" onClick={() => act("xsync", "X sync")}>sync now</button></td></tr>
+            <tr><td>X watchlist (twitterapi.io rules)</td><td className={st.xRules ? "green" : "muted"}>{st.xRules ? `${st.xRules.n} rules · ${st.xRules.accounts} accounts · every ${st.xRules.interval || 20}s${st.xRules.removed ? ` · ${st.xRules.removed} old rules removed` : ""} · ${ago(st.xRules.at)}` : "never synced"}</td><td><button className="btn sm" onClick={() => act("xsync", "X sync")}>sync now</button></td></tr>
+            <tr>
+              <td>HOUND wallet book</td>
+              <td className={st.hound?.wallets ? "green" : "red"}>
+                {st.hound?.wallets || 0} wallets
+                {st.hound?.fomo ? ` · FOMO: ${st.hound.fomo.ok ? `${st.hound.fomo.traders} traders read, ${st.hound.fomo.added} added` : st.hound.fomo.error} (${ago(st.hound.fomo.at)})` : " · FOMO: not run yet"}
+                {st.hound?.kol ? ` · KOL rosters: ${st.hound.kol.ok ? `${st.hound.kol.rosterWallets} listed, ${st.hound.kol.added} added` : st.hound.kol.error} (${ago(st.hound.kol.at)})` : " · KOL: not run yet"}
+              </td>
+              <td><button className="btn sm" onClick={() => act("houndfill", "HOUND fill")}>fill now</button></td>
+            </tr>
             <tr><td>Helius wallet webhook (HOUND)</td><td className={st.heliusHook ? "green" : "muted"}>{st.heliusHook ? `${st.heliusHook.n} wallets · ${ago(st.heliusHook.at)}` : "not created"}</td><td><button className="btn sm" onClick={() => act("hound", "Helius webhook")}>sync now</button></td></tr>
           </tbody>
         </table>

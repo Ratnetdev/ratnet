@@ -75,6 +75,7 @@ export type Pos = {
   tokens0: number;
   soldSol: number;
   tp1Done: boolean; // initials taken
+  sendHit?: boolean; // CATCH send ladder: the target market cap was reached and the runner third sold
   lastPx: number;
   peakPx: number;
   king: number;
@@ -494,7 +495,7 @@ function heldPath(p: Pos, now: number, exitPx: number): Partial<After> {
 function labDefault(cfg: Cfg, sl: string, _tier: Tier): ExitSet {
   const c: any = cfg;
   if (sl === "momo") return { stop: c.momoSl ?? -20, time: c.momoTimeStop ?? 40, initials: c.momoInitials ?? 40, trailK: 0.6 };
-  if (sl === "catch") return { stop: c.catchSl ?? -18, time: c.catchTimeStop ?? 30, initials: c.catchInitials ?? 60, trailK: 0.8 };
+  if (sl === "catch") return { stop: c.catchSl ?? -18, time: c.catchTimeStop ?? 30, initials: c.catchInitials ?? 100, trailK: 0.8 };
   return { stop: cfg.sl, time: cfg.timeStop, initials: cfg.initialsAt, trailK: 1 };
 }
 
@@ -684,6 +685,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await earlyStats(learnS);
     await r.set(K.deskLearn, learnS); // saved right away so the page never shows stale gates
     let learnDirty = false;
+    let learning: Promise<unknown> | null = null;
     const kp = wallet();
     EXEC_CFG = { fastExec: (cfg as any).fastExec !== false, maxPriorityLamports: (cfg as any).maxPriorityLamports, jitoTipMinSol: (cfg as any).jitoTipMinSol, jitoTipMaxSol: (cfg as any).jitoTipMaxSol };
     if (kp && state.live) await warm().catch(() => {});
@@ -723,7 +725,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const stale = Number((await r.zremrangebyscore(K.deskQ, 0, now - 180_000)) || 0);
       if (stale) log(b, "VET", `dropped ${stale} stale signal${stale > 1 ? "s" : ""} (older than 3 minutes)`, "info");
       const queued = ((await r.zrange<string[]>(K.deskQ, 0, 9, { rev: true })) || []) as string[];
-      const slow = loops % 3 === 1; // shadows, stalks and coach every ~6s
+      const slow = loops % 3 === 1 && !learning; // shadows and COACH every few beats, one pass at a time
       const shadows = slow ? (await r.hgetall<Record<string, Shadow>>(K.deskShadow)) || {} : {};
       const afters = slow ? (await r.hgetall<Record<string, After>>(K.deskAfter)) || {} : {};
       const stalks = (await r.hgetall<Record<string, Stalk>>(K.deskStalk)) || {};
@@ -811,7 +813,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const mo = sl === "momo";
         const ca = sl === "catch"; // CATCH: senders get room to run, but a fake start is cut fast
         const c2: any = cfg;
-        const initialsAt = lb?.initials ?? pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 60 : cfg.initialsAt);
+        const initialsAt = lb?.initials ?? pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 100 : cfg.initialsAt);
         const timeStop = lb?.time ?? pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : cfg.timeStop);
         const stopAt = lb?.stop ?? (mo ? c2.momoSl ?? -20 : ca ? c2.catchSl ?? -18 : cfg.sl);
         const trailK = lb ? lb.trailK * (learnS.trailBy?.[sl] ?? 1) : learnS.trailBy?.[sl] ?? (mo ? 0.6 : ca ? 0.8 : learnS.trailK);
@@ -851,23 +853,33 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         else if (!p.tp1Done) {
           if (gain <= stopAt) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
           else if (drain <= -20) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}% in 40s`];
-          else if (gain >= initialsAt) [sellFrac, reason] = [cfg.initialsFrac, `initials at ${mult.toFixed(1)}x${pf?.medPk && initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf.medPk}x)` : ""}, cost is back`];
+          // CATCH send ladder, step 1: 40% at the initials (2x to start, the exit lab tunes it), 60% rides
+          else if (gain >= initialsAt) [sellFrac, reason] = [ca ? c2.catchFirstFrac ?? 0.4 : cfg.initialsFrac, `${ca ? "send ladder: " : ""}initials at ${mult.toFixed(1)}x${pf?.medPk && initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf.medPk}x)` : ""}, cost is back`];
           else if (q.grad && !p.gradSeen) {
             p.gradSeen = true;
             if (p.pn < cfg.gradKeepP) [sellFrac, reason] = [1, `migrated before initials, P(next) ${Math.round(p.pn * 100)}%: out`];
           } else if (age >= timeStop) [sellFrac, reason] = [1, `time stop ${Math.round(age)}m at ${fmtPct(gain)}${pf?.medTtp && timeStop !== cfg.timeStop ? ` (${sl} coins peak within ${pf.medTtp}m)` : ""}`];
         } else {
           // house money: trail + milestone ladder + migration check
-          const width = Math.max(15, Math.min(65, trailFor(cfg.trail, mult) * trailK * (0.85 + 0.3 * p.pn)));
+          // CATCH runners get a wider trail until they reach the send target: senders shake out hard on the way up
+          const sending = ca && !p.sendHit;
+          const width = Math.max(15, Math.min(65, trailFor(cfg.trail, mult) * trailK * (0.85 + 0.3 * p.pn) * (sending ? 1.25 : 1)));
           p.trail = Math.round(width);
           const quiet = (now - (p.peakAt || p.openedAt)) / 60_000;
           const staleMin = (cfg as any).bagStaleMin ?? 120;
-          if (quiet >= staleMin && mult < 3) {
+          const sendT = Math.max(c2.catchTargetUsd ?? 300_000, p.entryPx * SUPPLY * sol * 2);
+          if (sending && sol && usd >= sendT) {
+            // CATCH send ladder, step 2: at the target ($300K or 2x the entry cap), sell 30% of the original bag; the
+            // last 30% trails like any house-money bag
+            p.sendHit = true;
+            const f = Math.min(1, ((c2.catchSendFrac ?? 0.3) * p.tokens0) / Math.max(1, p.tokens));
+            [sellFrac, reason, tunable] = [f, `send ladder: ${usdS(sendT)} reached (${mult.toFixed(1)}x), runner third sold, the rest trails`, true];
+          } else if (quiet >= staleMin && mult < 3) {
             // a bag that has not made a new high in a long time is dead money: sell it and keep the record clean
             [sellFrac, reason, tunable] = [1, `bag went quiet: no new high in ${Math.round(quiet)}m, out at ${mult.toFixed(1)}x`, true];
           } else if (q.px <= p.peakPx * (1 - width / 100)) {
             [sellFrac, reason, tunable] = [1, `trailing stop ${p.trail}% off the peak (${(p.peakPx / p.entryPx).toFixed(1)}x), out at ${mult.toFixed(1)}x`, true];
-          } else if (lv > (p.msHi ?? -1) && lv >= 0) {
+          } else if (lv > (p.msHi ?? -1) && lv >= 0 && !sending) {
             // only de-risk at a milestone when the runner model rates the next one as weak; strong coins keep running
             const f = Math.min(p.pn < cfg.ladderBelow ? cfg.ladderMax * (1 - p.pn / cfg.ladderBelow) : 0, toBag);
             p.msHi = lv;
@@ -1162,7 +1174,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       }
 
       // --- learning: shadows (entries) and COACH (exits), every ~6s
+      // learning (shadows, COACH, the exit lab, FILM) runs beside the beat, never in front of it: a long review pass
+      // used to hold the desk for up to a minute while open positions waited for their next price
       if (slow) {
+        learning = (async () => {
+        const wp = r.pipeline();
+        const shUp: Record<string, Shadow> = {};
+        const afUp: Record<string, After> = {};
         for (const sh of Object.values(shadows)) {
           const q = px[sh.mint];
           if (q) {
@@ -1176,8 +1194,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               scoreShadow(learnS, sh, b);
               learnDirty = true;
             }
-            await r.hdel(K.deskShadow, sh.k || sh.mint);
-          } else await r.hset(K.deskShadow, { [sh.k || sh.mint]: sh });
+            wp.hdel(K.deskShadow, sh.k || sh.mint);
+          } else shUp[sh.k || sh.mint] = sh;
         }
         for (const [ak, a] of Object.entries(afters)) {
           const q = px[a.mint];
@@ -1199,9 +1217,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const pathDone = !a.openedAt || now - a.openedAt >= 120 * 60_000 || now - a.at > LEARN_RULES.coachHours * 3600_000 || !q;
           if (a.reviewed && pathDone) {
             if (a.pts && a.tier && a.sl) await notePath({ at: a.openedAt || a.at, tier: a.tier, sl: a.sl, pts: a.pts }).catch(() => {});
-            await r.hdel(K.deskAfter, ak);
-          } else await r.hset(K.deskAfter, { [ak]: a });
+            wp.hdel(K.deskAfter, ak);
+          } else afUp[ak] = a;
         }
+        if (Object.keys(shUp).length) wp.hset(K.deskShadow, shUp);
+        if (Object.keys(afUp).length) wp.hset(K.deskAfter, afUp);
+        await wp.exec().catch(() => {});
         // EXIT LAB re-learns every bucket with enough paths (every ~10 minutes)
         const learned = await labStep((sl2, tier) => labDefault(cfg, sl2, tier)).catch(() => []);
         for (const x of learned) {
@@ -1217,6 +1238,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           await r.set(K.deskLearn, learnS);
           learnDirty = false;
         }
+        })()
+          .catch((e) => log(b, "COACH", `learning pass failed, retrying: ${safeErr(e)}`, "info"))
+          .finally(() => (learning = null));
       }
 
       // --- the homepage shows how close the desk is to its own wallet (every ~30s)
@@ -1268,6 +1292,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       if (wait > 0) await new Promise((res) => setTimeout(res, wait));
     }
     if (digging) await digging;
+    if (learning) await learning;
     await r.set(K.deskLearn, learnS);
     return { loops };
   } catch (e) {
