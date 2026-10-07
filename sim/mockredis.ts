@@ -69,6 +69,8 @@ export class MockRedis {
   async lpop(k: string, n?: number) { this.calls++; const l = this.l(k); if (n == null) return l.length ? this.clone(l.shift()) : null; const out = l.splice(0, n); return out.length ? this.clone(out) : null; }
   async lrange(k: string, a: number, b: number) { this.calls++; const l = this.l(k); const e = b < 0 ? l.length + b : b; return this.clone(l.slice(a, e + 1)); }
   async sadd(k: string, ...m: string[]) { const s = this.live(k) ? new Set(this.kv.get(k)) : new Set(); const before = s.size; m.forEach((x) => s.add(x)); this.kv.set(k, [...s]); return s.size - before; }
+  async smismember(k: string, ms: string[]) { this.calls++; const arr: string[] = this.live(k) ? this.kv.get(k) : []; return ms.map((m) => (arr.includes(m) ? 1 : 0)); }
+  async spop(k: string, n = 1) { this.calls++; const arr: string[] = this.live(k) ? this.kv.get(k) : []; const out = arr.splice(0, n); this.kv.set(k, arr); return out; }
   async sismember(k: string, m: string) { return this.live(k) && this.kv.get(k).includes(m) ? 1 : 0; }
   async smembers(k: string) { return this.live(k) ? [...this.kv.get(k)] : []; }
   pipeline() {

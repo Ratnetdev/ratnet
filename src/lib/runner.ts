@@ -170,8 +170,14 @@ function step(c: Ctx, p: any, run: Run, usd: number, at: number) {
   run.done ||= {};
   for (let i = run.hi + 1; i <= lv; i++) {
     (run.upAt ||= {})[i] = at;
-    run.xs[i] = features(run, i, at);
-    run.xsAt[i] = at;
+    // jumped past several milestones in one read: the ones in between were crossed at an unknown moment, so they get
+    // no snapshot (it would be an instant "yes"). Same rule as the historian's hourly candles.
+    if (i < lv) {
+      run.done[i] = true;
+    } else {
+      run.xs[i] = features(run, i, at);
+      run.xsAt[i] = at;
+    }
     // HOUND digs into every coin that breaks out past $500K: who bought big before it ran?
     if (MILESTONES[i] === 5e5) p.zadd("rn:hd:bq", { score: at, member: `${run.mint}|${run.createdAt}|${run.bondedAt || 0}|${run.symbol}` });
     if (i === MILLION) {

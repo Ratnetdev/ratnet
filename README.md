@@ -131,7 +131,7 @@ For each launch the rats:
 
 **Market caps from the chain.** Coins on the curve: price from the curve account. Graduated coins: price from the canonical pool's two vaults, one RPC call for up to 50 coins. DexScreener is only used for volume and buy/sell flow, never for the market cap, so post-bond peaks are exact and instant.
 
-**RPC budget.** The desk, the rats and the historian share one rate limiter (`RPC_RPS`). The desk and the dig always go first; the historian only uses spare capacity. A rate-limit answer slows everyone down and retries instead of failing.
+**RPC budget.** The desk, the rats and the historian share one rate limiter (`RPC_RPS`). The desk and the dig always go first; the historian only uses spare capacity. A rate-limit answer slows everyone down and retries instead of failing. On top of the per-second limit there is a daily budget (`RPC_CALLS_PER_DAY`, default 300K = a 10M-a-month plan over 30 days), paced through the UTC day: the historian pauses first, then the agents, then the rats; the desk may go 15% over so it can always price and exit. Launch tapes and desk prices come from the PumpPortal stream first, so most of the day costs no chain reads.
 
 **TAPE (trades).** For every coin moving at its read (curve 5%+ at minute 5, 3%+ at minute 1) the rats read the curve's transactions: trade count and speed, unique traders, SOL per buy, buy share, bundle wallets in the create slot, snipers in the next two slots, top-5 early concentration and whether the dev has sold. The token accounts of the dev, bundle wallets, snipers and top buyers are kept, so the desk can watch those bags while it holds.
 
@@ -538,7 +538,8 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `X_CREDITS_PER_HOUR` | Optional. twitterapi.io credit budget per hour for all of RATNET (default `25000`). Live rules get about half (the seeds plus the found accounts with the best results), LENS stops at 80% of it. The burn shows on /status. |
 | `X_RULE_ACCOUNTS` | Optional. Hard cap on accounts watched through paid rules (default: what the budget pays for, about 100). |
 | `LENS_PER_HOUR` | Optional. LENS dossiers per hour (default `20`). |
-| `HISTORIAN_CALLS_PER_DAY` | Optional. Chain reads the historian may use per day (default `400000`). Every call is billed by Helius; /status shows calls today and the monthly pace. |
+| `HISTORIAN_CALLS_PER_DAY` | Optional. Chain reads the historian may use per day (default `60000`). Every call is billed by Helius; /status shows calls today and the monthly pace. |
+| `RPC_CALLS_PER_DAY` | Optional. Total chain reads per day for the worker (default `300000`, a 10M-a-month Helius plan over 30 days). Paced through the day: historian, agents and rats pause in that order when ahead of pace; the desk may go 15% over. `0` turns the cap off. |
 | `FETCH_TIMEOUT_MS` | Optional. Deadline for any outside call that sets none of its own (default `20000`). |
 | `WORKER_DESK_MS` | Optional. Length of one desk session in the worker (default `300000`, 5 minutes). The desk runs in its own loop next to the agents. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |

@@ -21,8 +21,8 @@ import { historianCapped } from "./rpcday";
 import { acquire, holds, release, renew } from "./lock";
 import { CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, hourKey, redis } from "./redis";
-import { canonicalPool, readPools } from "./pool";
-import { lane } from "./solana";
+import { canonicalPool, migrated, readPools } from "./pool";
+import { lane, laneOpen } from "./solana";
 import { epochReady } from "./epoch";
 import { agentLog } from "./agents";
 import { bondingCurvePda, conn, fetchOffchain, getCurves, limitedFetch, parseCreateTx, pmap, safeErr } from "./solana";
@@ -72,7 +72,7 @@ export type HState = {
   mClock?: number;
 };
 
-type Job = { mint: string; curve: string; creator: string; createdAt: number; name: string; symbol: string; uri: string; devBuySol: number; w: number; bondedNow: boolean; fromMig?: boolean };
+type Job = { mint: string; curve: string; creator: string; createdAt: number; name: string; symbol: string; uri: string; devBuySol: number; w: number; bondedNow: boolean; fromMig?: boolean; bondAt?: number };
 const MIGRATION_ACCOUNT = "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg"; // pump.fun's migration account (signs every graduation)
 const SEEN = "rn:h:seen"; // mints already queued for a deep read
 
@@ -182,7 +182,7 @@ async function fillJob(job: Job): Promise<Job | null> {
   return { ...job, createdAt: l.createdAt, creator: l.creator, name: l.name, symbol: l.symbol, uri: l.uri, devBuySol: l.devBuySol };
 }
 
-async function replay(job0: Job) {
+async function replay(job0: Job, mins = { t1: 3, t5: 5 }) {
   const job = await fillJob(job0);
   if (!job) return null;
   const sigs = (await oldestSigs(job.curve, job.createdAt + CUT5 + 5000)).filter((x) => !x.err);
@@ -191,7 +191,11 @@ async function replay(job0: Job) {
   const in1 = sigs.filter((x) => (x.blockTime || 0) * 1000 <= job.createdAt + CUT1);
   const in5 = sigs.filter((x) => (x.blockTime || 0) * 1000 <= job.createdAt + CUT5);
   const in0 = sigs.filter((x) => (x.blockTime || 0) * 1000 <= job.createdAt + 15_000);
-  const pick = Array.from(new Set([...in5.slice(0, 28), ...in1.slice(-4), ...in5.slice(-10), ...in0.slice(-1)].map((x) => x.signature)));
+  // the same sample the live read takes (lib/tape.ts SAMPLE: the first 28 trades and the newest 14 at that moment),
+  // for each look on its own. Before v0.1.28 the minute-5 tape mixed in minute-1 trades and took 10 recent, not 14
+  const s1 = new Set([...in1.slice(0, 28), ...in1.slice(-14)].map((x) => x.signature));
+  const s5 = new Set([...in5.slice(0, 28), ...in5.slice(-14)].map((x) => x.signature));
+  const pick = Array.from(new Set([...s1, ...s5, ...in0.slice(-1).map((x) => x.signature)]));
   const txs = await parsedTxs(pick);
   const bySig: Record<string, any> = {};
   pick.forEach((s, i) => (bySig[s] = txs[i]));
@@ -208,10 +212,9 @@ async function replay(job0: Job) {
   const p0 = curveAt(in0) ?? 0;
   const p1 = curveAt(in1);
   const p5 = curveAt(in5);
-  const trades: Trade[] = pick.map((s) => parseTrade(bySig[s], job.curve, job.mint)).filter((t): t is Trade => !!t && Math.abs(t.sol) > 1e-6);
-  const t1 = trades.filter((t) => t.t <= job.createdAt + CUT1);
-  const tape1: Tape | null = in1.length ? buildTape(t1, in1.length, createSlot, job.creator, job.createdAt, job.createdAt + CUT1) : null;
-  const tape5: Tape | null = in5.length ? buildTape(trades, in5.length, createSlot, job.creator, job.createdAt, job.createdAt + CUT5) : null;
+  const tradesOf = (set: Set<string>) => Array.from(set).map((sg) => parseTrade(bySig[sg], job.curve, job.mint)).filter((t): t is Trade => !!t && Math.abs(t.sol) > 1e-6);
+  const tape1: Tape | null = in1.length ? buildTape(tradesOf(s1), in1.length, createSlot, job.creator, job.createdAt, job.createdAt + CUT1) : null;
+  const tape5: Tape | null = in5.length ? buildTape(tradesOf(s5), in5.length, createSlot, job.creator, job.createdAt, job.createdAt + CUT5) : null;
   const [off, rg] = await Promise.all([fetchOffchain(job.uri, 2000), regimeAt(job.createdAt).catch(() => null)]);
   const common = {
     curve0: p0,
@@ -228,15 +231,29 @@ async function replay(job0: Job) {
     rg,
     hist: true,
   };
-  const x5 = p5 != null ? features({ ...common, curve5: p5, tape: tape5 }) : null;
-  const x1 = p1 != null ? features({ ...common, curve5: p1, tape: tape1 }) : null;
+  // same rule as live (lib/digger.ts processDue): trades are only read for curves past the settings' minimum, so a
+  // quiet coin shows "no tape" in both places
+  const x5 = p5 != null ? features({ ...common, curve5: p5, tape: p5 >= mins.t5 ? tape5 : null }) : null;
+  const x1 = p1 != null ? features({ ...common, curve5: p1, tape: p1 >= mins.t1 ? tape1 : null }) : null;
   const v0 = p5 != null ? score({ progress: p5, progress0: p0, twitter: common.twitter, telegram: common.telegram, website: common.website, description: common.description, symbol: job.symbol, name: job.name, devBuySol: job.devBuySol, farm: !!tape5?.farm?.farm }) : null;
   return { x5, x1, p5, v0, tape5 };
 }
 
-async function bondTime(curve: string) {
-  const s = await conn().getSignaturesForAddress(new PublicKey(curve), { limit: 1 });
-  return s[0]?.blockTime ? s[0].blockTime * 1000 : null;
+/**
+ * When the coin bonded: the time of its migration tx. Bonds found through the migration account carry it already.
+ * Before v0.1.28 this was the curve's newest signature, which is any later activity (dust sent to the curve hours on):
+ * a coin that bonded in 40 minutes could be labelled "not within 2h", and the models learned from wrong labels.
+ */
+async function bondTime(job: Job) {
+  if (job.bondAt) return job.bondAt;
+  const s = (await conn().getSignaturesForAddress(new PublicKey(job.curve), { limit: 6 })).filter((x) => !x.err);
+  for (const x of s.slice(0, 3)) {
+    const tx: any = await conn().getParsedTransaction(x.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null);
+    if ((tx?.meta?.logMessages || []).some((l: string) => /Instruction: Migrate/i.test(l))) return (tx.blockTime || x.blockTime || 0) * 1000 || null;
+  }
+  // no migrate log among the newest: the oldest of the recent ones is the closest bound (never the newest)
+  const last = s[s.length - 1];
+  return last?.blockTime ? last.blockTime * 1000 : null;
 }
 
 /** Post-bond run from GeckoTerminal hourly candles: first time each milestone was crossed. */
@@ -273,6 +290,7 @@ async function historianInner(budgetMs: number) {
   if (!cfg.on) return { history: "off" };
   // its daily share of the RPC plan (HISTORIAN_CALLS_PER_DAY): spare capacity is not free capacity, every call is billed
   if (await historianCapped()) return { history: "daily cap reached" };
+  if (!laneOpen(3)) return { history: "paused: daily chain budget on pace" };
   const lk = await acquire(HK.lock, 120_000);
   if (!lk) return { history: "busy" };
   const lkRenew = setInterval(() => renew(lk, 120_000).catch(() => false), 30_000);
@@ -307,7 +325,9 @@ async function historianInner(budgetMs: number) {
           else {
             st.mCursor = raw[raw.length - 1].signature;
             const oldestT = (raw[raw.length - 1].blockTime || 0) * 1000;
-            st.mSigs = raw.filter((x) => !x.err && (x.blockTime || 0) * 1000 >= st.from).map((x) => x.signature);
+            // only the replay window: graduations after `until` belong to the live rats (before v0.1.28 the scan
+            // started at the newest bond and taught the historian coins the live lane was already learning from)
+            st.mSigs = raw.filter((x) => !x.err && (x.blockTime || 0) * 1000 >= st.from && (x.blockTime || 0) * 1000 <= st.until).map((x) => x.signature);
             st.mPos = 0;
             st.mClock = oldestT;
             if (oldestT < st.from && !st.mSigs.length) st.mDone = true;
@@ -325,7 +345,7 @@ async function historianInner(budgetMs: number) {
               if (!logs.some((l) => /Instruction: Migrate/i.test(l))) return null;
               const bal: any[] = [...(tx?.meta?.postTokenBalances || []), ...(tx?.meta?.preTokenBalances || [])];
               const mint = bal.map((b) => String(b.mint || "")).find((m) => m && m !== WSOL_M && m.endsWith("pump")) || bal.map((b) => String(b.mint || "")).find((m) => m && m !== WSOL_M);
-              return mint || null;
+              return mint ? { mint, at: (tx?.blockTime || 0) * 1000 } : null;
             } catch {
               // rate-limited or timed out: read it again later (before v0.1.24 a failed read skipped that bond for good,
               // which is how a burst of 429s left the bond scan at 0 found)
@@ -339,7 +359,9 @@ async function historianInner(budgetMs: number) {
             // mostly failing: the plan is saturated, give it a breather instead of hammering it
             if (failed.length * 2 > mchunk.length) await new Promise((res) => setTimeout(res, 3000));
           }
-          const mints = Array.from(new Set(found.filter((m): m is string => !!m)));
+          const bondAt: Record<string, number> = {};
+          for (const f of found) if (f && !bondAt[f.mint]) bondAt[f.mint] = f.at;
+          const mints = Object.keys(bondAt);
           if (mints.length) {
             const p = r.pipeline();
             for (const m of mints) p.sadd(SEEN, m);
@@ -349,7 +371,7 @@ async function historianInner(budgetMs: number) {
             mints.forEach((m, i) => {
               if (!Number(added[i])) return;
               n++;
-              q.rpush(HK.queue, { mint: m, curve: bondingCurvePda(m), creator: "", createdAt: 0, name: "", symbol: "", uri: "", devBuySol: 0, w: 1, bondedNow: true, fromMig: true } satisfies Job);
+              q.rpush(HK.queue, { mint: m, curve: bondingCurvePda(m), creator: "", createdAt: 0, name: "", symbol: "", uri: "", devBuySol: 0, w: 1, bondedNow: true, fromMig: true, bondAt: bondAt[m] || undefined } satisfies Job);
             });
             if (n) await q.exec();
             st.mFound = (st.mFound || 0) + n;
@@ -398,14 +420,14 @@ async function historianInner(budgetMs: number) {
           const full = launches.filter((l) => curves[l.mint]?.complete).map((l) => l.mint);
           const pools = full.length ? await readPools(full) : {};
           // bonds the migration scan already queued are not queued twice
-          const bondedMints = launches.filter((l) => curves[l.mint]?.complete && pools[l.mint] && pools[l.mint]!.sol > 0.5).map((l) => l.mint);
+          const bondedMints = launches.filter((l) => curves[l.mint]?.complete && migrated(pools[l.mint])).map((l) => l.mint);
           const sp = r.pipeline();
           for (const m of bondedMints) sp.sadd(SEEN, m);
           const newly = bondedMints.length ? ((await sp.exec()) as number[]) : [];
           const already = new Set(bondedMints.filter((_, i) => !Number(newly[i])));
           const p = r.pipeline();
           for (const l of launches) {
-            const bondedNow = !!curves[l.mint]?.complete && !!pools[l.mint] && pools[l.mint]!.sol > 0.5;
+            const bondedNow = !!curves[l.mint]?.complete && migrated(pools[l.mint]);
             st.scanned++;
             st.clock = Math.min(st.clock, l.createdAt);
             const day = new Date(l.createdAt).toISOString().slice(0, 10);
@@ -434,7 +456,7 @@ async function historianInner(budgetMs: number) {
       }
       const results = await pmap(list, 6, async (job) => {
         try {
-          const [bt, rep, funder] = await Promise.all([job.bondedNow ? bondTime(job.curve) : Promise.resolve(null), replay(job), funderOf(job.creator).catch(() => null)]);
+          const [bt, rep, funder] = await Promise.all([job.bondedNow ? bondTime(job) : Promise.resolve(null), replay(job, { t1: Number((s.desk as any).earlyMinCurve ?? 3), t5: Number((s.desk as any).tapeMinCurve ?? 5) }), funderOf(job.creator).catch(() => null)]);
           return { job, bt, rep, funder };
         } catch (e) {
           st.errors++;
@@ -503,6 +525,9 @@ async function historianInner(budgetMs: number) {
             for (const c of path) for (let i = 0; i < MILESTONES.length; i++) if (c.mc >= MILESTONES[i] && first[i] == null && c.t >= bt - 3600_000) first[i] = c.t;
             for (let i = MILESTONES.indexOf(1e5); i < MILESTONES.length - 1; i++) {
               if (first[i] == null) break;
+              // two milestones in one hourly candle: we can't tell when inside the hour each was crossed, so that step
+              // teaches nothing (before v0.1.28 it was an instant "yes", and the ladder looked steeper than it is)
+              if (first[i + 1] != null && first[i + 1] === first[i]) continue;
               const up = first[i + 1] != null && first[i + 1] - first[i] <= 6 * 3600_000;
               learn(runner, runFeatures(run, i, first[i]), up, 1.5, season);
               p.hincrby(RK.emp, `n${i}`, 1);

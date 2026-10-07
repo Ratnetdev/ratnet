@@ -1,5 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
-import { CALL_MAX_AGE_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
+import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
 import { conn, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, RPS } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
@@ -70,7 +70,7 @@ export type Launch = {
   cp: Partial<Record<Stage, Cp>>;
   call?: Call;
   early?: { at: number; score: number; verdict: Verdict; curve: number; x: number[] } | null; // minute-1 read
-  xpre?: number[]; // features of a coin that bonded before its call (still a lesson)
+  xpre?: number[]; // v0.1.27 and older: dig-time features of a coin that bonded before its call (no longer learned)
   learned?: boolean;
   tape?: Tape | null;
   g?: Graph | null;
@@ -457,6 +457,7 @@ async function digNew(model: NanoModel) {
     return { dug: 0, scanned: oldestFirst.length, fromStream: oldestFirst.length - unseen.length };
   }
 
+  const FAIL = Symbol("fail");
   const txs = await pmap(ok, 6, async (x) => {
     try {
       return parseCreateTx(
@@ -464,15 +465,26 @@ async function digNew(model: NanoModel) {
         await conn().getParsedTransaction(x.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" })
       );
     } catch {
-      return null;
+      return FAIL as any;
     }
   });
-  const launches = txs.filter((x): x is NonNullable<typeof x> => !!x);
-  if (!launches.length) {
-    await r.set(K.cursor, newCursor);
-    return { dug: 0, scanned: batch.length };
+  // a read that failed (timeout, budget, 5xx) is retried next pass: the cursor stops just before it. Before v0.1.28 the
+  // cursor moved past failed reads and those launches were lost for good. A tx that fails 3 passes in a row is let go.
+  let cursor2 = newCursor;
+  const failIdx = txs.findIndex((t, i) => t === FAIL && (PARSE_FAILS.set(ok[i].signature, (PARSE_FAILS.get(ok[i].signature) || 0) + 1), PARSE_FAILS.get(ok[i].signature)! < 3));
+  if (failIdx >= 0) {
+    const at = oldestFirst.indexOf(ok[failIdx]);
+    cursor2 = at > 0 ? oldestFirst[at - 1].signature : cursor || "";
   }
-  // the chain path: how late the rats saw these (the stream path is ~1s)
+  if (PARSE_FAILS.size > 500) PARSE_FAILS.clear();
+  const setCursor = () => (cursor2 ? r.set(K.cursor, cursor2) : Promise.resolve(null));
+  const launches = txs.filter((x): x is NonNullable<ReturnType<typeof parseCreateTx>> => !!x && x !== FAIL);
+  if (!launches.length) {
+    await setCursor();
+    return { dug: 0, scanned: batch.length, ...(failIdx >= 0 ? { retry: txs.filter((t) => t === FAIL).length } : {}) };
+  }
+  const res = await ingest(model, launches, "chain");
+  // marked seen only once the launch is stored: a failed ingest is dug again on the next pass
   const lagP = r.pipeline();
   for (const l of launches) {
     lagP.lpush(LAT("intake_rpc"), Math.round((Date.now() - l.createdAt) / 1000));
@@ -480,10 +492,10 @@ async function digNew(model: NanoModel) {
   }
   lagP.ltrim(LAT("intake_rpc"), 0, 199);
   await lagP.exec().catch(() => {});
-  const res = await ingest(model, launches, "chain");
-  await r.set(K.cursor, newCursor);
-  return { ...res, scanned: batch.length, behind: raw.length - batch.length };
+  await setCursor();
+  return { ...res, scanned: batch.length, behind: raw.length - batch.length, ...(failIdx >= 0 ? { retry: txs.filter((t) => t === FAIL).length } : {}) };
 }
+const PARSE_FAILS = new Map<string, number>();
 
 /** Launches straight from the PumpPortal stream (worker): dug about a second after they are born, no chain read. */
 export async function ingestStream(items: { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number }[]) {
@@ -494,13 +506,21 @@ export async function ingestStream(items: { mint: string; sig: string; creator: 
     // never overwrite a launch already dug (the chain backfill may have it)
     const have = await r.mget<(Launch | null)[]>(...fresh.map((x) => K.launch(x.mint))).catch(() => [] as (Launch | null)[]);
     const todo = fresh.filter((_, i) => !have[i]);
-    const p = r.pipeline();
-    for (const x of fresh) p.set(SEEN_SIG(x.sig), 1, { ex: 3 * 3600 });
-    await p.exec().catch(() => {});
+    const markSeen = async (xs: typeof fresh) => {
+      if (!xs.length) return;
+      const p = r.pipeline();
+      for (const x of xs) p.set(SEEN_SIG(x.sig), 1, { ex: 3 * 3600 });
+      await p.exec().catch(() => {});
+    };
+    await markSeen(fresh.filter((_, i) => !!have[i]));
     if (!todo.length) return { dug: 0 };
     const model = await loadModel();
     if (!SOL_USD) SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
-    return ingest(model, todo, "stream");
+    // seen only after the launch is stored: if ingest fails, the chain backfill digs it (before v0.1.28 it was marked
+    // seen first, so a failed ingest lost the launch for good)
+    const out = await ingest(model, todo, "stream");
+    await markSeen(todo);
+    return out;
   });
 }
 
@@ -512,7 +532,8 @@ async function ingest(model: NanoModel, launches: { mint: string; sig: string; c
   const [off, curves, devN, devB] = await Promise.all([
     // metadata (IPFS): 1.5s at most, a slow gateway never holds the launch back (socials stay empty, LENS reads them later)
     pmap(launches, 12, (l) => fetchOffchain(l.uri, 1500)),
-    getCurves(launches.map((l) => l.mint)),
+    // a failed curve read never drops the launches: they are stored at 0% and the hot watch reads the curve again
+    getCurves(launches.map((l) => l.mint)).catch(() => ({} as Awaited<ReturnType<typeof getCurves>>)),
     creators.length ? r.hmget<Record<string, number>>(K.devN, ...creators) : Promise.resolve(null),
     creators.length ? r.hmget<Record<string, number>>(K.devB, ...creators) : Promise.resolve(null),
   ]);
@@ -674,7 +695,8 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
     const call0 = rec.call;
     const lead = call0 ? Math.max(0, Math.round((c.now - call0.at) / 1000)) : null;
     if (call0?.counted) {
-      p.hincrby(K.calib, `v${bucket(call0.score)}b`, 1);
+      // v0's own score: once v1 makes the call, call.score is nano's (before v0.1.28 the v0 table mixed both)
+      p.hincrby(K.calib, `v${bucket(call0.v0?.score ?? call0.score)}b`, 1);
       if (call0.nano) p.hincrby(K.calib, `n${bucket(call0.nano.score)}b`, 1);
       if (call0.verdict === "BOND") {
         queueBonded(p, { mint: rec.mint, symbol: rec.symbol, score: call0.score, bondSecs: rec.bondSecs ?? 0, leadSecs: lead });
@@ -693,7 +715,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
       bondedAt: c.now,
       secs: rec.bondSecs,
       devN: rec.devN ?? 0,
-      v0: rec.call ? { score: rec.call.score, verdict: rec.call.verdict, counted: rec.call.counted } : null,
+      v0: rec.call ? { score: rec.call.score, verdict: rec.call.verdict, counted: rec.call.counted } : null, // the call as made (field name kept for old records)
       nano: rec.call?.nano || null,
       lead,
     };
@@ -729,27 +751,10 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
     // the models learn this launch at createdAt + 2h (see LABEL_MS), not now
   }
 
-  // Graduated before the 5-minute call: nano still learns from it, using what the rats saw at dig time.
-  // No call is logged, so the scoreboard is untouched; only the model gets the lesson.
-  if (!rec.call && outcome === "BONDED") {
-    const x = features({
-      curve5: rec.p0,
-      curve0: rec.p0,
-      devBuySol: rec.devBuySol,
-      twitter: !!rec.twitter,
-      telegram: !!rec.telegram,
-      website: !!rec.website,
-      description: rec.description,
-      symbol: rec.symbol,
-      name: rec.name,
-      devN: rec.devN ?? 0,
-      devB: rec.devB ?? 0,
-      createdAt: rec.createdAt,
-    });
-    rec.xpre = x;
-    p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
-    inc(c, "learn_precall");
-  }
+  // Graduated before the 5-minute call: no lesson. Before v0.1.28 these were learned from dig-time features with
+  // label "bonded" and nothing else: only winners got that shape of lesson (no losers looked like it), which taught
+  // the models that a thin dig-time picture means BOND. Counted only, for the record.
+  if (!rec.call && outcome === "BONDED") inc(c, "bond_precall");
 
   // WIRE learns which accounts' posts make coins that bond; bonded coins that link a post point at new accounts
   if (rec.wire) noteOutcome(p, rec.wire.h, outcome === "BONDED");
@@ -1044,7 +1049,9 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     wire: !!rec.wire,
     pulse: !rec.wire && !!rec.pulse,
   });
-  const x = features(featIn(rec, curveNow, { ...ex, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null }));
+  // the model sees only a tape read for this call: when the minute-5 read failed it gets "no tape", the same as the
+  // historian does. Before v0.1.28 the minute-1 tape stood in for minute 5, a picture the model never trained on
+  const x = features(featIn(rec, curveNow, { ...ex, tape: ex.tape ?? null, g: ex.g ?? rec.g ?? null, meta: rec.meta ?? null }));
   const nano =
     c.model.n >= NANO_MIN
       ? (() => {
@@ -1062,7 +1069,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
       ? { score: nano!.score, verdict: (farm ? "DUST" : v1) as Verdict, version: "v1.0" }
       : { score: sc.score, verdict: "BOND" as Verdict, version: "v1.0" }
     : { score: sc.score, verdict: sc.verdict, version: KING_VERSION };
-  const counted = c.now - rec.createdAt <= CALL_MAX_AGE_MS;
+  const counted = c.now - rec.createdAt <= CALL_ON_TIME_MS;
   rec.call = {
     mint: rec.mint,
     symbol: rec.symbol,
@@ -1130,7 +1137,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   }
   if (counted) {
     noteCall(c.p, rec.call); // hashed into the hourly on-chain receipt (see lib/receipts.ts)
-    c.p.hincrby(K.calib, `v${bucket(kv.score)}n`, 1);
+    c.p.hincrby(K.calib, `v${bucket(sc.score)}n`, 1);
     if (nano) c.p.hincrby(K.calib, `n${bucket(nano.score)}n`, 1);
     if (kv.verdict === "BOND") hrInc(c, rec.createdAt, "bn");
     if (nano?.verdict === "BOND") hrInc(c, rec.createdAt, "nbn");
@@ -1351,14 +1358,15 @@ async function lessons(model: NanoModel) {
     }
     // label: bonded within the window (a bond after 2h is rare; it still counts on the scoreboard, not in training)
     const bonded = rec.outcome === "BONDED" && (rec.bondSecs ?? Infinity) * 1000 <= LABEL_MS;
-    const x = rec.call?.x?.length ? rec.call.x : rec.xpre;
+    // a late call (made after minute 7) saw a later coin than the model is asked about: no lesson from it
+    const x = rec.call?.x?.length && rec.call.counted ? rec.call.x : null;
     if (x?.length) {
       // King v1 calibration: nano's score on this lesson BEFORE it learns from it
       noteCal(c.p, nanoScore(c.model, x), bonded);
       c.ops.push({ k: 0, x, y: bonded, pw: posWeight(c.model.n, c.model.pos) });
       n++;
     }
-    const x1 = rec.early?.x?.length ? rec.early.x : rec.xpre;
+    const x1 = rec.early?.x?.length ? rec.early.x : null;
     if (x1?.length) c.ops.push({ k: 1, x: x1, y: bonded, pw: posWeight(c.model1.n, c.model1.pos) });
     // same moment for winners and losers: wallet and cluster records, and the early-vs-King record that gates early entries
     if (rec.tape) {

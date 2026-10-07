@@ -15,6 +15,7 @@ import { labBest, labStep, notePath, tierOf, type ExitSet, type LabBest, type Ti
 import { flashSignal } from "./flash";
 import { catchSignal } from "./catcher";
 import { acquire, holds, release, renew, type Lock } from "./lock";
+import { streamQuote } from "./streamlog";
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { K, dayKey, redis } from "./redis";
@@ -261,7 +262,8 @@ export const EXAM = { trades: 30, winRate: 40, pnlPct: 10, maxDD: 30, minWallet:
 const FEE = 0.01; // pump.fun fee per side
 const PAPER_SLIP = 0.02; // assumed slippage per side on paper
 const WSOL = "So11111111111111111111111111111111111111112";
-const LOOP_MS = RPS >= 40 ? 500 : RPS >= 20 ? 1000 : 2000; // positions re-read twice a second on a paid RPC plan
+// twice a second whatever the plan: prices come from the stream between the 10s chain checks (v0.1.28)
+const LOOP_MS = RPS >= 5 ? 500 : 1000;
 const SUPPLY = 1e9; // pump.fun tokens have a fixed 1B supply
 
 // ---------------------------------------------------------------- state
@@ -510,7 +512,30 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
 // ---------------------------------------------------------------- prices
 
 export type Px = { px: number; real: number; curve: CurveView | null; grad: boolean };
+// Each position is checked on the chain at most every 10s; in between its price comes from the stream's last trade
+// (the worker streams every position). Before v0.1.28 every position was read from the chain on every beat, about
+// a third of the plan's credits. A stale stream quote (no trade in 3s) always falls back to the chain.
+const VERIFIED = new Map<string, { at: number; px: Px }>();
+const VERIFY_MS = 10_000;
 export async function priceOf(mints: string[]) {
+  const now = Date.now();
+  const fromStream: Record<string, Px> = {};
+  for (const m of mints) {
+    const v = VERIFIED.get(m);
+    const sq = streamQuote(m);
+    if (!v || now - v.at > VERIFY_MS || !sq) continue;
+    // the stream only knows the curve or the pool from the venue of the trade; the chain check says which it is
+    if (sq.curve !== !v.px.grad) continue;
+    fromStream[m] = { px: sq.px, real: sq.real ?? v.px.real, curve: v.px.curve, grad: v.px.grad };
+  }
+  const chain = mints.filter((m) => !fromStream[m]);
+  const out = chain.length ? await priceOfChain(chain) : {};
+  for (const [m, q] of Object.entries(out)) VERIFIED.set(m, { at: now, px: q });
+  for (const m of Array.from(VERIFIED.keys())) if (now - VERIFIED.get(m)!.at > 600_000) VERIFIED.delete(m);
+  return { ...out, ...fromStream };
+}
+
+async function priceOfChain(mints: string[]) {
   const curves = mints.length ? await getCurves(mints) : {};
   const done = mints.filter((m) => !curves[m] || curves[m]!.complete);
   // migrated coins: the canonical pool's own reserves (exact, one RPC call). Never a random side pool.
@@ -823,6 +848,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let walletAt = 0;
     let walletSolC: number | null = null;
     let lastSlowAt = 0;
+    let lastInsAt = 0;
     while (Date.now() - t0 < budgetMs) {
       loops++;
       if (DESK_LOST || !(await renew(lock, LOCK_MS))) {
@@ -897,8 +923,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
       }
 
-      // --- insiders (every other beat): token balances of the dev, bundle wallets, snipers, top early buyers
-      if (loops % 2 === 1) {
+      // --- insiders: token balances of the dev, bundle wallets, snipers, top early buyers
+      // every 5s (it was every other beat: about one chain read a second just for this)
+      if (now - lastInsAt >= 5_000) {
+        lastInsAt = now;
         const accs = Array.from(new Set([...positions, ...ghosts].flatMap((p) => (p.watch || []).map((w) => w.acc))));
         if (accs.length) {
           const amt = await tokenAmounts(accs).catch(() => null);
@@ -1535,8 +1563,13 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   if (sh) await r.set(`rn:shield:${rec.mint}`, { at: Date.now(), checks: sh.checks }, { ex: 7 * 86400 });
   const pos = await buy(b, state, rec, size, px, cfg.slippageBps, kp, real, how);
   if (!pos) return;
-  // RISK watches the insiders' bags from here: dev, bundle wallets, snipers, top early buyers
-  const ins = rec.tape?.insiders || [];
+  // RISK watches the insiders' bags from here: dev, bundle wallets, snipers, top early buyers. A tape built from the
+  // stream has no token accounts, so the desk reads the chain once for them, only for coins it actually buys
+  let ins = rec.tape?.insiders || [];
+  if (!ins.length && rec.tape?.src === "stream") {
+    const full = await readTape(rec.mint, rec.creator, rec.createdAt, undefined, { rpc: true }).catch(() => null);
+    ins = full?.insiders || [];
+  }
   if (ins.length) {
     const amt = await tokenAmounts(ins.map((i) => i.acc)).catch(() => ({} as Record<string, number>));
     pos.watch = ins.map((i) => ({ acc: i.acc, role: i.role, base: amt[i.acc] ?? 0 })).filter((w) => w.base > 0);
@@ -1952,7 +1985,7 @@ async function rightNow(learnS: Learn) {
     const xs = ((await r.lrange<number>(`rn:lat:${k}`, 0, 99).catch(() => [])) || []).map(Number).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
     return xs.length ? { p50: xs[Math.floor(xs.length / 2)], n: xs.length } : null;
   };
-  const speedP = Promise.all([lat("call"), lat("early"), lat("flash"), lat("intake_rpc"), lat("sig2fill")]).then(([call, early, flash, chain, fill]) => ({ call, early, flash, chain, fill }));
+  const speedP = Promise.all([lat("call"), lat("early"), lat("flash"), lat("intake_rpc"), lat("sig2fill"), lat("stream")]).then(([call, early, flash, chain, fill, stream]) => ({ call, early, flash, chain, fill, stream }));
   const [beat, day, hist, nano, st] = await Promise.all([
     r.get<number>(BEAT_KEY),
     r.hgetall<Record<string, number>>(DAY_KEY(now)),

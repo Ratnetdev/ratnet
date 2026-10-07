@@ -11,11 +11,12 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const r = redis();
+    const rpcP = rpcLive();
     const [parts, rpc, x, day, boots, bootAt, exits, takeovers, takeoverAt, reconnects] = await Promise.all([
       aliveView(),
-      rpcLive(),
+      rpcP,
       xSpendView().catch(() => null),
-      rpcDayView().catch(() => null),
+      rpcP.then((rp: any) => rpcDayView(Number(rp?.perSec ?? 0))).catch(() => null),
       r.get<number>("rn:worker:boots"),
       r.get<number>("rn:worker:bootAt"),
       r.lrange<{ at: number; why: string }>("rn:worker:exits", 0, 4),

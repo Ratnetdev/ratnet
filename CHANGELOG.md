@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.28 · Stream first, fits the 10M plan, clean data
+- Helius ran at ~39 calls a second (~100M a month) on a 10M-a-month plan. Most of it was paid for data the PumpPortal stream already delivers. Now:
+  - Launch tapes (minute-1 and minute-5 trades) are built from the stream's own trades for every launch the worker saw from birth: no chain reads. The chain is read only for launches the stream missed, and for the insider check when the desk buys.
+  - Desk prices come from the stream's latest quote, with a chain check of each coin every 10 seconds. The desk loop runs every 0.5s on a paid plan, insider holdings every 5s.
+  - A paced daily budget (RPC_CALLS_PER_DAY, default 300K): when spending runs ahead of the day's pace the historian pauses first, then the agents, then the rats. The desk can go 15% over so it can always price and exit. A worker restart picks up the day's count from Redis. Historian default cap lowered to 60K a day.
+  - /status: a Chain budget tile (today vs budget and pace, historian share) and the monthly pace from the live rate. Before, the monthly figure was today's count spread over the whole day and read far too low.
+- Clean data (labels the models learn from):
+  - Lost launches: a launch is marked seen only after it is stored, and the chain backfill no longer moves past a launch it failed to read (retried, given up after 3 failed passes). A failed curve read no longer drops the batch.
+  - Historian bond time is the migration transaction's time. It was the curve's newest signature (any later activity), so coins that bonded in 40 minutes could be labelled "not within 2 hours". The bond scan now stays inside the replay window.
+  - Busy coins (1000+ transactions): the tape pages back to the create, so bundles, snipers and early buyers are measured on the real first trades.
+  - Same picture live and in history: the historian takes the same trade sample as the live read (first 28, newest 14), counts only successful transactions, and has no tape below the same curve minimum. When the minute-5 trade read fails, the call's model sees "no tape" instead of the minute-1 tape.
+  - Coins that bonded before their call are no longer learned as one-sided "winner" lessons.
+  - Late calls: only calls made by minute 7 count on the board, the calibration, the desk and the lessons (made up to minute 15, shown as late).
+  - /lab v0 calibration uses v0's own score (it mixed in nano's once v1 made the call).
+  - Graduation proof: the canonical pool existing is the proof (only pump.fun's migration can create it). A pool dumped under 20 SOL right after migrating used to make the coin count as DIED.
+  - CATCH: every snapshot keeps its own peak from the moment it was taken (a new snapshot used to reset the coin's peak and erase an earlier hit). The record is graded on the score given at the look and counts each coin once. FLASH graded on its stored score too.
+  - Runner ladder: milestones crossed in the same hourly candle (history) or the same read (live) teach nothing; they used to be instant "yes" lessons.
+- Redis growth: dev, wallet and funder tables, the funder cache, CATCH's last looks, finished runs and the near set are trimmed every 6 hours (one-off entries first).
+- Speed panel: PumpPortal's delivery lag (sampled against block time, 1 launch in 50).
+
 ## v0.1.27 · /desk crash fix, error pages
 - /desk crashed ("Application error") after v0.1.26: the page's new exam cache used the same Redis key as the homepage's exam summary, so each overwrote the other and the desk payload arrived without its exam. The full exam now has its own key, and the page tolerates a missing exam.
 - Error pages: one page that fails to draw no longer blanks the whole site. The header and menu stay, the page offers a retry and a link to /status; an error in the layout itself shows a plain reload screen.

@@ -28,8 +28,11 @@ export const CHECKPOINTS = {
   d1: 24 * 60 * 60_000, // outcome resolves here
 } as const;
 
-// A call only counts toward the public hit rate if it was made within this window after creation.
+// The minute-5 call is still made up to this age (the record shows it, marked late)...
 export const CALL_MAX_AGE_MS = 15 * 60_000;
+// ...but it only counts toward the public hit rate, the calibration and the desk if it was made by minute 7. Before
+// v0.1.28 a call made at minute 14 counted as a "minute-5" call: it had seen 9 more minutes of the curve.
+export const CALL_ON_TIME_MS = 7 * 60_000;
 
 export const ROUND_MS = 12 * 60 * 60_000;
 export const FEE_SPLIT = { compute: 0.6, owners: 0.4 };

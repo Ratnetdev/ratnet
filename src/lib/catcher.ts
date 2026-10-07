@@ -37,6 +37,9 @@ const DUE2 = "rn:ct:due2"; // id -> when its 2-hour horizon ends
 const SNAP = "rn:ct:s"; // id -> Snap (pending)
 const DUE = "rn:ct:due"; // id -> when its horizon ends
 const WATCH = "rn:ct:watch"; // mint -> { pk, until, sym }
+const PKS = "rn:ct:pks"; // snapshot id -> highest market cap since THAT snapshot (v0.1.28)
+const RECM = "rn:ct:recm"; // coins already in the 6-hour record (one entry per coin)
+const RECM2 = "rn:ct:recm2"; // same for the 2-hour record
 const LAST = "rn:ct:last"; // mint -> last look { at, prog, real, mc, stage }
 const REC = "rn:ct:rec"; // prequential record: p{bucket}:n / :hit, prior{bucket}:n / :hit, all:n / :hit
 const VIEW = "rn:ct:view";
@@ -62,7 +65,7 @@ const LR = 0.03;
 const L2 = 1e-4;
 
 type Model = { w: number[]; mu: number[]; m2: number[]; n: number; pos: number; ver: number };
-export type Snap = { id: string; mint: string; sym: string; at: number; stage: "curve" | "pool"; mc: number; x: number[]; p: number; prior: number; why: string[] };
+export type Snap = { id: string; mint: string; sym: string; at: number; stage: "curve" | "pool"; mc: number; x: number[]; p: number; p2?: number; prior: number; why: string[] };
 export type CatchSig = { mint: string; sym: string; at: number; stage: "curve" | "pool"; mc: number; p: number; prior: number; by: "model" | "prior"; why: string[]; target: number };
 
 const clip = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Number.isFinite(v) ? v : 0));
@@ -355,8 +358,9 @@ export async function catchPass(force = false) {
     if (mc < target * 0.6) {
       snaps++;
       const id = `${m}:${now.toString(36)}`;
-      const snap: Snap = { id, mint: m, sym, at: now, stage: cand.stage, mc: Math.round(mc), x, p, prior: pr.score, why: pr.why };
+      const snap: Snap = { id, mint: m, sym, at: now, stage: cand.stage, mc: Math.round(mc), x, p, p2, prior: pr.score, why: pr.why };
       pipe.hset(SNAP, { [id]: snap });
+      pipe.hset(PKS, { [id]: Math.round(mc) });
       pipe.zadd(DUE, { score: now + (c.catchHorizonH ?? 6) * 3600_000, member: id });
       pipe.zadd(DUE2, { score: now + 2 * 3600_000, member: id });
       pipe.hset(WATCH, { [m]: { pk: mc, until: now + (c.catchHorizonH ?? 6) * 3600_000, sym } });
@@ -424,22 +428,41 @@ async function follow(sol: number, target: number) {
     if (mc > watch[m].pk) upd[m] = { ...watch[m], pk: Math.round(mc) };
   }
   if (Object.keys(upd).length) await r.hset(WATCH, upd);
-  const pk = (m: string) => upd[m]?.pk ?? watch[m]?.pk ?? 0;
+  const mcNow: Record<string, number> = {};
+  for (const m of mints) {
+    const q = (px as any)[m];
+    if (q) mcNow[m] = Math.round(q.px * 1e9 * sol);
+  }
+  // each snapshot keeps its own peak, measured from the moment it was taken. Before v0.1.28 every coin had one peak
+  // that a new snapshot reset to the current price: an earlier snapshot's real 2x was wiped, and it was labelled a miss
+  const pks = ((await r.hgetall<Record<string, number>>(PKS)) || {}) as Record<string, number>;
+  const pkUpd: Record<string, number> = {};
+  const rose = new Set<string>();
+  for (const [id, v] of Object.entries(pks)) {
+    const now2 = mcNow[id.split(":")[0]];
+    if (now2 && now2 > Number(v)) {
+      pkUpd[id] = now2;
+      rose.add(id);
+    }
+  }
+  if (Object.keys(pkUpd).length) await r.hset(PKS, pkUpd);
+  const pkOf = (id: string, m: string) => (pkUpd[id] ?? (pks[id] != null ? Number(pks[id]) : watch[m]?.pk ?? 0));
 
-  // labels: due snapshots, plus any snapshot whose coin already hit its goal (early positive)
+  // labels: due snapshots, plus any snapshot whose own peak rose this minute (it may have hit: early positive)
   const due = ((await r.zrange<string[]>(DUE, 0, now, { byScore: true })) || []) as string[];
   const hitMints = new Set(Object.keys(upd));
-  const early: string[] = [];
+  const early: string[] = Array.from(rose);
   if (hitMints.size) {
+    // snapshots from before v0.1.28 (no own peak yet) still resolve on the coin's peak
     const all = ((await r.zrange<string[]>(DUE, 0, -1)) || []) as string[];
-    for (const id of all) if (hitMints.has(id.split(":")[0])) early.push(id);
+    for (const id of all) if (pks[id] == null && hitMints.has(id.split(":")[0])) early.push(id);
   }
   // the fast model's labels: 2 hours after the look (or the moment the coin hits)
   const due2 = ((await r.zrange<string[]>(DUE2, 0, now, { byScore: true })) || []) as string[];
-  const early2: string[] = [];
+  const early2: string[] = Array.from(rose);
   if (hitMints.size) {
     const all2 = ((await r.zrange<string[]>(DUE2, 0, -1)) || []) as string[];
-    for (const id of all2) if (hitMints.has(id.split(":")[0])) early2.push(id);
+    for (const id of all2) if (pks[id] == null && hitMints.has(id.split(":")[0])) early2.push(id);
   }
   const ids2 = Array.from(new Set([...due2, ...early2])).slice(0, 400);
   const ids6 = Array.from(new Set([...due, ...early])).slice(0, 400);
@@ -457,52 +480,79 @@ async function follow(sol: number, target: number) {
   const done2: string[] = [];
   let labelled2 = 0;
   const due2Set = new Set(due2);
-  for (const id of ids2) {
+  // still waiting on a 2-hour label? (a snapshot whose peak rose may have had its 2-hour label already)
+  const pend2 = ids2.length ? (((await r.zmscore(DUE2, ids2).catch(() => null)) || []) as (number | null)[]) : [];
+  const pend6 = ids6.length ? (((await r.zmscore(DUE, ids6).catch(() => null)) || []) as (number | null)[]) : [];
+  // the record counts each coin once (its first resolved look): before v0.1.28 a coin looked at 12 times as it ran
+  // filled a band with 12 hits, and the record looked far better than the trades it would have made
+  const mintsOf = (xs: string[]) => Array.from(new Set(xs.map((id) => id.split(":")[0])));
+  const m2 = mintsOf(ids2);
+  const m6 = mintsOf(ids6);
+  const in2 = m2.length ? (((await r.smismember(RECM2, m2).catch(() => null)) || []) as number[]) : [];
+  const in6 = m6.length ? (((await r.smismember(RECM, m6).catch(() => null)) || []) as number[]) : [];
+  const seen2 = new Set(m2.filter((_, i) => Number(in2[i])));
+  const seen6 = new Set(m6.filter((_, i) => Number(in6[i])));
+  const newM2: string[] = [];
+  const newM6: string[] = [];
+  for (let i = 0; i < ids2.length; i++) {
+    const id = ids2[i];
     const sp = snaps[id];
     if (!sp) {
       done2.push(id);
       continue;
     }
-    const hit = pk(sp.mint) >= Math.max(target, sp.mc * 2);
+    if (pend2[i] == null && !due2Set.has(id)) continue;
+    const hit = pkOf(id, sp.mint) >= Math.max(target, sp.mc * 2);
     if (!hit && !due2Set.has(id)) continue;
-    const pb = Math.min(9, Math.floor(predict(model2, sp.x) * 10));
+    // graded on the score it gave at the look (what the desk acted on), not on today's model
+    const pb = Math.min(9, Math.floor((sp.p2 ?? predict(model2, sp.x)) * 10));
     const k2 = (k: string) => (inc2[k] = (inc2[k] || 0) + 1);
-    k2(`p${pb}:n`);
-    k2("all:n");
-    if (hit) {
-      k2(`p${pb}:hit`);
-      k2("all:hit");
+    if (!seen2.has(sp.mint)) {
+      seen2.add(sp.mint);
+      newM2.push(sp.mint);
+      k2(`p${pb}:n`);
+      k2("all:n");
+      if (hit) {
+        k2(`p${pb}:hit`);
+        k2("all:hit");
+      }
     }
     learn(model2, sp.x, hit ? 1 : 0);
     labelled2++;
     done2.push(id);
   }
   const due6Set = new Set(due);
-  for (const id of ids6) {
+  for (let i = 0; i < ids6.length; i++) {
+    const id = ids6[i];
     const sp = snaps[id];
     if (!sp) {
       done.push(id);
       continue;
     }
+    if (pend6[i] == null && !due6Set.has(id)) continue;
     const goal = Math.max(target, sp.mc * 2);
-    const peak = pk(sp.mint);
+    const peak = pkOf(id, sp.mint);
     const hit = peak >= goal;
     const over = due6Set.has(id);
     if (!hit && !over) continue; // early check only resolves positives
     const y = hit ? 1 : 0;
-    // prequential: grade the score it gave *before* learning from this label
-    const pb = Math.min(9, Math.floor(predict(model, sp.x) * 10));
+    // graded on the score stored at the look (the one the desk traded on), before learning from this label
+    const pb = Math.min(9, Math.floor(sp.p * 10));
     const qb = Math.min(9, Math.floor(sp.prior / 10));
     const key = (k: string) => (inc[k] = (inc[k] || 0) + 1);
-    key(`p${pb}:n`);
-    key(`q${qb}:n`);
-    key("all:n");
-    key(`${sp.stage}:n`);
-    if (y) {
-      key(`p${pb}:hit`);
-      key(`q${qb}:hit`);
-      key("all:hit");
-      key(`${sp.stage}:hit`);
+    if (!seen6.has(sp.mint)) {
+      seen6.add(sp.mint);
+      newM6.push(sp.mint);
+      key(`p${pb}:n`);
+      key(`q${qb}:n`);
+      key("all:n");
+      key(`${sp.stage}:n`);
+      if (y) {
+        key(`p${pb}:hit`);
+        key(`q${qb}:hit`);
+        key("all:hit");
+        key(`${sp.stage}:hit`);
+      }
     }
     learn(model, sp.x, y);
     labelled++;
@@ -513,7 +563,10 @@ async function follow(sol: number, target: number) {
   if (done.length) {
     p.zrem(DUE, ...done);
     p.hdel(SNAP, ...done);
+    p.hdel(PKS, ...done);
   }
+  if (newM6.length) p.sadd(RECM, newM6[0], ...newM6.slice(1));
+  if (newM2.length) p.sadd(RECM2, newM2[0], ...newM2.slice(1));
   for (const [k, v] of Object.entries(inc)) p.hincrby(REC, k, v);
   if (labelled) p.set(W, model);
   if (done2.length) p.zrem(DUE2, ...done2);

@@ -8,9 +8,11 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { lane, rpcView } from "../src/lib/solana";
+import { conn, lane, rpcView } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
-import { flushRpcDay } from "../src/lib/rpcday";
+import { logCreate, logTrade, pruneStream, streamSize, youngMints } from "../src/lib/streamlog";
+import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
+import { pruneRedis } from "../src/lib/prune";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, redisDown } from "../src/lib/critical";
 import { markAlive, markBusy } from "../src/lib/alive";
@@ -44,6 +46,27 @@ async function restart(why: string) {
   process.exit(1);
 }
 
+// PumpPortal lag: 1 launch in 50 has its block time read (one chain call each, ~600 a day) and the gap to the moment
+// the stream delivered it goes on the speed panel. The rest of the speed numbers start from that delivery time.
+const LAG_EVERY = 50;
+let createN = 0;
+function sampleLag(sig: string, gotAt: number) {
+  setTimeout(() => {
+    lane
+      .run(1, () => conn().getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }))
+      .then((tx) => {
+        if (!tx?.blockTime) return;
+        // block times are whole seconds: the lag is rounded to the second, never below 0
+        const lag = Math.max(0, Math.round((gotAt - tx.blockTime * 1000) / 1000));
+        const p = redis().pipeline();
+        p.lpush("rn:lat:stream", lag);
+        p.ltrim("rn:lat:stream", 0, 199);
+        return p.exec();
+      })
+      .catch(() => {});
+  }, 8000);
+}
+let pruneAskAt = Date.now() - 25 * 60_000; // first try ~5 minutes after boot
 async function beat() {
   const stuck = Date.now() - sessionAt;
   const deskStuck = Date.now() - deskAt;
@@ -53,6 +76,13 @@ async function beat() {
   flushRpcDay().catch(() => {});
   stallAlerts().catch(() => {});
   criticalChecks().catch(() => {});
+  // Redis growth: trimmed once every 6 hours (the shared key decides; this only asks every 30 minutes)
+  if (Date.now() - pruneAskAt > 30 * 60_000) {
+    pruneAskAt = Date.now();
+    pruneRedis()
+      .then((x) => x.prune !== "not due" && console.log("prune", JSON.stringify(x)))
+      .catch(() => {});
+  }
   if (Date.now() - fastAt > 150_000) return restart("the rats' fast lane is stuck");
   if (Date.now() - slowAt > 300_000) return restart("the rats' slow lane is stuck");
   if (Date.now() - histAt > 900_000) return restart("the historian is stuck");
@@ -79,6 +109,7 @@ let lastRtExpire = 0;
 function onTrade(m: any, kick: () => void) {
   const mint = String(m.mint);
   const now = Date.now();
+  logTrade({ mint, w: String(m.traderPublicKey || ""), buy: m.txType !== "sell", sol: Number(m.solAmount) || 0, tok: Number(m.tokenAmount) || 0, vSol: Number(m.vSolInBondingCurve) || undefined, mcSol: Number(m.marketCapSol) || undefined, pool: m.pool ? String(m.pool) : undefined });
   const w = TAPE.get(mint) || [];
   const who = String(m.traderPublicKey || "");
   const seen = SEEN.get(mint) || new Set<string>();
@@ -122,7 +153,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, lastMsgSec: quiet }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet }).catch(() => {});
   }
   // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};
@@ -148,15 +179,20 @@ async function flushTape() {
 async function wantList() {
   const r = redis();
   const now = Date.now();
-  const [pos, radar, mig, cw] = await Promise.all([
+  const [pos, ghosts, radar, mig, cw] = await Promise.all([
     r.hkeys(K.deskPos).catch(() => []),
+    r.hkeys("rn:ghost:pos").catch(() => []),
     r.zrange<string[]>(K.radar, 0, 99, { rev: true }).catch(() => []),
     r.zrange<string[]>("rn:ct:mig", now - 2 * 3600_000, now, { byScore: true }).catch(() => []),
     r.hkeys("rn:ct:watch").catch(() => []),
   ]);
-  const want = new Set([...(pos || []), ...(radar || []), ...(mig || [])].map(String).filter(Boolean));
+  // positions (real and ghost) first: the desk prices them from these trades between its chain checks
+  const want = new Set([...(pos || []), ...(ghosts || []), ...(radar || []), ...(mig || [])].map(String).filter(Boolean));
   for (const m of cw || []) if (want.size < 400) want.add(String(m));
   for (const m of FLW.keys()) want.add(m); // launches in their first ~100 seconds (FLASH)
+  // every launch for its first ~7 minutes: the minute-1 and minute-5 tapes are built from these trades (no chain reads)
+  for (const m of youngMints(now)) want.add(m);
+  pruneStream(want, now);
   return want;
 }
 
@@ -251,9 +287,11 @@ function pumpportal() {
         const now = Date.now();
         const mint = String(msg.mint);
         INTAKE.push({ mint, sig: String(msg.signature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
+        logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
         FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
         if (up) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
         watched.add(mint);
+        if (++createN % LAG_EVERY === 0 && msg.signature) sampleLag(String(msg.signature), now);
       }
     };
     // reconnect once per drop, 3s later (errors are always followed by a close)
@@ -395,6 +433,7 @@ process.on("uncaughtException", (e: any) => {
 async function main() {
   await redis().incr("rn:worker:boots").catch(() => 0);
   await redis().set("rn:worker:bootAt", Date.now()).catch(() => null);
+  await seedRpcDay().catch(() => null);
   console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
   pumpportal();
   setInterval(beat, 20_000);

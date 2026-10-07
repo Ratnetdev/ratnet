@@ -4,7 +4,8 @@
 // Cost: one getSignaturesForAddress (up to 1000 sigs) + one batch of parsed transactions (~40) per coin.
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
-import { bondingCurvePda, conn, pmap, RPS } from "./solana";
+import { bondingCurvePda, conn, pmap } from "./solana";
+import { streamLog } from "./streamlog";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
 const JITO = new Set([
@@ -51,6 +52,7 @@ export type Tape = {
   maxBuy?: number; // biggest single buy in the sample (SOL)
   maxBuyAt?: number; // when it happened
   farm?: Farm;
+  src?: "stream" | "chain"; // where the trades came from (stream tapes carry no insider token accounts)
 };
 
 export type Farm = { farm: boolean; score: number; why: string };
@@ -141,21 +143,52 @@ async function parsedMany(sigs: string[]) {
 
 /** Read the tape of one launch. Returns null when nothing could be read (never throws). */
 // Fewer sampled trades on a small RPC plan (Helius free = 10 calls/s); the full sample from 20/s up.
-const SAMPLE = RPS >= 20 ? { early: 28, recent: 14 } : { early: 20, recent: 10 };
+// one sample size everywhere (live stream, live chain fallback, historian): the features must mean the same thing in
+// training and in serving. Stream tapes cost nothing, so the smaller free-plan sample is gone.
+const SAMPLE = { early: 28, recent: 14 };
 
-export async function readTape(mint: string, creator: string, createdAt: number, sample = SAMPLE): Promise<Tape | null> {
+/**
+ * The tape from the stream's own trades (no chain reads). Same sampling as the chain read (the first `early` trades
+ * and the last `recent`), so live features match what the historian and the models saw before. The stream has no
+ * slots: the create block is approximated by time (a buy within 400ms of the create is a bundle, within 1.2s a
+ * snipe), and no token accounts (insiders are read from the chain only when the desk buys, see desk enter()).
+ */
+export function tapeFromStream(mint: string, creator: string, createdAt: number, sample = SAMPLE, at = Date.now()): Tape | null {
+  const l = streamLog(mint, createdAt);
+  if (!l) return null;
+  const slotOf = (t: number) => Math.max(0, Math.floor((t - l.t0) / 400));
+  const all: Trade[] = l.trades.map((x) => ({ slot: slotOf(x.t), t: x.t, w: x.w, sol: x.sol, tok: x.tok, acc: null, jito: false }));
+  const pick = all.length <= sample.early + sample.recent ? all : [...all.slice(0, sample.early), ...all.slice(-sample.recent)];
+  const tape = buildTape(pick, l.n, 0, creator, createdAt, at, sample);
+  return { ...tape, src: "stream" };
+}
+
+export async function readTape(mint: string, creator: string, createdAt: number, sample = SAMPLE, opts: { rpc?: boolean } = {}): Promise<Tape | null> {
+  if (!opts.rpc) {
+    const st = tapeFromStream(mint, creator, createdAt, sample);
+    if (st) return st;
+  }
   try {
     const curve = bondingCurvePda(mint);
-    const sigs = await conn().getSignaturesForAddress(new PublicKey(curve), { limit: 1000 });
+    const pk = new PublicKey(curve);
+    const sigs = await conn().getSignaturesForAddress(pk, { limit: 1000 });
     if (!sigs.length) return null;
+    // a busy coin has more than 1000 signatures: page back (up to 4 more pages) to reach its create. Before v0.1.28 the
+    // "early" sample of such a coin was simply its 1000th-newest trades, so bundle, snipe and early concentration were
+    // measured on the wrong trades
+    let page = sigs;
+    for (let i = 0; page.length === 1000 && i < 4; i++) {
+      page = await conn().getSignaturesForAddress(pk, { limit: 1000, before: sigs[sigs.length - 1].signature });
+      sigs.push(...page);
+    }
     const ok = sigs.filter((s) => !s.err);
     const oldest = [...ok].reverse();
-    const full = sigs.length < 1000; // we saw the whole history, so the oldest tx is the create
+    const full = page.length < 1000; // we saw the whole history, so the oldest tx is the create
     const createSlot = full && oldest.length ? oldest[0].slot : null;
     const pick = Array.from(new Set([...oldest.slice(0, sample.early).map((s) => s.signature), ...ok.slice(0, sample.recent).map((s) => s.signature)]));
     const txs = await parsedMany(pick);
     const trades = txs.map((tx) => parseTrade(tx, curve, mint)).filter((x): x is Trade => !!x && Math.abs(x.sol) > 1e-6);
-    return buildTape(trades, sigs.length, createSlot, creator, createdAt, Date.now(), sample);
+    return buildTape(trades, ok.length, createSlot, creator, createdAt, Date.now(), sample);
   } catch {
     return null;
   }

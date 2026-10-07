@@ -200,9 +200,12 @@ export async function flashFollow() {
     const sp = snaps[id];
     if (!sp) continue;
     const rec = recBy[sp.mint];
-    const bonded = !!rec?.completeAt && !rec.stuck && rec.completeAt - sp.createdAt <= LABEL_MS + 60_000;
+    // a full curve that later proved stuck (never migrated) is a miss, whatever order the flags arrived in
+    const bonded = !!rec?.completeAt && !rec.stuck && rec.outcome !== "DIED" && rec.completeAt - sp.createdAt <= LABEL_MS + 60_000;
     const y = bonded ? 1 : 0;
-    const band = Math.min(9, Math.floor(predict(model, sp.x) * 10));
+    // graded on the score it gave at the look (what the desk acted on). Before v0.1.28 it was today's model's score,
+    // so the record described a model that never made those calls
+    const band = Math.min(9, Math.floor(sp.p * 10));
     const k = (x: string) => (inc[x] = (inc[x] || 0) + 1);
     k(`s${sp.stage}:p${band}:n`);
     k(`s${sp.stage}:all:n`);

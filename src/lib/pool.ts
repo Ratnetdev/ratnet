@@ -101,5 +101,9 @@ export function poolUsd(p: PoolRead | null | undefined, solUsd: number, supply =
   return p && solUsd ? p.px * supply * solUsd : 0;
 }
 
-/** True graduation: the canonical pool exists and holds the migrated curve. */
-export const migrated = (p: PoolRead | null | undefined) => !!p && p.sol >= MIN_POOL_SOL;
+/**
+ * True graduation: the canonical pool exists. Only pump.fun's migration can create that PDA, so existence is the proof.
+ * Before v0.1.28 it also had to hold 20 SOL: a coin dumped hard right after migrating was then counted as "never
+ * migrated" and labelled DIED, so the models learned some of the fastest bonds as losers.
+ */
+export const migrated = (p: PoolRead | null | undefined) => !!p;
