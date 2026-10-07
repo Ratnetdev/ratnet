@@ -57,6 +57,14 @@ export async function lensView() {
 
 // ---------------------------------------------------------------- helpers
 
+// "websites" that are really social pages: they block bots and say nothing about whether the team built anything
+const SOCIAL: [RegExp, string][] = [
+  [/(^|\.)instagram\.com$/i, "Instagram"], [/(^|\.)tiktok\.com$/i, "TikTok"], [/(^|\.)(youtube\.com|youtu\.be)$/i, "YouTube"],
+  [/(^|\.)(x\.com|twitter\.com)$/i, "X"], [/(^|\.)(t\.me|telegram\.me)$/i, "Telegram"], [/(^|\.)facebook\.com$/i, "Facebook"],
+  [/(^|\.)reddit\.com$/i, "Reddit"], [/(^|\.)(discord\.gg|discord\.com)$/i, "Discord"], [/(^|\.)(linktr\.ee|linktree\.com)$/i, "Linktree"],
+  [/(^|\.)pump\.fun$/i, "pump.fun"], [/(^|\.)dexscreener\.com$/i, "DexScreener"], [/(^|\.)threads\.net$/i, "Threads"],
+];
+
 const safeHost = (u: URL) => /^https?:$/.test(u.protocol) && !/^(localhost|.*\.local|.*\.internal|\d+\.\d+\.\d+\.\d+|\[.*\])$/i.test(u.hostname);
 
 // Every fetch here goes through safeFetch: project websites are chosen by whoever launched the coin (public hosts only,
@@ -158,9 +166,16 @@ async function investigate(rec: Launch, why: LensWhy): Promise<Dossier> {
     try {
       u = new URL(rec.website.startsWith("http") ? rec.website : `https://${rec.website}`);
     } catch {}
+    const social = u ? SOCIAL.find(([re]) => re.test(u!.hostname))?.[1] : null;
     if (!u || !safeHost(u)) {
       await push("site", "bad", "not a usable link");
       add(-5, "website link is broken");
+    } else if (social) {
+      // a social page in the website field is not a broken website: those sites block bots, so LENS does not open
+      // them. It just means the team did not buy a domain
+      d.site = { url: u.toString(), up: false, title: social, text: "", builder: null, caOnSite: false, linksX: false, domainAgeDays: null };
+      add(-2, `no own website (links ${social})`);
+      await push("site", "skip", `${social} page, not a website`, { url: u.toString(), tab: "site", title: u.hostname, text: `(${social} link: social pages block bots, so it was not opened)` });
     } else {
       await push("site", "run", u.hostname, { url: u.toString(), tab: "site", title: u.hostname, text: "loading…" });
       const page = await get(u.toString(), 7000).catch(() => null);
@@ -232,8 +247,13 @@ async function investigate(rec: Launch, why: LensWhy): Promise<Dossier> {
         await push("x", "ok", `${fmtK(f)} followers · ${fmtK(d.x.likes || 0)} likes`, { title: `@${d.x.handle} on X`, text: `${d.x.postText}\n\n${fmtK(d.x.likes || 0)} likes · ${fmtK(d.x.views || 0)} views` });
       } else {
         d.x = { kind: "post", handle: xi.handle, followers: null, ageDays: null, posts: null, blue: false, bio: "" };
-        await push("x", xOn() ? "bad" : "skip", xOn() ? "post not found" : "X reads not connected");
-        if (xOn()) add(-3, "the linked post could not be read");
+        // our read failing (key, rate limit, outage) says nothing about the coin: only a real "no such post" counts
+        if (!xOn()) await push("x", "skip", "X reads not connected");
+        else if (j == null) await push("x", "skip", "X read failed on our side (not counted)");
+        else {
+          await push("x", "bad", "post not found");
+          add(-3, "the linked post could not be read");
+        }
       }
     } else if (xi.kind === "account" && xi.handle) {
       const j = await xApi<any>(`/twitter/user/info?userName=${encodeURIComponent(xi.handle)}`);
@@ -252,8 +272,12 @@ async function investigate(rec: Launch, why: LensWhy): Promise<Dossier> {
         await push("x", f < 50 || (age ?? 99) < 3 ? "bad" : "ok", `${fmtK(f)} followers · ${age == null ? "?" : Math.round(age)}d old${d.x.blue ? " · blue" : ""}`, { title: `@${d.x.handle} on X`, text: `${a.name || ""}\n${d.x.bio}\n\n${fmtK(f)} followers · ${fmtK(d.x.posts || 0)} posts · ${age == null ? "?" : Math.round(age)} days old` });
       } else {
         d.x = { kind: "account", handle: xi.handle, followers: null, ageDays: null, posts: null, blue: false, bio: "" };
-        await push("x", xOn() ? "bad" : "skip", xOn() ? "account not found" : "X reads not connected");
-        if (xOn()) add(-6, `X account @${xi.handle} not found (suspended or fake link)`);
+        if (!xOn()) await push("x", "skip", "X reads not connected");
+        else if (j == null) await push("x", "skip", "X read failed on our side (not counted)");
+        else {
+          await push("x", "bad", "account not found");
+          add(-6, `X account @${xi.handle} not found (suspended or fake link)`);
+        }
       }
     } else {
       d.x = { kind: "community", handle: null, followers: null, ageDays: null, posts: null, blue: false, bio: "" };
@@ -328,7 +352,7 @@ async function investigate(rec: Launch, why: LensWhy): Promise<Dossier> {
   d.done = true;
   d.flags = d.flags.slice(0, 6);
   d.good = d.good.slice(0, 6);
-  await push("verdict", d.score >= 60 ? "ok" : d.score < 40 ? "bad" : "ok", `${d.score}/100`, { score: d.score, done: true, tab: "verdict", title: `$${rec.symbol} · LENS ${d.score}/100`, text: [...d.good.map((x) => `+ ${x}`), ...d.flags.map((x) => `- ${x}`)].join("\n") });
+  await push("verdict", d.score >= 60 ? "ok" : d.score < 40 ? "bad" : "ok", `${d.score}/100`, { score: d.score, done: true, tab: "verdict", url: `ratnet://lens/${rec.symbol}`, title: `$${rec.symbol} · LENS ${d.score}/100`, text: [...d.good.map((x) => `+ ${x}`), ...d.flags.map((x) => `- ${x}`)].join("\n") });
   return d;
 }
 

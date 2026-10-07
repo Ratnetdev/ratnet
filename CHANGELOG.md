@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.15 · Real time
+- Live market caps: every page streams pump.fun trades (curve and PumpSwap) for the coins on screen straight from PumpPortal's public websocket. Open positions, the radar, open trades in the track record and the coin page move with every trade (green on a buy, red on a sell, a live dot). One shared connection per tab, subscriptions follow what is on screen.
+- Worker: one PumpPortal connection for launches, migrations and live trades on every open position, the 40 hottest curves and fresh migrations. A 20-second live tape per coin lands in Redis (rn:rt) every 2 seconds, and a buying burst (10+ buys from 6+ wallets, 4+ SOL net in 20s) wakes CATCH at once instead of at its next 12-second pass. CATCH's starting score reads the live tape (+10 on a burst, -8 when sellers dominate).
+- Insider exit fixed: it fired on any drop in the watched wallets' bags, even when they were tiny (three snipers selling 0.3% of supply = "insiders dumped 99%"). Now it needs the insiders to have let go of at least 2% of the supply (insiderMinSupply) and the price 8%+ off the peak; the exit line says both numbers.
+- LENS: a social page in the website field (Instagram, TikTok, YouTube, X, Telegram, Linktree, ...) is no longer "does not load -10": it is noted as "no own website" (-2) and not opened. An X read failing on our side (key, rate limit, outage) is no longer counted against the coin; only a real "post/account not found" is. The address bar shows ratnet://lens/$TICKER when the dossier is written.
+
 ## v0.1.14 · CATCH, BOARD, hardening
 - Desk freeze fixed. A MOMO position hitting its own time stop crashed every desk beat (an exit message read a strategy profile that did not exist yet), so the desk stopped exiting and entering until restarted. Fixed, and the desk is now fault-isolated: one broken position, ghost position or signal logs an error and everything else keeps running.
 - Slots fixed. Positions whose cost is back (house money) no longer take a slot, so moonbags can never fill the desk (the 12h sim showed 7 bags blocking every slot for 6 hours). MOMO positions no longer use the King's slots. New: bag cap (maxBags 12, the quietest bag is sold to make room) and quiet-bag exit (no new high for bagStaleMin 120 minutes and under 3x: sold).

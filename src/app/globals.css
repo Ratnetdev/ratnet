@@ -967,3 +967,9 @@ th .info, .k .info { gap: 4px; }
   .tbl .vicons { display: none; }
   .curvebar { width: 46px; }
 }
+/* live market caps (trade stream) */
+.livemc { display: inline-flex; align-items: center; gap: 5px; transition: color .45s; font-variant-numeric: tabular-nums; }
+.livemc.up { color: var(--rat); }
+.livemc.down { color: var(--dust); }
+.livemc-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--rat); box-shadow: 0 0 6px var(--rat); animation: lmpulse 1.6s infinite; }
+@keyframes lmpulse { 50% { opacity: .35; } }

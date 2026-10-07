@@ -88,7 +88,8 @@ export type Pos = {
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
   watch?: Watch[]; // insider token accounts and their balance at entry
-  ins?: number | null; // insiders' bag now vs entry (1 = untouched)
+  ins?: number | null;
+  insSold?: number | null; // % of supply the watched insiders sold // insiders' bag now vs entry (1 = untouched)
   dev?: number | null; // dev's bag now vs entry
   gradSeen?: boolean;
   xm?: number | null;
@@ -674,7 +675,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               const dev = w.filter((x) => x.role === "dev" && x.base > 0);
               const ins = w.filter((x) => x.role !== "dev" && x.base > 0);
               const base = ins.reduce((a, x) => a + x.base, 0);
-              p.ins = base ? Math.round((ins.reduce((a, x) => a + (amt[x.acc] ?? x.base), 0) / base) * 1000) / 1000 : null;
+              const nowHeld = ins.reduce((a, x) => a + (amt[x.acc] ?? x.base), 0);
+              p.ins = base ? Math.round((nowHeld / base) * 1000) / 1000 : null;
+              // how much of the whole supply the insiders actually let go of (1B supply, amounts in whole tokens)
+              p.insSold = base ? Math.round(((base - nowHeld) / 1e9) * 1000) / 10 : null;
               p.dev = dev.length ? Math.round(((amt[dev[0].acc] ?? dev[0].base) / dev[0].base) * 1000) / 1000 : null;
             }
         }
@@ -725,7 +729,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
         if (closeAll) [sellFrac, reason] = [1, "manual close"];
         else if (p.dev != null && p.dev <= 1 - cfg.devExit / 100 && learnS.devExitOn) [sellFrac, reason] = [1, `dev sold ${Math.round((1 - p.dev) * 100)}% of their bag (dev exit earned by COACH)`];
-        else if (p.ins != null && p.ins <= 1 - cfg.insiderExit / 100) [sellFrac, reason] = [1, `insiders dumped ${Math.round((1 - p.ins) * 100)}% (bundle, snipers, top buyers)`];
+        // insider exit only when it matters: they let go of a real share of the supply (not a few tiny sniper bags) and
+        // the price shows it (8%+ off the peak). Otherwise a 99% "dump" of 0.3% of supply could throw out a good coin
+        else if (p.ins != null && p.ins <= 1 - cfg.insiderExit / 100 && (p.insSold ?? 0) >= ((cfg as any).insiderMinSupply ?? 2) && q.px <= p.peakPx * 0.92)
+          [sellFrac, reason] = [1, `insiders dumped ${Math.round((1 - p.ins) * 100)}% of their bags (${p.insSold}% of supply: bundle, snipers, top buyers), price ${Math.round((q.px / p.peakPx - 1) * 100)}% off the peak`];
         else if (!p.tp1Done) {
           if (gain <= stopAt) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
           else if (drain <= -20) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}% in 40s`];

@@ -17,6 +17,7 @@ import HoundBoard from "./HoundBoard";
 import { TradeIcons } from "./venues";
 import { fullUrl, useAdmin } from "./useAdmin";
 import CoinImg from "./CoinImg";
+import LiveMc from "./LiveMc";
 
 type Ev = { agent: string; at: number; mint?: string; symbol?: string; text: string; tone: string };
 type Sample = [number, number, number];
@@ -324,7 +325,7 @@ export default function DeskBoard() {
                       <td><Link href={`/c/${p.mint}`} className="coin-a"><CoinImg mint={p.mint} sym={p.symbol} size={16} />${p.symbol}</Link><TradeIcons ca={p.mint} /> <span className="tiny muted">{p.costSol.toFixed(2)}◎ · {p.how || "direct"}{p.tp1Done ? ` · initials, ${Math.round((p.tokens / Math.max(1e-9, p.tokens0)) * 100)}% left` : ""}</span></td>
                       <td><Spark s={p.series} entry={p.entryPx} /></td>
                       <td style={{ color: g >= 0 ? "var(--rat)" : "var(--dust)" }}>{sign(g)}%</td>
-                      <td className="muted">{usdK(p.usd)}</td>
+                      <td className="muted"><LiveMc mint={p.mint} usd={p.usd} /></td>
                       <td>{p.pn != null ? `${Math.round(p.pn * 100)}%` : "–"}</td>
                       <td className="muted">{p.tp1Done && p.trail ? `${p.trail}%` : "after initials"}</td>
                       <td style={{ color: (p.ins ?? 1) < 0.8 || (p.dev ?? 1) < 0.8 ? "var(--dust)" : "var(--dim)" }}>{p.nWatch ? `${p.ins != null ? Math.round(p.ins * 100) + "%" : "–"}${p.dev != null ? ` · dev ${Math.round(p.dev * 100)}%` : ""}` : "–"}</td>

@@ -10,6 +10,7 @@ import { safeHref, ago, chg, num, short, usd, type Mkt } from "./fmt";
 import { useState } from "react";
 import Info from "./Info";
 import CoinImg from "./CoinImg";
+import LiveMc from "./LiveMc";
 
 type Cp = { p: number; mcap: number; at: number };
 type Launch = {
@@ -170,7 +171,7 @@ export default function CoinView({ mint }: { mint: string }) {
         </div>
         {m ? (
           <div className="mkt">
-            <div><span className="k"><Info k="mc">Market cap</Info></span><b>{usd(m.mc)}</b></div>
+            <div><span className="k"><Info k="mc">Market cap</Info></span><b><LiveMc mint={mint} usd={m.mc} /></b></div>
             <div><span className="k"><Info k="v5">Vol 5m</Info></span><b>{usd(m.v5)}</b></div>
             <div><span className="k"><Info k="v1">Vol 1h</Info></span><b>{usd(m.v1)}</b></div>
             <div><span className="k"><Info k="v24">Vol 24h</Info></span><b>{usd(m.v24)}</b></div>

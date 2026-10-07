@@ -88,7 +88,8 @@ export const DEFAULT_SETTINGS = {
     ladderMax: 0.5, // at a new milestone sell up to this share of what is left...
     ladderBelow: 0.4, // ...only when P(next milestone) is under this, scaled: P 0 sells ladderMax, P 0.4+ sells nothing
     trail: [30, 40, 45, 50], // trailing stop % from the peak at <3x, 3-10x, 10-30x, 30x+ (scaled by COACH and the runner model)
-    insiderExit: 50, // % of the watched insiders' bag sold: exit everything
+    insiderExit: 50, // % of the watched insiders' bag sold: exit everything...
+    insiderMinSupply: 2, // ...only if that is at least this % of the supply and the price is 8%+ off the peak
     devExit: 50, // % of the dev's bag sold: exit everything
     gradKeepP: 0.35, // at migration keep the runner bag only if P(next milestone) is at least this
     // entries v0.1.4

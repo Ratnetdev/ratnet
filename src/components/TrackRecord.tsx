@@ -8,6 +8,7 @@ import TripDetail, { Trip, col, dur, moveOf, sgn } from "./TripDetail";
 import { fullUrl, useAdmin } from "./useAdmin";
 import { TradeIcons } from "./venues";
 import CoinImg from "./CoinImg";
+import LiveMc from "./LiveMc";
 
 type Rec = {
   live: boolean;
@@ -33,7 +34,7 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
         </td>
         {full && <td className="muted">{ago(t.openedAt)} ago{t.ctx ? <div className="tiny mute2">coin {dur(t.ctx.ageMs)} old</div> : null}</td>}
         <td>{usd(t.entryMc)}{full && t.ctx?.curve != null ? <div className="tiny mute2">curve {t.ctx.curve}%</div> : null}</td>
-        <td>{usd(end)}{full ? <div className="tiny mute2">{t.open ? "now" : "exit"}</div> : null}</td>
+        <td>{t.open ? <LiveMc mint={t.mint} usd={end} /> : usd(end)}{full ? <div className="tiny mute2">{t.open ? "now" : "exit"}</div> : null}</td>
         <td style={{ color: col(move ?? 0) }}>{move != null ? `${sgn(move)}%` : "–"}</td>
         <td style={{ color: col(t.pnlSol) }}>{sgn(t.pnlSol, 3)} ◎{full ? <div className="tiny" style={{ color: col(t.pnlPct) }}>{sgn(t.pnlPct)}%</div> : null}</td>
         {full && <td className="muted">{dur(t.holdMs)}</td>}

@@ -2,6 +2,7 @@
 import { CoinLink, ScoreBar, VerdictTag } from "./Calls";
 import { ago, chg, usd, type Mkt } from "./fmt";
 import Info from "./Info";
+import LiveMc from "./LiveMc";
 
 export type RadarRow = {
   mint: string;
@@ -84,7 +85,7 @@ export default function RadarTable({ rows, full = false }: { rows: RadarRow[]; f
               <td><CurveBar p={r.pNow} /></td>
               {full && <td className="muted">{r.peak}%</td>}
               <td>
-                {usd(r.mcUsd)}
+                <LiveMc mint={r.mint} usd={r.mcUsd} />
                 {full && r.mkt?.c5 != null && <span className="tiny" style={{ color: r.mkt.c5 >= 0 ? "var(--rat)" : "var(--dust)" }}> {chg(r.mkt.c5)}</span>}
               </td>
               {full && <td className="muted">{r.mkt ? usd(r.mkt.v1) : "–"}</td>}

@@ -122,6 +122,9 @@ export function priorScore(f: Record<string, number>) {
     if (f.buyShare >= 0.7) s += 4;
     if (f.bundle > 0.5) (s -= 12), why.push(`bundle ${Math.round(f.bundle * 100)}%`);
   }
+  // the live tape from the worker (last 20 seconds of trades), when there is one
+  if (f.rtB >= 10 && f.rtU >= 6 && f.rtNet >= 4) (s += 10), why.push(`live: ${f.rtB} buys in 20s, +${f.rtNet.toFixed(1)} SOL net`);
+  else if (f.rtS >= 6 && f.rtS > f.rtB * 1.5) (s -= 8), why.push("selling right now");
   if (f.farm) (s -= 40), why.push("farm or bot coin");
   if (f.tracked >= 3) (s += 12), why.push(`${f.tracked} tracked wallets in`);
   else if (f.tracked >= 1) (s += 6), why.push(`${f.tracked} tracked wallet in`);
@@ -150,7 +153,7 @@ export function toX(f: Record<string, number>) {
 }
 
 /** Build one snapshot's features from everything the agents already know about the coin. */
-async function features(c: Cand, rec: Launch | null, sol: number, prev: any) {
+async function features(c: Cand, rec: Launch | null, sol: number, prev: any, rt?: any) {
   const now = Date.now();
   const posts = await board(c.mint).catch(() => []);
   const cf = confluence(posts, now);
@@ -194,6 +197,11 @@ async function features(c: Cand, rec: Launch | null, sol: number, prev: any) {
     copy: (rec as any)?.meta?.copy ? 1 : 0,
     mind: mindPost ? mindPost.s : 0,
     lens: lensPost ? lensPost.s : 0,
+    // live tape (prior score only; the model's inputs stay the same so its record stays comparable)
+    rtB: rt && now - rt.at < 30_000 ? rt.b20 : 0,
+    rtS: rt && now - rt.at < 30_000 ? rt.s20 : 0,
+    rtU: rt && now - rt.at < 30_000 ? rt.u20 : 0,
+    rtNet: rt && now - rt.at < 30_000 ? rt.bsol - rt.ssol : 0,
   };
   const x = toX(f);
   return { f, x, mc, cf };
@@ -245,11 +253,13 @@ export async function catchPass(force = false) {
     await follow(sol, target);
     return { catch: "no candidates" };
   }
-  const [curves, recs, lastAll] = await Promise.all([
+  const [curves, recs, lastAll, rtAll] = await Promise.all([
     getCurves(mints).catch(() => ({} as Record<string, any>)),
     r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m))),
     r.hmget<Record<string, any>>(LAST, ...mints),
+    r.hmget<Record<string, any>>("rn:rt", ...mints).catch(() => null),
   ]);
+  const rtBy = (rtAll || {}) as Record<string, any>;
   const last = (lastAll || {}) as Record<string, any>;
   // fresh migrations MOMO has not listed yet: read their pool straight from the chain
   const migSet = new Set(migs);
@@ -279,7 +289,7 @@ export async function catchPass(force = false) {
     const prev = last[m];
     // look again only when something moved: 8+ curve points, a new stage, or 4 minutes on the curve / 5 in the pool
     const moved = !prev || prev.stage !== cand.stage || (cand.stage === "curve" ? Math.abs((cand.prog || 0) - prev.prog) >= 8 || now - prev.at >= 4 * 60_000 : now - prev.at >= 5 * 60_000);
-    const { f, x, mc, cf } = await features(cand, rec, sol, prev);
+    const { f, x, mc, cf } = await features(cand, rec, sol, prev, rtBy[m]);
     pipe.hset(LAST, { [m]: { at: now, prog: cand.prog ?? 100, mc, stage: cand.stage } });
     const pr = priorScore(f);
     const p = predict(model, x);
