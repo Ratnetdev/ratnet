@@ -6,6 +6,7 @@ import { TradeIcons } from "./venues";
 import { VerdictTag } from "./Calls";
 import { usdK } from "./Grads";
 import { ago } from "./fmt";
+import CoinImg from "./CoinImg";
 
 type View = { mint: string; symbol: string; pk: number; pkAt?: number; now?: number; cUsd?: number | null; x: number | null; verdict?: string | null; bondedAt: number | null; createdAt: number };
 type Model = { n: number; ready: boolean; ladder: { from: number; to: number; n: number; up: number; rate: number | null }[]; following: { curve: number; bonded: number }; log: { at: number; text: string }[] };
@@ -26,7 +27,7 @@ export default function Runners({ limit = 15 }: { limit?: number }) {
           <tbody>
             {top.map((v) => (
               <tr key={v.mint}>
-                <td><Link href={`/c/${v.mint}`}>${v.symbol}</Link><TradeIcons ca={v.mint} /></td>
+                <td><Link href={`/c/${v.mint}`} className="coin-a"><CoinImg mint={v.mint} sym={v.symbol} size={16} />${v.symbol}</Link><TradeIcons ca={v.mint} /></td>
                 <td>{v.verdict ? <VerdictTag v={v.verdict} /> : <span className="tiny mute2">–</span>}</td>
                 <td className="muted">{usdK(v.cUsd)}</td>
                 <td>{usdK(v.pk)}</td>

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.1.12-8cff5a?style=flat-square&labelColor=060807" alt="version">
+  <img src="https://img.shields.io/badge/version-v0.1.13-8cff5a?style=flat-square&labelColor=060807" alt="version">
   <img src="https://img.shields.io/badge/chain-Solana-8cff5a?style=flat-square&labelColor=060807" alt="Solana">
   <img src="https://img.shields.io/badge/source-pump.fun-ffb547?style=flat-square&labelColor=060807" alt="pump.fun">
   <img src="https://img.shields.io/badge/model-trained%20from%20scratch-7fd1ff?style=flat-square&labelColor=060807" alt="from scratch">
@@ -612,3 +612,15 @@ Every rule above traces to a source. The main ones:
 Public pages show every trade and why it was taken, but not the playbook: desk thresholds, priors, learned stats, FILM rule grades, check values and nano weights are stripped. Sign in at `/admin` and the same pages show everything; the **strategy** tab has the whole playbook on one page, and every trade view and coin page gets a feedback box (good or bad, tags, note).
 
 Trade buttons (GMGN, Axiom, FOMO, pump.fun, DexScreener) take your referral codes from the **trade buttons** panel in admin. Click-test each venue once after saving.
+
+
+## Always-on worker (fastest setup)
+
+Vercel runs the protocol from a minute ping, about 55 seconds at a time. For no gaps and launches pushed the moment they happen, run the worker next to it:
+
+1. railway.app → New Project → Deploy from GitHub repo → this repo.
+2. Settings → Start command: `npm run worker`. Build command: `npm install` (no Next build needed).
+3. Variables: copy every variable from Vercel (Raw editor makes this one paste).
+4. Deploy. The admin Strategy tab shows "always-on worker: running" within a minute.
+
+The Vercel ping keeps running as a backup: it steps aside while the worker is alive and takes over if it stops.

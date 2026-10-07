@@ -9,6 +9,7 @@ import { fmtSecs } from "./Grads";
 import { ago, chg, num, short, usd, type Mkt } from "./fmt";
 import { useState } from "react";
 import Info from "./Info";
+import CoinImg from "./CoinImg";
 
 type Cp = { p: number; mcap: number; at: number };
 type Launch = {
@@ -87,10 +88,7 @@ export default function CoinView({ mint }: { mint: string }) {
     <>
       <section className="hero" style={{ paddingTop: 6, paddingBottom: 20 }}>
         <div className="row wrapx" style={{ gap: 16, alignItems: "center" }}>
-          {l?.image && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={l.image.replace("ipfs://", "https://ipfs.io/ipfs/")} alt="" width={72} height={72} style={{ border: "1px solid var(--line2)", objectFit: "cover", imageRendering: "auto" }} />
-          )}
+          <CoinImg mint={mint} sym={sym} size={72} className="cimg-hero" />
           <div>
             <h1 style={{ fontSize: "clamp(36px,6vw,60px)" }}>${sym || "…"}</h1>
             <div className="muted small">{l?.name || c?.name}</div>

@@ -1,6 +1,7 @@
 "use client";
 // Trade buttons with logos, used on every coin across the site. Templates (with your referral codes) come from the
 // server with the live feed; until they arrive the plain links work.
+import { useState } from "react";
 import { useLive } from "./Live";
 
 export type Venue = "pump" | "dex" | "gmgn" | "axiom" | "fomo";
@@ -19,8 +20,10 @@ export function useVenues() {
 }
 
 export function Logo({ v, size = 14 }: { v: Venue; size?: number }) {
+  const [bad, setBad] = useState(false);
+  if (bad) return <span className="vlogo vlogo-l" style={{ width: size, height: size, fontSize: Math.round(size * 0.72) }}>{VENUE[v].label[0].toUpperCase()}</span>;
   // eslint-disable-next-line @next/next/no-img-element
-  return <img className="vlogo" src={`/api/logo/${v}`} alt="" width={size} height={size} loading="lazy" />;
+  return <img className="vlogo" src={`/api/logo/${v}`} alt="" width={size} height={size} loading="lazy" decoding="async" onError={() => setBad(true)} />;
 }
 
 /** A row of trade buttons with logos. */

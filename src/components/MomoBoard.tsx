@@ -5,6 +5,7 @@ import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { ago } from "./fmt";
 import { TradeIcons } from "./venues";
+import CoinImg from "./CoinImg";
 
 type Hot = { mint: string; symbol: string; ageMin: number; mc: number; liq: number; v5: number; v1h: number; buyers5: number; sellers5: number; ch5: number; ch1h: number; pass?: boolean; why?: string };
 const k = (n: number) => (n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : `$${Math.round(n / 1000)}K`);
@@ -21,7 +22,7 @@ export default function MomoBoard() {
           <tbody>
             {(v?.hot || []).map((h) => (
               <tr key={h.mint}>
-                <td><Link href={`/c/${h.mint}`}>${h.symbol}</Link><TradeIcons ca={h.mint} /></td>
+                <td><Link href={`/c/${h.mint}`} className="coin-a"><CoinImg mint={h.mint} sym={h.symbol} size={16} />${h.symbol}</Link><TradeIcons ca={h.mint} /></td>
                 <td className="muted">{age(h.ageMin)}</td>
                 <td>{k(h.mc)}</td>
                 <td>{k(h.v5)}</td>

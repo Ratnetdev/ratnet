@@ -4,6 +4,7 @@ import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { usdK } from "./Grads";
 import { ago } from "./fmt";
+import CoinImg from "./CoinImg";
 
 type View = { mint: string; symbol: string; pk: number; pkAt?: number; cUsd?: number | null; x: number | null; verdict?: string | null; bondedAt: number | null; createdAt: number };
 
@@ -29,7 +30,7 @@ export default function HallOfFame({ limit = 6, full = false }: { limit?: number
             <div key={v.mint} className="fame-c">
               <div className="fame-top">
                 <span className="fame-n">#{i + 1}</span>
-                <Link href={`/c/${v.mint}`} className="fame-sym">${v.symbol}</Link>
+                <Link href={`/c/${v.mint}`} className="fame-sym"><CoinImg mint={v.mint} sym={v.symbol} size={22} />${v.symbol}</Link>
                 <span className="fame-x">{v.x}x</span>
               </div>
               <div className="fame-path">

@@ -90,7 +90,12 @@ const SEED: [string, string][] = [
 
 const pct = (a: number, b: number) => Math.round((a / b - 1) * 1000) / 10;
 const fmtK = (n: number | null | undefined) => (n == null ? "?" : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(1)}K` : `$${Math.round(n)}`);
-const ipfs = (u: string) => (u || "").replace(/^ipfs:\/\//, "https://ipfs.io/ipfs/");
+// pump.fun's own pinata gateway answers fastest for pump.fun images; any other IPFS gateway URL is rewritten to it
+const ipfs = (u: string) => {
+  const x = u || "";
+  const cid = x.match(/^ipfs:\/\/(.+)$/)?.[1] || x.match(/\/ipfs\/([A-Za-z0-9]+)/)?.[1];
+  return cid ? `https://pump.mypinata.cloud/ipfs/${cid}` : x;
+};
 
 /** Ask MIND to judge a coin (pipeline-safe). */
 export function enqueueMind(p: { zadd: Function }, mint: string, why: MindWhy) {
@@ -294,7 +299,9 @@ async function judge(mint: string, why: MindWhy): Promise<Judgement | null> {
   if (/^https:\/\//.test(img)) blocks.push({ type: "image", source: { type: "url", url: img } });
   blocks.push({ type: "text", text: `Why you are looking at it: ${why === "momo" ? "it is pulling real volume right now (MOMO)" : why === "wallets" ? "tracked wallets (KOLs, FOMO traders, smart money) are buying it" : why === "kol" ? "a KOL or trader posted it" : why === "wire" ? "it was born from a tracked post" : why === "bond" ? "the Rat King called BOND" : why === "bonded" ? "it just migrated" : why === "pulse" ? "it is named after a rising narrative" : "LENS looked at it"}.\n\n${ctx.text}${img ? "\n\nThe image above is the coin's image." : ""}` });
   await setLive({ mint, symbol: rec.symbol, name: rec.name, image: rec.image, why, stage: "thinking", facts: ctx.text.split("\n").slice(0, 10) });
-  const ans = json<any>(await ask(SYSTEM, blocks, 700));
+  let ans = json<any>(await ask(SYSTEM, blocks, 700));
+  // an image that can't be fetched fails the whole call: try once more on the text alone
+  if (!ans && blocks[0]?.type === "image") ans = json<any>(await ask(SYSTEM, blocks.slice(1), 700));
   if (!ans || !["SEND", "WATCH", "PASS"].includes(ans.verdict)) {
     await setLive({ mint, symbol: rec.symbol, stage: "error" });
     return null;

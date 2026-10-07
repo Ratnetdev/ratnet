@@ -21,6 +21,8 @@ export async function GET() {
   if (!isAdmin()) return fail("unauthorized", 401);
   try {
     const [d, nano, fb, cal, stats, book, mrec, unlock, picker] = await Promise.all([getDesk(), getNano(), feedbackSummary(), loadCal(), getStats(), lessonBook(), mindRecord(), mindUnlocked(), pickerView()]);
+    const execLog = ((await (await import("@/lib/redis")).redis().lrange<any>("rn:exec:log", 0, 19)) || []) as any[];
+    const worker = Number((await (await import("@/lib/redis")).redis().get("rn:worker:at")) || 0);
     const profiles = await exitProfiles((d.cfg as any).initialsAt, (d.cfg as any).timeStop);
     const l: any = d.learn;
     const mean = (x: { n: number; sum: number } | undefined) => (x?.n ? Math.round((Math.exp(x.sum / x.n) - 1) * 1000) / 10 : null);
@@ -37,6 +39,7 @@ export async function GET() {
       ],
       picker,
       profiles,
+      speed: { worker: Date.now() - worker < 90_000, rps: Number(process.env.RPC_RPS || 10), exec: execLog, avgMs: execLog.length ? Math.round(execLog.reduce((a, x) => a + x.ms, 0) / execLog.length) : null, fast: execLog.filter((x) => x.path === "fast").length },
       learned: { trailBy: l.trailBy || {}, trailK: l.trailK, reviews: l.reviews, early: l.early, late: l.late, good: l.good, stalkOn: l.stalkOn, stalkArm: l.stalkArm, earlyOn: l.earlyOn, earlyStat: l.earlyStat, arms: l.arms, shadows: l.shadows, reviewing: l.reviewing },
       king: { version: cal?.ready ? "v1.0" : KING_VERSION, verdicts: VERDICTS, rules: WEIGHTS, cal, honest: (stats as any).honest },
       mind: { on: llmOn(), model: llmModel(), record: mrec, unlock, lessons: book },

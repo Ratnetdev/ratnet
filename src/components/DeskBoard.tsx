@@ -15,6 +15,7 @@ import MomoBoard from "./MomoBoard";
 import HoundBoard from "./HoundBoard";
 import { TradeIcons } from "./venues";
 import { fullUrl, useAdmin } from "./useAdmin";
+import CoinImg from "./CoinImg";
 
 type Ev = { agent: string; at: number; mint?: string; symbol?: string; text: string; tone: string };
 type Sample = [number, number, number];
@@ -315,7 +316,7 @@ export default function DeskBoard() {
                   const g = pct(p.lastPx, p.entryPx);
                   return (
                     <tr key={p.mint}>
-                      <td><Link href={`/c/${p.mint}`}>${p.symbol}</Link><TradeIcons ca={p.mint} /> <span className="tiny muted">{p.costSol.toFixed(2)}◎ · {p.how || "direct"}{p.tp1Done ? ` · initials, ${Math.round((p.tokens / Math.max(1e-9, p.tokens0)) * 100)}% left` : ""}</span></td>
+                      <td><Link href={`/c/${p.mint}`} className="coin-a"><CoinImg mint={p.mint} sym={p.symbol} size={16} />${p.symbol}</Link><TradeIcons ca={p.mint} /> <span className="tiny muted">{p.costSol.toFixed(2)}◎ · {p.how || "direct"}{p.tp1Done ? ` · initials, ${Math.round((p.tokens / Math.max(1e-9, p.tokens0)) * 100)}% left` : ""}</span></td>
                       <td><Spark s={p.series} entry={p.entryPx} /></td>
                       <td style={{ color: g >= 0 ? "var(--rat)" : "var(--dust)" }}>{sign(g)}%</td>
                       <td className="muted">{usdK(p.usd)}</td>
@@ -341,7 +342,7 @@ export default function DeskBoard() {
                   <tr key={t.id}>
                     <td className="muted">{t.sig ? <a href={solscanTx(t.sig)} target="_blank" rel="noreferrer">{ago(t.at)}</a> : ago(t.at)}</td>
                     <td style={{ color: t.side === "buy" ? "var(--watch)" : "var(--bond)" }}>{t.side}</td>
-                    <td><Link href={`/c/${t.mint}`}>${t.symbol}</Link></td>
+                    <td><Link href={`/c/${t.mint}`} className="coin-a"><CoinImg mint={t.mint} sym={t.symbol} size={16} />${t.symbol}</Link></td>
                     <td>{t.sol.toFixed(3)}</td>
                     <td style={{ color: (t.pnlSol ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{t.pnlSol != null ? `${sign(t.pnlSol, 3)} (${sign(t.pnlPct ?? 0)}%)` : ""}</td>
                     <td className="tiny muted" style={{ whiteSpace: "normal" }}>{t.reason}</td>
@@ -529,7 +530,7 @@ export default function DeskBoard() {
             <div className="film-k mt">Bonds the King didn&apos;t call</div>
             {(d?.film?.misses || []).slice(0, 8).map((m) => (
               <div key={m.mint + m.at} className="film-miss">
-                <Link href={`/c/${m.mint}`}>${m.symbol}</Link>
+                <Link href={`/c/${m.mint}`} className="coin-a"><CoinImg mint={m.mint} sym={m.symbol} size={16} />${m.symbol}</Link>
                 <span className={`tag v-${m.verdict}`}>{m.verdict} {m.score}</span>
                 {m.nano ? <span className="tiny" style={{ color: m.nano.verdict === "BOND" ? "var(--bond)" : "var(--mute)" }}>nano {m.nano.verdict} {m.nano.score}</span> : null}
                 <span className="film-why">{m.minus[0] || "no reason against recorded"}</span>
@@ -548,7 +549,7 @@ export default function DeskBoard() {
               <tbody>
                 {(d?.stalks || []).map((k) => (
                   <tr key={k.mint}>
-                    <td><Link href={`/c/${k.mint}`}>${k.symbol}</Link></td>
+                    <td><Link href={`/c/${k.mint}`} className="coin-a"><CoinImg mint={k.mint} sym={k.symbol} size={16} />${k.symbol}</Link></td>
                     <td>-{k.depth}% then a bounce</td>
                     <td style={{ color: k.armed ? "var(--rat)" : "var(--dim)" }}>{k.hi ? `${Math.round((1 - k.lo / k.hi) * 100)}%${k.armed ? " · armed" : ""}` : "–"}</td>
                     <td className="muted">{ago(k.at)}</td>

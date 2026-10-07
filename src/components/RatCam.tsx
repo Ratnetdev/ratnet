@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Info from "./Info";
 import { useLive } from "./Live";
+import CoinImg from "./CoinImg";
 
 type FeedItem = { kind: string; rat: string; mint: string; symbol: string; name: string; at: number; text: string };
 type Line = { t: string; c?: string; href?: string };
@@ -350,13 +351,7 @@ export default function RatCam() {
 
   if (home || path?.startsWith("/admin")) return null;
 
-  if (mode === "min")
-    return (
-      <button className="ratcam-pill" onClick={() => choose("open")} aria-label="Open rat cam">
-        <span className="dot" /> RAT CAM <span className="muted">{rat}</span>
-        <span className="pill-line">{typing ? typing.line.t.slice(0, typing.n) : lines[lines.length - 1]?.t || "waking up…"}</span>
-      </button>
-    );
+  if (mode === "min") return <LiveToasts onOpen={() => choose("open")} />;
 
   return (
     <aside className="ratcam" aria-label="Rat cam, live">
@@ -373,6 +368,115 @@ export default function RatCam() {
       <div className="ratcam-f">
         <span>{stats ? `${stats.dug.toLocaleString("en-US")} dug · ${stats.bonded.toLocaleString("en-US")} graduated` : "connecting…"}</span>
         <Link href="/rats">rats →</Link>
+      </div>
+    </aside>
+  );
+}
+
+// ---------- live toasts: the minimized cam on every page
+type Toast = { id: string; tag: string; color: string; sym: string; mint?: string; text: string; href?: string; at: number; weight: number };
+const TAG: Record<string, [string, string]> = {
+  dig: ["NEW", "#8cff5a"],
+  call: ["KING", "#ffb547"],
+  grad: ["BONDED", "#ffb547"],
+  near: ["NEAR BOND", "#7fd1ff"],
+  desk: ["DESK", "#ff7ab6"],
+  h1: ["1H CHECK", "#8cff5a"],
+  resolve: ["SETTLED", "#9aa79f"],
+};
+
+function toastOf(f: FeedItem): Toast {
+  const [tag, color0] = TAG[f.kind] || [f.rat?.split("-")[0] || "LIVE", "#8cff5a"];
+  const color = f.kind === "call" || f.kind === "resolve" ? colorFor(f) : color0;
+  // what matters most survives a busy minute: trades and graduations first, BOND calls next, fresh digs last
+  const weight = f.kind === "desk" || f.kind === "grad" ? 3 : (f.kind === "call" && f.text.startsWith("BOND")) || f.kind === "near" ? 2 : f.kind === "dig" ? 0 : 1;
+  return { id: `${f.at}-${f.mint}-${f.kind}`, tag, color, sym: f.symbol ? `$${f.symbol}` : "", mint: f.mint || undefined, text: f.text.split(" · ").slice(0, 2).join(" · "), href: f.mint ? `/c/${f.mint}` : undefined, at: f.at, weight };
+}
+
+const AG_COL: Record<string, string> = { EXEC: "#ff7ab6", RISK: "#ffb547", KING: "#ffb547", MOMO: "#ff9f5a", MIND: "#c79bff", WIRE: "#7fd1ff", LEDGER: "#8cff5a", HOUND: "#ffd36b", PM: "#9ff0c8" };
+const SHOW_MS = 2600; // one new card every 2.6s at most, so every line can be read
+const MAX_BACKLOG = 14;
+
+function LiveToasts({ onOpen }: { onOpen: () => void }) {
+  const live = useLive();
+  const [cards, setCards] = useState<Toast[]>([]);
+  const [paused, setPaused] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const [waiting, setWaiting] = useState(0);
+  const queue = useRef<Toast[]>([]);
+  const seen = useRef<Set<string>>(new Set());
+  const first = useRef(true);
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
+
+  useEffect(() => {
+    const feed = (live.data?.feed || []) as FeedItem[];
+    const ag = ((live.data as any)?.agents || []) as { agent: string; at: number; mint: string; symbol: string; text: string; tone: string }[];
+    const all = [
+      ...feed.map(toastOf),
+      ...ag.map((e) => ({ id: `a-${e.at}-${e.agent}-${e.mint}`, tag: e.agent, color: AG_COL[e.agent] || "#8cff5a", sym: e.symbol ? `$${e.symbol}` : "", mint: e.mint || undefined, text: e.text.replace(/^\$\S+\s*/, ""), href: e.mint ? `/c/${e.mint}` : undefined, at: e.at, weight: e.agent === "EXEC" || e.agent === "RISK" || e.tone === "win" ? 3 : 2 } as Toast)),
+    ].sort((a, b) => b.at - a.at);
+    const fresh = all.filter((t) => (seen.current.has(t.id) ? false : (seen.current.add(t.id), true))).reverse();
+    queue.current.push(...(first.current ? fresh.slice(-3) : fresh));
+    first.current = false;
+    // too much at once: drop the least important (and oldest) first instead of speeding up
+    while (queue.current.length > MAX_BACKLOG) {
+      let k = 0;
+      queue.current.forEach((t, i) => (t.weight < queue.current[k].weight ? (k = i) : null));
+      queue.current.splice(k, 1);
+    }
+    setWaiting(queue.current.length);
+  }, [live.tick, live.data]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (pausedRef.current) return;
+      const next = queue.current.shift();
+      setWaiting(queue.current.length);
+      if (next) setCards((c) => [...c, next].slice(-3));
+    }, SHOW_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  if (hidden)
+    return (
+      <button className="lt-dot" onClick={() => setHidden(false)} aria-label="Show live updates">
+        <span className="dot" />
+        {waiting ? <em>{waiting}</em> : null}
+      </button>
+    );
+
+  return (
+    <aside className={`lt ${paused ? "paused" : ""}`} onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={() => setPaused(false)} aria-label="Live updates" aria-live="polite">
+      <div className="lt-h">
+        <span className="lt-live"><span className="dot" /> LIVE</span>
+        <span className="lt-state">{paused ? `paused${waiting ? ` · ${waiting} waiting` : ""}` : waiting > 2 ? `${waiting} queued` : "rats digging"}</span>
+        <button onClick={onOpen} title="Open the rat cam">cam</button>
+        <button onClick={() => setHidden(true)} title="Hide">×</button>
+      </div>
+      <div className="lt-stack">
+        {cards.map((c, i) => {
+          const body = (
+            <>
+              <i className="lt-bar" style={{ background: c.color }} />
+              <div className="lt-top">
+                <b style={{ color: c.color }}>{c.tag}</b>
+                {c.mint ? <CoinImg mint={c.mint} sym={c.sym} size={22} className="lt-img" /> : null}
+                {c.sym ? <span className="lt-sym">{c.sym}</span> : null}
+                <span className="lt-ago">{Math.max(0, Math.round((Date.now() - c.at) / 1000)) < 60 ? `${Math.max(0, Math.round((Date.now() - c.at) / 1000))}s` : `${Math.round((Date.now() - c.at) / 60000)}m`}</span>
+              </div>
+              <div className="lt-text">{c.text}</div>
+              {!paused && i === cards.length - 1 ? <i className="lt-timer" style={{ animationDuration: `${SHOW_MS}ms` }} key={c.id} /> : null}
+            </>
+          );
+          const cls = `lt-card ${i === cards.length - 1 ? "new" : ""}`;
+          return c.href ? (
+            <Link key={c.id} href={c.href} className={cls} style={{ opacity: 0.55 + (i + 1) / (cards.length * 2.2) }}>{body}</Link>
+          ) : (
+            <div key={c.id} className={cls} style={{ opacity: 0.55 + (i + 1) / (cards.length * 2.2) }}>{body}</div>
+          );
+        })}
+        {!cards.length && <div className="lt-card"><div className="lt-text">waking the rats…</div></div>}
       </div>
     </aside>
   );

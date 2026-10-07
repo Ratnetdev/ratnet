@@ -13,7 +13,7 @@
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { K, dayKey, redis } from "./redis";
-import { conn, getCurves, safeErr, CurveView, solUsd } from "./solana";
+import { conn, getCurves, safeErr, CurveView, solUsd, RPS } from "./solana";
 import { getMarket } from "./market";
 import { readPools, type PoolRead } from "./pool";
 import { getSettings } from "./settings";
@@ -29,6 +29,7 @@ import { accountOf, notePnl, wireView } from "./wire";
 import { getHistory } from "./historian";
 import { enqueueLens, lensDossier } from "./lens";
 import { mindJudgement } from "./mind";
+import { fastSwap, warm, type ExecCfg } from "./exec";
 import { momoSignal } from "./momo";
 import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
@@ -242,7 +243,7 @@ export const EXAM = { trades: 30, winRate: 40, pnlPct: 10, maxDD: 30, minWallet:
 const FEE = 0.01; // pump.fun fee per side
 const PAPER_SLIP = 0.02; // assumed slippage per side on paper
 const WSOL = "So11111111111111111111111111111111111111112";
-const LOOP_MS = 2000;
+const LOOP_MS = RPS >= 40 ? 1000 : 2000; // positions re-read every second on a paid RPC plan
 const SUPPLY = 1e9; // pump.fun tokens have a fixed 1B supply
 
 // ---------------------------------------------------------------- state
@@ -317,45 +318,16 @@ export function deskWalletAddress() {
 const JUP = process.env.JUPITER_API_KEY ? "https://api.jup.ag/swap/v1" : "https://lite-api.jup.ag/swap/v1";
 const jupHeaders = (): Record<string, string> => (process.env.JUPITER_API_KEY ? { "x-api-key": process.env.JUPITER_API_KEY } : {});
 
+let EXEC_CFG: ExecCfg = {};
+/** Live swap: the fast path in lib/exec.ts (own tx, Helius priority fee, Jito tip, Sender), Jupiter's tx as fallback. */
 async function swap(kp: Keypair, inputMint: string, outputMint: string, amountRaw: bigint, slippageBps: number) {
-  const q = await fetch(`${JUP}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}&restrictIntermediateTokens=true`, {
-    headers: jupHeaders(),
-    cache: "no-store",
-  });
-  if (!q.ok) throw new Error(`no route (${q.status})`);
-  const quote = await q.json();
-  if (!quote?.outAmount) throw new Error("no route");
-  const s = await fetch(`${JUP}/swap`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...jupHeaders() },
-    body: JSON.stringify({
-      quoteResponse: quote,
-      userPublicKey: kp.publicKey.toBase58(),
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true,
-      prioritizationFeeLamports: { priorityLevelWithMaxLamports: { maxLamports: 3_000_000, priorityLevel: "veryHigh" } },
-    }),
-    cache: "no-store",
-  });
-  if (!s.ok) throw new Error(`swap build failed (${s.status})`);
-  const { swapTransaction } = await s.json();
-  const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
-  tx.sign([kp]);
-  const raw = tx.serialize();
-  const c = conn();
-  const sig = await c.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 });
-  // rebroadcast every 1.5s until confirmed or 25s pass
-  const t0 = Date.now();
-  while (Date.now() - t0 < 25_000) {
-    const st = await c.getSignatureStatuses([sig]);
-    const v = st.value[0];
-    if (v?.err) throw new Error(`tx failed ${sig.slice(0, 8)}`);
-    if (v?.confirmationStatus === "confirmed" || v?.confirmationStatus === "finalized") return { sig, outRaw: BigInt(quote.outAmount) };
-    await c.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => {});
-    await new Promise((res) => setTimeout(res, 1500));
-  }
-  throw new Error(`not confirmed ${sig.slice(0, 8)}`);
+  const res = await fastSwap(kp, inputMint, outputMint, amountRaw, slippageBps, EXEC_CFG);
+  LAST_EXEC = { ms: res.ms, landedMs: res.landedMs, path: res.path, tipSol: res.tipSol, at: Date.now() };
+  await redis().lpush("rn:exec:log", LAST_EXEC).catch(() => {});
+  await redis().ltrim("rn:exec:log", 0, 99).catch(() => {});
+  return res;
 }
+let LAST_EXEC: { ms: number; landedMs: number; path: string; tipSol: number; at: number } | null = null;
 
 async function tokenBalanceRaw(owner: PublicKey, mint: string): Promise<bigint> {
   const res = await conn().getParsedTokenAccountsByOwner(owner, { mint: new PublicKey(mint) });
@@ -605,6 +577,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await r.set(K.deskLearn, learnS); // saved right away so the page never shows stale gates
     let learnDirty = false;
     const kp = wallet();
+    EXEC_CFG = { fastExec: (cfg as any).fastExec !== false, maxPriorityLamports: (cfg as any).maxPriorityLamports, jitoTipMinSol: (cfg as any).jitoTipMinSol, jitoTipMaxSol: (cfg as any).jitoTipMaxSol };
+    if (kp && state.live) await warm().catch(() => {});
     let lastBeat = 0;
     let sol = (await solUsd()) || 0;
     let runModel: NanoModel = await loadRunner();
@@ -624,10 +598,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const now = Date.now();
       try {
       // the dig runs next to the desk, never in front of it: positions keep their 2s beat while the rats dig
-      if (onBeat && !digging && now - lastBeat > 10_000) {
+      // the rats dig every 5s on a paid RPC plan (40+ calls a second), every 10s on the free one
+      if (onBeat && !digging && now - lastBeat > (RPS >= 40 ? 5_000 : 10_000)) {
         lastBeat = now;
         digging = onBeat().catch(() => null).finally(() => (digging = null));
       }
+      if (kp && state.live) warm().catch(() => {}); // a fresh blockhash is always ready for the next trade
       const posMap = (await r.hgetall<Record<string, Pos>>(K.deskPos)) || {};
       const positions = Object.values(posMap);
       // signals older than 3 minutes are stale by the desk's own rule: drop them quietly, newest calls first
@@ -974,7 +950,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
         // FLOW: live pressure on the curve over a few seconds plus the last hour of trades
         const before = q.real;
-        await new Promise((res) => setTimeout(res, 3000));
+        // FLOW watches the curve for a moment. Tweet coins get no wait: there, seconds are the edge
+        await new Promise((res) => setTimeout(res, wireSig ? 0 : (cfg as any).flowWaitMs ?? 1500));
         const again = (await getCurves([m]))[m];
         const delta = again && before ? pct(again.realSol, before) : 0;
         const mk = (await getMarket([m]).catch(() => ({} as any)))[m];
@@ -1221,7 +1198,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
-  log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? "" : " (paper)"}`, "ok", coin);
+  log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
   return {
     mint: rec.mint,
     symbol: rec.symbol,

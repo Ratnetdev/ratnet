@@ -295,7 +295,7 @@ async function digInner(): Promise<Record<string, unknown>> {
     return { ok: false, error: safeErr(e) };
   } finally {
     // Hold the lock a few seconds after each run so many open pages can't hammer the RPC.
-    await r.set(K.digLock, Date.now(), { ex: 5 });
+    await r.set(K.digLock, Date.now(), { ex: process.env.RATNET_WORKER ? 1 : 5 });
   }
 }
 

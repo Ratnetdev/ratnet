@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ago } from "./fmt";
 import { TradeIcons } from "./venues";
 import Info from "./Info";
+import CoinImg from "./CoinImg";
 
 export type Verdict = "BOND" | "WATCH" | "DUST";
 export type Call = {
@@ -53,7 +54,7 @@ export function Mark({ h }: { h: boolean | null }) {
 export function CoinLink({ mint, symbol, trade = true }: { mint: string; symbol: string; trade?: boolean }) {
   return (
     <>
-      <Link href={`/c/${mint}`}>${symbol || "?"}</Link>
+      <Link href={`/c/${mint}`} className="coin-a"><CoinImg mint={mint} sym={symbol} size={16} />${symbol || "?"}</Link>
       {trade ? <TradeIcons ca={mint} /> : null}
     </>
   );

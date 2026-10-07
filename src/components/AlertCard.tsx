@@ -3,6 +3,7 @@ import { Logo, useVenues } from "./venues";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { chg, short, usd } from "./fmt";
+import CoinImg from "./CoinImg";
 
 // A fast, information-dense alert: who called it, how strong, what the tape and the wallets say, and one tap to trade.
 
@@ -175,7 +176,7 @@ export default function AlertCard({ t, term, top, pinned, onClose, onPin, onHove
 
       <div className="ac-body">
         <div className="ac-id">
-          <div className="ac-img">{l?.image ? <img src={l.image} alt="" loading="lazy" /> : <span>{t.symbol.slice(0, 2)}</span>}</div>
+          <div className="ac-img"><CoinImg mint={t.mint} sym={t.symbol} size={48} /></div>
           <div style={{ minWidth: 0 }}>
             <Link href={`/c/${t.mint}`} className="ac-sym">${t.symbol}</Link>
             <div className="ac-name">{(l?.name || "").slice(0, 26)}</div>

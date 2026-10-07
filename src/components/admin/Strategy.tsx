@@ -11,6 +11,7 @@ type S = {
   exam: Record<string, number>;
   rules: Record<string, number>;
   priors: Prior[];
+  speed: { worker: boolean; rps: number; avgMs: number | null; fast: number; exec: { ms: number; landedMs: number; path: string; tipSol: number; at: number }[] };
   picker: { n: number; right: number; weights: { key: string; label: string; w: number; prior: number }[] };
   profiles: Record<string, { n: number; medPk: number; medTtp: number; initials: number | null; timeStop: number | null }>;
   learned: { trailBy: Record<string, number>; trailK: number; reviews: number; early: number; late: number; good: number; stalkOn: boolean; stalkArm: number; earlyOn: boolean; earlyStat: { n: number; hit: number; mainN: number; mainHit: number }; arms: { arm: number; n: number; fills: number; mean: number | null }[]; shadows: number; reviewing: number };
@@ -101,6 +102,14 @@ export default function Strategy() {
               <tbody>{Object.entries(s.profiles).map(([k, p]) => <tr key={k}><td>{k}</td><td className="muted">{p.n}</td><td>{p.medPk}x</td><td className="muted">{p.medTtp}m</td><td className="green">{p.initials != null ? `+${p.initials}%` : "default"}</td><td className="green">{p.timeStop != null ? `${p.timeStop}m` : "default"}</td><td>{(s.learned.trailBy[k] ?? s.learned.trailK).toFixed(2)}x</td></tr>)}</tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ph"><span><b>speed</b></span></div>
+        <div className="pb small">
+          <div>always-on worker: <b style={{ color: s.speed.worker ? "var(--rat)" : "var(--watch)" }}>{s.speed.worker ? "running (no gaps, launches pushed by PumpPortal)" : "off (minute ping only)"}</b> · RPC {s.speed.rps}/s{s.speed.rps >= 40 ? " (desk re-reads every 1s, rats dig every 5s)" : " (free plan: desk every 2s, rats every 10s)"}</div>
+          <div>live trades: {s.speed.exec.length ? `last ${s.speed.exec.length} landed in ${((s.speed.avgMs || 0) / 1000).toFixed(1)}s on average, ${s.speed.fast} through the fast path (Sender + Jito tip)` : "none yet (paper trades fill instantly)"}</div>
         </div>
       </div>
 

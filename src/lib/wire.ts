@@ -222,7 +222,7 @@ export function noteMatch(p: { zadd: Function; expire: Function; set: Function; 
 export async function dueTweets() {
   const r = redis();
   const now = Date.now();
-  const ids = ((await r.zrange<string[]>(OPEN, 0, now - 30_000, { byScore: true, offset: 0, count: 10 })) || []).map(String);
+  const ids = ((await r.zrange<string[]>(OPEN, 0, now - 20_000, { byScore: true, offset: 0, count: 10 })) || []).map(String);
   const out: { tid: string; mints: { mint: string; score: number }[]; age: number }[] = [];
   for (const tid of ids) {
     if (await r.exists(PICKED(tid))) {

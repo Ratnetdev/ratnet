@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.13 · Speed
+- Fast execution: every live trade builds its own transaction from Jupiter's swap instructions (fetched in parallel with a blockhash that is always pre-loaded), with a live priority fee from Helius (capped at 0.003 SOL), a small Jito tip (0.4% of the trade, 0.0003 to 0.002 SOL), sent through Helius Sender and the RPC at the same time, rebroadcast every 0.7s, confirmation checked every 0.4s. Any problem with the fast path falls back to Jupiter's own transaction. Each trade logs how long it took to land. Settings in the desk JSON: fastExec, maxPriorityLamports, jitoTipMinSol, jitoTipMaxSol.
+- Faster loop on a paid RPC plan (RPC_RPS 40+): positions re-read every 1s (was 2s), the rats dig every 5s (was 10s).
+- FLOW waits 1.5s before a King buy (was 3s), tweet coins no wait. WIRE picks the leader among a post's copies after 20s (was 30s).
+- Always-on worker (worker/index.ts, `npm run worker`): runs the whole protocol back to back with no gaps between minute pings, and digs a new launch the moment PumpPortal announces it. Deploy on Railway from the same repo with the same env vars. The Vercel minute ping steps aside while the worker's heartbeat is fresh and takes over again if it stops.
+- Admin Strategy tab: speed panel (worker on or off, RPC plan, how fast live trades land).
+- Live updates on every page (bottom right, replaces the one-line rat cam pill): a stack of the 3 latest moments as cards (new launches, King calls, graduations, desk buys and sells, MOMO, MIND, WIRE), one new card every 2.6s so every line can be read. When it gets busy the least important updates are dropped, never sped up. Hover pauses it ("paused · N waiting"); click a card to open the coin; "cam" opens the full rat cam, × folds it into a dot with a counter. One card on mobile, above the tab bar.
+- Coin logos everywhere, including brand-new pairs: live update cards, calls, radar, graduations, coin pages, alerts, desk positions and trades, MOMO, MIND, HOUND, LENS, runners, hall of fame, sniff and the feed. New route /api/img/[mint] finds the image (dig record, the launch metadata, pump.fun, DexScreener), asks 5 IPFS gateways at once (pump.fun's own first) and caches the winner on the CDN for a week. No image yet: a ticker badge, retried every 2 minutes.
+- Trade button logos (GMGN, Axiom, FOMO, pump.fun, DexScreener) race Google, DuckDuckGo and the site's own favicon, with a letter badge if all fail. Never a blank button.
+- MIND reads coin images through pump.fun's gateway and retries on text alone if the image can't be fetched.
+- Tests: sim/exectest.ts.
+
+
 ## v0.1.12 · MOMO
 - MOMO (22nd agent): the runners after migration. Every minute it reads GeckoTerminal's trending Solana pools (5m and 1h) and PumpSwap's busiest pools, and sends the desk the pump.fun coins with real traction right now: $25K+ volume in 5 minutes, $100K+ in the hour, 40+ different buyers, more buyers than sellers, $20K+ liquidity, under 24 hours old, not falling and not already +60% in 5 minutes. Live table on /desk with why each coin is or is not taken.
 - The desk buys MOMO coins in their own sleeve (3 slots, PM sizing by record) after its own checks: holder spread (top 10 under 35%, pool excluded), wash trading, 40+ SOL in the pool. Starting exits are tighter (initials at +40%, stop -20%, out after 40 minutes without initials) until MOMO's own record sets them. MIND judges every MOMO coin too. All lines are in the desk JSON (momo*), every skip is followed by FILM.

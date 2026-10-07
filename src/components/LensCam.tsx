@@ -6,6 +6,7 @@ import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { ago } from "./fmt";
 import { lensCol } from "./Scorecard";
+import CoinImg from "./CoinImg";
 
 type Step = { k: string; label: string; st: "wait" | "run" | "ok" | "bad" | "skip"; note?: string };
 type Live = { mint: string; symbol: string; image?: string; at: number; why: string; url: string; tab: string; title: string; text: string; steps: Step[]; score?: number; done: boolean };
@@ -39,7 +40,7 @@ function Browser({ l }: { l: Live }) {
       <div className="lc-url">
         <span className={`lc-dot ${l.done ? "done" : stale ? "" : "run"}`} />
         <span className="lc-addr">{l.url || "about:blank"}</span>
-        <Link href={`/c/${l.mint}`} className="lc-coin">${l.symbol}</Link>
+        <Link href={`/c/${l.mint}`} className="lc-coin"><CoinImg mint={l.mint} sym={l.symbol} size={14} />${l.symbol}</Link>
       </div>
       <div className="lc-body">
         <div className="lc-page">
@@ -77,7 +78,7 @@ export default function LensCam() {
           {v.recent.slice(0, 8).map((r) => (
             <Link key={`${r.mint}${r.at}`} href={`/c/${r.mint}`} className="lc-row">
               <b style={{ color: lensCol(r.score) }}>{r.score}</b>
-              <span className="lc-sym">${r.symbol}</span>
+              <span className="lc-sym"><CoinImg mint={r.mint} sym={r.symbol} size={14} />${r.symbol}</span>
               <span className="lc-tag">{WHY[r.why] || r.why}</span>
               <span className="lc-note">{r.flags[0] ? <span className="red">- {r.flags[0]}</span> : r.good[0] ? <span className="green">+ {r.good[0]}</span> : null}</span>
               <span className="muted tiny">{ago(r.at)}</span>

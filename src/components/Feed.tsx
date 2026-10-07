@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { clock } from "./fmt";
+import CoinImg from "./CoinImg";
 
 export type FeedItem = { kind: string; rat: string; mint: string; symbol: string; name: string; at: number; text: string };
 
@@ -21,7 +22,7 @@ export default function Feed({ items, max = 40 }: { items: FeedItem[]; max?: num
             {f.kind === "dig" && f.mint ? "dug " : f.kind === "call" ? "calls " : f.kind === "resolve" ? "" : ""}
             {f.symbol && (
               <Link href={`/c/${f.mint}`}>
-                <b>${f.symbol}</b>
+                <CoinImg mint={f.mint} sym={f.symbol} size={14} /><b>${f.symbol}</b>
               </Link>
             )}{" "}
             {f.text}

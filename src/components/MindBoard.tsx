@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { ago } from "./fmt";
+import CoinImg from "./CoinImg";
 
 type H = { k: string; n: number; avg: number | null; up: number | null; x2: number };
 type Rec = { verdict: string; n: number; h: H[] };
@@ -14,7 +15,6 @@ export type Judgement = { verdict: string; conviction: number; thesis: string; r
 
 const WHY: Record<string, string> = { momo: "MOMO runner", wallets: "tracked wallets buying", kol: "a KOL posted it", wire: "tweet coin", bond: "BOND call", bonded: "just migrated", pulse: "rising narrative", lens: "LENS look" };
 export const VCOL: Record<string, string> = { SEND: "var(--rat)", WATCH: "var(--watch)", PASS: "var(--mute)" };
-const img = (u?: string) => (u || "").replace(/^ipfs:\/\//, "https://ipfs.io/ipfs/");
 const usdK = (n: number | null) => (n == null ? "" : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(1)}K` : `$${n}`);
 const pc = (n: number | null) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n}%`);
 
@@ -57,7 +57,7 @@ export default function MindBoard() {
           {l ? (
             <div className={`ml ${l.stage}`}>
               <div className="ml-head">
-                {l.image ? <img src={img(l.image)} alt="" width={44} height={44} /> : <span className="ml-ph" />}
+                <CoinImg mint={l.mint} sym={l.symbol} size={44} />
                 <div>
                   <Link href={`/c/${l.mint}`}><b>${l.symbol}</b></Link> <span className="muted small">{l.name}</span>
                   <div className="tiny mute2">{WHY[l.why] || l.why} · {ago(l.at)} ago</div>
@@ -96,7 +96,7 @@ export default function MindBoard() {
           {(v?.recent || []).slice(0, 7).map((x) => (
             <Link key={x.mint + x.at} href={`/c/${x.mint}`} className="mind-row">
               <b style={{ color: VCOL[x.verdict] }}>{x.verdict} {x.conviction}</b>
-              <span className="mind-sym">${x.symbol}</span>
+              <span className="mind-sym"><CoinImg mint={x.mint} sym={x.symbol} size={14} />${x.symbol}</span>
               <span className="mind-th">{x.thesis}</span>
               <span className="tiny muted">{ago(x.at)}</span>
             </Link>

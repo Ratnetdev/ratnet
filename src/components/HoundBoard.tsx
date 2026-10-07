@@ -5,6 +5,7 @@ import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { ago } from "./fmt";
 import { fullUrl, useAdmin } from "./useAdmin";
+import CoinImg from "./CoinImg";
 
 type Buy = { id: string; w: string; name: string; cls: string; conf: string; mint: string; symbol: string; sol: number; at: number; sig: string; side: string };
 type H = { n: number; avg: number | null; x2: number };
@@ -32,7 +33,7 @@ export default function HoundBoard() {
                 <tr key={b.id}>
                   <td className="muted">{ago(b.at)}</td>
                   <td><span style={{ color: CLS_COL[b.cls] }}>{b.name}</span>{b.conf !== "confirmed" ? <span className="tiny mute2"> unconfirmed</span> : null}</td>
-                  <td><Link href={`/c/${b.mint}`}>{b.symbol ? `$${b.symbol}` : `${b.mint.slice(0, 4)}…`}</Link></td>
+                  <td><Link href={`/c/${b.mint}`} className="coin-a"><CoinImg mint={b.mint} sym={b.symbol} size={16} />{b.symbol ? `$${b.symbol}` : `${b.mint.slice(0, 4)}…`}</Link></td>
                   <td>{b.sol ? b.sol.toFixed(2) : "–"}</td>
                 </tr>
               ))}

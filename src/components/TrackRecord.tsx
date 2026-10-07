@@ -7,6 +7,7 @@ import { ago, usd } from "./fmt";
 import TripDetail, { Trip, col, dur, moveOf, sgn } from "./TripDetail";
 import { fullUrl, useAdmin } from "./useAdmin";
 import { TradeIcons } from "./venues";
+import CoinImg from "./CoinImg";
 
 type Rec = {
   live: boolean;
@@ -24,7 +25,7 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
       <tr className={`trip click ${open ? "on" : ""}`} onClick={() => setOpen(!open)}>
         <td>
           <span className="trip-caret">{open ? "▾" : "▸"}</span>
-          <Link href={`/c/${t.mint}`} onClick={(e) => e.stopPropagation()}>${t.symbol}</Link>
+          <Link href={`/c/${t.mint}`} onClick={(e) => e.stopPropagation()} className="coin-a"><CoinImg mint={t.mint} sym={t.symbol} size={16} />${t.symbol}</Link>
           {full ? <TradeIcons ca={t.mint} /> : null}
           {t.open ? <span className="trip-tag open">open</span> : null}
           {t.how === "wire" ? <span className="trip-tag">tweet</span> : t.how === "early" ? <span className="trip-tag">1m</span> : null}

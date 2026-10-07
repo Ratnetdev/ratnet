@@ -124,6 +124,12 @@ export const DEFAULT_SETTINGS = {
     mindMin: 75, // conviction MIND needs before a SEND goes to the desk
     mindMaxOpen: 2, // MIND positions open at once
     mindMinPoolSol: 20, // migrated coins: SOL in the pool needed before MIND may buy
+    // EXEC speed: own transaction with a live priority fee and a Jito tip, sent through Helius Sender and the RPC
+    fastExec: true,
+    maxPriorityLamports: 3_000_000, // cap on the priority fee per trade (0.003 SOL)
+    jitoTipMinSol: 0.0003,
+    jitoTipMaxSol: 0.002, // tip = 0.4% of the trade, between these two
+    flowWaitMs: 1500, // FLOW watches the curve this long before a King buy (tweet coins: no wait)
     ghostSol: 0.1, // ghost desk: fixed size per trade (not counted anywhere, only learned from)
     slippageBps: 1500,
   },
