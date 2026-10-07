@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.16 · Exit lab
+- EXIT LAB: exits are learned per strategy and per market-cap tier (micro under $100K, small to $1M, large $1M+) from every trade's whole path. Every closed trade, real and ghost, leaves its price path from the buy until 2 hours after it (COACH keeps watching after the sale). Every ~10 minutes the lab replays the last 40 paths of each bucket under a grid of 500 exit settings (stop, time stop, initials, trail) and moves halfway toward the best one, once a bucket has 12 paths. Shown in admin Strategy with the replayed result vs before. Nobody sets these numbers by hand.
+- Fixed two flaws that gave a $3M coin an 8-minute time stop: one exit profile per strategy for every market cap (now per tier), and a feedback loop where profiles only saw the price while holding (a short time stop made every peak look early, which shortened the stop further). Profiles are now per tier, and the lab judges exits on the whole move, including after the sale.
+- COACH now also learns from stop-loss and time-stop exits (through the lab), not only from trailing stops.
+
 ## v0.1.15 · Real time
 - Live market caps: every page streams pump.fun trades (curve and PumpSwap) for the coins on screen straight from PumpPortal's public websocket. Open positions, the radar, open trades in the track record and the coin page move with every trade (green on a buy, red on a sell, a live dot). One shared connection per tab, subscriptions follow what is on screen.
 - Worker: one PumpPortal connection for launches, migrations and live trades on every open position, the 40 hottest curves and fresh migrations. A 20-second live tape per coin lands in Redis (rn:rt) every 2 seconds, and a buying burst (10+ buys from 6+ wallets, 4+ SOL net in 20s) wakes CATCH at once instead of at its next 12-second pass. CATCH's starting score reads the live tape (+10 on a burst, -8 when sellers dominate).

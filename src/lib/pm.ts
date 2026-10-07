@@ -115,7 +115,7 @@ const med = (a: number[]) => {
   return s[Math.floor(s.length / 2)];
 };
 
-export async function noteExit(sl: Sleeve, peakMult: number, ttpMin: number) {
+export async function noteExit(sl: string, peakMult: number, ttpMin: number) {
   const r = redis();
   const cur = ((await r.hget<Prof>(PX, sl)) || { pk: [], ttp: [] }) as Prof;
   cur.pk = [...cur.pk, Math.round(Math.max(0.01, peakMult) * 100) / 100].slice(-30);

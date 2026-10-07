@@ -10,6 +10,7 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { labBest, labStep, notePath, tierOf, type ExitSet, type LabBest, type Tier } from "./exitlab";
 import { catchSignal } from "./catcher";
 import { acquire, release, renew } from "./lock";
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
@@ -82,6 +83,7 @@ export type Pos = {
   how?: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch";
   wire?: { h: string; tid: string; text: string; vamp?: boolean } | null; // the post a tweet coin was born from
   peakAt?: number; // when the price peaked while held (exit profiles)
+  tier?: Tier; // market cap tier at entry (exit lab buckets)
   msHi?: number; // highest milestone the ladder has acted on
   pn?: number; // P(next milestone) at the last check
   noPxSince?: number; // first beat with no price (curve complete, not migrated yet)
@@ -239,7 +241,7 @@ function emptyLearn(): Learn {
 
 type ArmTrack = { hi: number; lo: number; armed: boolean; fill: number | null };
 type Shadow = { k: string; mint: string; symbol: string; at: number; px0: number; hi: number; lo: number; last: number; early: boolean; arms: Record<string, ArmTrack>; tag?: "floor" | "socials" | "traction" };
-type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string };
+type After = { mint: string; symbol: string; at: number; exitPx: number; peakHeld: number; reason: string; hi: number; lo: number; tunable: boolean; sl?: string; entryPx?: number; openedAt?: number; tier?: Tier; pts?: [number, number][]; reviewed?: boolean };
 type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean };
 
 // the desk lock lives this long past its last renewal (one pass, including a swap waiting for confirmation)
@@ -430,6 +432,29 @@ export async function priceOf(mints: string[]) {
   return px;
 }
 
+/** The held part of a position's path for the EXIT LAB: [minutes since entry, price / entry], ~30s apart. */
+function heldPath(p: Pos, now: number, exitPx: number): Partial<After> {
+  const pts: [number, number][] = [];
+  let lastT = -1;
+  for (const [t, px] of p.series || []) {
+    const m = (t - p.openedAt) / 60_000;
+    if (m - lastT >= 0.5) {
+      pts.push([Math.round(m * 100) / 100, Math.round((px / p.entryPx) * 10000) / 10000]);
+      lastT = m;
+    }
+  }
+  pts.push([Math.round(((now - p.openedAt) / 60_000) * 100) / 100, Math.round((exitPx / p.entryPx) * 10000) / 10000]);
+  return { entryPx: p.entryPx, openedAt: p.openedAt, tier: p.tier || "micro", pts };
+}
+
+/** Where the EXIT LAB starts a bucket before it has learned anything: the desk's own starting exits for that sleeve. */
+function labDefault(cfg: Cfg, sl: string, _tier: Tier): ExitSet {
+  const c: any = cfg;
+  if (sl === "momo") return { stop: c.momoSl ?? -20, time: c.momoTimeStop ?? 40, initials: c.momoInitials ?? 40, trailK: 0.6 };
+  if (sl === "catch") return { stop: c.catchSl ?? -18, time: c.catchTimeStop ?? 30, initials: c.catchInitials ?? 60, trailK: 0.8 };
+  return { stop: cfg.sl, time: cfg.timeStop, initials: cfg.initialsAt, trailK: 1 };
+}
+
 /** Trailing stop width for a coin up `mult` times, before COACH and the runner model scale it. */
 function trailFor(trail: number[], mult: number) {
   return mult < 3 ? trail[0] : mult < 10 ? trail[1] : mult < 30 ? trail[2] : trail[3];
@@ -590,6 +615,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let sol = (await solUsd()) || 0;
     let runModel: NanoModel = await loadRunner();
     let prof: Record<string, ExitProfile> = await exitProfiles(cfg.initialsAt, cfg.timeStop).catch(() => ({}));
+    let lab: Record<string, LabBest> = await labBest().catch(() => ({}));
     let emp: Record<string, number> = (await r.hgetall<Record<string, number>>(RK.emp)) || {};
     let runs: Record<string, Run | null> = {};
     let lastRunsAt = 0;
@@ -660,6 +686,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         if (loops % 30 === 1) {
           runModel = await loadRunner();
           prof = await exitProfiles(cfg.initialsAt, cfg.timeStop).catch(() => prof);
+          lab = await labBest().catch(() => lab);
           emp = (await r.hgetall<Record<string, number>>(RK.emp)) || {};
         }
       }
@@ -693,15 +720,19 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const rs = (recent[p.mint] ||= []);
         // this strategy's own exit profile (initials, time stop) and COACH's trail scale for it
         const sl = sleeveOf(p.how, p.wire?.vamp);
-        const pf = prof[sl];
+        if (!p.tier && sol) p.tier = tierOf(q.px * SUPPLY * sol);
+        // exits learned by the EXIT LAB for this strategy at this market-cap tier win over everything else; until a
+        // bucket has its 12 paths, the sleeve's profile (micro coins only: it was learned on them) and the defaults
+        const lb = lab[`${sl}:${p.tier || "micro"}`];
+        const pf = p.tier && p.tier !== "micro" ? prof[`${sl}:${p.tier}`] : prof[`${sl}:micro`] || prof[sl];
         // MOMO coins move fast both ways: tighter starting exits until their own record says otherwise
         const mo = sl === "momo";
         const ca = sl === "catch"; // CATCH: senders get room to run, but a fake start is cut fast
         const c2: any = cfg;
-        const initialsAt = pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 60 : cfg.initialsAt);
-        const timeStop = pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : cfg.timeStop);
-        const stopAt = mo ? c2.momoSl ?? -20 : ca ? c2.catchSl ?? -18 : cfg.sl;
-        const trailK = learnS.trailBy?.[sl] ?? (mo ? 0.6 : ca ? 0.8 : learnS.trailK);
+        const initialsAt = lb?.initials ?? pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 60 : cfg.initialsAt);
+        const timeStop = lb?.time ?? pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : cfg.timeStop);
+        const stopAt = lb?.stop ?? (mo ? c2.momoSl ?? -20 : ca ? c2.catchSl ?? -18 : cfg.sl);
+        const trailK = lb ? lb.trailK * (learnS.trailBy?.[sl] ?? 1) : learnS.trailBy?.[sl] ?? (mo ? 0.6 : ca ? 0.8 : learnS.trailK);
         rs.push([now, q.px, q.real]);
         while (rs.length && now - rs[0][0] > 60_000) rs.shift();
         const lastS = p.series[p.series.length - 1];
@@ -804,7 +835,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             }
             if (ok && p.tokens <= 0) {
               // COACH follows the coin after we leave it
-              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
+              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px) } satisfies After });
             }
           }
           if (p.tokens > 0) await r.hset(K.deskPos, { [p.mint]: p });
@@ -846,7 +877,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               learnDirty = true;
             }
             // COACH reviews ghost exits like real ones (trail too tight or too loose)
-            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp) } satisfies After });
+            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px) } satisfies After });
           }
           if (p.tokens > 0) await r.hset(GHOST_POS, { [p.mint]: p });
           else await r.hdel(GHOST_POS, p.mint);
@@ -1076,11 +1107,29 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           if (q) {
             a.hi = Math.max(a.hi, q.px);
             a.lo = Math.min(a.lo, q.px);
+            // EXIT LAB: keep drawing the coin's path after we left, so exits are judged on the whole move
+            if (a.pts && a.entryPx && a.openedAt) {
+              const t = (now - a.openedAt) / 60_000;
+              const lastT = a.pts.length ? a.pts[a.pts.length - 1][0] : -1;
+              if (t - lastT >= 0.5) a.pts.push([Math.round(t * 100) / 100, Math.round((q.px / a.entryPx) * 10000) / 10000]);
+            }
           }
-          if (reviewExit(learnS, a, b)) {
+          if (!a.reviewed && reviewExit(learnS, a, b)) {
             learnDirty = true;
+            a.reviewed = true;
+          }
+          // done when COACH has its verdict and the path covers 2 hours from the buy (or the coin went dark)
+          const pathDone = !a.openedAt || now - a.openedAt >= 120 * 60_000 || now - a.at > LEARN_RULES.coachHours * 3600_000 || !q;
+          if (a.reviewed && pathDone) {
+            if (a.pts && a.tier && a.sl) await notePath({ at: a.openedAt || a.at, tier: a.tier, sl: a.sl, pts: a.pts }).catch(() => {});
             await r.hdel(K.deskAfter, ak);
           } else await r.hset(K.deskAfter, { [ak]: a });
+        }
+        // EXIT LAB re-learns every bucket with enough paths (every ~10 minutes)
+        const learned = await labStep((sl2, tier) => labDefault(cfg, sl2, tier)).catch(() => []);
+        for (const x of learned) {
+          lab[x.key] = x.best;
+          log(b, "COACH", `exit lab ${x.key.replace(":", " · ")}: stop ${x.best.stop}%, time stop ${Math.round(x.best.time)}m, initials +${Math.round(x.best.initials)}%, trail ${x.best.trailK.toFixed(2)}x · replayed on ${x.best.n} paths: ${x.best.avg >= 0 ? "+" : ""}${x.best.avg}% avg vs ${x.best.base >= 0 ? "+" : ""}${x.best.base}% before`, "info");
         }
         // FILM reviews every skip at 30m, 2h, 24h
         for (const e of await filmStep().catch(() => [])) log(b, "FILM", e.text, e.tone as Tone, { mint: e.mint, symbol: e.symbol });
@@ -1497,7 +1546,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     // COACH keeps watching the coin after we leave it: 5m, 15m, 1h, 2h, 6h, 1d, 7d
     await follow({ id: tripId(p.mint, p.openedAt), mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: Date.now(), entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
     log(b, "COACH", `following $${p.symbol} after the exit: checks at 5m, 15m, 1h, 2h, 6h, 1d and 7d, and what moved it`, "info", coin);
-    await noteExit(sleeveOf(p.how, p.wire?.vamp), Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
+    await noteExit(`${sleeveOf(p.how, p.wire?.vamp)}:${p.tier || "micro"}`, Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
     const pmNote = await pmClose(sleeveOf(p.how, p.wire?.vamp), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
     if (pmNote) log(b, "PM", pmNote, "info");
     if (p.wire?.h) await notePnl(p.wire.h, p.soldSol - p.costSol).catch(() => {});
@@ -1558,7 +1607,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   await redis().ltrim(GHOST_TRIPS, 0, 999);
   // COACH follows ghost exits too (5m to 7d), and PM hears how a paused strategy would have done
   await follow({ id: `g:${tripId(p.mint, p.openedAt)}`, mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: now, entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
-  await noteExit(sleeveOf(p.how, p.wire?.vamp), Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
+  await noteExit(`${sleeveOf(p.how, p.wire?.vamp)}:${p.tier || "micro"}`, Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
   const note = await pmGhost(sleeveOf(p.how, p.wire?.vamp), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
   if (note) log(b, "PM", note, "win");
   const total = p.soldSol - p.costSol;

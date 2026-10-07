@@ -8,6 +8,7 @@ import { Callers, KingV1, LessonBook } from "./MindAdmin";
 type Prior = { key: string; on: boolean; what: string; n: number; need: number; skippedAvg?: number | null; boughtAvg?: number | null; saved?: number };
 type S = {
   cfg: Record<string, any>;
+  exitLab?: Lab | null;
   exam: Record<string, number>;
   rules: Record<string, number>;
   priors: Prior[];
@@ -64,6 +65,38 @@ const CFG: [string, string, (c: any) => string][] = [
 const pc = (n: number | null | undefined) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n}%`);
 const c = (n: number | null | undefined) => ((n ?? 0) > 0 ? "var(--rat)" : (n ?? 0) < 0 ? "var(--dust)" : "var(--dim)");
 
+type Lab = { best: Record<string, { stop: number; time: number; initials: number; trailK: number; n: number; avg: number; base: number; at: number }>; counts: Record<string, number>; minN: number };
+
+/** EXIT LAB: exits learned per strategy and market-cap tier by replaying every trade's whole path. */
+function ExitLab({ lab }: { lab: Lab | null | undefined }) {
+  if (!lab) return null;
+  const keys = Object.keys(lab.counts).filter((k) => lab.counts[k] > 0 || lab.best[k]);
+  return (
+    <section className="panel">
+      <div className="ph"><span><b>Exit lab</b> · exits learned per strategy and market-cap tier (micro &lt;$100K, small to $1M, large $1M+) by replaying every trade&apos;s whole path, before and after the sale</span></div>
+      <table className="tbl">
+        <thead><tr><th>Bucket</th><th>Paths</th><th>Stop</th><th>Time stop</th><th>Initials</th><th>Trail</th><th>Replayed avg</th><th>Before</th></tr></thead>
+        <tbody>
+          {keys.length ? keys.map((k) => {
+            const b = lab.best[k];
+            return (
+              <tr key={k}>
+                <td>{k.replace(":", " · ")}</td>
+                <td className="muted">{lab.counts[k]}{!b ? ` / ${lab.minN}` : ""}</td>
+                {b ? (<>
+                  <td>{b.stop}%</td><td>{Math.round(b.time)}m</td><td>+{Math.round(b.initials)}%</td><td>{b.trailK.toFixed(2)}x</td>
+                  <td style={{ color: b.avg >= 0 ? "var(--rat)" : "var(--dust)" }}>{b.avg >= 0 ? "+" : ""}{b.avg}%</td>
+                  <td className="muted">{b.base >= 0 ? "+" : ""}{b.base}%</td>
+                </>) : <td colSpan={6} className="muted small">learning: starting exits until {lab.minN} paths</td>}
+              </tr>
+            );
+          }) : <tr><td colSpan={8} className="muted small">No paths yet. Every closed trade (real and ghost) adds one, 2 hours after its buy.</td></tr>}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 export default function Strategy() {
   const { data: s, error } = usePoll<S>("/api/admin/strategy", 15000);
   if (error) return <div className="panel"><div className="pb err">{error}</div></div>;
@@ -71,6 +104,7 @@ export default function Strategy() {
   const wMax = Math.max(0.01, ...s.nano.weights.map((w) => Math.abs(w.w)));
   return (
     <div className="grid" style={{ gap: 16 }}>
+      <ExitLab lab={s.exitLab} />
       <div className="grid g2">
         <LessonBook on={s.mind.on} model={s.mind.model} />
         <div className="grid" style={{ alignContent: "start", gap: 16 }}>

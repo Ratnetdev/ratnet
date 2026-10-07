@@ -11,6 +11,7 @@ import { lessonBook, mindRecord, mindUnlocked } from "@/lib/mind";
 import { llmModel, llmOn } from "@/lib/llm";
 import { pickerView } from "@/lib/picker";
 import { exitProfiles } from "@/lib/pm";
+import { labView } from "@/lib/exitlab";
 import { fail, json } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
@@ -24,11 +25,13 @@ export async function GET() {
     const execLog = ((await (await import("@/lib/redis")).redis().lrange<any>("rn:exec:log", 0, 19)) || []) as any[];
     const worker = Number((await (await import("@/lib/redis")).redis().get("rn:worker:at")) || 0);
     const profiles = await exitProfiles((d.cfg as any).initialsAt, (d.cfg as any).timeStop);
+    const exitLab = await labView().catch(() => null);
     const l: any = d.learn;
     const mean = (x: { n: number; sum: number } | undefined) => (x?.n ? Math.round((Math.exp(x.sum / x.n) - 1) * 1000) / 10 : null);
     const direct = l.arms?.find((a: any) => a.arm === 0);
     return json({
       cfg: d.cfg,
+      exitLab,
       exam: EXAM,
       rules: LEARN_RULES,
       priors: [
