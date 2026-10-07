@@ -154,7 +154,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { coins: TAPE.size, watching: watched.size, firstSeconds: FLW.size, logs: streamSize().logs, quotes: streamSize().quotes, lastMsgSec: quiet, lastTradeSec: streamSize().lastTradeSec ?? "never", feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accounts ${FEED.view().quotes} prices ~${Math.round(FEED.view().perDay / 1000)}K credits/day${FEED.view().error ? ` err ${FEED.view().error}` : ""}` : PP_KEY ? "pumpportal key" : "off" }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", ppKey: PP_KEY ? 1 : 0, lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
   }
   // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};

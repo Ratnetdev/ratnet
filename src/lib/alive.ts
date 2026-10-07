@@ -12,7 +12,7 @@ export const EXPECT: Record<string, number> = {
 const note = (r: any): { ok: boolean; note: string } => {
   if (r == null) return { ok: true, note: "" };
   const err = r?.error || r?.timeout || (typeof r === "object" && Object.values(r).some((v) => v === "error"));
-  const text = JSON.stringify(r).replace(/https?:\/\/\S+/g, "[url]").replace(/api-key=\S+/gi, "").replace(/[{}"]/g, "").slice(0, 120);
+  const text = JSON.stringify(r).replace(/https?:\/\/\S+/g, "[url]").replace(/api-key=\S+/gi, "").replace(/[{}"]/g, "").slice(0, 160);
   // a lane paused by the daily chain budget is working as designed, not failing
   return { ok: !err || /budget/i.test(text), note: text };
 };

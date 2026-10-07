@@ -9,7 +9,7 @@ import { enqueueLens } from "./lens";
 import { redis } from "./redis";
 import { X_SEED } from "@/config/x-accounts";
 import { memo, memoPatch } from "./memo";
-import { X_BUDGET, xAllowed, xCost, xSpend } from "./xcredits";
+import { X_BUDGET, xAllowed, xCost, xSpend, xSpendView } from "./xcredits";
 import { agentLog } from "./agents";
 import { K } from "./redis";
 import { getSettings } from "./settings";
@@ -33,6 +33,9 @@ const SPARK = (tid: string) => `rn:x:sp:${tid}`;
 const FOUND = "rn:x:found"; // candidate handles -> evidence points
 const DIRTY = "rn:x:dirty"; // watchlist changed: rules need a sync
 const RULES = "rn:x:rules"; // last synced rule ids
+const RULE_LIST = "rn:x:rulelist"; // [{ id, tag, value }] of the synced rules (to pause and resume them)
+export const X_PAUSED = "rn:x:paused"; // { hour, min }: rules switched off for the rest of that UTC hour
+const VOL = (h: string) => `rn:x:vol:${h}`; // posts per watched account per UTC hour (from the webhook)
 export const WIRE_Q = (m: string) => `w:${m}`; // desk queue member for a wire signal
 
 export const xOn = () => !!process.env.X_API_KEY;
@@ -317,7 +320,13 @@ export async function syncRules(force = false) {
   await ensureSeed();
   // v0.1.24 changed who gets a paid rule: resync once even if the list did not change
   const lastSync = await r.get<any>("rn:x:synced");
-  if (!force && !(await r.get(DIRTY)) && lastSync?.v === 24) return { synced: false, note: "up to date" };
+  // v0.1.35: also when the hourly budget changed (X_CREDITS_PER_HOUR) and every 6 hours, so the paid list follows
+  // what the accounts really cost
+  const stale = !lastSync || lastSync.v !== 35 || lastSync.budget !== X_BUDGET || Date.now() - Number(lastSync.at || 0) > 6 * 3600_000;
+  if (!force && !(await r.get(DIRTY)) && !stale) return { synced: false, note: "up to date" };
+  // the hourly cap switched the rules off: no new rules until the next hour
+  const pz = await r.get<{ hour: string }>(X_PAUSED);
+  if (!force && pz?.hour === new Date().toISOString().slice(0, 13)) return { synced: false, note: "paused this hour (budget reached)" };
   const A = ((await r.hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>;
   // J7 already watches its feed and pool for free: twitterapi.io only pays for our accounts J7 doesn't cover
   const cov = await j7Covered().catch(() => new Set<string>());
@@ -326,25 +335,57 @@ export async function syncRules(force = false) {
   // every minute: over 100K credits an hour). The rest are still read for free through J7 and tweet links
   const S0 = ((await r.hgetall<Record<string, number>>(ST)) || {}) as Record<string, number>;
   const interval = Math.max(10, Number(process.env.X_RULE_INTERVAL || 60));
-  // rules may use about half the budget: ~13 handles per rule, each rule billed 15 credits per check, plus the posts
-  const maxRules = Math.max(2, Math.floor((X_BUDGET * 0.5) / ((3600 / interval) * 15 + 13 * 3 * 15)));
-  const cap = Math.min(Number(process.env.X_RULE_ACCOUNTS || 1e9), maxRules * 13);
-  const handles = Object.values(A)
+  // v0.1.35: sized on what the accounts really cost. Each rule is billed 15 credits per check (~13 handles per rule)
+  // and every post it returns 15 more. On 7 Oct 104 accounts posted ~2,400 times an hour: ~36K credits an hour in
+  // posts alone, against a 10K budget. The rules may now use ~60% of the budget (the rest is LENS, HOUND, OVERSEER),
+  // priced at each account's measured posts per hour (the last 2 hours), and accounts that post more than 20 times an
+  // hour without ever leading to a pick are left to J7 (free).
+  const hNow = new Date().toISOString().slice(0, 13);
+  const hPrev = new Date(Date.now() - 3600_000).toISOString().slice(0, 13);
+  const [v1, v2] = await Promise.all([r.hgetall<Record<string, number>>(VOL(hNow)), r.hgetall<Record<string, number>>(VOL(hPrev))]);
+  const mins = new Date().getUTCMinutes() + 1;
+  const perHour = (h: string) => {
+    const k = h.toLowerCase();
+    const a = Number(v2?.[k] || 0);
+    const b = Number(v1?.[k] || 0);
+    return v2 ? a * 0.5 + (b * 60) / mins * 0.5 : (b * 60) / mins;
+  };
+  const checkPerAcct = ((3600 / interval) * 15) / 13;
+  const room = X_BUDGET * 0.6;
+  const handles: string[] = [];
+  let spend = 0;
+  const ranked = Object.values(A)
     .filter((a) => a.tier !== "muted" && a.tier !== "j7" && !cov.has(a.h.toLowerCase()))
     .filter((a) => a.tier === "seed" || Number(S0[`${a.h.toLowerCase()}:picks`] || 0) > 0 || Number(S0[`${a.h.toLowerCase()}:sparks`] || 0) >= 2 || (a.f ?? 0) >= 100_000)
-    .sort((a, b) => (b.tier === "seed" ? 1 : 0) - (a.tier === "seed" ? 1 : 0) || weightOf(b, S0) - weightOf(a, S0))
-    .slice(0, cap)
-    .map((a) => a.h);
+    .sort((a, b) => (b.tier === "seed" ? 1 : 0) - (a.tier === "seed" ? 1 : 0) || weightOf(b, S0) - weightOf(a, S0));
+  const capN = Number(process.env.X_RULE_ACCOUNTS || 1e9);
+  let noisy = 0;
+  for (const a of ranked) {
+    if (handles.length >= capN) break;
+    const ph = perHour(a.h);
+    if (ph > 20 && !Number(S0[`${a.h.toLowerCase()}:picks`] || 0)) {
+      noisy++;
+      continue;
+    }
+    const cost = checkPerAcct + Math.max(3, ph) * 15; // an account never measured is priced at 3 posts an hour
+    if (handles.length >= 2 && spend + cost > room) continue;
+    spend += cost;
+    handles.push(a.h);
+  }
+  // reposts carry no new post to make a coin from, and they are billed like posts
+  const filter = (process.env.X_RULE_FILTER ?? "-is:retweet").trim();
   const chunks: string[] = [];
   let cur = "";
+  const room255 = 255 - (filter ? filter.length + 3 : 0); // "(...) -is:retweet"
   for (const h of handles) {
     const part = `from:${h}`;
-    if ((cur ? cur.length + 4 : 0) + part.length > 255) {
+    if ((cur ? cur.length + 4 : 0) + part.length > room255) {
       chunks.push(cur);
       cur = part;
     } else cur = cur ? `${cur} OR ${part}` : part;
   }
   if (cur) chunks.push(cur);
+  if (filter) for (let i = 0; i < chunks.length; i++) chunks[i] = `(${chunks[i]}) ${filter}`;
   const head = { "X-API-Key": process.env.X_API_KEY!, "content-type": "application/json" };
   // how often twitterapi.io checks each rule. Every check is billed (15 credits minimum, more when posts come back), so
   // 25 rules at 20s burned ~200K credits an hour. 60s by default; J7 already covers the big accounts in real time
@@ -359,17 +400,80 @@ export async function syncRules(force = false) {
     if (ok?.status === "success") removed++;
   }
   const ids: string[] = [];
+  const list: { id: string; tag: string; value: string }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const tag = `ratnet-wire-${i}`;
     const res: any = await fetch(`${API}/oapi/tweet_filter/add_rule`, { method: "POST", headers: head, body: JSON.stringify({ tag, value: chunks[i], interval_seconds: interval }) }).then((x) => x.json()).catch(() => null);
     if (!res?.rule_id) continue;
     ids.push(res.rule_id);
+    list.push({ id: String(res.rule_id), tag, value: chunks[i] });
     await fetch(`${API}/oapi/tweet_filter/update_rule`, { method: "POST", headers: head, body: JSON.stringify({ rule_id: res.rule_id, tag, value: chunks[i], interval_seconds: interval, is_effect: 1 }) }).catch(() => null);
   }
   await r.set(RULES, ids);
-  await r.set("rn:x:synced", { at: Date.now(), n: ids.length, accounts: handles.length, interval, removed, found: mine.length, v: 24 });
+  await r.set(RULE_LIST, list);
+  await r.del(X_PAUSED); // fresh rules start switched on
+  await r.set("rn:x:synced", { at: Date.now(), n: ids.length, accounts: handles.length, interval, removed, found: mine.length, budget: X_BUDGET, est: Math.round(spend), noisy, filter, v: 35 });
   await r.del(DIRTY);
-  return { synced: true, rules: ids.length, accounts: handles.length, interval, removed, foundOnAccount: mine.length };
+  return { synced: true, rules: ids.length, accounts: handles.length, interval, removed, foundOnAccount: mine.length, estPerHour: Math.round(spend), noisy };
+}
+
+/** Posts per watched account this hour (the webhook calls this), so the next sync prices each account. */
+export async function noteVolume(tweets: XTweet[]) {
+  if (!tweets.length) return;
+  const r = redis();
+  const k = VOL(new Date().toISOString().slice(0, 13));
+  const by: Record<string, number> = {};
+  for (const t of tweets) by[t.h.toLowerCase()] = (by[t.h.toLowerCase()] || 0) + 1;
+  const p = r.pipeline();
+  for (const [h, n] of Object.entries(by)) p.hincrby(k, h, n);
+  p.expire(k, 3 * 3600);
+  await p.exec().catch(() => null);
+}
+
+/**
+ * The hard cap (v0.1.35). twitterapi.io bills the rules whatever RATNET does, so the hourly budget was only a
+ * wish for them: on 7 Oct the budget said 10K an hour and the account spent ~45K. When this hour's spend reaches the
+ * budget, every rule is switched off (is_effect 0) until the next UTC hour; J7 keeps the feed going for free.
+ */
+export async function xGuard() {
+  if (!xOn()) return { guard: "no key" };
+  const r = redis();
+  const hour = new Date().toISOString().slice(0, 13);
+  const [paused, list] = await Promise.all([r.get<{ hour: string; min: number }>(X_PAUSED), r.get<{ id: string; tag: string; value: string }[]>(RULE_LIST)]);
+  const rules = (list || []) as { id: string; tag: string; value: string }[];
+  if (!rules.length && !paused) return { guard: "no rules" };
+  const head = { "X-API-Key": process.env.X_API_KEY!, "content-type": "application/json" };
+  const interval = Math.max(10, Number(process.env.X_RULE_INTERVAL || 60));
+  const set = async (on: 0 | 1) => {
+    let ok = 0;
+    for (const x of rules) {
+      const res: any = await fetch(`${API}/oapi/tweet_filter/update_rule`, { method: "POST", headers: head, body: JSON.stringify({ rule_id: x.id, tag: x.tag, value: x.value, interval_seconds: interval, is_effect: on }) }).then((y) => y.json()).catch(() => null);
+      if (res?.status === "success") ok++;
+    }
+    return ok;
+  };
+  if (paused?.hour && paused.hour !== hour) {
+    await r.del(X_PAUSED);
+    if ((paused as any).deleted) return { guard: "resumed", ...(await syncRules(true)) };
+    const ok = await set(1);
+    return { guard: "resumed", rules: ok };
+  }
+  if (paused?.hour === hour) return { guard: "paused this hour" };
+  const used = await xSpendView();
+  if (used.thisHour < X_BUDGET) return { guard: "ok", thisHour: used.thisHour };
+  const ok = await set(0);
+  // a rule that would not switch off is deleted (it would keep billing); the next hour builds the set again
+  let deleted = false;
+  if (ok < rules.length) {
+    for (const x of rules) await fetch(`${API}/oapi/tweet_filter/delete_rule`, { method: "DELETE", headers: head, body: JSON.stringify({ rule_id: x.id }) }).catch(() => null);
+    await r.set(RULE_LIST, []);
+    deleted = true;
+  }
+  await r.set(X_PAUSED, { hour, min: new Date().getUTCMinutes(), deleted }, { ex: 26 * 3600 });
+  const p = r.pipeline();
+  agentLog(p, [{ agent: "WIRE", at: Date.now(), text: `X budget reached (${Math.round(used.thisHour / 100) / 10}K of ${Math.round(X_BUDGET / 100) / 10}K credits this hour): paid rules off until the next hour, J7 keeps watching`, tone: "info" }]);
+  await p.exec();
+  return { guard: "paused", rules: ok, thisHour: used.thisHour };
 }
 
 /** Per-account record: the weight WIRE gives an account's posts. Seeds start trusted, found accounts earn it. */

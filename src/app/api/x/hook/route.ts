@@ -1,6 +1,6 @@
 import { safeEq } from "@/lib/admin";
 import { redis } from "@/lib/redis";
-import { ingest, parseHook } from "@/lib/wire";
+import { ingest, noteVolume, parseHook } from "@/lib/wire";
 import { fail, json } from "@/lib/http";
 import { xSpend } from "@/lib/xcredits";
 
@@ -23,6 +23,7 @@ export async function POST(req: Request) {
     const tweets = parseHook(body);
     if (!tweets.length) return json({ ok: true, stored: 0 });
     await xSpend("watchlist posts", tweets.length * 15);
+    await noteVolume(tweets);
     return json({ ok: true, ...(await ingest(tweets)) });
   } catch (e) {
     return fail(e, 500);

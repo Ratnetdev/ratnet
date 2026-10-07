@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.35 · Hotfix: the X budget is enforced
+- The cause: X_CREDITS_PER_HOUR only limited RATNET's own reads. twitterapi.io bills the filter rules on its side (15 credits per check, 15 per post they return), so with the budget at 10K an hour the account still spent ~45K: 9 rules checked every minute (8.1K) and ~2,400 posts an hour from 104 accounts.
+- Hard cap: once this hour's spend reaches the budget, every paid rule is switched off until the next UTC hour (J7 keeps watching for free). A rule that will not switch off is deleted and rebuilt the next hour. WIRE posts when it happens.
+- The paid list is sized on real costs: the webhook counts posts per account per hour, the rules may use ~60% of the budget, and accounts posting more than 20 times an hour that never led to a pick are left to J7.
+- Rules leave reposts out (-is:retweet, change with X_RULE_FILTER). Reposts are billed like posts and carry nothing to make a coin from.
+- The rules resync on their own when the budget changes and every 6 hours.
+- /status:
+  - X reads: shows when the budget is reached and what the rules are expected to cost;
+  - Live stream: no warning for missing trades without a PumpPortal key (that is the plan since v0.1.34); shows the price feed's accounts and prices;
+  - Chain budget: says which lanes wait and when it resets;
+  - Desk heartbeat: describes how positions are priced now.
+
 ## v0.1.34 · Hotfix: fits the Helius plan
 - The cause: following launches through Helius transaction messages cost 1.3M to 5.7M credits a day (~50 KB per message). The plan's daily share is ~330K. On 7 Oct the day's budget ran out by evening and the rats, agents and historian stood still until midnight UTC.
 - The Helius feed now prices open positions only, real and ghost, through account updates:

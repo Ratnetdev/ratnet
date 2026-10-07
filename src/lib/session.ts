@@ -5,7 +5,7 @@ import { dig } from "./digger";
 import { historianSession } from "./historian";
 import { sealDue } from "./receipts";
 import { tgFlush } from "./tg";
-import { curate, ingest, syncRules } from "./wire";
+import { curate, ingest, syncRules, xGuard } from "./wire";
 import { j7Accounts, j7Session } from "./j7";
 import { pulseTick } from "./pulse";
 import { lensSession } from "./lens";
@@ -49,6 +49,8 @@ export async function runSession(ms = 55_000, opts: { desk?: boolean; historian?
     // J7: make sure it watches its whole free pool and our list (hourly), then twitterapi.io pays only for the rest
     const j7acc = await j7Accounts(X_SEED.map((x) => x.h)).catch((e) => ({ error: String(e?.message || e) }));
     const synced = mins % 10 === 0 ? await syncRules().catch((e) => ({ synced: false, error: String(e?.message || e) })) : null;
+    // the hourly X budget, enforced: paid rules off once this hour's spend reaches it, back on next hour
+    const guard = await xGuard().catch((e) => ({ guard: "error", error: String(e?.message || e) }));
     // PULSE: rebuild the rising narratives and announce new ones
     const fresh = await pulseTick().catch(() => []);
     if (fresh.length) {
@@ -56,7 +58,7 @@ export async function runSession(ms = 55_000, opts: { desk?: boolean; historian?
       agentLog(p, fresh.map((x) => ({ agent: "PULSE", at: Date.now(), text: `rising on X: "${x.term}" at ${x.x}x its usual pace (${x.posts15} weighted posts in 15m), mood ${x.mood}`, tone: x.mood === "bearish" ? "bad" : "ok" })));
       await p.exec();
     }
-    return { changes, j7acc, synced, rising: fresh.map((x) => x.term) };
+    return { changes, j7acc, synced, guard, rising: fresh.map((x) => x.term) };
   })();
   // J7 live feed for the whole minute run: posts land in WIRE within moments
   const j7 = alive("j7", j7Session(Math.round(52_000 * k), (t) => ingest(t)).catch((e) => ({ on: true, error: String(e?.message || e) })));

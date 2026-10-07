@@ -21,11 +21,12 @@ export async function xSpend(what: string, credits: number) {
 /** This hour so far (by part) and the rules' fixed checking cost per hour. */
 export async function xSpendView() {
   const r = redis();
-  const [now, prev, synced] = await Promise.all([r.hgetall<Record<string, number>>(KEY(hourKey())), r.hgetall<Record<string, number>>(KEY(hourKey(Date.now() - 3600_000))), r.get<any>("rn:x:synced")]);
+  const [now, prev, synced, paused] = await Promise.all([r.hgetall<Record<string, number>>(KEY(hourKey())), r.hgetall<Record<string, number>>(KEY(hourKey(Date.now() - 3600_000))), r.get<any>("rn:x:synced"), r.get<{ hour: string; min: number }>("rn:x:paused")]);
   const sum = (o: Record<string, number> | null) => Object.values(o || {}).reduce((a, x) => a + Number(x || 0), 0);
   const rulesPerHour = synced?.n ? Math.round(synced.n * (3600 / (synced.interval || 60)) * 15) : 0;
-  const mins = new Date().getUTCMinutes() + 1;
-  return { budget: X_BUDGET, thisHour: sum(now) + Math.round((rulesPerHour * mins) / 60), lastHour: sum(prev) + rulesPerHour, rulesPerHour, rules: synced?.n ?? 0, paidAccounts: synced?.accounts ?? 0, by: { ...(now || {}), rules: Math.round((rulesPerHour * mins) / 60) } };
+  // rules switched off by the guard stop billing checks from the minute they were paused
+  const mins = paused?.hour === hourKey() ? Math.min(new Date().getUTCMinutes() + 1, paused.min + 1) : new Date().getUTCMinutes() + 1;
+  return { paused: paused?.hour === hourKey(), est: synced?.est ?? null, budget: X_BUDGET, thisHour: sum(now) + Math.round((rulesPerHour * mins) / 60), lastHour: sum(prev) + rulesPerHour, rulesPerHour, rules: synced?.n ?? 0, paidAccounts: synced?.accounts ?? 0, by: { ...(now || {}), rules: Math.round((rulesPerHour * mins) / 60) } };
 }
 
 /** Whether a part may still spend this hour (LENS and the extras stop first; WIRE's rules are sized in advance). */
@@ -34,6 +35,7 @@ export async function xAllowed(share = 1) {
   const now = await r.hgetall<Record<string, number>>(KEY(hourKey())).catch(() => null);
   const used = Object.values(now || {}).reduce((a, x) => a + Number(x || 0), 0);
   const synced = await r.get<any>("rn:x:synced").catch(() => null);
-  const rules = synced?.n ? synced.n * (3600 / (synced.interval || 60)) * 15 * ((new Date().getUTCMinutes() + 1) / 60) : 0;
+  const paused = await r.get<{ hour: string; min: number }>("rn:x:paused").catch(() => null);
+  const rules = paused?.hour === hourKey() ? 0 : synced?.n ? synced.n * (3600 / (synced.interval || 60)) * 15 * ((new Date().getUTCMinutes() + 1) / 60) : 0;
   return used + rules < X_BUDGET * share;
 }
