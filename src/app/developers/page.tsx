@@ -3,14 +3,14 @@ import { SITE } from "@/config/site";
 export const metadata = { title: "API · RATNET" };
 
 const EPS: [string, string, string][] = [
-  ["GET", "/api/live", "Stats, the live feed, latest calls, radar and graduations in one call. Cached 3s."],
+  ["GET", "/api/live", "Stats, the live feed, latest calls, radar and graduations in one call. Cached about 10 seconds."],
   ["GET", "/api/radar", "Up to 50 live launches whose curve is filling, sorted by curve %, with the King's call and dev history."],
   ["GET", "/api/king?page=0", "Latest Rat King calls, 60 per page, plus hit rates for v0 and nano. Add &verdict=BOND to filter."],
   ["GET", "/api/graduations", "The last 100 launches that bonded, time to bond, and what the King said at 5 minutes."],
   ["GET", "/api/coin/{CA}", "Everything the rats dug on one launch: metadata, dev history, checkpoints, call, outcome."],
   ["GET", "/api/king/weights", "Rat King nano's sample count, loss and training log."],
   ["GET", "/api/ledger", "Payout rounds, burns and the public dataset drops."],
-  ["GET", "/api/boards", "What every desk agent sees right now in one call: FLASH, CATCH, the BOARD, MOMO, MIND, HOUND and LENS. Cached 3s."],
+  ["GET", "/api/boards", "What every desk agent sees right now in one call: FLASH, CATCH, the BOARD, MOMO, MIND, HOUND and LENS. Refreshed about every 20 seconds."],
   ["GET", "/api/desk/record", "The desk's public track record: every round trip with entry, exits and P&L after every fee. Add ?book=ghost for the ghost desk."],
   ["GET", "/api/px?m={CA},{CA}", "Live market caps (USD) for up to 60 coins, from the worker's chain reads. Cached 2s."],
   ["GET", "/api/og/{CA}", "1200×630 share card for a call. Use it as an image in bots and posts."],

@@ -1,12 +1,14 @@
 // A small in-process cache for big Redis reads that change slowly. The WIRE account list (5,000+ accounts), its
 // counters and HOUND's wallet book used to be read whole on every post ingested and every page poll: tens of GB a day
 // of Upstash bandwidth (the plan limit that took the whole site down on 7 Oct). One read per TTL per process now.
+import { bwMul } from "./bwgov";
 const store = new Map<string, { at: number; v: unknown; p?: Promise<unknown> }>();
 
 export async function memo<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
   const now = Date.now();
   const hit = store.get(key);
-  if (hit && now - hit.at < ttlMs) return hit.v as T;
+  // v0.1.40: when the day's Redis bandwidth runs ahead of pace, every cache holds 3x (or 6x) longer
+  if (hit && now - hit.at < ttlMs * bwMul()) return hit.v as T;
   if (hit?.p) return hit.p as Promise<T>; // one load at a time
   const p = load()
     .then((v) => {

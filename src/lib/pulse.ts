@@ -3,6 +3,7 @@
 // rising narratives. PULSE tells the King (+5 for a launch named after one), WIRE and the desk, and logs when a new
 // narrative takes off. Sentiment is a simple trench lexicon per term (bullish vs bearish words in the posts).
 import { redis } from "./redis";
+import { cachedRead } from "./lcache";
 import type { XTweet } from "./wire";
 
 const B5 = (t: number) => `rn:pl:5:${Math.floor(t / 300_000)}`;
@@ -41,7 +42,8 @@ export async function pulseTick() {
   const hourKeys = Array.from({ length: 24 }, (_, i) => BH(now - (i + 1) * 3600_000));
   const [recent, hours, curH] = await Promise.all([
     Promise.all(recentKeys.map((k) => r.hgetall<Record<string, number>>(k))),
-    Promise.all(hourKeys.map((k) => r.hgetall<Record<string, number>>(k))),
+    // v0.1.40: finished hours never change, so each is read once and kept in memory (was 24 full reads a minute)
+    Promise.all(hourKeys.map((k) => cachedRead(`pulse:${k}`, 2 * 3600_000, () => r.hgetall<Record<string, number>>(k)))),
     r.hgetall<Record<string, number>>(BH(now)),
   ]);
   const last15: Record<string, number> = {};

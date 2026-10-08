@@ -18,6 +18,8 @@
 //
 // Starting numbers (target, horizon, cutoffs) are hints in the desk config (catch*). The model, its cutoff and the PM
 // sleeve size are learned. FILM follows every skip, the ghost desk takes what the desk can't.
+import { cachedRead, launchesCached } from "./lcache";
+import { memo } from "./memo";
 import { poolSnaps, poolWatch, asHot, type PoolSnap } from "./pools";
 import { K, redis } from "./redis";
 import { agentLog } from "./agents";
@@ -176,9 +178,9 @@ export function toX(f: Record<string, number>) {
 /** Build one snapshot's features from everything the agents already know about the coin. */
 async function features(c: Cand, rec: Launch | null, sol: number, prev: any, rt?: any, pl?: PoolSnap | null) {
   const now = Date.now();
-  const posts = await board(c.mint).catch(() => []);
+  const posts = await cachedRead(`bb:${c.mint}`, 15_000, () => board(c.mint)).catch(() => []);
   const cf = confluence(posts, now);
-  const tracked = (await buyersOf(c.mint).catch(() => [])).filter((x: any) => x.side !== "sell" && now - x.at < 2 * 3600_000).length;
+  const tracked = (await cachedRead(`hb:${c.mint}`, 60_000, () => buyersOf(c.mint)).catch(() => [])).filter((x: any) => x.side !== "sell" && now - x.at < 2 * 3600_000).length;
   const t: any = rec?.tape;
   const ageMin = rec ? (now - rec.createdAt) / 60_000 : (c.hot?.ageMin ?? 0);
   const mc = c.stage === "pool" ? (c.hot?.mc || (c.mcSol || 0) * sol) : (c.mcSol || 0) * sol;
@@ -279,6 +281,44 @@ async function resetRecordOnce() {
 }
 
 /** One pass: find candidates, snapshot them, score, signal the desk. Then follow peaks and learn from labels. */
+// v0.1.40: the last look at each coin lives in memory (it is read and rewritten for ~240 coins every pass); it is
+// written to Redis every 5 minutes so a restart keeps it. The live tape comes straight from the worker's memory when
+// CATCH runs in the worker (lib: globalThis.__rnRt), instead of reading rn:rt for 240 coins every pass.
+const LASTM = new Map<string, any>();
+let lastLoadedAt = 0;
+let lastSavedAt = 0;
+async function lastFor(mints: string[]) {
+  const now = Date.now();
+  if (!lastLoadedAt || now - lastLoadedAt > 30 * 60_000) {
+    const all = ((await redis().hgetall<Record<string, any>>(LAST).catch(() => null)) || {}) as Record<string, any>;
+    for (const [k, v] of Object.entries(all)) if (!LASTM.has(k) || (LASTM.get(k)?.at ?? 0) < (v?.at ?? 0)) LASTM.set(k, v);
+    lastLoadedAt = now;
+  }
+  return Object.fromEntries(mints.map((m) => [m, LASTM.get(m)]));
+}
+async function rtFor(mints: string[]) {
+  const local = (globalThis as any).__rnRt as ((ms: string[]) => Record<string, any>) | undefined;
+  if (local) return local(mints);
+  return ((await redis().hmget<Record<string, any>>("rn:rt", ...mints).catch(() => null)) || {}) as Record<string, any>;
+}
+// the watched coins and every snapshot's own peak, in memory too (re-read every 15 minutes); follow() used to read
+// both whole hashes, thousands of entries, every minute
+type Watch = { pk: number; until: number; sym: string };
+let WATCHM: Map<string, Watch> | null = null;
+let PKSM: Map<string, number> | null = null;
+let followMemAt = 0;
+async function followMem() {
+  const now = Date.now();
+  if (WATCHM && PKSM && now - followMemAt < 15 * 60_000) return;
+  const r = redis();
+  const [w, pk] = await Promise.all([r.hgetall<Record<string, Watch>>(WATCH), r.hgetall<Record<string, number>>(PKS)]);
+  WATCHM = new Map(Object.entries((w || {}) as Record<string, Watch>));
+  PKSM = new Map(Object.entries((pk || {}) as Record<string, number>).map(([k, v]) => [k, Number(v)]));
+  followMemAt = now;
+}
+const ctModel = (k: string) => memo(`ct:model:${k}`, 30_000, () => loadModel(k));
+const ctRec = (k: string) => memo(`ct:rec:${k}`, 30_000, async () => ((await redis().hgetall<Record<string, number>>(k)) || {}) as Record<string, number>);
+
 export async function catchPass(force = false) {
   const r = redis();
   const now = Date.now();
@@ -311,9 +351,9 @@ export async function catchPass(force = false) {
   }
   const [curves, recs, lastAll, rtAll] = await Promise.all([
     getCurves(mints).catch(() => ({} as Record<string, any>)),
-    r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m))),
-    r.hmget<Record<string, any>>(LAST, ...mints),
-    r.hmget<Record<string, any>>("rn:rt", ...mints).catch(() => null),
+    launchesCached(mints, 120_000),
+    lastFor(mints),
+    rtFor(mints),
   ]);
   const rtBy = (rtAll || {}) as Record<string, any>;
   const last = (lastAll || {}) as Record<string, any>;
@@ -327,8 +367,8 @@ export async function catchPass(force = false) {
   const needPool = mints.filter((m) => migSet.has(m) && !hotBy.has(m) && !plOf(m) && !((curves as any)[m] && !(curves as any)[m].complete));
   const { priceOf } = await import("./desk");
   const poolPx = needPool.length ? await priceOf(needPool).catch(() => ({} as Record<string, any>)) : {};
-  const model = await loadModel();
-  const recStat = ((await r.hgetall<Record<string, number>>(REC)) || {}) as Record<string, number>;
+  const model = await ctModel(W);
+  const recStat = await ctRec(REC);
   const ready = model.n >= CT_MIN && model.pos >= 15;
   const cut = ready ? cutoff(recStat, c.catchMinHit ?? 0.08) : null;
   const pipe = r.pipeline();
@@ -353,8 +393,8 @@ export async function catchPass(force = false) {
     todo.push({ m, rec, cand, prev: last[m], hot, pl });
   }
   const feats = await pmap(todo, 12, (t) => features(t.cand, t.rec, sol, t.prev, rtBy[t.m], t.pl).catch(() => null));
-  const model2 = await loadModel(W2H);
-  const rec2 = ((await r.hgetall<Record<string, number>>(REC2)) || {}) as Record<string, number>;
+  const model2 = await ctModel(W2H);
+  const rec2 = await ctRec(REC2);
   const ready2 = model2.n >= CT_MIN && model2.pos >= 15;
   const cut2 = ready2 ? cutoff(rec2, c.catchMinHit ?? 0.08) : null;
 
@@ -365,7 +405,7 @@ export async function catchPass(force = false) {
     // look again only when something moved: 8+ curve points, a new stage, or 4 minutes on the curve / 3 in the pool
     const moved = !prev || prev.stage !== cand.stage || (cand.stage === "curve" ? Math.abs((cand.prog || 0) - prev.prog) >= 8 || now - prev.at >= 4 * 60_000 : now - prev.at >= 3 * 60_000);
     const { f, x, mc, cf } = ft;
-    pipe.hset(LAST, { [m]: { at: now, prog: cand.prog ?? 100, mc, stage: cand.stage } });
+    LASTM.set(m, { at: now, prog: cand.prog ?? 100, mc, stage: cand.stage });
     const pr = priorScore(f);
     const p = predict(model, x);
     const p2 = predict(model2, x);
@@ -380,9 +420,11 @@ export async function catchPass(force = false) {
       const snap: Snap = { id, mint: m, sym, at: now, stage: cand.stage, mc: Math.round(mc), x, p, p2, prior: pr.score, why: pr.why };
       pipe.hset(SNAP, { [id]: snap });
       pipe.hset(PKS, { [id]: Math.round(mc) });
+      PKSM?.set(id, Math.round(mc));
       pipe.zadd(DUE, { score: now + (c.catchHorizonH ?? 6) * 3600_000, member: id });
       pipe.zadd(DUE2, { score: now + 2 * 3600_000, member: id });
       pipe.hset(WATCH, { [m]: { pk: mc, until: now + (c.catchHorizonH ?? 6) * 3600_000, sym } });
+      WATCHM?.set(m, { pk: mc, until: now + (c.catchHorizonH ?? 6) * 3600_000, sym });
     }
     // the trade decision: the model once its record earned it, the prior before that
     const room = mc > 0 && mc <= goal / 2 && mc <= target / 2;
@@ -407,6 +449,12 @@ export async function catchPass(force = false) {
   }
   for (const g of signals) enqueueMind(pipe, g.mint, "catch");
   scored.sort((a, b) => (ready ? b.p - a.p : b.prior - a.prior));
+  if (now - lastSavedAt > 5 * 60_000) {
+    lastSavedAt = now;
+    for (const [k, v] of LASTM) if (now - (v?.at ?? 0) > 6 * 3600_000) LASTM.delete(k);
+    const obj = Object.fromEntries(Array.from(LASTM.entries()).filter(([, v]) => now - (v?.at ?? 0) < 10 * 60_000));
+    if (Object.keys(obj).length) pipe.hset(LAST, obj);
+  }
   pipe.set(VIEW, { at: now, ready, n: model.n, pos: model.pos, cut, fast: { ready: ready2, n: model2.n, pos: model2.pos, cut: cut2 }, scanned: scored.length, pools: todo.filter((t) => t.pl).length, live: scored.filter((x) => x.live).length, top: scored.slice(0, 25) }, { ex: 600 });
   await pipe.exec();
 
@@ -431,10 +479,14 @@ async function follow(sol: number, target: number) {
   const now = Date.now();
   if (now - Number((await r.get(PK_AT)) || 0) < 55_000) return {};
   await r.set(PK_AT, now);
-  const watch = ((await r.hgetall<Record<string, { pk: number; until: number; sym: string }>>(WATCH)) || {}) as Record<string, { pk: number; until: number; sym: string }>;
+  await followMem();
+  const watch = Object.fromEntries(WATCHM!) as Record<string, Watch>;
   const live = Object.entries(watch).filter(([, w]) => w.until > now - 60_000);
   const gone = Object.entries(watch).filter(([, w]) => w.until <= now - 60_000).map(([m]) => m);
-  if (gone.length) await r.hdel(WATCH, ...gone);
+  if (gone.length) {
+    for (const m of gone) WATCHM!.delete(m);
+    await r.hdel(WATCH, ...gone);
+  }
   // peaks: curve price or the canonical pool, for up to 200 coins (one batched read each way)
   const { priceOf } = await import("./desk");
   const mints = live.map(([m]) => m).slice(0, 200);
@@ -446,7 +498,10 @@ async function follow(sol: number, target: number) {
     const mc = q.px * 1e9 * sol;
     if (mc > watch[m].pk) upd[m] = { ...watch[m], pk: Math.round(mc) };
   }
-  if (Object.keys(upd).length) await r.hset(WATCH, upd);
+  if (Object.keys(upd).length) {
+    for (const [m, w] of Object.entries(upd)) WATCHM!.set(m, w);
+    await r.hset(WATCH, upd);
+  }
   const mcNow: Record<string, number> = {};
   for (const m of mints) {
     const q = (px as any)[m];
@@ -454,7 +509,7 @@ async function follow(sol: number, target: number) {
   }
   // each snapshot keeps its own peak, measured from the moment it was taken. Before v0.1.28 every coin had one peak
   // that a new snapshot reset to the current price: an earlier snapshot's real 2x was wiped, and it was labelled a miss
-  const pks = ((await r.hgetall<Record<string, number>>(PKS)) || {}) as Record<string, number>;
+  const pks = Object.fromEntries(PKSM!) as Record<string, number>;
   const pkUpd: Record<string, number> = {};
   const rose = new Set<string>();
   for (const [id, v] of Object.entries(pks)) {
@@ -464,25 +519,20 @@ async function follow(sol: number, target: number) {
       rose.add(id);
     }
   }
-  if (Object.keys(pkUpd).length) await r.hset(PKS, pkUpd);
+  if (Object.keys(pkUpd).length) {
+    for (const [id, v] of Object.entries(pkUpd)) PKSM!.set(id, v);
+    await r.hset(PKS, pkUpd);
+  }
   const pkOf = (id: string, m: string) => (pkUpd[id] ?? (pks[id] != null ? Number(pks[id]) : watch[m]?.pk ?? 0));
 
   // labels: due snapshots, plus any snapshot whose own peak rose this minute (it may have hit: early positive)
   const due = ((await r.zrange<string[]>(DUE, 0, now, { byScore: true })) || []) as string[];
-  const hitMints = new Set(Object.keys(upd));
   const early: string[] = Array.from(rose);
-  if (hitMints.size) {
-    // snapshots from before v0.1.28 (no own peak yet) still resolve on the coin's peak
-    const all = ((await r.zrange<string[]>(DUE, 0, -1)) || []) as string[];
-    for (const id of all) if (pks[id] == null && hitMints.has(id.split(":")[0])) early.push(id);
-  }
+  // (snapshots from before v0.1.28 without their own peak are long resolved: no full read of the due list)
   // the fast model's labels: 2 hours after the look (or the moment the coin hits)
   const due2 = ((await r.zrange<string[]>(DUE2, 0, now, { byScore: true })) || []) as string[];
   const early2: string[] = Array.from(rose);
-  if (hitMints.size) {
-    const all2 = ((await r.zrange<string[]>(DUE2, 0, -1)) || []) as string[];
-    for (const id of all2) if (pks[id] == null && hitMints.has(id.split(":")[0])) early2.push(id);
-  }
+
   const ids2 = Array.from(new Set([...due2, ...early2])).slice(0, 400);
   const ids6 = Array.from(new Set([...due, ...early])).slice(0, 400);
   const ids = Array.from(new Set([...ids6, ...ids2]));
@@ -583,6 +633,7 @@ async function follow(sol: number, target: number) {
     p.zrem(DUE, ...done);
     p.hdel(SNAP, ...done);
     p.hdel(PKS, ...done);
+    for (const id of done) PKSM?.delete(id);
   }
   if (newM6.length) p.sadd(RECM, newM6[0], ...newM6.slice(1));
   if (newM2.length) p.sadd(RECM2, newM2[0], ...newM2.slice(1));

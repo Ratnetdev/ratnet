@@ -11,6 +11,7 @@ import { runViews, RunView } from "./runner";
 import { getSettings } from "./settings";
 import { allRats, isActive, roundOf, roundStart } from "./rats";
 import { ROUND_MS } from "@/config/site";
+import { launchesCached, mgetCached } from "./lcache";
 
 const n = (v: unknown) => Number(v || 0);
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 : null);
@@ -77,7 +78,8 @@ export async function getCalls(limit = 60, offset = 0): Promise<Call[]> {
   const r = redis();
   const mints = (await r.zrange<string[]>(K.calls, offset, offset + limit - 1, { rev: true })) || [];
   if (!mints.length) return [];
-  const calls = await r.mget<(Call | null)[]>(...mints.map((m) => K.call(m)));
+  // v0.1.40: a call record changes rarely (made once, resolved once): each is read at most once a minute
+  const calls = await mgetCached<Call>(mints.map((m) => K.call(m)), 60_000);
   return calls.filter((c): c is Call => !!c).map((c) => ({ ...c, parts: undefined, nc: undefined }));
 }
 
@@ -86,7 +88,7 @@ export async function getBondCalls(limit = 8): Promise<Call[]> {
   const r = redis();
   const mints = ((await r.lrange<string>("rn:bondcalls", 0, limit - 1)) || []) as string[];
   if (!mints.length) return [];
-  const calls = await r.mget<(Call | null)[]>(...mints.map((m) => K.call(m)));
+  const calls = await mgetCached<Call>(mints.map((m) => K.call(m)), 60_000);
   return calls.filter((c): c is Call => !!c).map((c) => ({ ...c, parts: undefined, nc: undefined }));
 }
 
@@ -147,7 +149,8 @@ export async function getRadar(limit = 15): Promise<RadarRow[]> {
     pNow[String(flat[i])] = Number(flat[i + 1]);
   }
   if (!mints.length) return [];
-  const [recs, peaks] = await Promise.all([r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m))), r.zmscore(K.peak, mints)]);
+  // live numbers come from the sorted sets and the curves; the launch records (names, socials, the call) from memory
+  const [recs, peaks] = await Promise.all([launchesCached(mints, 30_000), r.zmscore(K.peak, mints)]);
   const peakOf: Record<string, number> = {};
   mints.forEach((m, i) => (peakOf[m] = Number(peaks?.[i] ?? 0)));
   const [mkt, sol, cv] = await Promise.all([getMarket(mints).catch(() => ({} as Record<string, Mkt | null>)), solUsd(), getCurves(mints).catch(() => ({} as Record<string, any>))]);

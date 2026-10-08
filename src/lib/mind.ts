@@ -13,6 +13,7 @@
 //  3. School. Every hour it reads what the KOLs and traders it follows posted and keeps the reusable lessons, and the
 //     admin can teach it directly (a thread, a video transcript, your own rules).
 import { K, redis } from "./redis";
+import { memo } from "./memo";
 import { acquire, release, renew } from "./lock";
 import { getCurves, solUsd } from "./solana";
 import { readPools } from "./pool";
@@ -653,7 +654,8 @@ export async function mindSession(ms: number) {
 
 export async function mindView() {
   const r = redis();
-  const [live, hist, q, rec, unlock, all] = await Promise.all([r.get<any>(LIVE), r.lrange<any>(HIST, 0, 19), r.zcard(Q), mindRecord(), mindUnlocked(), lessons()]);
+  // v0.1.40: the lesson book (a whole hash) at most every 2 minutes for the view
+  const [live, hist, q, rec, unlock, all] = await Promise.all([r.get<any>(LIVE), r.lrange<any>(HIST, 0, 19), r.zcard(Q), mindRecord(), mindUnlocked(), memo("mind:lessons:view", 120_000, lessons)]);
   const on = all.filter((l) => !l.off);
   return { on: llmOn(), model: llmModel(), live: live || null, recent: hist || [], queued: q || 0, record: rec, unlock, lessons: { n: on.length, proven: on.filter((l) => l.wins + l.losses >= 3).length } };
 }

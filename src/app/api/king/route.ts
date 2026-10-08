@@ -4,6 +4,7 @@ import { loadModel } from "@/lib/digger";
 import { WEIGHTS, VERDICTS, KING_VERSION } from "@/lib/king";
 import { NANO_MIN } from "@/lib/nano";
 import { cached, fail } from "@/lib/http";
+import { memo } from "@/lib/memo";
 import { loadCal } from "@/lib/kingcal";
 
 export const dynamic = "force-dynamic";
@@ -11,16 +12,17 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const page = Math.max(0, Number(url.searchParams.get("page") || 0));
-    const verdict = (url.searchParams.get("verdict") || "").toUpperCase();
-    const [callsRaw, resolved, stats, model, grads, cal] = await Promise.all([
+    const page = Math.min(50, Math.max(0, Math.floor(Number(url.searchParams.get("page") || 0)) || 0));
+    const verdict = (url.searchParams.get("verdict") || "").toUpperCase().slice(0, 12);
+    // v0.1.40: up to 300 full calls per answer; read at most every 10s per server instance and filter
+    const [callsRaw, resolved, stats, model, grads, cal] = await memo(`api:king:${verdict}:${page}`, 20_000, () => Promise.all([
       getCalls(verdict ? 300 : 60, verdict ? 0 : page * 60),
       getResolvedCalls(40),
       getStats(),
       loadModel(),
       getGrads(40),
       loadCal().catch(() => null),
-    ]);
+    ]));
     const calls = verdict ? callsRaw.filter((c) => c.verdict === verdict || c.nano?.verdict === verdict).slice(0, 60) : callsRaw;
     return cached(
       {

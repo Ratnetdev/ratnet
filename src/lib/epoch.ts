@@ -39,7 +39,7 @@ export async function ensureEpoch(): Promise<Record<string, unknown> | null> {
   const hours = Array.from({ length: 24 * 5 }, (_, i) => hourKey(now - i * 3600_000));
   const keys = [
     K.stat, K.calib, K.calls, K.callRes, K.grads, K.near, K.idx, K.idxT, K.feed, K.devB,
-    K.nano, K.nano1, K.nanoLog, "rn:replay",
+    K.nano, K.nano1, K.nanoLog, "rn:replay", "rn:nano:ver",
     GK.cN, GK.cB, GK.cM, GK.sN, GK.sB, GK.sM,
     HGK.cN, HGK.cB, HGK.cM, HGK.sN, HGK.sB, HGK.sM,
     ...HIST, ...RUNNER,

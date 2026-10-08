@@ -1,4 +1,5 @@
 import { ROUND_MS, SCOUTS, Settings } from "@/config/site";
+import { memo } from "./memo";
 import { K, redis } from "./redis";
 
 export type Rat = {
@@ -61,7 +62,9 @@ export function isActive(r: Rat, s: Settings) {
  */
 export async function assignWork(n: number, s: Settings) {
   if (n <= 0) return { names: [] as string[], counts: {} as Record<string, number>, real: false };
-  const rats = (await allRats()).filter((r) => isActive(r, s));
+  // v0.1.40: the whole rat table was read on every dig pass (more than once a second); a new rat joins the
+  // rotation within a minute
+  const rats = (await memo("rats:all", 60_000, allRats)).filter((r) => isActive(r, s));
   const pool = rats.length ? rats.map((r) => r.name) : SCOUTS;
   const end = await redis().incrby(K.rr, n);
   const start = end - n;

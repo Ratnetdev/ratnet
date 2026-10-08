@@ -2,6 +2,7 @@ import { aliveView, rpcLive } from "@/lib/alive";
 import { xSpendView } from "@/lib/xcredits";
 import { rpcDayView } from "@/lib/rpcday";
 import { redis } from "@/lib/redis";
+import { memo } from "@/lib/memo";
 import { cached, fail } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +11,14 @@ export const dynamic = "force-dynamic";
 // chain reads per day, X credits and the worker's restarts. Counts only, never secrets.
 export async function GET() {
   try {
+    return cached(await memo("api:alive", 5_000, build), 5);
+  } catch (e) {
+    return fail(e, 500);
+  }
+}
+
+async function build() {
+  {
     const r = redis();
     const rpcP = rpcLive();
     const [parts, rpc, x, day, boots, bootAt, exits, takeovers, takeoverAt, reconnects, streamNote, streamShapes, xRejected] = await Promise.all([
@@ -27,9 +36,9 @@ export async function GET() {
       r.get<{ at: number; shapes: [string, number][] }>("rn:stream:shapes"),
       r.get<number>("rn:hook:x:rejected"),
     ]);
+    // v0.1.40: Redis bandwidth today (worker and site together) against the day's allowance
+    const bw = await r.get<any>("rn:bw").catch(() => null);
     const worker = { boots: Number(boots || 0), bootAt: Number(bootAt || 0) || null, exits: exits || [], takeovers: Number(takeovers || 0), takeoverAt: Number(takeoverAt || 0) || null, streamReconnects: Number(reconnects || 0), streamNote: streamNote || null, streamShapes: streamShapes || null, xHookRejected: Number(xRejected || 0) };
-    return cached({ parts, rpc: rpc || null, x, rpcDay: day, worker }, 3);
-  } catch (e) {
-    return fail(e, 500);
+    return { parts, rpc: rpc || null, x, rpcDay: day, worker, bw: bw ? { at: bw.at, hourMB: bw.hourMB, gov: bw.gov ?? null } : null };
   }
 }

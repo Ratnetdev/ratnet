@@ -10,6 +10,7 @@ import { poolUsd, readPools } from "./pool";
 import { emptyModel, learn, NanoModel, predict } from "./nano";
 import { acquire, holds, release, type Lock } from "./lock";
 import { creditMillion } from "./graph";
+import { cachedRead, mgetCached } from "./lcache";
 
 export const MILESTONES = [25e3, 50e3, 1e5, 2.5e5, 5e5, 1e6, 2.5e6, 5e6, 1e7, 2.5e7, 5e7];
 export const MILLION = MILESTONES.indexOf(1e6);
@@ -184,6 +185,7 @@ export function pNext(model: NanoModel, emp: Record<string, number>, run: Run, i
 
 /** Start following a coin (called at the King's call for taped coins, and at bond for every coin). */
 export async function enroll(p: { set: Function; zadd: Function }, run: Run) {
+  RUNC.delete(run.mint);
   p.set(RK.run(run.mint), run, { ex: Math.ceil((FOLLOW_MS + 2 * 86400_000) / 1000) });
   if (run.bondedAt) p.zadd(RK.post, { score: run.bondedAt, member: run.mint });
   else p.zadd(RK.pre, { score: run.createdAt, member: run.mint });
@@ -256,6 +258,13 @@ function close(c: Ctx, p: any, run: Run) {
   p.zrem(RK.post, run.mint);
 }
 
+// v0.1.40: followed runs are kept in memory by the process that follows them (the worker's slow lane) and written
+// back only when something changed. Before, every slow pass (every ~4s) read and rewrote every followed run (~1.8KB
+// each, often 100+ of them): several GB a day of Redis traffic for numbers that mostly stood still. A run held in
+// memory is re-read from Redis every 5 minutes, so another process's write is picked up.
+const RUNC = new Map<string, { at: number; json: string; run: Run }>();
+const RUNC_MS = 5 * 60_000;
+
 /**
  * One runner pass, run from the dig loop.
  * `curveUsd` holds USD market caps the rats just read off the curves (free), bonds/deaths are reported by the digger.
@@ -280,13 +289,23 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
   // DexScreener is asked only for the paid boost/profile flag, and never allowed to hold the pass up.
   const postSet = Array.from(new Set([...postMints, ...events.bonded]));
   const quick = <T,>(p: Promise<T>, ms: number, d: T) => Promise.race([p.catch(() => d), new Promise<T>((res) => setTimeout(() => res(d), ms))]);
-  const [runs, model, emp, pools, mkt] = await Promise.all([
-    r.mget<(Run | null)[]>(...all.map(RK.run)),
+  const miss = all.filter((m) => {
+    const h = RUNC.get(m);
+    return !h || now - h.at > RUNC_MS;
+  });
+  const [got, model, emp, pools, mkt] = await Promise.all([
+    miss.length ? r.mget<(Run | null)[]>(...miss.map(RK.run)) : Promise.resolve([] as (Run | null)[]),
     loadRunner(),
     r.hgetall<Record<string, number>>(RK.emp),
     postSet.length && solUsd ? readPools(postSet).catch(() => ({} as Record<string, any>)) : Promise.resolve({} as Record<string, any>),
     postMints.length ? quick(getMarket(postMints), 1500, {} as Record<string, any>) : Promise.resolve({} as Record<string, any>),
   ]);
+  miss.forEach((m, i) => {
+    const run = got[i] as Run | null;
+    if (run) RUNC.set(m, { at: now, json: JSON.stringify(run), run });
+    else RUNC.delete(m);
+  });
+  const runs = all.map((m) => RUNC.get(m)?.run ?? null);
   const c: Ctx = { model, dirty: false, emp: emp || {}, log: [], ops: [] };
   const p = r.pipeline();
   p.zremrangebyscore(RK.pre, 0, now - 2 * 86400_000); // curve coins we never heard back from
@@ -297,6 +316,7 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
       p.zrem(RK.post, m);
       return;
     }
+    if (events.stuck?.includes(m) || events.died.includes(m)) RUNC.delete(m);
     if (events.stuck?.includes(m)) {
       // curve full but never migrated: its numbers say nothing about real runners, drop it unlearned
       p.del(RK.run(m));
@@ -315,8 +335,12 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
     if (mkt[m]) run.paid = !!(mkt[m].bo || mkt[m].pf);
     step(c, p, run, usd, now);
     expire(c, p, run, now);
-    if (run.bondedAt && now - run.bondedAt > FOLLOW_MS) return close(c, p, run);
+    if (run.bondedAt && now - run.bondedAt > FOLLOW_MS) return RUNC.delete(m), close(c, p, run);
+    const json = JSON.stringify(run);
+    const h = RUNC.get(m);
+    if (h && h.json === json) return; // nothing changed: no write
     p.set(RK.run(m), run, { keepTtl: true });
+    RUNC.set(m, { at: h?.at ?? now, json, run });
   });
   for (const l of c.log) p.lpush(RK.log, { at: now, text: l });
   if (c.log.length) p.ltrim(RK.log, 0, 99);
@@ -330,7 +354,8 @@ export async function runViews(mints: string[]): Promise<Record<string, RunView>
   const out: Record<string, RunView> = {};
   if (!mints.length) return out;
   const r = redis();
-  const [runs, fin] = await Promise.all([r.mget<(Run | null)[]>(...mints.map(RK.run)), r.hmget<Record<string, RunView>>(RK.fin, ...mints)]);
+  // v0.1.40: pages read runs at most once a minute per server instance (the worker's own pass keeps RUNC)
+  const [runs, fin] = await Promise.all([mgetCached<Run>(mints.map(RK.run), 60_000), cachedRead(`runfin:${mints.join(",").slice(0, 400)}:${mints.length}`, 60_000, () => r.hmget<Record<string, RunView>>(RK.fin, ...mints))]);
   mints.forEach((m, i) => {
     const run = runs[i];
     if (run) out[m] = viewOf(run);

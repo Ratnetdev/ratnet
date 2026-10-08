@@ -16,6 +16,7 @@
 // looks and a hit rate of 10%+ and 5x the base rate. Earlier looks are cheaper but noisier; the record decides which
 // look time is worth acting on, nobody picks it by hand.
 import { K, redis } from "./redis";
+import { memo } from "./memo";
 import { agentLog } from "./agents";
 import { getSettings } from "./settings";
 import type { Launch } from "./digger";
@@ -130,15 +131,18 @@ function cutoff(rec: Record<string, number>, stage: FlStage) {
 }
 
 /** The worker hands over a batch of looks (15s, 45s, 90s after launch). Score, snapshot, maybe signal the desk. */
+let VIEW_MEM: { top: any[] } | null = null;
 export async function flashLook(looks: FlashLook[]) {
   if (!looks.length) return { looks: 0 };
   const r = redis();
   const s = await getSettings();
   const c: any = s.desk;
   const mode: "auto" | "on" | "off" = c.flashMode ?? "auto";
+  // v0.1.40: runs up to twice a second; the model and its record change once per labelling pass (25s+), so they are
+  // read at most every 30s, and the live view is kept in memory (the worker is its only writer)
   const [model, recStat, recs] = await Promise.all([
-    loadModel(),
-    r.hgetall<Record<string, number>>(REC).then((x) => (x || {}) as Record<string, number>),
+    memo("fl:model", 30_000, loadModel),
+    memo("fl:rec", 30_000, () => r.hgetall<Record<string, number>>(REC).then((x) => (x || {}) as Record<string, number>)),
     r.mget<(Launch | null)[]>(...looks.map((l) => K.launch(l.mint))),
   ]);
   const cuts: Record<number, ReturnType<typeof cutoff>> = {};
@@ -168,8 +172,9 @@ export async function flashLook(looks: FlashLook[]) {
   }
   pipe.ltrim("rn:lat:flash", 0, 199);
   if (view.length) {
-    const prev = ((await r.get<any>(VIEW)) || { top: [] }) as { top: any[] };
+    const prev = (VIEW_MEM || ((await r.get<any>(VIEW)) || { top: [] })) as { top: any[] };
     const top = [...view, ...(prev.top || [])].filter((v, i, a) => a.findIndex((y) => y.mint === v.mint) === i).slice(0, 30);
+    VIEW_MEM = { top };
     pipe.set(VIEW, { at: Date.now(), n: model.n, pos: model.pos, cuts, top }, { ex: 3600 });
   }
   for (const g of sigs.slice(0, 3)) {

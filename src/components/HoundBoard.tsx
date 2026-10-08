@@ -20,7 +20,7 @@ export default function HoundBoard() {
   const admin = useAdmin();
   // the public view comes with every other board in one request; the admin's full book has its own endpoint
   const adminV = usePoll<View>(admin ? fullUrl("/api/hound", true) : null, 5000, { ref: box }).data;
-  const publicV = usePoll<{ hound: View | null }>(admin ? null : "/api/boards", 5000, { ref: box }).data?.hound ?? null;
+  const publicV = usePoll<{ hound: View | null }>(admin ? null : "/api/boards", 10000, { ref: box }).data?.hound ?? null;
   const v = (admin ? adminV : publicV);
   return (
     <section className="panel mt hound" ref={box}>

@@ -13,7 +13,7 @@ const age = (m: number) => (m < 120 ? `${m}m` : `${Math.round(m / 60)}h`);
 
 export default function MomoBoard() {
   const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
-  const v = (usePoll<{ momo: { at: number | null; hot: Hot[] } | null }>("/api/boards", 5000, { ref: box }).data?.momo ?? null);
+  const v = (usePoll<{ momo: { at: number | null; hot: Hot[] } | null }>("/api/boards", 10000, { ref: box }).data?.momo ?? null);
   return (
     <section className="panel mt" ref={box}>
       <div className="ph"><span><Info k="momo"><b>MOMO</b></Info> · pump.fun coins pulling real volume right now</span><span className="tiny muted">{v?.at ? `scanned ${ago(v.at)} ago` : "first scan within a minute"}</span></div>

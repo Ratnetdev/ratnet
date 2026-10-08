@@ -20,6 +20,11 @@ import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, redisDown } from "../src/lib/critical";
 import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
+import { bwTick, installBwMeter } from "../src/lib/bwmeter";
+import { bwFlush, bwLevel, bwMul, bwView } from "../src/lib/bwgov";
+import { drainXQueue, publishWireView } from "../src/lib/wire";
+import { publishSite } from "../src/lib/site";
+installBwMeter(); // v0.1.40: counts every byte sent to and from Upstash (v0.1.40: through lib/rediswire.ts)
 
 process.env.RATNET_WORKER = "1";
 const SESSION_MS = Number(process.env.WORKER_SESSION_MS || 55_000);
@@ -70,6 +75,48 @@ function sampleLag(sig: string, gotAt: number) {
   }, 8000);
 }
 let pruneAskAt = Date.now() - 25 * 60_000; // first try ~5 minutes after boot
+
+// v0.1.40: the bandwidth governor's level changes go to the private Telegram chat
+let govLevel = 0;
+async function govAlert() {
+  const lv = bwLevel();
+  if (lv === govLevel) return;
+  const was = govLevel;
+  govLevel = lv;
+  const v = bwView();
+  console.log(`[bw] saving mode ${was} -> ${lv}: ${v.dayMB}MB today, pace ${v.paceMB}MB, allowance ${v.allowMB}MB`);
+  const { tgSend, ideasChat } = await import("../src/lib/tgbot");
+  const chat = ideasChat();
+  if (!chat || !process.env.TELEGRAM_BOT_TOKEN) return;
+  const text = lv
+    ? `⚠️ <b>Redis saving mode ${lv}</b>: ${(v.dayMB / 1000).toFixed(2)}GB used today, pace ${(v.paceMB / 1000).toFixed(2)}GB (allowance ${(v.allowMB / 1000).toFixed(1)}GB a day). Pages cache ${lv === 2 ? 6 : 3}x longer, the historian, agents and slow lane slow down. The desk keeps trading.`
+    : `✅ <b>Redis back on pace</b>: ${(v.dayMB / 1000).toFixed(2)}GB today of ${(v.allowMB / 1000).toFixed(1)}GB. Normal speed again.`;
+  await tgSend(chat, text).catch(() => null);
+}
+
+// v0.1.40: summaries the pages read as one key (lib/site.ts): the agent boards every ~20s, WIRE's view every 2 minutes
+let boardsAt = 0;
+let wireViewAt = 0;
+let siteBusy = false;
+async function siteTick() {
+  if (siteBusy) return;
+  siteBusy = true;
+  try {
+    const now = Date.now();
+    const m = bwMul();
+    if (now - boardsAt > 20_000 * m) {
+      boardsAt = now;
+      const { buildBoards } = await import("../src/lib/boards");
+      await publishSite("boards", buildBoards, 600).catch((e) => console.log("site boards", e?.message || e));
+    }
+    if (now - wireViewAt > 120_000 * m) {
+      wireViewAt = now;
+      await publishWireView().catch((e) => console.log("site wire", e?.message || e));
+    }
+  } finally {
+    siteBusy = false;
+  }
+}
 async function beat() {
   const stuck = Date.now() - sessionAt;
   const deskStuck = Date.now() - deskAt;
@@ -79,6 +126,10 @@ async function beat() {
   flushRpcDay().catch(() => {});
   stallAlerts().catch(() => {});
   criticalChecks().catch(() => {});
+  bwFlush()
+    .then(() => govAlert())
+    .then(() => bwTick())
+    .catch(() => {});
   // Redis growth: trimmed once every 6 hours (the shared key decides; this only asks every 30 minutes)
   if (Date.now() - pruneAskAt > 30 * 60_000) {
     pruneAskAt = Date.now();
@@ -151,6 +202,20 @@ function tapeOf(w: Trade[], now: number) {
   };
 }
 
+// v0.1.40: CATCH and SHIELD run in this process and read the tape straight from memory; rn:rt in Redis is only a
+// slow copy (every 15s, was every second) for anything outside the worker
+(globalThis as any).__rnRt = (ms: string[]) => {
+  const now = Date.now();
+  const out: Record<string, unknown> = {};
+  for (const m of ms) {
+    const w = TAPE.get(m);
+    const l = LAST.get(m);
+    if (!w || !l || now - l.at > 90_000) continue;
+    out[m] = { mc: l.mc, at: l.at, ...tapeOf(w, now) };
+  }
+  return out;
+};
+let tapeFlushAt = 0;
 async function flushTape() {
   const now = Date.now();
   if (now - lastStreamMark > 10_000) {
@@ -158,6 +223,8 @@ async function flushTape() {
     const quiet = Math.round((now - lastMsgAt) / 1000);
     markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", ppKey: PP_KEY ? 1 : 0, lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
   }
+  if (now - tapeFlushAt < 15_000) return;
+  tapeFlushAt = now;
   // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
   const out: Record<string, unknown> = {};
   for (const [mint, w] of TAPE) {
@@ -270,7 +337,9 @@ function pumpportal() {
   let ws: any = null;
   let up = false;
   const kick = () => {
-    if (Date.now() - lastCatch < 3000) return;
+    // v0.1.40: 10s (was 3s); each pass reads ~240 coins. v0.1.40: no bursts while the day's Redis bandwidth runs
+    // ahead of pace (lib/bwgov.ts); the regular passes still run
+    if (Date.now() - lastCatch < 10_000 || bwLevel() >= 1) return;
     lastCatch = Date.now();
     lane.run(2, () => catchPass(true)).catch(() => null);
   };
@@ -442,7 +511,8 @@ async function digSlowLoop() {
     const f: any = await flashFollow().catch((e) => ({ flashError: e?.message || e }));
     await markAlive("rats_slow", { ...r, ...(f?.flashError ? { flashError: f.flashError } : {}) });
     if (n++ % 15 === 0 || r?.error || Date.now() - t0 > 30_000) console.log(new Date().toISOString(), "dig slow", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ ...r, ...f }).slice(0, 300));
-    await new Promise((res) => setTimeout(res, Math.max(500, 4000 - (Date.now() - t0))));
+    // v0.1.40: every ~4s, or every 12s / 30s in Redis saving mode 1 / 2
+    await new Promise((res) => setTimeout(res, Math.max(500, [4000, 12_000, 30_000][bwLevel()] - (Date.now() - t0))));
   }
 }
 
@@ -455,7 +525,14 @@ async function historianLoop() {
     histAt = t0;
     // waited for, never raced: a session left running in the background used to overlap the next one once its lock
     // expired (two historians on one lane, both slower)
+    // v0.1.40: the historian is the first to wait when the day's Redis bandwidth runs ahead of pace
+    if (bwLevel() >= 2) {
+      await markAlive("historian", { paused: "Redis bandwidth saving mode" }).catch(() => {});
+      await new Promise((res) => setTimeout(res, 60_000));
+      continue;
+    }
     const r: any = await waitFor("historian", historianSession(110_000).catch((e) => ({ history: "error", error: e?.message || e })), 180_000);
+    if (bwLevel() === 1) await new Promise((res) => setTimeout(res, 60_000));
     await markAlive("historian", r);
     if (n++ % 5 === 0 || r?.error) console.log(new Date().toISOString(), "historian", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify(r).slice(0, 240));
     // nothing to do (done, off, busy, waiting): look again in a few seconds instead of spinning
@@ -469,6 +546,8 @@ async function agentLoop() {
     sessionAt = t0;
     try {
       const r: any = await runSession(SESSION_MS, { desk: false, historian: false });
+      // v0.1.40: in Redis saving mode the agents rest between sessions (30s, or 2 minutes in mode 2)
+      if (bwLevel()) await new Promise((res) => setTimeout(res, bwLevel() === 2 ? 120_000 : 30_000));
       console.log(new Date().toISOString(), `session ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ momo: r?.momo, mind: r?.mind, lens: r?.lens, catch: r?.catch, hound: r?.hound, overseer: r?.overseer }).slice(0, 500));
     } catch (e: any) {
       console.log("session error", e?.message || e);
@@ -503,8 +582,10 @@ async function main() {
   }
   // live prices for the site's pages (/api/px reads them): what viewers asked for, every 4s, on the agents' lane
   let pxBusy = false;
+  let pxAt = 0;
   setInterval(() => {
-    if (pxBusy || !laneOpen(2)) return;
+    if (pxBusy || !laneOpen(2) || Date.now() - pxAt < 4_000 * bwMul()) return;
+    pxAt = Date.now();
     pxBusy = true;
     lane
       .run(2, () => refreshPxCache((ms) => priceOf(ms, false, 8_000) as any))
@@ -512,6 +593,16 @@ async function main() {
       .finally(() => (pxBusy = false));
   }, 4_000);
   setInterval(beat, 20_000);
+  // X webhook posts the site queued (v0.1.40): ingested here, where WIRE's account list is in memory
+  let xqBusy = false;
+  setInterval(() => {
+    if (xqBusy) return;
+    xqBusy = true;
+    drainXQueue()
+      .catch((e) => console.log("x queue", e?.message || e))
+      .finally(() => (xqBusy = false));
+  }, 1_500);
+  setInterval(() => siteTick().catch(() => null), 5_000);
   await beat();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);
 }

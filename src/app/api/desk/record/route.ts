@@ -10,7 +10,7 @@ export async function GET(req: Request) {
   try {
     const book = new URL(req.url).searchParams.get("book") === "ghost" ? "ghost" : "real";
     // built at most every 15s per server instance: it reads up to 2,000 trades and 1,000 trips
-    return serve(req, await memo(`record:${book}`, 15_000, () => getRecord(undefined, book)), (d: any) => ({ ...d, trips: d.trips.map(publicTrip) }), 5);
+    return serve(req, await memo(`record:${book}`, 20_000, () => getRecord(undefined, book)), (d: any) => ({ ...d, trips: d.trips.map(publicTrip) }), 5);
   } catch (e) {
     return fail(e, 500);
   }

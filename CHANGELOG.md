@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.1.40 · Redis bandwidth: built to fit the $20 plan
+- Why the database went down again: Upstash bills every byte sent to it and back, and the plan has 100GB a month. RATNET moved about 13GB a day, because many loops and pages read and rewrote the same large JSON values over and over: whole trade books, run records, model weights, account lists, every few seconds, often in several processes at once. The first round (below) cut the worst of it, but nothing capped the total. This build cuts the bytes and puts a hard pace on them.
+- Compression on the wire (lib/rediswire.ts): every value of 1KB or more is stored deflate-compressed (about a third of its size), and every answer is inflated before the code sees it, pipelines and transactions included. Keys, fields, set members and scores are never touched; old values stay readable. Works on Node, Vercel functions and the Edge runtime.
+- Daily governor (lib/bwgov.ts): the worker and every server instance add their bytes to one daily counter. The day's allowance (BW_GB_PER_DAY, default 2.8GB) is paced through the day. Ahead of pace, saving mode 1: pages cache 3x longer, the historian rests between sessions, the agents rest 30s between sessions, the slow lane runs every 12s, CATCH stops burst passes. Mode 2: 6x caches, historian paused, agents rest 2 minutes, slow lane every 30s. The desk keeps pricing, buying and exiting at full speed. Mode changes go to the private Telegram chat; /status shows the day's total against the pace.
+- The worker builds what pages read: the agent boards (every ~20s) and WIRE's view (every 2 minutes) are one small key each. Server instances no longer read HOUND's wallet book, MIND's lesson book or WIRE's 800KB account list.
+- X webhook posts are queued for the worker, which holds WIRE's account list in memory (each server instance read it for every webhook). Without a worker the webhook ingests itself as before.
+- The desk's books: the 2,000 trades and 1,000 round trips are kept in memory per process and only the newest rows are read when they change (a change counter per list). The exam, the track record and the desk page each read the whole lists before. Buy rows no longer carry their entry context (the round trips and open positions keep it); old rows are slimmed once.
+- Runner: followed runs live in the worker's memory and are written only when they changed (every followed run was read and rewritten every ~4s).
+- Rats' slow lane: models from a 15s memory copy, the trainer re-reads the models only when another process saved, replay once a minute (was every pass), the epoch check once a minute, hot-curve scores written only when they moved.
+- CATCH: last looks, watched coins and snapshot peaks in memory (saved every 5 minutes); the live tape straight from the worker's memory; models and records every 30s; coin records every 2 minutes; tracked buyers every minute.
+- The desk's shadow and COACH books in memory, saved every 2 minutes and at the end of every desk session (were read and rewritten every 30s).
+- Site: every public route has its own short cache per server instance (live 10s, radar 5s, king 20s, rats 15s, runners 30s, Hall of Fame 2 minutes, coin pages 5s, ledger 20s, status 5s, the coin index 2 minutes); call, coin and run records come from a 1-minute memory cache; position charts once a minute. Agent boards poll every 10s.
+- The live tape (rn:rt) is copied to Redis every 15s instead of every second; the worker's own readers use memory.
+- New test suite v041test: compression round trips through the real Upstash client (get, set, hashes, lists, mget, pipelines, transactions), the Edge base64 path, byte counting, the governor's levels and cache stretch, the incremental list cache (merging, late counter bumps, resets).
+
+- First round (also in this build):
+  - 8 Oct: Upstash suspended the database again, this time for the month (109 GB of the plan's 100 GB in 8 days). The causes, all fixed:
+    - HOUND's copy-record table (a row for every wallet that ever bought, 100-300KB) was read whole for every coin CATCH looked at, on every pass, plus for every desk entry, MIND judgement and coin page. It is read at most once a minute per process now, and not at all for coins no tracked wallet bought.
+    - The desk's exam (up to 2,000 trades) ran on every beat while the desk waited flat for its exam. Once per 30s now, shared with the homepage summary.
+    - CATCH re-read up to 240 full coin records and every coin's BOARD posts each pass: served from a 30s/15s memory cache now. Burst passes from the live stream are at least 10s apart (was 3s).
+    - Both rats' lanes reloaded both models every pass (the fast lane every second; its 15s cache was never switched on). From memory now, refreshed every 15s; new launches from the stream use the same copy. The model version check runs once per process.
+    - FLASH read its model, its record and its live view up to twice a second: model and record every 30s, the live view stays in memory.
+    - WIRE re-read every copy of an open post every second (10s cache), the last 200 tweets on every launch (15s), the rat table on every pass (60s). PULSE reads each finished hour once instead of 24 hours every minute.
+    - The desk's learning books (shadows and afters with price paths) every 30s instead of 15s.
+    - Upstash answers are no longer base64-encoded: about a quarter fewer bytes on every read.
+    - Site: /api/live is built once per 5s per server (it had no cache of its own), /api/boards every 8s, /api/desk every 5s, /api/king every 10s.
+  - Bandwidth meter: the worker counts every byte to and from Upstash by command and key. Each hour goes to the logs and to rn:bw; a report goes to the private Telegram chat every 6 hours, and at once when one hour passes BW_ALERT_MB_HOUR (default 150MB, about 4.5GB a day).
+
 ## v0.1.39 · Platform and final verification (Run 8)
 - Next.js 15.5 and React 19 (was Next 14 and React 18): admin checks read cookies the new async way, dynamic routes take their params async, ref and JSX types updated. Every page and API route checked after the upgrade.
 - The paper desk resets once on deploy for the final verification (never while live): the old record is archived, everything learned is kept, and strategies paused before the reset start unpaused.

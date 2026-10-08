@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { installFetchGuard } from "./fetchguard";
+import { installRedisWire } from "./rediswire";
 
 if (typeof window === "undefined") installFetchGuard();
 
@@ -12,7 +13,11 @@ export function redis(): Redis {
   const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (!url || !token) throw new Error("Redis is not configured");
   // one retry, not Upstash's default five: during an outage five retries per command multiplied the load
-  _r = new Redis({ url, token, retry: { retries: 1, backoff: () => 300 } });
+  // responseEncoding false (v0.1.40): Upstash sends answers base64-encoded by default, a third more bytes on every
+  // read, and its plan counts those bytes. Everything stored here is JSON text, which needs no encoding.
+  // v0.1.40: compress large values on the way in, inflate them on the way out, count every byte (lib/rediswire.ts)
+  installRedisWire(url);
+  _r = new Redis({ url, token, retry: { retries: 1, backoff: () => 300 }, responseEncoding: false });
   // an empty pipeline is a no-op, not an error: Upstash throws "Pipeline is empty", which used to fail whole passes
   // (the slow lane's migration check on every beat where no coin had migrated yet)
   const client: any = _r;

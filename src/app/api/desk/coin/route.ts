@@ -8,6 +8,7 @@ import { lensDossier } from "@/lib/lens";
 import { feedbackFor } from "@/lib/feedback";
 import { mindJudgement } from "@/lib/mind";
 import { wantsFull } from "@/lib/private";
+import { memo } from "@/lib/memo";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
     if (!isPubkey(mint)) return fail("bad mint");
     const full = await wantsFull(req);
     const [rec, log, vet, lens, fb, call, mind] = await Promise.all([
-      getRecord(mint),
+      memo(`record:coin:${mint}`, 15_000, () => getRecord(mint)), // v0.1.40: was read on every request
       coinLog(mint),
       redis().get<any>(VET_KEY(mint)),
       lensDossier(mint).catch(() => null),

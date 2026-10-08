@@ -4,17 +4,16 @@ import { getEcon } from "@/lib/fees";
 import { allPups, priceFor } from "@/lib/rats";
 import { getSettings } from "@/lib/settings";
 import { cached, fail, json } from "@/lib/http";
+import { memo } from "@/lib/memo";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   try {
     const wallet = new URL(req.url).searchParams.get("wallet") || "";
-    const [board, rounds, econ, pups, myPrice] = await Promise.all([
-      getRatBoard(),
-      getRounds().catch(() => []),
-      getEcon().catch(() => null),
-      allPups().catch(() => []),
+    // v0.1.40: the shared part at most every 15s per server instance (it read the payout rounds twice, uncached)
+    const [[board, rounds, econ, pups], myPrice] = await Promise.all([
+      memo("api:rats", 15_000, () => Promise.all([getRatBoard(), getRounds().catch(() => []), getEcon().catch(() => null), allPups().catch(() => [])])),
       wallet ? getSettings().then((st) => priceFor("spawn", wallet, st)) : Promise.resolve(null),
     ]);
     const lr = rounds[0];
@@ -33,7 +32,7 @@ export async function GET(req: Request) {
       econ,
       mine: wallet ? board.rats.filter((r) => r.owner === wallet) : [],
     };
-    return wallet ? json(body) : cached(body, 5);
+    return wallet ? json(body) : cached(body, 10);
   } catch (e) {
     return fail(e, 500);
   }

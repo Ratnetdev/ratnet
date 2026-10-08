@@ -1,5 +1,6 @@
 import { mindJudgement, mindView } from "@/lib/mind";
 import { isPubkey } from "@/lib/solana";
+import { memo } from "@/lib/memo";
 import { cached, fail } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function GET(req: Request) {
       const j = await mindJudgement(mint);
       return cached({ judgement: j ? { ...j, lessons: [] } : null }, 5);
     }
-    return cached(await mindView(), 2);
+    return cached(await memo("api:mind", 10_000, mindView), 10);
   } catch (e) {
     return fail(e, 500);
   }

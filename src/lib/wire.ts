@@ -86,9 +86,11 @@ export function parseHook(body: any): XTweet[] {
 
 let seeded = 0;
 /** The whole account list, read at most once a minute per process (5,000+ accounts, about 800KB). */
-const accsAll = () => memo("wire:acc", 60_000, async () => ((await redis().hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>);
+// v0.1.40: 10 minutes (was 1). Every write to the account list patches this cache in the same process, and since
+// v0.1.40 only the worker writes it (the X webhook queues its posts for the worker). The list is ~800KB.
+const accsAll = () => memo("wire:acc", 600_000, async () => ((await redis().hgetall<Record<string, Acc>>(ACC)) || {}) as Record<string, Acc>);
 /** WIRE's per-account counters, at most once a minute per process. */
-const statsAll = () => memo("wire:st", 60_000, async () => ((await redis().hgetall<Record<string, number>>(ST)) || {}) as Record<string, number>);
+const statsAll = () => memo("wire:st", 600_000, async () => ((await redis().hgetall<Record<string, number>>(ST)) || {}) as Record<string, number>);
 
 export async function ensureSeed() {
   if (seeded === X_SEED.length) return;
@@ -220,7 +222,8 @@ export function matchOne(l: { mint: string; name: string; symbol: string; descri
 }
 
 export async function recentTweets(maxAgeMs = 3600_000) {
-  const all = ((await redis().lrange<XTweet>(TW, 0, 199)) || []) as XTweet[];
+  // v0.1.40: read on every launch the stream delivers (~150KB each time); once per 15s per process now
+  const all = await memo("wire:tw200", 15_000, async () => ((await redis().lrange<XTweet>(TW, 0, 199)) || []) as XTweet[]);
   return all.filter((t) => Date.now() - t.at <= maxAgeMs && t.kind !== "reply");
 }
 
@@ -499,6 +502,33 @@ export async function accountOf(h: string) {
 
 /** Everything for the page: latest tracked posts with the coins they spawned, and the account board. */
 /** The board for the pages: the top `limit` accounts by results (the full list runs to thousands: ~1MB) plus counts. */
+// v0.1.40: the pages read WIRE's view as one small key the worker writes every 2 minutes, instead of each server
+// instance reading the whole account list (~800KB) and its counters every minute.
+const VIEW = "rn:x:view";
+export async function publishWireView() {
+  const v = await wireView(100);
+  await redis().set(VIEW, { ...v, at: Date.now() }, { ex: 1800 });
+  return v.accounts.length;
+}
+export async function wireViewPublic(limit = 100) {
+  const v = await memo("wire:view", 30_000, () => redis().get<Awaited<ReturnType<typeof wireView>> & { at: number }>(VIEW).catch(() => null));
+  if (!v) return wireView(limit); // the worker has not written it yet
+  return { ...v, accounts: (v.accounts || []).slice(0, limit) };
+}
+/** X webhook posts wait here for the worker (it holds WIRE's account list in memory). */
+export const X_INQ = "rn:x:inq";
+export async function drainXQueue() {
+  const r = redis();
+  const m = r.multi();
+  m.lrange(X_INQ, 0, 199);
+  m.ltrim(X_INQ, 200, -1);
+  const [got] = (await m.exec()) as [XTweet[] | null];
+  const tweets = ((got || []) as XTweet[]).filter((t) => t && typeof t === "object");
+  if (!tweets.length) return 0;
+  await ingest(tweets.reverse()); // oldest first
+  return tweets.length;
+}
+
 export async function wireView(limit = 100) {
   const r = redis();
   await ensureSeed();

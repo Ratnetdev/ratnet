@@ -1,3 +1,4 @@
+import { bwMul } from "./bwgov";
 import { NextResponse } from "next/server";
 import { safeErr } from "./solana";
 
@@ -29,7 +30,10 @@ export async function limit(key: string, max: number, windowSec: number) {
 export const tooMany = () => NextResponse.json({ error: "Slow down a little." }, { status: 429, headers: { "cache-control": "no-store", "retry-after": "30" } });
 
 /** Public read: cached on Vercel's CDN so thousands of viewers cost one Redis read every few seconds. */
-export const cached = (data: unknown, seconds = 3, swr = seconds * 5) =>
-  NextResponse.json(data, {
-    headers: { "cache-control": `public, max-age=0, s-maxage=${seconds}, stale-while-revalidate=${swr}` },
+// v0.1.40: the CDN holds answers longer when the day's Redis bandwidth runs ahead of pace (lib/bwgov.ts)
+export const cached = (data: unknown, seconds = 3, swr = seconds * 5) => {
+  const m = bwMul();
+  return NextResponse.json(data, {
+    headers: { "cache-control": `public, max-age=0, s-maxage=${seconds * m}, stale-while-revalidate=${swr * m}` },
   });
+};

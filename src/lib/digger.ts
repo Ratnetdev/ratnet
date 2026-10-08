@@ -1,4 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
+import { launchesCached } from "./lcache";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
 import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, RPS } from "./solana";
@@ -27,6 +28,7 @@ import { addVamp, featOf, loadW, notePickSet, pickedOn, pickLessons, scoreOf, va
 import { KING_V1, computeCal, loadCal, noteCal, posWeight, v1Verdict, type Cal } from "./kingcal";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 import { memo } from "./memo";
+import { bwMul } from "./bwgov";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
 type Extra = { tape: Tape | null; g: Graph | null; meta: Meta | null; px: number; rg?: Regime | null };
@@ -273,6 +275,10 @@ export function tapeFloor(d: { tapeMinCurve?: number; earlyMinCurve?: number }) 
   return { t5: Math.max(8, Number(d?.tapeMinCurve ?? 8)), t1: Math.max(5, Number(d?.earlyMinCurve ?? 5)) };
 }
 
+// v0.1.40: the trainer keeps both models in memory with the version it saved; it re-reads them only when another
+// process saved since (the version moved). Before, every lesson batch (every ~4s) read both models first.
+const NANO_VER = "rn:nano:ver";
+let NANO_MEM: { ver: string; m: NanoModel; m1: NanoModel } | null = null;
 export async function applyNano(ops0: NanoOp[]) {
   if (!ops0.length) return;
   const r = redis();
@@ -291,7 +297,14 @@ export async function applyNano(ops0: NanoOp[]) {
     await migrateNanoHeld();
     const parked = ((await r.lpop<NanoOp[]>(NANO_PENDING, 2000).catch(() => null)) || []) as NanoOp[];
     const ops = [...(Array.isArray(parked) ? parked : []), ...ops0];
-    const [m, m1] = await Promise.all([loadModel(), loadModel(K.nano1)]);
+    const ver = String((await r.get(NANO_VER).catch(() => "x")) ?? "0");
+    if (!NANO_MEM || NANO_MEM.ver !== ver || ver === "x") {
+      const [a, b] = await Promise.all([loadModel(), loadModel(K.nano1)]);
+      NANO_MEM = { ver, m: a, m1: b };
+    }
+    // learn on copies: if the save below does not happen, memory must not run ahead of Redis
+    const m: NanoModel = structuredClone(NANO_MEM.m);
+    const m1: NanoModel = structuredClone(NANO_MEM.m1);
     const logs: { n: number; loss: number; acc: number; pos: number; at: number }[] = [];
     let d0 = false;
     let d1 = false;
@@ -308,6 +321,7 @@ export async function applyNano(ops0: NanoOp[]) {
     const p = r.pipeline();
     if (d0) p.set(K.nano, m);
     if (d1) p.set(K.nano1, m1);
+    p.incr(NANO_VER);
     for (const l of logs) p.rpush(K.nanoLog, l);
     if (logs.length) p.ltrim(K.nanoLog, -500, -1);
     // a lock that expired mid-training: another trainer may have saved since; park these instead of overwriting it
@@ -315,7 +329,9 @@ export async function applyNano(ops0: NanoOp[]) {
       await r.rpush(NANO_PENDING, ...ops).catch(() => {});
       return;
     }
-    await p.exec();
+    const res = (await p.exec()) as unknown[];
+    const v = res[(d0 ? 1 : 0) + (d1 ? 1 : 0)]; // the INCR's answer: sets first, then the INCR
+    NANO_MEM = Number.isFinite(Number(v)) ? { ver: String(v), m, m1 } : null;
   } finally {
     await release(l);
   }
@@ -337,9 +353,12 @@ export async function migrateNano() {
     await release(l);
   }
 }
+let nanoChecked = false; // v0.1.40: the version check needs one read per process, not one per training batch
 async function migrateNanoHeld() {
+  if (nanoChecked) return { nano: "v2" };
   const r = redis();
   const cur = await r.get<NanoModel>(K.nano);
+  if (cur?.v === NANO_V && cur.warm === WARM) nanoChecked = true;
   // "warm" marks the build that warm-started it: v0.1.30 does it once more, because the v0.1.28 code ran for a few
   // minutes on 7 Oct (a reverted push) and trained the new model the old way
   if (cur?.v === NANO_V && cur.warm === WARM) return { nano: "v2" };
@@ -364,6 +383,8 @@ async function migrateNanoHeld() {
   if (old1 && old1.v !== NANO_V) p.set("rn:nano1:v1", old1);
   p.set(K.nano, m);
   p.set(K.nano1, m1);
+  p.del(NANO_VER);
+  NANO_MEM = null;
   // the historian walks its window again (clean labels since v0.1.28), the runner model starts over on v2
   p.del("rn:h:state2", "rn:h:q2", "rn:h:seen", "rn:runner", K.nanoLog);
   p.lpush(K.deskEv, { agent: "KING", at: Date.now(), text: `King v1.1: nano rebuilt (standardized inputs, small capped steps, one class weight). warm start on ${lessons.length} recent lessons, ${m.pos} bonds. v0 rules call until v1.1's own lines are calibrated`, tone: "info" });
@@ -434,17 +455,18 @@ async function digInner(): Promise<Record<string, unknown>> {
 // learns and writes the model, still reads it fresh every pass. The SOL price is written once an hour.
 let solHourWritten = "";
 async function digPrep(fast = false) {
-  if (fast) await memo("dig:epoch", 300_000, () => ensureEpoch().catch(() => null));
-  else await ensureEpoch().catch(() => null);
-  const model = fast ? await memo("dig:nano", 15_000, () => loadModel()) : await loadModel();
-  M1 = fast ? await memo("dig:nano1", 15_000, () => loadModel(K.nano1)) : await loadModel(K.nano1);
+  await memo(fast ? "dig:epoch" : "dig:epoch:slow", fast ? 300_000 : 60_000, () => ensureEpoch().catch(() => null));
+  // v0.1.40: the slow lane too (it only scores with them; applyNano trains on its own copy under the lock)
+  void fast;
+  const model = await memo("dig:nano", 15_000, () => loadModel());
+  M1 = await memo("dig:nano1", 15_000, () => loadModel(K.nano1));
   SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
   const hr = new Date().toISOString().slice(0, 13);
   if (hr !== solHourWritten && SOL_USD) {
     solHourWritten = hr;
     await recordSol(SOL_USD).catch(() => (solHourWritten = ""));
   }
-  CAL = fast ? await memo("dig:cal", 60_000, () => loadCal()).catch(() => CAL) : await loadCal().catch(() => CAL);
+  CAL = await memo("dig:cal", 60_000, () => loadCal()).catch(() => CAL);
   if (Date.now() - CAL_AT > 600_000) {
     CAL_AT = Date.now();
     CAL = await computeCal().catch(() => CAL);
@@ -463,7 +485,7 @@ export async function digFast(): Promise<Record<string, unknown>> {
   const out = await withLock("rn:lock:digfast", 60_000, () => lane.run(1, async () => {
     const t0 = Date.now();
     try {
-      const model = await digPrep();
+      const model = await digPrep(true); // v0.1.40: models from memory (15s), both lanes only score with them
       // the chain backfill (launches the stream missed) every 10s instead of every pass: one call a second was ~86K
       // credits a day on its own, and the stream already delivers nearly every launch within a second (v0.1.36)
       const dug = Date.now() - lastBackfill >= BACKFILL_MS ? ((lastBackfill = Date.now()), await digNew(model).catch((e) => ({ digError: safeErr(e) }))) : { dug: 0 };
@@ -482,7 +504,7 @@ export async function digSlow(): Promise<Record<string, unknown>> {
   const out = await withLock("rn:lock:digslow", 90_000, () => lane.run(1, async () => {
     const t0 = Date.now();
     try {
-      const model = await digPrep();
+      const model = await digPrep(true); // v0.1.40: models from memory (15s), both lanes only score with them
       const tl = await tweetLinks().catch((e) => ({ tlinkError: safeErr(e) }));
       const hot = await hotWatch(model);
       const mig = await migrations(model).catch((e) => ({ migError: safeErr(e) }));
@@ -603,7 +625,7 @@ export async function ingestStream(items: { mint: string; sig: string; creator: 
     };
     await markSeen(fresh.filter((_, i) => !!have[i]));
     if (!todo.length) return { dug: 0 };
-    const model = await loadModel();
+    const model = await memo("dig:nano", 15_000, () => loadModel());
     if (!SOL_USD) SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
     // seen only after the launch is stored: if ingest fails, the chain backfill digs it (before v0.1.28 it was marked
     // seen first, so a failed ingest lost the launch for good)
@@ -1275,7 +1297,8 @@ async function wirePicks() {
   const W = await loadW();
   for (const d of due) {
     const mints = d.mints.map((x) => x.mint);
-    const recs = mints.length ? (((await r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m)))) || []) as (Launch | null)[]) : [];
+    // v0.1.40: copies are re-read every second for up to 10 minutes per post; 10s old is fresh enough to rank them
+    const recs = mints.length ? await launchesCached(mints, 10_000) : [];
     const curves = mints.length ? await getCurves(mints) : {};
     const all = d.mints.map((x, i) => ({ ...x, rec: recs[i], cv: curves[x.mint] })).filter((x) => x.rec);
     const live = all.filter((x) => !x.rec!.outcome && x.cv && !x.cv.complete && x.cv.progress >= WIRE_MIN_CURVE);
@@ -1336,7 +1359,7 @@ async function vampPicks(s: Awaited<ReturnType<typeof getSettings>>) {
     if (already.length >= 1 + VAMP_MAX) continue;
     const cs = await candidatesOf(tid);
     if (cs.length < 2) continue;
-    const recs = ((await r.mget<(Launch | null)[]>(...cs.map((x) => K.launch(x.mint)))) || []) as (Launch | null)[];
+    const recs = await launchesCached(cs.map((x) => x.mint), 10_000);
     const curves = await getCurves(cs.map((x) => x.mint));
     const rows = cs.map((x, i) => ({ ...x, rec: recs[i], cv: curves[x.mint] })).filter((x) => x.rec && x.cv);
     const trac = { copies: rows.length, sol: Math.round(rows.reduce((a, x) => a + (x.cv?.realSol ?? 0), 0) * 10) / 10 };
@@ -1514,7 +1537,11 @@ async function lessons(model: NanoModel) {
 type Lesson = { x: number[] | null; x1: number[] | null; y: number };
 
 /** Experience replay: a random slice of recent lessons, learned again at half weight. Sharpens the weights without counting as new lessons. */
+let replayAt = 0;
 async function replay(model: NanoModel) {
+  // v0.1.40: once a minute (was every slow pass, ~4s): each replay read 64 stored lessons
+  if (Date.now() - replayAt < 60_000 * bwMul()) return { replayed: 0 };
+  replayAt = Date.now();
   const r = redis();
   const len = (await r.llen(REPLAY_KEY)) || 0;
   if (len < 200) return { replayed: 0 };
@@ -1534,6 +1561,9 @@ async function replay(model: NanoModel) {
 // ---------------------------------------------------------------- hot watch (bonds in near real time)
 // Reads only curve accounts plus two sorted sets, so it stays cheap even with thousands of live coins.
 
+const HOTW = new Map<string, number>();
+const PEAKW = new Map<string, number>();
+let HOTW_AT = 0;
 export async function hotWatch(model: NanoModel) {
   const r = redis();
   const total = await r.zcard(K.hot);
@@ -1572,10 +1602,22 @@ export async function hotWatch(model: NanoModel) {
 
   const c = newCtx(model);
   const p = c.p;
-  if (radarAdds.length) {
-    p.zadd(K.radar, radarAdds[0], ...radarAdds.slice(1));
-    p.zadd(K.peak, { gt: true }, radarAdds[0], ...radarAdds.slice(1));
+  // v0.1.40: only scores that moved are written (up to 200 coins were re-written every ~4s, most of them unchanged).
+  // Everything is re-written once every 10 minutes in case another process changed the sets.
+  if (now - HOTW_AT > 600_000) {
+    HOTW.clear();
+    PEAKW.clear();
+    HOTW_AT = now;
   }
+  const radarCh = radarAdds.filter((x) => HOTW.get(x.member) !== x.score);
+  const peakCh = radarAdds.filter((x) => !(PEAKW.get(x.member)! >= x.score));
+  if (radarCh.length) p.zadd(K.radar, radarCh[0], ...radarCh.slice(1));
+  if (peakCh.length) p.zadd(K.peak, { gt: true }, peakCh[0], ...peakCh.slice(1));
+  for (const x of radarCh) HOTW.set(x.member, x.score);
+  for (const x of peakCh) PEAKW.set(x.member, x.score);
+  for (const m of gone) (HOTW.delete(m), PEAKW.delete(m));
+  if (HOTW.size > 5000) HOTW.clear();
+  if (PEAKW.size > 5000) PEAKW.clear();
   if (gone.length) {
     p.zrem(K.hot, ...gone);
     p.zrem(K.radar, ...gone);

@@ -38,6 +38,11 @@ const W = "rn:hd:w"; // wallet -> Wallet
 const FEED = "rn:hd:feed"; // latest buys
 const M = (m: string) => `rn:hd:m:${m}`; // mint -> wallet -> buy
 const EV = "rn:hd:ev"; // {w}:n|s|x2 and c:{cls}:n|s|x2 (copy-trade record at 6h)
+// v0.1.40: this hash holds a row for every wallet that ever bought and was read whole (100-300KB) for every coin CATCH
+// looked at, thousands of times an hour: the main cause of the 8 Oct Upstash bandwidth outage. It is a slow-moving
+// stats table, so each process reads it at most once a minute.
+// v0.1.40: 5 minutes (was 1): copy results move slowly and the hash is large
+const evAll = () => memo("hound:ev", 300_000, async () => ((await redis().hgetall<Record<string, number>>(EV)) || {}) as Record<string, number>);
 const DUE = "rn:hd:due";
 const BUY = "rn:hd:b"; // id -> pending follow
 const BQ = "rn:hd:bq"; // breakouts to dig
@@ -468,10 +473,10 @@ export async function onSwaps(txs: any[]) {
   await p.exec();
   // confluence: 2+ tracked wallets in 30 minutes, or one strong one (confirmed KOL with a positive copy record, a
   // FOMO home-run hitter, a smart wallet), sends the coin to LENS and MIND
-  const ev = ((await r.hgetall<Record<string, number>>(EV)) || {}) as Record<string, number>;
+  const kolS = Number((await r.hget<number>(EV, "c:kol:s").catch(() => 0)) || 0);
   for (const mint of hot) {
     const buyers = Object.values(((await r.hgetall<Record<string, any>>(M(mint))) || {}) as Record<string, any>).filter((x) => Date.now() - x.at < 30 * 60_000);
-    const strong = buyers.some((x) => x.cls === "fomo-homerun" || x.cls === "smart" || (x.cls === "kol" && x.conf === "confirmed" && Number(ev[`c:kol:s`] || 0) >= 0));
+    const strong = buyers.some((x) => x.cls === "fomo-homerun" || x.cls === "smart" || (x.cls === "kol" && x.conf === "confirmed" && kolS >= 0));
     if (buyers.length >= 2 || strong) {
       const q = r.pipeline();
       enqueueLens(q, mint, "wire");
@@ -559,8 +564,9 @@ const avgOf = (ev: Record<string, number>, key: string, hk: string) => {
 /** Who among the tracked wallets bought this coin, with their copy records (for MIND, VET and the coin page). */
 export async function buyersOf(mint: string) {
   const r = redis();
-  const [m, ev] = await Promise.all([r.hgetall<Record<string, any>>(M(mint)), r.hgetall<Record<string, number>>(EV)]);
-  const E = (ev || {}) as Record<string, number>;
+  const m = await r.hgetall<Record<string, any>>(M(mint));
+  if (!m || !Object.keys(m).length) return []; // no tracked wallet bought it: nothing to look up
+  const E = await evAll();
   return Object.entries((m || {}) as Record<string, any>)
     .map(([w, x]) => ({ w, ...x, copy6h: avgOf(E, w, "6h"), class6h: avgOf(E, `c:${x.cls}`, "6h") }))
     .sort((a, b) => a.at - b.at);
@@ -591,7 +597,7 @@ export async function houndSession() {
 
 export async function houndView(full: boolean) {
   const r = redis();
-  const [feed, ws, ev, hook, lv, q, stt] = await Promise.all([r.lrange<Buy>(FEED, 0, 39), memo("hound:book", 60_000, book), r.hgetall<Record<string, number>>(EV), r.get<any>(HOOK), r.get<any>(LIVE), r.zcard(BQ), r.hgetall<Record<string, any>>(STATUS)]);
+  const [feed, ws, ev, hook, lv, q, stt] = await Promise.all([r.lrange<Buy>(FEED, 0, 39), memo("hound:book", 300_000, book), evAll(), r.get<any>(HOOK), r.get<any>(LIVE), r.zcard(BQ), r.hgetall<Record<string, any>>(STATUS)]);
   const E = (ev || {}) as Record<string, number>;
   const all = Object.values(ws);
   const counts = { total: all.length, fomo: all.filter((x) => x.cls.startsWith("fomo")).length, kol: all.filter((x) => x.cls === "kol").length, kolConfirmed: all.filter((x) => x.cls === "kol" && x.conf === "confirmed").length, smart: all.filter((x) => x.cls === "smart").length, admin: all.filter((x) => x.cls === "admin").length };

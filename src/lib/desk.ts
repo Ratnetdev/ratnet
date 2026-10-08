@@ -11,6 +11,7 @@
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
 import { memo } from "./memo";
+import { listCached, listDrop } from "./lcache";
 import { ATA_RENT, roundTripCost, slipOf, sellProceeds, txCost, venueFee, type CostCfg } from "./costs";
 import { shield } from "./shield";
 import { dropPaths, labBest, labStep, notePath, tierOf, type ExitSet, type LabBest, type Tier } from "./exitlab";
@@ -34,7 +35,7 @@ import { agentLog, type AgentEv } from "./agents";
 import { coachStats, coachStep, follow, followsFor, tripId, type Check } from "./coach";
 import { filmStats, filmStep, logSkip } from "./film";
 import { exitProfiles, noteExit, onClose as pmClose, onGhost as pmGhost, pmClearPauses, pmDropWicks, pmView, sleeveOf, sleeveWeight, type ExitProfile } from "./pm";
-import { accountOf, notePnl, wireView } from "./wire";
+import { accountOf, notePnl, wireViewPublic } from "./wire";
 import { getHistory } from "./historian";
 import { enqueueLens, lensDossier } from "./lens";
 import { mindJudgement } from "./mind";
@@ -316,7 +317,10 @@ async function syncWallet(state: DeskState, kp: Keypair | null, walletSol: numbe
   if (state.wallet !== addr || state.funded == null || state.funded < minSol) {
     // new (or newly funded) wallet: fresh paper run from the real balance; old paper trades used other rules/sizes
     const r = redis();
-    await r.del(K.deskPos, K.deskTrades, K.deskEq, K.deskShadow, K.deskStalk, K.deskAfter, K.deskVet);
+    await r.del(K.deskPos, K.deskTrades, K.deskEq, K.deskShadow, K.deskStalk, K.deskAfter, K.deskVet, SEQ.trades);
+    SHM = null;
+    AFM = null;
+    listDrop(K.deskTrades);
     const now = Date.now();
     const fresh: DeskState = { live: false, cash: walletSol, start: walletSol, startedAt: now, realized: 0, closed: 0, wins: 0, dayKey: dayKey(), dayStart: walletSol, peakEq: walletSol, maxDD: 0, liveStart: null, promotedAt: null, demotions: state.demotions || 0, lastEqAt: 0, equity: walletSol, wallet: addr, funded: walletSol };
     log(b, "LEDGER", `desk wallet ${addr.slice(0, 4)}…${addr.slice(-4)} holds ${walletSol.toFixed(4)} SOL. paper desk restarted from that real balance`, "win");
@@ -351,7 +355,9 @@ export async function resetDesk(why = "manual") {
     await r.expire(arch, 60 * 86400);
   }
   POSC[K.deskPos]?.clear();
-  await r.del(K.deskState, K.deskPos, K.deskTrades, K.deskEv, K.deskQ, K.deskEq, K.deskAgent, K.deskVet, K.deskStalk, TRIPS_KEY, EXAM_FULL, K.deskExam);
+  await r.del(K.deskState, K.deskPos, K.deskTrades, K.deskEv, K.deskQ, K.deskEq, K.deskAgent, K.deskVet, K.deskStalk, TRIPS_KEY, EXAM_FULL, K.deskExam, SEQ.trades, SEQ.trips);
+  listDrop(K.deskTrades);
+  listDrop(TRIPS_KEY);
   await r.lpush(K.deskEv, { agent: "LEDGER", at: Date.now(), text: `paper desk reset (${why}). what it learned is kept`, tone: "info" });
   await loadState(s.desk.start);
 }
@@ -377,7 +383,7 @@ export async function dropWicksOnce() {
   const bad = new Set(trades.filter((t) => t.side === "sell" && (t.pnlPct ?? 0) > 5000).map((t) => t.mint));
   if (bad.size) {
     const keep = trades.filter((t) => !bad.has(t.mint));
-    await r.del(GHOST_TRADES);
+    await r.del(GHOST_TRADES, SEQ.gtrades, SEQ.gtrips);
     if (keep.length) await r.rpush(GHOST_TRADES, ...keep);
     const trips = ((await r.lrange<TripMeta>(GHOST_TRIPS, 0, -1)) || []) as TripMeta[];
     const keepT = trips.filter((t) => !bad.has(t.mint));
@@ -387,6 +393,28 @@ export async function dropWicksOnce() {
   const text = `data fix: false prints removed from learning (${paths} exit-lab paths, ${pm} PM ghost results, ${bad.size} ghost trades)`;
   await r.lpush(K.deskEv, { agent: "LEDGER", at: Date.now(), text, tone: "info" });
   return text;
+}
+/**
+ * v0.1.40 one-time slimming: buy rows in the trade lists carried their whole entry context (checks, card, LENS), a
+ * few KB each, read again with every list read. The round trips (rn:desk:trips) and open positions keep that context;
+ * the trade rows no longer need it.
+ */
+export async function slimTradesOnce() {
+  const r = redis();
+  if (!(await r.set("rn:fix:slim:0.1.40", Date.now(), { nx: true }))) return null;
+  let n = 0;
+  for (const [key, seq] of [[K.deskTrades, SEQ.trades], [GHOST_TRADES, SEQ.gtrades]] as const) {
+    const rows = ((await r.lrange<Trade>(key, 0, 1999)) || []) as Trade[];
+    if (!rows.some((t) => t.ctx)) continue;
+    const slim = rows.map(({ ctx, ...t }) => t);
+    const m = r.multi();
+    m.del(key, seq);
+    m.rpush(key, ...slim);
+    await m.exec();
+    listDrop(key);
+    n += rows.length;
+  }
+  return n;
 }
 /** v0.1.31: one reset so the exam measures the honest desk (real costs, fresh fills) from zero. */
 export async function resetOnceForCosts() {
@@ -452,12 +480,27 @@ const WROTE = new Map<string, number>();
 const SER = (key: string, mint: string) => `${key}:ser:${mint}`;
 const SER_AT = new Map<string, number>(); // newest point already in the list
 /** Fill in the price paths of positions read from Redis (pages and a fresh process). */
+// v0.1.40: the pages read each position's price path (up to 360 points) at most once a minute per server instance;
+// it only draws a sparkline. The worker always reads them fresh (its desk appends to them).
+const SER_CACHE = new Map<string, { at: number; v: Sample[] }>();
 export async function withSeries(key: string, pos: Record<string, Pos> | null) {
-  const ms = Object.keys(pos || {}).filter((m) => !(pos![m].series || []).length);
+  const ms0 = Object.keys(pos || {}).filter((m) => !(pos![m].series || []).length);
+  if (!ms0.length) return pos || {};
+  const site = process.env.RATNET_WORKER !== "1";
+  const now = Date.now();
+  if (site) {
+    for (const m of ms0) {
+      const c = SER_CACHE.get(`${key}|${m}`);
+      if (c && now - c.at < 60_000 && c.v.length) pos![m].series = c.v;
+    }
+    if (SER_CACHE.size > 500) SER_CACHE.clear();
+  }
+  const ms = ms0.filter((m) => !(pos![m].series || []).length);
   if (!ms.length) return pos || {};
   const p = redis().pipeline();
   for (const m of ms) p.lrange(SER(key, m), 0, -1);
   const got = ((await p.exec().catch(() => [])) || []) as Sample[][];
+  if (site) ms.forEach((m, i) => Array.isArray(got[i]) && got[i].length && SER_CACHE.set(`${key}|${m}`, { at: now, v: got[i] }));
   ms.forEach((m, i) => {
     const ser = Array.isArray(got[i]) ? got[i] : [];
     if (ser.length) pos![m].series = ser;
@@ -509,6 +552,36 @@ async function dropPos(key: string, mint: string) {
   await redis().hdel(key, mint);
   await redis().del(SER(key, mint)).catch(() => 0);
 }
+// v0.1.40: the shadow and COACH-after books in memory (see the slow pass). New entries go to both; deletes to both;
+// updates reach Redis every 2 minutes and at the end of every desk session.
+let SHM: Record<string, Shadow> | null = null;
+let AFM: Record<string, After> | null = null;
+let shafSavedAt = 0;
+async function loadShaf() {
+  if (SHM && AFM) return;
+  const r = redis();
+  const [sh, af] = await Promise.all([r.hgetall<Record<string, Shadow>>(K.deskShadow), r.hgetall<Record<string, After>>(K.deskAfter)]);
+  SHM = (sh || {}) as Record<string, Shadow>;
+  AFM = (af || {}) as Record<string, After>;
+  shafSavedAt = Date.now();
+}
+async function setShadow(r: ReturnType<typeof redis>, k: string, sh: Shadow) {
+  await r.hset(K.deskShadow, { [k]: sh });
+  if (SHM) SHM[k] = sh;
+}
+async function setAfter(r: ReturnType<typeof redis>, k: string, a: After) {
+  await r.hset(K.deskAfter, { [k]: a });
+  if (AFM) AFM[k] = a;
+}
+async function flushShaf() {
+  if (!SHM || !AFM) return;
+  const p = redis().pipeline();
+  if (Object.keys(SHM).length) p.hset(K.deskShadow, SHM);
+  if (Object.keys(AFM).length) p.hset(K.deskAfter, AFM);
+  await p.exec();
+  shafSavedAt = Date.now();
+}
+
 /** Write every position held in memory (end of a desk session). */
 async function flushPositions() {
   for (const [key, m] of Object.entries(POSC)) for (const p of Array.from(m.values())) await savePos(key, p, true).catch(() => {});
@@ -652,10 +725,12 @@ async function flushLog(b: Batch) {
   if (b.trades.length) {
     p.lpush(K.deskTrades, ...b.trades);
     p.ltrim(K.deskTrades, 0, 1999); // the full public track record
+    p.incr(SEQ.trades);
   }
   if (b.ghost?.length) {
     p.lpush(GHOST_TRADES, ...b.ghost);
     p.ltrim(GHOST_TRADES, 0, 1999);
+    p.incr(SEQ.gtrades);
   }
   await p.exec();
   b.ev = [];
@@ -687,7 +762,7 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
   // a round trip is a closed position: bought, then sold to the last token. A position still open after its initials
   // does not count yet (before v0.1.24 its first partial sell did, so the exam ran ahead of the track record), and a
   // coin bought twice counts twice. Only paper trades since this desk's start count.
-  const [all0, openMints] = await Promise.all([redis().lrange<Trade>(K.deskTrades, 0, 1999), redis().hkeys(K.deskPos).catch(() => [] as string[])]);
+  const [all0, openMints] = await Promise.all([deskTrades(), redis().hkeys(K.deskPos).catch(() => [] as string[])]);
   const all = ((all0 || []) as Trade[]).filter((t) => !t.live && t.at >= (state.startedAt || 0)).sort((a, b) => a.at - b.at);
   const open = new Set(openMints || []);
   const list: { mint: string; pnl: number; sells: number; at: number }[] = [];
@@ -1094,6 +1169,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await resetOnceForCosts().catch(() => false);
     await resetOnceForFinal().catch(() => false);
     await dropWicksOnce().catch(() => null);
+    await slimTradesOnce().catch(() => null);
     const s = await getSettings();
     const cfg = s.desk;
     if (cfg.mode === "off") return { off: true };
@@ -1166,10 +1242,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const queued = ((await r.zrange<string[]>(K.deskQ, 0, 9, { rev: true })) || []) as string[];
       // shadows and COACH every 15s, one pass at a time (every third beat read the whole shadow and after books, with
       // their price paths, about once a second: a large share of the Redis bandwidth)
-      const slow = !learning && now - lastSlowAt >= 15_000;
+      const slow = !learning && now - lastSlowAt >= 30_000; // v0.1.40: 30s (was 15s); path points are 30s apart anyway
       if (slow) lastSlowAt = now;
-      const shadows = slow ? (await r.hgetall<Record<string, Shadow>>(K.deskShadow)) || {} : {};
-      const afters = slow ? (await r.hgetall<Record<string, After>>(K.deskAfter)) || {} : {};
+      // v0.1.40: from memory (read from Redis once per process); written back every 2 minutes, not every 30s
+      if (slow) await loadShaf();
+      const shadows = slow ? SHM! : {};
+      const afters = slow ? AFM! : {};
       const cases = slow ? ((await r.hgetall<Record<string, Case>>(CASES).catch(() => null)) || {}) : {};
       const stalks = (await r.hgetall<Record<string, Stalk>>(K.deskStalk)) || {};
       const reents = ((await r.hgetall<Record<string, { mint: string; symbol: string; how: Pos["how"]; entryPx: number; at: number }>>(REENT).catch(() => null)) || {}) as Record<string, { mint: string; symbol: string; how: Pos["how"]; entryPx: number; at: number }>;
@@ -1188,7 +1266,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       }
       const walletSol = kp ? walletSolC : null;
       if (!state.live && (cfg.mode === "live" || cfg.mode === "auto") && kp && !positions.length) {
-        const ex = cfg.mode === "live" ? { passed: walletSol != null && walletSol >= EXAM.minWallet } : await exam(state, walletSol);
+        const ex = cfg.mode === "live" ? { passed: walletSol != null && walletSol >= EXAM.minWallet } : await memo("desk:exam", 30_000, () => exam(state, walletSol));
         if (ex.passed) {
           state.live = true;
           state.liveStart = walletSol;
@@ -1416,7 +1494,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             if (ok && /^sellers took over/.test(reason)) caseAdds.push({ kind: "drain", key: sleeveOf(p.how, p.wire?.vamp), mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
             if (ok && p.tokens <= 0) {
               // COACH follows the coin after we leave it
-              await r.hset(K.deskAfter, { [p.mint]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After });
+              await setAfter(r, p.mint, { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After);
             }
           }
           if (p.tokens > 0) await savePos(K.deskPos, p, sellFrac > 0);
@@ -1452,7 +1530,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             if (/^dev sold/.test(d.reason)) caseAdds.push({ kind: "dev", key: p.kind || "meme", mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
             if (/^sellers took over/.test(d.reason)) caseAdds.push({ kind: "drain", key: sleeveOf(p.how, p.wire?.vamp), mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
             // COACH reviews ghost exits like real ones (trail too tight or too loose)
-            if (closed) await r.hset(K.deskAfter, { [`g:${p.mint}`]: { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(d.reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After });
+            if (closed) await setAfter(r, `g:${p.mint}`, { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(d.reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After);
           }
           if (p.tokens > 0) await savePos(GHOST_POS, p, d.sellFrac > 0);
           else await dropPos(GHOST_POS, p.mint);
@@ -1576,7 +1654,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             // a prior skipped it: follow it anyway so COACH can tell whether the prior helps
             const tag = PRIOR_RULES[fails[0].rule];
             const sh = { ...newShadow(m, rec.symbol, q.px, early), k: `${tag[0]}:${m}`, tag };
-            await r.hset(K.deskShadow, { [sh.k]: sh });
+            await setShadow(r, sh.k, sh);
           }
           await r.set(K.deskVet, { mint: m, symbol: rec.symbol, at: now, checks }, { ex: 3600 });
           await r.set(VET_KEY(m), { at: now, checks, passed: !checks.find((c) => !c.ok) }, { ex: 7 * 86400 });
@@ -1597,7 +1675,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           // every clean signal is followed in shadow: buy-now vs three pullback depths, scored after 30 minutes
           if (((await r.hlen(K.deskShadow)) || 0) < 40) {
             const sh = newShadow(m, rec.symbol, q.px, early);
-            await r.hset(K.deskShadow, { [sh.k]: sh });
+            await setShadow(r, sh.k, sh);
           }
           if (early && !learnS.earlyOn) {
             const es = learnS.earlyStat;
@@ -1715,8 +1793,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             scoreShadow(learnS, sh, b);
             learnDirty = true;
             wp.hdel(K.deskShadow, sh.k || sh.mint);
-          } else if (now - sh.at >= 2 * LEARN_RULES.shadowMins * 60_000) wp.hdel(K.deskShadow, sh.k || sh.mint);
-          else shUp[sh.k || sh.mint] = sh;
+            delete SHM?.[sh.k || sh.mint];
+          } else if (now - sh.at >= 2 * LEARN_RULES.shadowMins * 60_000) {
+            wp.hdel(K.deskShadow, sh.k || sh.mint);
+            delete SHM?.[sh.k || sh.mint];
+          } else shUp[sh.k || sh.mint] = sh;
         }
         for (const [ak, a] of Object.entries(afters)) {
           const q = px[a.mint];
@@ -1737,11 +1818,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           }
           // done when COACH has its verdict and the path covers 2 hours from the buy (or the coin went dark)
           if (!q || q.src === "dex") a.noq = (a.noq || 0) + 1;
-          // no read for ~10 minutes in a row (40 slow passes): the coin went dark
-          const pathDone = !a.openedAt || now - a.openedAt >= 120 * 60_000 || now - a.at > LEARN_RULES.coachHours * 3600_000 || (a.noq || 0) >= 40;
+          // no read for ~10 minutes in a row (20 slow passes of 30s): the coin went dark
+          const pathDone = !a.openedAt || now - a.openedAt >= 120 * 60_000 || now - a.at > LEARN_RULES.coachHours * 3600_000 || (a.noq || 0) >= 20;
           if (a.reviewed && pathDone) {
             if (a.pts && a.tier && a.sl) await notePath({ at: a.openedAt || a.at, tier: a.tier, sl: a.sl, pts: a.pts, cost: a.cost }).catch(() => {});
             wp.hdel(K.deskAfter, ak);
+            delete AFM?.[ak];
           } else afUp[ak] = a;
         }
         // dev-sell and sell-off cases, 30 minutes on: would selling at that moment have beaten holding?
@@ -1761,8 +1843,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           learnDirty = true;
           wp.hdel(CASES, ck);
         }
-        if (Object.keys(shUp).length) wp.hset(K.deskShadow, shUp);
-        if (Object.keys(afUp).length) wp.hset(K.deskAfter, afUp);
+        if (now - shafSavedAt >= 120_000) {
+          shafSavedAt = now;
+          if (Object.keys(shUp).length) wp.hset(K.deskShadow, shUp);
+          if (Object.keys(afUp).length) wp.hset(K.deskAfter, afUp);
+        }
         await wp.exec().catch(() => {});
         // EXIT LAB re-learns every bucket with enough paths (every ~10 minutes)
         const learned = await labStep((sl2, tier) => labDefault(cfg, sl2, tier)).catch(() => []);
@@ -1786,7 +1871,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       // --- the homepage shows how close the desk is to its own wallet (every ~30s)
       if (loops % 15 === 1) {
-        const ex = await exam(state, walletSol);
+        // v0.1.40: the exam reads up to 2,000 trades (MBs); one read per 30s is shared with the promotion check above,
+        // which used to run it on every beat while the desk waited flat for its exam
+        const ex = await memo("desk:exam", 30_000, () => exam(state, walletSol));
         await r.set(EXAM_FULL, { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
         await r.set(K.deskExam, { at: now, live: state.live, passed: ex.checks.filter((c) => c.ok).length, total: ex.checks.length, checks: ex.checks.map((c) => ({ l: c.label, ok: c.ok, now: c.now, need: c.need })), walletSol, wallet: kp ? kp.publicKey.toBase58() : null }, { ex: 600 });
       }
@@ -1850,6 +1937,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
   } finally {
     clearInterval(lockTimer);
     if (!DESK_LOST) await flushPositions();
+    if (!DESK_LOST) await flushShaf().catch(() => {});
     DESK_LOCK = null;
     await release(lock);
   }
@@ -2027,7 +2115,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   const now = Date.now();
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
-  b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
+  b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
   return {
     mint: rec.mint,
@@ -2339,6 +2427,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
     await redis().lpush(TRIPS_KEY, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: await withLens(p.ctx, p.mint) } satisfies TripMeta);
     await redis().ltrim(TRIPS_KEY, 0, 999);
+    await redis().incr(SEQ.trips).catch(() => 0);
     // COACH keeps watching the coin after we leave it: 5m, 15m, 1h, 2h, 6h, 1d, 7d
     await follow({ id: tripId(p.mint, p.openedAt), mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: Date.now(), entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
     log(b, "COACH", `following $${p.symbol} after the exit: checks at 5m, 15m, 1h, 2h, 6h, 1d and 7d, and what moved it`, "info", coin);
@@ -2375,7 +2464,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const now = Date.now();
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}`;
-  (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, cost: r4(sol + fixed), tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
+  (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, cost: r4(sol + fixed), tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
   const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, mkt: { grad, real: rl }, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];
   if (ins.length) {
@@ -2406,6 +2495,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
   await redis().lpush(GHOST_TRIPS, { mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, king: p.king, nano: p.nano, how: p.how || "direct", entryPx: p.entryPx, peakPx: Math.max(p.peakPx || 0, px), exitPx: px, series, ctx: await withLens(p.ctx, p.mint) } satisfies TripMeta);
   await redis().ltrim(GHOST_TRIPS, 0, 999);
+  await redis().incr(SEQ.gtrips).catch(() => 0);
   // COACH follows ghost exits too (5m to 7d), and PM hears how a paused strategy would have done
   await follow({ id: `g:${tripId(p.mint, p.openedAt)}`, mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: now, entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
   await noteExit(`${sleeveOf(p.how, p.wire?.vamp)}:${p.tier || "micro"}`, Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
@@ -2468,7 +2558,6 @@ export async function getDesk() {
   const p = r.pipeline();
   p.get(K.deskState);
   p.hgetall(K.deskPos);
-  p.lrange(K.deskTrades, 0, 59);
   p.lrange(K.deskEv, 0, 59);
   p.lrange(K.deskEq, -720, -1);
   p.hgetall(K.deskAgent);
@@ -2476,7 +2565,7 @@ export async function getDesk() {
   p.hgetall(K.deskStalk);
   p.hlen(K.deskShadow);
   p.hlen(K.deskAfter);
-  const [st, pos, trades, ev, eqs, agents, vet, stalks, nShadow, nAfter] = (await p.exec()) as any[];
+  const [[st, pos, ev, eqs, agents, vet, stalks, nShadow, nAfter], trades] = (await Promise.all([p.exec(), deskTrades().then((t) => t.slice(0, 60))])) as [any[], Trade[]];
   const state: DeskState = st || (await loadState(s.desk.start));
   await withSeries(K.deskPos, pos);
   const learnS = await loadLearn();
@@ -2524,7 +2613,7 @@ export async function getDesk() {
       const [open, n] = await Promise.all([r.hlen(GHOST_POS), r.llen(GHOST_TRADES)]);
       return { open: open || 0, fills: n || 0, max: GHOST_MAX };
     })().catch(() => null),
-    wire: await wireView(40).catch(() => null),
+    wire: await wireViewPublic(40).catch(() => null),
     learn: { ...learnS, arms, shadows: nShadow || 0, reviewing: nAfter || 0, rules: LEARN_RULES, xConnected: !!process.env.X_BEARER_TOKEN },
     now: await rightNow(learnS).catch(() => null),
   };
@@ -2584,6 +2673,13 @@ export async function catchStageRecord(stage: "curve" | "pool") {
 }
 const GHOST_TRADES = "rn:ghost:trades";
 const GHOST_TRIPS = "rn:ghost:trips";
+// v0.1.40: change counters of the four big lists (lib/lcache.ts listCached): readers fetch only the newest rows
+const SEQ = { trades: "rn:desk:trades:seq", trips: "rn:desk:trips:seq", gtrades: "rn:ghost:trades:seq", gtrips: "rn:ghost:trips:seq" };
+const tradeId = (t: Trade) => t.id;
+const tripMetaId = (m: TripMeta) => `${m.mint}|${m.openedAt}`;
+export const deskTrades = () => listCached<Trade>(K.deskTrades, SEQ.trades, 2000, tradeId);
+const ghostTrades = () => listCached<Trade>(GHOST_TRADES, SEQ.gtrades, 2000, tradeId);
+const tripMetas = (ghost: boolean) => listCached<TripMeta>(ghost ? GHOST_TRIPS : TRIPS_KEY, ghost ? SEQ.gtrips : SEQ.trips, 1000, tripMetaId);
 const GHOST_MAX = 10;
 const DESK_RULES = new Set(["daily_loss_ok", "open_slots"]);
 // strategies with their own slot count (the King's lane never fills up with them, nor they with the King's)
@@ -2701,10 +2797,10 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
   const r = redis();
   const ghost = book === "ghost";
   const [trades, posMap, st, metas, sol] = await Promise.all([
-    r.lrange<Trade>(ghost ? GHOST_TRADES : K.deskTrades, 0, 1999),
+    ghost ? ghostTrades() : deskTrades(),
     r.hgetall<Record<string, Pos>>(ghost ? GHOST_POS : K.deskPos).then((x) => withSeries(ghost ? GHOST_POS : K.deskPos, x)),
     r.get<DeskState>(K.deskState),
-    r.lrange<TripMeta>(ghost ? GHOST_TRIPS : TRIPS_KEY, 0, 999),
+    tripMetas(ghost),
     solUsd().catch(() => null),
   ]);
   const metaBy: Record<string, TripMeta> = {};

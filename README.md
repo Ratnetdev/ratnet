@@ -547,6 +547,10 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `HELIUS_WS_URL` | Optional. Helius websocket URL for the price feed (account updates of open positions); by default derived from `HELIUS_RPC_URL` (https → wss). |
 | `RPC_CALLS_PER_DAY` | Optional. Total chain reads per day for the worker (default `300000`, a 10M-a-month Helius plan over 30 days). Paced evenly through the UTC day (about 3.5 reads a second): the historian waits at 75% of pace, the agents at 95%, the rats at 105%; the desk never waits. `0` turns the cap off. /status shows the top methods per lane this hour. |
 | `FETCH_TIMEOUT_MS` | Optional. Deadline for any outside call that sets none of its own (default `20000`). |
+| `BW_ALERT_MB_HOUR` | Optional. The worker reports Redis bandwidth to the private Telegram chat every 6 hours, and at once when one hour uses more than this many MB (default `150`). |
+| `BW_GB_PER_DAY` | Optional. The Redis bandwidth allowance per day, worker and site together (default `2.8`, about 84GB a month on Upstash's 100GB Fixed 1GB plan). It is paced through the day: past the pace, pages cache 3x longer and the background work slows (saving mode 1); past 1.5x the pace or the whole allowance, 6x (mode 2). The desk itself is never slowed. Shown on /status. |
+| `BW_GOVERNOR` | Optional. `off` switches the saving modes off (the counting stays). Leave unset. |
+| `RW_MIN_BYTES` | Optional. Redis values at least this long are stored compressed (default `1024`). Leave unset. |
 | `WORKER_DESK_MS` | Optional. Length of one desk session in the worker (default `300000`, 5 minutes). The desk runs in its own loop next to the agents. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |
 

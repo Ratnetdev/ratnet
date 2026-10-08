@@ -45,7 +45,8 @@ const ok = (c: boolean, m: string) => {
   ok(!old.MINTA, "a cached price older than 20s is not served");
 
   // merged boards: one endpoint carries every agent board
-  const src = require("fs").readFileSync("src/app/api/boards/route.ts", "utf8");
+  // v0.1.40: the builder moved to lib/boards.ts (the worker publishes it, the route reads it)
+  const src = require("fs").readFileSync("src/lib/boards.ts", "utf8");
   ok(["flashView", "catchView", "boardTop", "momoView", "mindView", "houndView(false)", "lensView"].every((x) => src.includes(x)) && /w: \[\]/.test(src), "/api/boards carries all seven boards, public views only");
 
   console.log(fail ? `\n${fail} FAILED` : "\nall v0.1.38 checks passed");

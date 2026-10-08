@@ -1,6 +1,6 @@
 import { safeEq } from "@/lib/admin";
 import { redis } from "@/lib/redis";
-import { ingest, noteVolume, parseHook } from "@/lib/wire";
+import { ingest, noteVolume, parseHook, X_INQ } from "@/lib/wire";
 import { fail, json } from "@/lib/http";
 import { xSpend } from "@/lib/xcredits";
 
@@ -24,6 +24,17 @@ export async function POST(req: Request) {
     if (!tweets.length) return json({ ok: true, stored: 0 });
     await xSpend("watchlist posts", tweets.length * 15);
     await noteVolume(tweets);
+    // v0.1.40: the worker ingests (it holds WIRE's ~800KB account list in memory; each server instance reading it
+    // for every webhook was gigabytes a day). Only when the worker is down does the webhook ingest here.
+    const r = redis();
+    if (await r.get("rn:worker:at").catch(() => null)) {
+      const p = r.pipeline();
+      p.lpush(X_INQ, ...tweets);
+      p.ltrim(X_INQ, 0, 1999);
+      p.expire(X_INQ, 3600);
+      await p.exec();
+      return json({ ok: true, queued: tweets.length });
+    }
     return json({ ok: true, ...(await ingest(tweets)) });
   } catch (e) {
     return fail(e, 500);
