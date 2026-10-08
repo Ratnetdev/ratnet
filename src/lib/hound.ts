@@ -17,6 +17,7 @@
 // what and how much, MIND gets the coin when several tracked wallets pile in (or one strong one), and every buy is
 // followed 1h, 6h and 24h later, so each wallet and each class gets a copy-trade record of its own. MIND and RISK
 // see those records; nothing is followed blindly.
+import { createHash } from "crypto";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { postTo } from "./board";
 import { memo } from "./memo";
@@ -406,15 +407,20 @@ async function digBreakout() {
 
 const heliusKey = () => process.env.HELIUS_API_KEY || (process.env.HELIUS_RPC_URL || "").match(/api-key=([A-Za-z0-9-]+)/)?.[1] || "";
 const hookAuth = () => secretFor("helius-hook");
+const B58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 export const checkHook = (req: Request) => !!hookAuth() && safeEq(req.headers.get("authorization"), hookAuth());
 
 /** Keep one Helius webhook on every tracked wallet (only when the book changed, at most every 10 minutes). */
 export async function syncHook(force = false) {
   const key = heliusKey();
   const r = redis();
-  if (!key || !hookAuth()) return { hook: "off (no Helius key or CRON_SECRET)" };
+  if (!key || !hookAuth()) return { hook: "off (no Helius key or HELIUS_HOOK_SECRET)" };
+  const prev = await r.get<{ id: string; n: number; at: number; auth?: string }>(HOOK);
+  // v0.1.46: a new HELIUS_HOOK_SECRET is pushed to Helius on its own (the webhook would otherwise keep sending the old
+  // one and every swap would be refused)
+  const authNow = createHash("sha256").update(hookAuth()).digest("hex").slice(0, 12);
+  if (prev && prev.auth !== authNow) force = true;
   if (!force && !(await r.get(DIRTY))) return { hook: "unchanged" };
-  const prev = await r.get<{ id: string; n: number; at: number }>(HOOK);
   if (!force && prev && Date.now() - prev.at < 10 * 60_000) return { hook: "waiting" };
   const addrs = Object.values(await book()).filter((x) => !x.off).map((x) => x.w).slice(0, 100_000);
   if (!addrs.length) return { hook: "no wallets yet" };
@@ -438,7 +444,7 @@ export async function syncHook(force = false) {
   }
   const j: any = res?.ok ? await res.json().catch(() => null) : null;
   if (!res?.ok) return { hook: `failed ${res?.status ?? "no answer"}` };
-  await r.set(HOOK, { id: j?.webhookID || id || "", n: addrs.length, at: Date.now() });
+  await r.set(HOOK, { id: j?.webhookID || id || "", n: addrs.length, at: Date.now(), auth: authNow });
   await r.del(DIRTY);
   return { hook: `${addrs.length} wallets live` };
 }
@@ -446,7 +452,7 @@ export async function syncHook(force = false) {
 /** Parse Helius enhanced SWAP transactions into buys and sells of tracked wallets. */
 export async function onSwaps(txs: any[]) {
   const r = redis();
-  const list = Array.isArray(txs) ? txs : [];
+  const list = (Array.isArray(txs) ? txs : []).slice(0, 500); // v0.1.46: one webhook call carries at most 500 swaps
   if (!list.length) return { buys: 0 };
   const ws = Array.from(new Set(list.map((t) => t.feePayer).filter(Boolean)));
   const got = ((await r.hmget<Record<string, Wallet>>(W, ...ws)) || {}) as Record<string, Wallet | null>;
@@ -462,7 +468,8 @@ export async function onSwaps(txs: any[]) {
     const wsolOut = tt.filter((x) => x.fromUserAccount === t.feePayer && x.mint === WSOL).reduce((a, x) => a + Number(x.tokenAmount || 0), 0);
     const side: Buy["side"] = inTok ? "buy" : "sell";
     const mint = (inTok || outTok)?.mint;
-    if (!mint) continue;
+    // v0.1.46: only real Solana addresses get in (a crafted payload could otherwise put any string into keys and pages)
+    if (!mint || !B58.test(String(mint)) || typeof t.signature !== "string" || t.signature.length > 100) continue;
     const sol = r2(side === "buy" ? Math.max(solOut, wsolOut) : 0);
     out.push({ id: t.signature, w: wl.w, name: wl.name, cls: wl.cls, conf: wl.conf, mint, symbol: "", sol, at: (t.timestamp || Date.now() / 1000) * 1000, sig: t.signature, side });
   }
@@ -481,7 +488,8 @@ export async function onSwaps(txs: any[]) {
     p.zadd(DUE, { score: Date.now() + 60_000, member: b.id });
     hot.add(b.mint);
     // BOARD: a tracked wallet buying is HOUND's view on the coin (stronger for classes with a proven edge)
-    postTo(p, b.mint, { a: "HOUND", at: b.at, s: b.cls === "smart" || b.cls === "fomo-homerun" ? 0.9 : b.conf === "confirmed" ? 0.7 : 0.5, t: `${b.name} (${CLASS_LABEL[b.cls as keyof typeof CLASS_LABEL] || b.cls}) bought ${b.sol} SOL`, sym: b.symbol });
+    // the BOARD is public: smart and admin-class wallets appear without their names
+    postTo(p, b.mint, { a: "HOUND", at: b.at, s: b.cls === "smart" || b.cls === "fomo-homerun" ? 0.9 : b.conf === "confirmed" ? 0.7 : 0.5, t: `${b.cls === "smart" || b.cls === "admin" ? "a tracked wallet" : b.name} (${CLASS_LABEL[b.cls as keyof typeof CLASS_LABEL] || b.cls}) bought ${b.sol} SOL`, sym: b.symbol });
   }
   p.ltrim(FEED, 0, 199);
   await p.exec();
@@ -649,8 +657,10 @@ export async function houndView(full: boolean) {
   const all = Object.values(ws);
   const counts = { total: all.length, fomo: all.filter((x) => x.cls.startsWith("fomo")).length, kol: all.filter((x) => x.cls === "kol").length, kolConfirmed: all.filter((x) => x.cls === "kol" && x.conf === "confirmed").length, smart: all.filter((x) => x.cls === "smart").length, admin: all.filter((x) => x.cls === "admin").length };
   const classes = (["fomo-homerun", "fomo-steady", "fomo-top", "kol", "smart", "admin"] as Cls[]).map((c) => ({ cls: c, label: CLASS_LABEL[c], h1: avgOf(E, `c:${c}`, "1h"), h6: avgOf(E, `c:${c}`, "6h"), h24: avgOf(E, `c:${c}`, "24h") }));
-  // public: names of KOLs and FOMO traders are public anyway; smart wallets stay anonymous and addresses are hidden
-  const show = (b: Buy) => (full ? b : { ...b, w: b.cls === "smart" ? "" : b.w, name: b.cls === "smart" ? "smart wallet" : b.name });
+  // public: names of KOLs and FOMO traders are public anyway; smart wallets stay anonymous and addresses are hidden.
+  // v0.1.46: wallets you added yourself (admin class) are hidden the same way: they can trace back to you
+  const anon = (c: string) => c === "smart" || c === "admin";
+  const show = (b: Buy) => (full ? b : { ...b, w: anon(b.cls) ? "" : b.w, name: anon(b.cls) ? (b.cls === "smart" ? "smart wallet" : "tracked wallet") : b.name });
   return {
     live: lv || null,
     hook: hook ? { n: hook.n, at: hook.at } : null,

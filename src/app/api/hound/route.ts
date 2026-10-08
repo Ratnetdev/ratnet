@@ -17,7 +17,8 @@ export async function GET(req: Request) {
       if (!isPubkey(mint)) return fail("bad mint");
       if (!full && !memLimit(`hound:${ipOf(req)}`, 30, 60)) return tooMany();
       const b = await memo(`hound:buyers:${mint}`, 15_000, () => buyersOf(mint));
-      const out = b.map((x: any) => (full ? x : { ...x, w: x.cls === "smart" ? "" : x.w, name: x.cls === "smart" ? "smart wallet" : x.name }));
+      const anon = (c: string) => c === "smart" || c === "admin"; // v0.1.46: your own wallets are hidden too
+      const out = b.map((x: any) => (full ? x : { ...x, w: anon(x.cls) ? "" : x.w, name: anon(x.cls) ? (x.cls === "smart" ? "smart wallet" : "tracked wallet") : x.name }));
       return full ? json({ buyers: out }) : cached({ buyers: out }, 5);
     }
     if (full) return json(await houndView(true));

@@ -31,7 +31,10 @@ export const sha256 = (lines: string[]) => createHash("sha256").update(lines.joi
 const memoOf = (h: string, n: number, sha: string) => `RATNET calls ${h}:00Z n=${n} sha256=${sha}`;
 
 function signer(): Keypair | null {
-  const sec = process.env.RECEIPT_WALLET_SECRET || process.env.DESK_WALLET_SECRET;
+  // v0.1.46: the desk wallet's key is used only in the worker (Railway). On Vercel only a receipt wallet of its own
+  // (RECEIPT_WALLET_SECRET) can sign; the desk key is never loaded there
+  const onVercel = !!process.env.VERCEL && process.env.DESK_ON_VERCEL !== "1";
+  const sec = process.env.RECEIPT_WALLET_SECRET || (onVercel ? "" : process.env.DESK_WALLET_SECRET);
   if (!sec) return null;
   try {
     return Keypair.fromSecretKey(sec.trim().startsWith("[") ? Uint8Array.from(JSON.parse(sec)) : bs58.decode(sec.trim()));

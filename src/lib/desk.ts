@@ -12,6 +12,7 @@
 
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { memo, memoDrop } from "./memo";
+import { alertClose, alertOpen, alertsFlush } from "./tradealerts";
 import { listCached, listDrop } from "./lcache";
 import { ATA_RENT, roundTripCost, slipOf, sellProceeds, txCost, venueFee, type CostCfg } from "./costs";
 import { shield } from "./shield";
@@ -1261,6 +1262,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     const s = await getSettings();
     const cfg = s.desk;
     if (cfg.mode === "off") return { off: true };
+    ALERT_CFG = cfg;
     let state = await loadState(cfg.start);
     // v0.1.45: a live desk is run only by the process with the wallet key. A takeover on Vercel used to book live
     // equity from paper cash (the balance is never read there) into the equity line
@@ -2078,6 +2080,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     return { error: safeErr(e), loops };
   } finally {
     clearInterval(lockTimer);
+    if (process.env.VERCEL) await alertsFlush().catch(() => null);
     if (!DESK_LOST) await flushPositions();
     if (!DESK_LOST) await flushShaf().catch(() => {});
     DESK_LOCK = null;
@@ -2171,6 +2174,7 @@ function skipFalling(b: Batch, rec: Launch, how: string, k: { why: string; px: n
   if (!ghost) logSkip("falling_knife", k.why, rec.mint, rec.symbol, k.px).catch(() => {});
 }
 const ENTERING = new Set<string>();
+let ALERT_CFG: unknown = null; // v0.1.46: the session's desk settings, for the Telegram trade alerts (desk.tgTrades)
 /** v0.1.45: is there room for one more buy in this strategy's lane? null = yes, otherwise the reason. Stalk fills and
  *  re-entries skipped VET, so they used to buy past full slots and past the daily loss limit. */
 export async function roomFor(how: Pos["how"] | string, state: DeskState, eqValue: number, cfg: Cfg): Promise<string | null> {
@@ -2343,6 +2347,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
+  alertOpen({ book: state.live ? "live" : "paper", mint: rec.mint, symbol: rec.symbol, how, sol: sol + paperFixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, sig }, ALERT_CFG);
   return {
     mint: rec.mint,
     symbol: rec.symbol,
@@ -2690,7 +2695,8 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     const total = p.soldSol - p.costSol;
     if (total > 0) state.wins++;
     log(b, "LEDGER", `closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))})`, total >= 0 ? "win" : "loss", coin);
-  }
+    alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(px, sol$), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason, sig }, ALERT_CFG);
+  } else alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, sig, partial: { frac: amt / p.tokens0, sol: proceeds } }, ALERT_CFG);
   return true;
 }
 
@@ -2733,6 +2739,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   }
   await savePos(GHOST_POS, pos, true);
   log(b, "EXEC", `ghost desk bought $${rec.symbol} for ${sol} SOL (the real desk is blocked: ${blocked}). not counted, learned from`, "info", coin);
+  alertOpen({ book: "ghost", mint: rec.mint, symbol: rec.symbol, how, sol: sol + fixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, blocked }, ALERT_CFG ?? cfg);
 }
 
 /** Sell in the ghost book. Returns true when the position is fully closed. */
@@ -2748,7 +2755,10 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   const sol$ = await solUsd().catch(() => null);
   (b.ghost ||= []).push({ id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pct(proceeds, costPart) * 10) / 10, live: false, mc: mcUsd(px, sol$) });
   log(b, "RISK", `ghost: ${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, "info", coin);
-  if (p.tokens > 1e-9) return false;
+  if (p.tokens > 1e-9) {
+    alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, partial: { frac: amt / p.tokens0, sol: proceeds } }, ALERT_CFG);
+    return false;
+  }
   p.tokens = 0;
   await noteStageResult(p).catch(() => {});
   const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
@@ -2763,6 +2773,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   if (note) log(b, "PM", note, "win");
   const total = p.soldSol - p.costSol;
   log(b, "LEDGER", `ghost desk closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))}). not counted`, "info", coin);
+  alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(px, sol$), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason }, ALERT_CFG);
   return true;
 }
 
@@ -3000,7 +3011,7 @@ async function entryCtx(rec: Launch, px: number, real: number, how: Pos["how"]):
     wire: rec.wire ? { h: rec.wire.h, text: rec.wire.text, how: rec.wire.how, lagSec: rec.wire.lagSec, trust: (await accountOf(rec.wire.h).catch(() => ({ w: 0 }))).w } : null,
     wallets: await (async () => {
       const bs = await buyersOf(rec.mint).catch(() => []);
-      return bs.length ? bs.slice(0, 8).map((x: any) => ({ name: x.cls === "smart" ? "smart wallet" : x.name, cls: CLASS_LABEL[x.cls as keyof typeof CLASS_LABEL] || x.cls, conf: x.conf, sol: x.sol, minsBefore: Math.round((now - x.at) / 60_000) })) : null;
+      return bs.length ? bs.slice(0, 8).map((x: any) => ({ name: x.cls === "smart" ? "smart wallet" : x.cls === "admin" ? "tracked wallet" : x.name, cls: CLASS_LABEL[x.cls as keyof typeof CLASS_LABEL] || x.cls, conf: x.conf, sol: x.sol, minsBefore: Math.round((now - x.at) / 60_000) })) : null;
     })(),
     mind: await (async () => {
       const j = await mindJudgement(rec.mint).catch(() => null);

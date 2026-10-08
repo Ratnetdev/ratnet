@@ -53,6 +53,8 @@ export function ownAtas(owner: PublicKey, mint: string) {
 export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: AddressLookupTableAccount[] = [], outputMint?: string) {
   const keys = tx.message.getAccountKeys({ addressLookupTableAccounts: lookups });
   if (!keys.get(0)?.equals(payer)) throw new Error("tx payer is not the desk wallet");
+  // v0.1.46: the desk wallet is the only signer (a second signer could be an account created for someone else)
+  if (tx.message.header.numRequiredSignatures !== 1) throw new Error(`tx needs ${tx.message.header.numRequiredSignatures} signers, refused`);
   const me = payer.toBase58();
   const wsolAtas = ownAtas(payer, WSOL_MINT);
   const tips = new Set(TIP);
@@ -85,6 +87,20 @@ export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: Addre
     }
   }
   if (!outSeen) throw new Error("the swap's output does not go to the desk wallet's own account");
+}
+
+/**
+ * v0.1.46: the quote has to be for what we asked (mints, amount) and its minimum output has to match our slippage
+ * limit. A quote whose minimum output is far below its expected output (a broken or tampered answer) would let a
+ * sandwich take almost everything; it is refused before anything is built or signed.
+ */
+export function vetQuote(q: any, inputMint: string, outputMint: string, amountRaw: bigint, slippageBps: number) {
+  if (q.inputMint !== inputMint || q.outputMint !== outputMint) throw new Error("quote refused: wrong mints");
+  if (String(q.inAmount) !== String(amountRaw)) throw new Error("quote refused: wrong input amount");
+  const out = BigInt(q.outAmount);
+  const min = BigInt(q.otherAmountThreshold ?? "0");
+  const floor = (out * BigInt(10_000 - slippageBps - 50)) / 10_000n;
+  if (out <= 0n || min < floor) throw new Error(`quote refused: minimum output ${min} under the ${slippageBps / 100}% slippage floor`);
 }
 
 /**
@@ -233,6 +249,7 @@ async function fastSwapInner(kp: Keypair, inputMint: string, outputMint: string,
     if (!r.ok) throw new Error(`no route (${r.status})`);
     const q = await r.json();
     if (!q?.outAmount) throw new Error("no route");
+    vetQuote(q, inputMint, outputMint, amountRaw, slippageBps);
     return q;
   });
   const [quote, bh] = await Promise.all([quoteP, blockhash()]);

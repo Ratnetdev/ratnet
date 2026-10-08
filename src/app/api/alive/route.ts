@@ -3,7 +3,8 @@ import { xSpendView } from "@/lib/xcredits";
 import { rpcDayView } from "@/lib/rpcday";
 import { redis } from "@/lib/redis";
 import { memo } from "@/lib/memo";
-import { cached, fail } from "@/lib/http";
+import { cached, fail, json } from "@/lib/http";
+import { isAdmin } from "@/lib/admin";
 
 export const dynamic = "force-dynamic";
 
@@ -11,10 +12,19 @@ export const dynamic = "force-dynamic";
 // chain reads per day, X credits and the worker's restarts. Counts only, never secrets.
 export async function GET() {
   try {
-    return cached(await memo("api:alive", 5_000, build), 5);
+    const out = await memo("api:alive", 5_000, build);
+    // v0.1.46: the Redis bandwidth figures are for the admin only (they show how much traffic it takes to push the
+    // database over its plan); the admin's answer is never shared through the CDN cache
+    if (await isAdmin()) return json({ ...out, bw: await memo("api:alive:bw", 5_000, bwView) });
+    return cached({ ...out, bw: null }, 5);
   } catch (e) {
     return fail(e, 500);
   }
+}
+
+async function bwView() {
+  const bw = await redis().get<any>("rn:bw").catch(() => null);
+  return bw ? { at: bw.at, hourMB: bw.hourMB, gov: bw.gov ?? null } : null;
 }
 
 async function build() {
@@ -36,9 +46,7 @@ async function build() {
       r.get<{ at: number; shapes: [string, number][] }>("rn:stream:shapes"),
       r.get<number>("rn:hook:x:rejected"),
     ]);
-    // v0.1.40: Redis bandwidth today (worker and site together) against the day's allowance
-    const bw = await r.get<any>("rn:bw").catch(() => null);
     const worker = { boots: Number(boots || 0), bootAt: Number(bootAt || 0) || null, exits: exits || [], takeovers: Number(takeovers || 0), takeoverAt: Number(takeoverAt || 0) || null, streamReconnects: Number(reconnects || 0), streamNote: streamNote || null, streamShapes: streamShapes || null, xHookRejected: Number(xRejected || 0) };
-    return { parts, rpc: rpc || null, x, rpcDay: day, worker, bw: bw ? { at: bw.at, hourMB: bw.hourMB, gov: bw.gov ?? null } : null };
+    return { parts, rpc: rpc || null, x, rpcDay: day, worker };
   }
 }

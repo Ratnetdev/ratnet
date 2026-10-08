@@ -108,7 +108,7 @@ export default function Admin() {
         <span className="strat-tabs">
           {(["settings", "setup", "strategy", "wallets", "overseer"] as const).map((k) => <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{k}</button>)}
         </span>
-        <span className="small">{msg && <span className="green">{msg}</span>} {err && <span style={{ color: "var(--dust)" }}>{err}</span>} <button className="btn sm ghost" onClick={async () => { await fetch("/api/admin/login", { method: "DELETE" }); setAuthed(false); }}>log out</button></span>
+        <span className="small">{msg && <span className="green">{msg}</span>} {err && <span style={{ color: "var(--dust)" }}>{err}</span>} <button className="btn sm ghost" onClick={async () => { await fetch("/api/admin/login", { method: "DELETE" }); setAuthed(false); }}>log out</button> <button className="btn sm ghost" title="Ends every admin session on every device" onClick={async () => { if (!confirm("Log out every admin session on every device?")) return; await fetch("/api/admin/login?all=1", { method: "DELETE" }); setAuthed(false); }}>log out everywhere</button></span>
       </div>
 
       {tab === "setup" ? <Setup /> : tab === "strategy" ? <Strategy /> : tab === "wallets" ? <Wallets /> : tab === "overseer" ? <Overseer /> : <>

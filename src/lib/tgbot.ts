@@ -15,12 +15,34 @@ export const ideasChat = () => process.env.TELEGRAM_IDEAS_CHAT_ID || null;
 export const hookSecret = () => secretFor("tg-hook");
 export const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+/** v0.1.46: cut a message to Telegram's 4,096 characters without breaking its HTML. The cut used to land inside an
+ *  escaped character or a tag, and Telegram refused the whole message. */
+export function tgCut(html: string, max = 4000) {
+  if (html.length <= max) return html;
+  let s = html.slice(0, max - 20).replace(/&[a-zA-Z#0-9]*$/, "").replace(/<[^>]*$/, "");
+  const open: string[] = [];
+  for (const m of s.matchAll(/<(\/?)([a-z]+)[^>]*>/gi)) {
+    const tag = m[2].toLowerCase();
+    if (m[1]) {
+      const i = open.lastIndexOf(tag);
+      if (i >= 0) open.splice(i, 1);
+    } else open.push(tag);
+  }
+  s += "…";
+  for (const t of open.reverse()) s += `</${t}>`;
+  return s;
+}
+
+/** v0.1.46: webhook secrets that are not set (that webhook refuses everything until they are). */
+export const missingSecrets = () => (["HELIUS_HOOK_SECRET", "TG_HOOK_SECRET"] as const).filter((k) => !(process.env[k] || "").trim());
+
 export async function tgSend(chat: string | number, html: string) {
   if (!TOKEN()) return false;
+  html = tgCut(html);
   const res = await fetch(`https://api.telegram.org/bot${TOKEN()}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chat, text: html.slice(0, 4000), parse_mode: "HTML", disable_web_page_preview: true }),
+    body: JSON.stringify({ chat_id: chat, text: html, parse_mode: "HTML", disable_web_page_preview: true }),
   }).catch(() => null);
   return !!res?.ok;
 }
@@ -33,6 +55,18 @@ export async function setupHook() {
     body: JSON.stringify({ url: `${SITE.url}/api/tg/hook`, secret_token: hookSecret(), allowed_updates: ["message", "channel_post"] }),
   }).catch(() => null);
   return (await res?.json().catch(() => null)) || { ok: false };
+}
+
+/** v0.1.46: re-register the bot's webhook by itself when TG_HOOK_SECRET changes (worker, every 10 minutes). */
+export async function ensureHook() {
+  if (!TOKEN() || !hookSecret()) return { tg: "off" };
+  const { createHash } = await import("crypto");
+  const { redis } = await import("./redis");
+  const v = createHash("sha256").update(hookSecret()).digest("hex").slice(0, 12);
+  if ((await redis().get<string>("rn:tg:hookv").catch(() => null)) === v) return { tg: "unchanged" };
+  const res: any = await setupHook();
+  if (res?.ok) await redis().set("rn:tg:hookv", v).catch(() => null);
+  return { tg: res?.ok ? "webhook updated" : `failed ${res?.description || ""}`.trim() };
 }
 
 // Who may command the bot. With TELEGRAM_ADMIN_IDS set, only those users (anywhere), plus posts in the ideas chat
@@ -79,7 +113,7 @@ export async function handleUpdate(u: any) {
     const d: any = await getDesk();
     const mr = await mindRecord();
     const send = mr.find((x) => x.verdict === "SEND");
-    return tgSend(chat, [`<b>RATNET</b> · ${d.live ? "live" : "paper"}`, `equity ${Number(d.state.equity).toFixed(3)} SOL (start ${d.state.start}) · ${d.state.closed} closed, ${d.state.wins} won`, `open: ${d.positions.length} · exam ${d.exam.passed ? "passed" : `${d.exam.checks.filter((c: any) => c.ok).length}/${d.exam.checks.length}`}`, `MIND SEND: ${send?.n ?? 0} calls, 6h avg ${send?.h[2]?.avg ?? "-"}%`, `${SITE.url}/desk`].join("\n"));
+    return tgSend(chat, [`<b>RATNET</b> · ${d.live ? "live" : "paper"}`, `equity ${Number(d.state.equity).toFixed(3)} SOL (start ${d.state.start}) · ${d.state.closed} closed, ${d.state.wins} won`, `open: ${d.positions.length} · exam ${d.exam.passed ? "passed" : `${d.exam.checks.filter((c: any) => c.ok).length}/${d.exam.checks.length}`}`, `MIND SEND: ${send?.n ?? 0} calls, 6h avg ${send?.h[2]?.avg ?? "-"}%`, ...(missingSecrets().length ? [`⚠️ missing: ${missingSecrets().join(", ")}`] : []), `${SITE.url}/desk`].join("\n"));
   }
   if (cmd === "/teach") {
     const { teach } = await import("./mind");

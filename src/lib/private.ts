@@ -39,7 +39,11 @@ export function publicDesk(d: any) {
     cfg: { dailyLoss: cfg.dailyLoss, maxOpen: cfg.maxOpen, mode: cfg.mode },
     learn: d.learn ? { shadows: d.learn.shadows, reviewing: d.learn.reviewing, reviews: d.learn.reviews, xConnected: d.learn.xConnected } : null,
     film: d.film ? { ...d.film, rules: [], against: [], forR: [] } : null,
-    positions: (d.positions || []).map((x: any) => ({ ...x, ctx: publicCtx(x.ctx) })),
+    // v0.1.46: no stalks (the pullback levels the desk waits for), no exit levels (trail width, insider wallets, runner
+    // odds) and no PM pauses: each one tells a front-runner where the desk will buy or sell next
+    positions: (d.positions || []).map(({ trail, watch, pn, msHi, drainPx, devSellPx, ...x }: any) => ({ ...x, ctx: publicCtx(x.ctx) })),
+    stalks: [],
+    pm: Array.isArray(d.pm) ? d.pm.map(({ pausedUntil, until, paused, w, ...x }: any) => x) : d.pm,
     trades: (d.trades || []).map((x: any) => ({ ...x, ctx: publicCtx(x.ctx) })),
     vet: d.vet ? { ...d.vet, checks: publicChecks(d.vet.checks) } : null,
     now: d.now ? stripNow(d.now) : null,

@@ -1,6 +1,6 @@
 {
   "name": "ratnet",
-  "version": "0.1.45",
+  "version": "0.1.46",
   "description": "",
   "scripts": {
     "dev": "next dev",
@@ -25,7 +25,7 @@
     "react-dom": "^19.0.8",
     "socket.io-client": "^4.8.4",
     "tsx": "^4.23.15",
-    "undici": "^6.23.0"
+    "undici": "^6.29.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

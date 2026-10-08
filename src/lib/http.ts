@@ -13,7 +13,7 @@ export function ipOf(req: Request) {
 }
 
 /** Fixed-window rate limit in Redis. Returns true while under the limit. Fails open if Redis is down. */
-export async function limit(key: string, max: number, windowSec: number) {
+export async function limit(key: string, max: number, windowSec: number, failClosed = false) {
   try {
     const { redis } = await import("./redis");
     const r = redis();
@@ -22,7 +22,8 @@ export async function limit(key: string, max: number, windowSec: number) {
     if (n === 1) await r.expire(k, windowSec + 5);
     return n <= max;
   } catch {
-    return true;
+    // v0.1.46: the login limit fails closed (Redis down must not mean unlimited password guesses)
+    return !failClosed;
   }
 }
 

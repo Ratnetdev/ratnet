@@ -14,7 +14,11 @@ let ix: TransactionInstruction = SystemProgram.transfer({ fromPubkey: kp.publicK
 const asJup = (i: any) => ({ programId: i.programId.toBase58(), accounts: i.keys.map((k: any) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable })), data: Buffer.from(i.data).toString("base64") });
 (globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
-  if (u.includes("/quote")) return { ok: true, json: async () => ({ outAmount: "123456" }) };
+  if (u.includes("/quote")) {
+    // a real quote echoes what was asked (v0.1.46 checks it)
+    const qs = new URL(u).searchParams;
+    return { ok: true, json: async () => ({ inputMint: qs.get("inputMint"), outputMint: qs.get("outputMint"), inAmount: qs.get("amount"), outAmount: "123456", otherAmountThreshold: "121000" }) };
+  }
   if (u.includes("/swap-instructions")) return { ok: true, json: async () => ({ swapInstruction: asJup(ix), setupInstructions: [], cleanupInstruction: null, addressLookupTableAddresses: [], computeUnitLimit: 120000 }) };
   if (u.includes("rpc.example")) return { ok: true, json: async () => ({ result: { priorityFeeEstimate: 500000 } }) };
   if (u.includes("sender")) { sent.push({ via: "sender", tx: VersionedTransaction.deserialize(Buffer.from(JSON.parse(init.body).params[0], "base64")) }); return { ok: true, json: async () => ({}) }; }

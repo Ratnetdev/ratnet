@@ -81,6 +81,7 @@ export const DEFAULT_SETTINGS = {
     maxCurve: 70,
     maxDevBuy: 5, // SOL
     serialDev: 5, // reject devs with this many launches and 0 bonds
+    tgTrades: { ghost: true, paper: true, live: true }, // v0.1.46: Telegram alerts per book (open and close); false = off
     needNano: true, // v0.1.43: King buys need nano BOND too (until nano is ready, King calls go to the ghost desk)
     minFlow: 0.55, // share of 1h trades that are buys
     sl: -35, // % loss before initials: sell all

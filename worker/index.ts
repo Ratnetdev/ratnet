@@ -626,6 +626,10 @@ async function main() {
       .finally(() => (xqBusy = false));
   }, 1_500);
   setInterval(() => siteTick().catch(() => null), 2_000);
+  // v0.1.46: the Telegram webhook follows TG_HOOK_SECRET by itself
+  const tgHook = () => import("../src/lib/tgbot").then((m) => m.ensureHook()).then((x) => x.tg !== "unchanged" && console.log("tg hook", x.tg)).catch(() => null);
+  tgHook();
+  setInterval(tgHook, 10 * 60_000);
   await beat();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);
 }

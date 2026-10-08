@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.46 · Run 12: security, and Telegram trade alerts
+- Telegram trade alerts for every trade, opening and closing, in three books that never look alike: 👻 GHOST (not counted, with what blocked the real desk), 📄 PAPER (counted in the exam) and 💰 LIVE (real money, with the Solscan link). The open alert: strategy, King and nano scores, size, entry market cap, curve or migrated, coin age and why. The close alert: WIN or LOSS, P&L in % and SOL, SOL in and out, entry and exit market cap, the peak while held, time held, strategy and the exit reason. Partial sells (initials, ladder) get a short alert. Every alert links the coin on RATNET, the desk, and the coin's address. Sent to TELEGRAM_TRADES_CHAT_ID, else the private ideas chat, one message every 1.1 seconds; each book can be switched off in Admin (desk.tgTrades).
+- Webhook secrets are their own env vars only (HELIUS_HOOK_SECRET, TG_HOOK_SECRET, X_HOOK_SECRET), never derived from CRON_SECRET. A webhook without its secret refuses everything, and Telegram /status names a missing one. A new HELIUS_HOOK_SECRET is pushed to Helius by itself; a new TG_HOOK_SECRET re-registers the bot's webhook by itself (worker, every 10 minutes).
+- HOUND's webhook: only real Solana addresses and signatures, at most 500 swaps a call. Wallets you added yourself (admin class) are hidden publicly like smart wallets, on the BOARD, coin pages and in MIND's text too.
+- Swaps: the transaction must have the desk wallet as its only signer; Jupiter's quote must be for our mints and amount, with a minimum output that matches our slippage limit (a near-zero minimum would hand a sandwich almost everything). Refused before signing.
+- Receipts never load the desk wallet's key on Vercel.
+- Admin: sessions are revocable ("log out everywhere"); the login limit is also in memory and fails closed when Redis is down. Every admin has to log in once after this deploy (new session format).
+- X webhook: field caps (post ids, handles, at most 200 posts a call, follower counts, names).
+- /api/alive: the Redis bandwidth figures are admin only (the /status tile shows them when you are logged in).
+- Telegram messages are cut to size without breaking their HTML (a cut inside a tag made Telegram refuse the whole message).
+- Public desk: no stalks, no exit levels (trail width, insider wallets, runner odds), no PM pauses.
+- Docs: cron and setup calls with the secret in a header only. undici 6.29.
+- New test suite v046test; exectest and securitytest follow the new rules. All suites pass.
+
 ## v0.1.45 · Run 11, part 2: desk money and live safety
 - Why: the rest of the audit's money list. Most of it only matters once the desk trades real money, so it is fixed before you ever switch it on.
 - Exam: a live drawdown that sends the desk back to paper stores when it happened, and the exam counts only paper round trips after it. Before, the desk went straight back to live on the record from before the losing run.

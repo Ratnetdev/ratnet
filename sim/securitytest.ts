@@ -37,7 +37,8 @@ const ok = (cond: boolean, what: string) => {
 
   const { secretFor, safeEq } = await import("../src/lib/admin");
   const x = secretFor("x-hook"), t = secretFor("tg-hook"), h = secretFor("helius-hook");
-  ok(new Set([x, t, h]).size === 3 && ![x, t, h].some((s) => s.includes("root-secret")), "secrets: one per purpose, none is the root");
+  // v0.1.46: never derived from the root any more: empty (the webhook refuses everything) until each has its own env var
+  ok([x, t, h].every((s) => s === ""), "secrets: never derived from the root secret");
   ok(safeEq("abc", "abc") && !safeEq("abc", "abd") && !safeEq("", "") && !safeEq(null, "x"), "safeEq: constant-time compare");
 
   const { confluence } = await import("../src/lib/board");

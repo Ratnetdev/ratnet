@@ -2,6 +2,7 @@
 // Set TELEGRAM_BOT_TOKEN (from @BotFather) and TELEGRAM_CHAT_ID (the channel, e.g. @ratnetcalls) to switch it on.
 import { redis } from "./redis";
 import { SITE } from "@/config/site";
+import { tgCut } from "./tgbot";
 
 const Q = "rn:tg:q";
 export const tgOn = () => !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID);
@@ -50,7 +51,7 @@ export async function tgFlush(max = 12) {
       const res = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: String(text), parse_mode: "HTML", disable_web_page_preview: true }),
+        body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: tgCut(String(text)), parse_mode: "HTML", disable_web_page_preview: true }),
       });
       if (res.status === 429) {
         await r.rpush(Q, text); // back at the front of the line

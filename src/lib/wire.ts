@@ -77,15 +77,19 @@ export function termsOf(text: string): string[] {
 export function parseHook(body: any): XTweet[] {
   const list: any[] = Array.isArray(body) ? body : body?.tweets || (body?.tweet ? [body.tweet] : body?.data ? [].concat(body.data) : []);
   const out: XTweet[] = [];
-  for (const t of list) {
+  // v0.1.46: field caps. A post id is digits, a handle is X's 15 characters, at most 200 posts per call, and the
+  // follower count is a sane number: a forged or broken payload can't push long keys, huge text or fake weights in
+  for (const t of list.slice(0, 200)) {
     if (!t?.id || !t?.author?.userName) continue;
+    if (!/^\d{1,25}$/.test(String(t.id)) || !/^[A-Za-z0-9_]{1,15}$/.test(String(t.author.userName))) continue;
     const rt = t.retweeted_tweet;
     const q = t.quoted_tweet;
     const kind: XTweet["kind"] = rt ? "rt" : q ? "quote" : t.isReply ? "reply" : "post";
     const text = String(rt?.text || t.text || "");
     const inner = q?.text ? String(q.text) : undefined;
     const at = Date.parse(t.createdAt) || Date.now();
-    out.push({ id: String(t.id), h: String(t.author.userName), name: t.author.name, f: Number(t.author.followers || 0), at, text: text.slice(0, 400), terms: termsOf(`${text} ${inner || ""}`), url: t.url || `https://x.com/${t.author.userName}/status/${t.id}`, kind, inner: inner?.slice(0, 200), src: "tapi" });
+    const fol = Number(t.author.followers || 0);
+    out.push({ id: String(t.id), h: String(t.author.userName), name: String(t.author.name ?? "").slice(0, 50), f: Number.isFinite(fol) ? Math.max(0, Math.min(fol, 500_000_000)) : 0, at: Math.min(at, Date.now() + 60_000), text: text.slice(0, 400), terms: termsOf(`${text.slice(0, 2000)} ${(inner || "").slice(0, 1000)}`), url: `https://x.com/${t.author.userName}/status/${t.id}`, kind, inner: inner?.slice(0, 200), src: "tapi" });
   }
   return out;
 }

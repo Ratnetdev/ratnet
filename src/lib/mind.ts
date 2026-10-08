@@ -318,7 +318,7 @@ async function context(rec: Launch, px: { px: number; grad: boolean; sol: number
   if (pv?.rising?.length) lines.push(`RISING ON X RIGHT NOW: ${pv.rising.slice(0, 8).map((x) => `${x.term} (${x.x}x)`).join(", ")}`);
   const tracked = await buyersOf(rec.mint).catch(() => []);
   if (tracked.length)
-    lines.push(`TRACKED WALLETS THAT BOUGHT IT: ${tracked.slice(0, 10).map((b: any) => `${b.name} (${CLASS_LABEL[b.cls as keyof typeof CLASS_LABEL] || b.cls}${b.conf !== "confirmed" ? ", unconfirmed" : ""}) ${b.sol} SOL ${Math.round((Date.now() - b.at) / 60_000)}m ago${b.copy6h.n ? `, copying them averaged ${b.copy6h.avg}% at 6h over ${b.copy6h.n} buys` : ""}${b.class6h.n ? `; this class ${b.class6h.avg}% at 6h` : ""}`).join(" | ")}`);
+    lines.push(`TRACKED WALLETS THAT BOUGHT IT: ${tracked.slice(0, 10).map((b: any) => `${b.cls === "smart" || b.cls === "admin" ? "a tracked wallet" : b.name} (${CLASS_LABEL[b.cls as keyof typeof CLASS_LABEL] || b.cls}${b.conf !== "confirmed" ? ", unconfirmed" : ""}) ${b.sol} SOL ${Math.round((Date.now() - b.at) / 60_000)}m ago${b.copy6h.n ? `, copying them averaged ${b.copy6h.avg}% at 6h over ${b.copy6h.n} buys` : ""}${b.class6h.n ? `; this class ${b.class6h.avg}% at 6h` : ""}`).join(" | ")}`);
   const ks = Object.keys(kol || {});
   if (ks.length) lines.push(`KOLS/TRADERS WHO POSTED IT: @${ks.slice(0, 8).join(", @")}`);
   if (lens?.done) {
