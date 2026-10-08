@@ -16,8 +16,10 @@ const KEY = "rn:desk:pm";
 const PRIOR: Record<Sleeve, number> = { king: 1, early: 0.7, wire: 0.8, vamp: 0.5, momo: 0.8, mind: 0.6, catch: 0.7, flash: 0.5 }; // weight before a sleeve has a record
 const MIN_N = 6; // trades before the record moves the weight
 const PAUSE_MS = 2 * 3600_000;
+const BRAKE_V = 50; // v0.1.50: brake window version
 
-type S = { r: number[]; pausedUntil: number; n: number; wins: number; g?: number[] };
+// r: the last 30 returns (sizing). b: the brake window, trades since v0.1.50 only (v0.1.50)
+type S = { r: number[]; pausedUntil: number; n: number; wins: number; g?: number[]; b?: number[]; v?: number };
 type PM = Record<Sleeve, S>;
 
 export const sleeveOf = (how?: string, vamp?: boolean): Sleeve => (how === "early" ? "early" : how === "wire" ? (vamp ? "vamp" : "wire") : how === "mind" ? "mind" : how === "momo" ? "momo" : how === "catch" ? "catch" : how === "flash" ? "flash" : "king");
@@ -25,7 +27,18 @@ export const sleeveOf = (how?: string, vamp?: boolean): Sleeve => (how === "earl
 const empty = (): S => ({ r: [], pausedUntil: 0, n: 0, wins: 0 });
 async function load(): Promise<PM> {
   const x = ((await redis().get<PM>(KEY)) || {}) as Partial<PM>;
-  return { king: { ...empty(), ...(x.king || {}) }, early: { ...empty(), ...(x.early || {}) }, wire: { ...empty(), ...(x.wire || {}) }, vamp: { ...empty(), ...(x.vamp || {}) }, momo: { ...empty(), ...(x.momo || {}) }, mind: { ...empty(), ...(x.mind || {}) }, catch: { ...empty(), ...(x.catch || {}) }, flash: { ...empty(), ...(x.flash || {}) } };
+  const pm = { king: { ...empty(), ...(x.king || {}) }, early: { ...empty(), ...(x.early || {}) }, wire: { ...empty(), ...(x.wire || {}) }, vamp: { ...empty(), ...(x.vamp || {}) }, momo: { ...empty(), ...(x.momo || {}) }, mind: { ...empty(), ...(x.mind || {}) }, catch: { ...empty(), ...(x.catch || {}) }, flash: { ...empty(), ...(x.flash || {}) } };
+  // v0.1.50, once per sleeve: the brake starts a fresh window and the pause it set is lifted. The old window still
+  // held the losses of the v0.1.48 bug (coins sold the moment they were bought), so a winning MOMO trade ($ERARI)
+  // paused MOMO on 8 Oct 22:14 UTC. What PM learned for sizing (r, n, wins) is kept.
+  for (const k of SLEEVES) {
+    if (pm[k].v !== BRAKE_V) {
+      pm[k].b = [];
+      pm[k].pausedUntil = 0;
+      pm[k].v = BRAKE_V;
+    }
+  }
+  return pm;
 }
 
 /** A paper reset starts every strategy unpaused (what PM learned about each one is kept). */
@@ -70,9 +83,11 @@ export async function onClose(sl: Sleeve, logRet: number): Promise<string | null
   s.n++;
   if (logRet > 0) s.wins++;
   let note: string | null = null;
-  // brake: the last 6 trades of the sleeve lost more than 60% of one position's stake in total
-  const last = s.r.slice(-6);
-  if (last.length >= 6 && last.reduce((a, b) => a + b, 0) < Math.log(0.4) && s.pausedUntil < Date.now()) {
+  // brake: the last 6 trades of the sleeve lost more than 60% of one position's stake in total. v0.1.50: only a losing
+  // trade can trip it (a win paused MOMO), and it counts trades since v0.1.50 only (s.b)
+  s.b = [...(s.b || []), Math.max(-3, Math.min(3, logRet))].slice(-6);
+  const last = s.b;
+  if (logRet < 0 && last.length >= 6 && last.reduce((a, b) => a + b, 0) < Math.log(0.4) && s.pausedUntil < Date.now()) {
     s.pausedUntil = Date.now() + PAUSE_MS;
     note = `${sl} sleeve paused for 2 hours after a bad run (last 6 trades ${Math.round((Math.exp(last.reduce((a, b) => a + b, 0)) - 1) * 100)}%)`;
   }

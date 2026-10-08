@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.50 · PM pause brake: a win never pauses a strategy
+- Bug: PM paused MOMO on 8 Oct 22:14 UTC right after a winning trade ($ERARI, +4.4%). The brake looks at a strategy's last 6 trades, and MOMO's still held the losses of the v0.1.48 bug (coins sold the moment they were bought), kept on purpose when the paper desk was reset. MOMO signals then went to the ghost desk instead of paper.
+- The brake now only trips on a losing trade, and counts trades from v0.1.50 on (its own window). On deploy every strategy's current pause is lifted once. What PM learned for sizing (returns, trade counts, wins) is kept.
+- New test suite v050test. All suites, tsc and next build pass.
+
 ## v0.1.49 · Trade card: the average exit, not the last sell
 - Bug (display): a trade with more than one sell showed only the last sell as its exit. $ERARI (8 Oct 22:12 UTC) sold half at $174.9K (initials, +36%) and the rest at $111.2K (trailing stop), and the card said exit $111.2K, change -13.5%, next to a +4.4% P&L. The money was always counted right; the card was wrong.
 - The exit market cap and the change are now the token-weighted average over every sell ($143.1K, +11.3% for $ERARI). The card says "Average exit" with each sell under it ("2 sells: $174.9K + $111.2K"), and the change says it is before costs (P&L is after all costs, so the two can differ by the fees and slippage).
