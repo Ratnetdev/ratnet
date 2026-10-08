@@ -178,22 +178,22 @@ export default function DeskNow({ now, live, open, closed, exam, pm = [] }: { no
           <div className="dn-k"><Info k="learn">Learning in the background</Info></div>
           <div className="dn-row">
             <span><Info k="historian">Historian replay</Info></span>
-            <span className="dn-v">{now?.history && now.history.phase !== "starting" ? (now.history.phase === "done" ? "done" : now.budget && now.budget.used >= now.budget.pace * 0.75 ? `${Math.round(now.history.done)}% · waits for chain budget` : `${Math.round(now.history.done)}%`) : "starting"}</span>
+            <span className="dn-v">{now?.history && now.history.phase !== "starting" ? (now.history.phase === "done" ? "done" : now.budget && now.budget.used >= now.budget.pace * 0.75 ? `${Math.round(now.history.done)}% · waits for chain budget` : `${Math.round(now.history.done)}%`) : now ? "starting" : "…"}</span>
             <Bar v={now?.history?.done ?? 0} />
           </div>
           <div className="dn-row">
             <span><Info k="nano">Nano model</Info></span>
-            <span className="dn-v">{now ? (now.nano.n >= now.nano.min ? "calling" : `${now.nano.n} / ${now.nano.min} lessons`) : "–"}</span>
+            <span className="dn-v">{now ? (now.nano.n >= now.nano.min ? "calling" : `${now.nano.n} / ${now.nano.min} lessons`) : "…"}</span>
             <Bar v={now ? (now.nano.n / now.nano.min) * 100 : 0} />
           </div>
           <div className="dn-row">
             <span><Info k="early">Minute-1 entries</Info></span>
-            <span className="dn-v">{now ? (now.early.on ? "unlocked" : now.early.n >= now.early.min ? "not better than minute 5 yet" : `${now.early.n} / ${now.early.min} reads`) : "–"}</span>
+            <span className="dn-v">{now ? (now.early.on ? "unlocked" : now.early.n >= now.early.min ? "not better than minute 5 yet" : `${now.early.n} / ${now.early.min} reads`) : "…"}</span>
             <Bar v={now ? (now.early.on ? 100 : (now.early.n / now.early.min) * 100) : 0} />
           </div>
           <div className="dn-row">
             <span><Info k="arms">Pullback entries</Info></span>
-            <span className="dn-v">{now?.stalkOn ? "unlocked" : "proving in shadow"}</span>
+            <span className="dn-v">{!now ? "…" : now.stalkOn ? "unlocked" : "proving in shadow"}</span>
             <Bar v={now?.stalkOn ? 100 : 0} />
           </div>
         </div>

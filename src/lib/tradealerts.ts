@@ -60,7 +60,7 @@ function head(book: Book, action: string, symbol: string, note?: string) {
 }
 
 export type OpenAlert = { book: Book; mint: string; symbol: string; how?: string | null; sol: number; mcUsd: number | null; curve?: number | null; ageMs?: number | null; why: string; king?: number | null; nano?: number | null; blocked?: string; sig?: string };
-export type CloseAlert = { book: Book; mint: string; symbol: string; how?: string | null; costSol: number; backSol: number; entryMc: number | null; exitMc: number | null; peakX: number; openedAt: number; reason: string; sig?: string; partial?: { frac: number; sol: number } };
+export type CloseAlert = { book: Book; mint: string; symbol: string; how?: string | null; costSol: number; backSol: number; entryMc: number | null; exitMc: number | null; peakX: number; openedAt: number; reason: string; sig?: string; lastMc?: number | null; sells?: number; partial?: { frac: number; sol: number; mc?: number | null } };
 
 export function openText(a: OpenAlert) {
   const rows = [
@@ -82,7 +82,7 @@ export function closeText(a: CloseAlert) {
     return [
       head(a.book, `SOLD ${Math.round(a.partial.frac * 100)}%`, a.symbol),
       LINE,
-      `<b>Back</b>  ${sol(a.partial.sol)} · rest still held`,
+      `<b>Back</b>  ${sol(a.partial.sol)}${a.partial.mc ? ` at ${usd(a.partial.mc)} mcap` : ""} · rest still held`,
       `<b>Exit</b>  ${esc(a.reason.slice(0, 160))}`,
       LINE,
       links(a.mint, a.sig),
@@ -91,17 +91,20 @@ export function closeText(a: CloseAlert) {
   const pnl = a.backSol - a.costSol;
   const pct = a.costSol > 0 ? (pnl / a.costSol) * 100 : 0;
   const win = pnl >= 0;
+  const multi = (a.sells ?? 1) > 1 && a.lastMc != null;
   const mcCh = a.entryMc && a.exitMc ? ((a.exitMc / a.entryMc - 1) * 100) : null;
   return [
     head(a.book, win ? "WIN" : "LOSS", a.symbol),
     LINE,
     `${win ? "✅" : "🔻"} <b>${pctS(pct)}</b>  (${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)} SOL)`,
     `<b>In → out</b>  ${sol(a.costSol)} → ${sol(a.backSol)}`,
-    `<b>Mcap</b>  ${usd(a.entryMc)} → ${usd(a.exitMc)}${mcCh != null ? ` (${pctS(mcCh)})` : ""}`,
+    // v0.1.49: with more than one sell, the exit is the average over every sell (the last sell alone read as a loss on a win)
+    `<b>Mcap</b>  ${usd(a.entryMc)} → ${usd(a.exitMc)}${multi ? " avg" : ""}${mcCh != null ? ` (${pctS(mcCh)})` : ""}`,
+    ...(multi ? [`<b>Sells</b>  ${a.sells} · last one at ${usd(a.lastMc)}`] : []),
     `<b>Peak held</b>  ${pctS((a.peakX - 1) * 100)}${a.entryMc ? ` · ${usd(a.entryMc * a.peakX)}` : ""}`,
     `<b>Held</b>  ${held(Date.now() - a.openedAt)}`,
     `<b>Strategy</b>  ${stratName(a.how)}`,
-    `<b>Exit</b>  ${esc(a.reason.slice(0, 160))}`,
+    `<b>${multi ? "Last exit" : "Exit"}</b>  ${esc(a.reason.slice(0, 160))}`,
     LINE,
     links(a.mint, a.sig),
   ].join("\n");

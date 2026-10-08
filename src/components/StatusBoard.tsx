@@ -37,24 +37,29 @@ export default function StatusBoard() {
   const beatAge = now?.beatAt ? Math.round((Date.now() - now.beatAt) / 1000) : null;
   const ex = desk?.exam;
   const passed = (ex?.checks || []).filter((c: any) => c.ok).length;
+  // v0.1.49: one placeholder style. "…" only while the data loads; once it is in and a value is missing: "–" and a
+  // plain reason, grey (it showed "…" forever, and "–" in one tile)
+  const nil = (loaded: unknown) => (loaded ? "–" : "…");
+  const deskIn = !!desk;
+  const aliveIn = !!alive;
 
   const groups: { title: string; tiles: Tile[] }[] = [
     {
       title: "Systems",
       tiles: [
-        { k: "Loops", v: parts.length ? `${parts.length - down - warn}/${parts.length}` : "…", s: `${down ? `${down} stalled${warn ? `, ${warn} with errors` : ""}` : warn ? `${warn} reported an error` : "all running"} · they run the 25 agents`, level: parts.length ? lvl(!down && !warn, !down) : "idle" },
-        { k: "X reads (credits)", v: xc ? `${k(xc.thisHour)}` : "…", s: xc ? `this hour, budget ${k(xc.budget)}/h${xc.paused ? " · BUDGET REACHED: paid rules off until the next hour" : ""} · last hour ${k(xc.lastHour)} · ${xc.paidAccounts} accounts watched live (${xc.rules} rules${xc.est ? `, ~${k(xc.est)}/h expected` : ""}), the rest through J7 (free)${wk?.xHookRejected ? ` · ${wk.xHookRejected} webhook calls refused${admin ? " (set X_HOOK_SECRET, see the README)" : ""}` : ""}` : "", level: xc ? lvl(xc.thisHour <= xc.budget && !xc.paused, xc.thisHour <= xc.budget * 1.5) : "idle" },
-        { k: "Chain reads (RPC)", v: rpc ? `${rpc.perSec}/s` : "…", s: rpc ? `plan ${rpc.plan}/s · ${rpc.throttled1m ? `${rpc.throttled1m} rate-limited in the last minute` : "never rate-limited this minute"}${slowest && slowest.waitMs > 500 ? ` · ${slowest.lane} wait ${(slowest.waitMs / 1000).toFixed(1)}s` : ""}${rpc.methods?.top?.length ? ` · this hour: ${rpc.methods.top.slice(0, 4).map(([k, n]) => `${k.replace(":", " ")} ${M(n)}`).join(", ")}` : ""}` : "worker report pending", level: rpc ? lvl(!rpc.throttled1m && (slowest?.waitMs ?? 0) <= 2000, rpc.throttled1m < 20) : "idle" },
-        { k: "Chain budget (today)", v: day ? M(day.today) : "…", s: day ? `${day.budget ? `of ${M(day.budget)} a day, on pace ${M(day.pace)} by now${day.today > day.pace * 1.05 ? " · OVER PACE: rats, agents and historian wait (resets 00:00 UTC), the desk keeps running" : ""}` : "no daily cap set"} · at this minute's rate ~${M(day.perMonth)} a month · historian ${M(Number(day.byLane?.historian || 0))} of ${M(day.histCap)}` : "", level: day ? (day.budget ? lvl(day.today <= day.pace * 1.05, day.today <= day.budget * 1.15) : lvl(day.perMonth <= 10_000_000, day.perMonth <= 15_000_000)) : "idle" },
+        { k: "Loops", v: parts.length ? `${parts.length - down - warn}/${parts.length}` : nil(aliveIn), s: `${down ? `${down} stalled${warn ? `, ${warn} with errors` : ""}` : warn ? `${warn} reported an error` : "all running"} · they run the 25 agents`, level: parts.length ? lvl(!down && !warn, !down) : "idle" },
+        { k: "X reads (credits)", v: xc ? `${k(xc.thisHour)}` : nil(aliveIn), s: xc ? `this hour, budget ${k(xc.budget)}/h${xc.paused ? " · BUDGET REACHED: paid rules off until the next hour" : ""} · last hour ${k(xc.lastHour)} · ${xc.paidAccounts} accounts watched live (${xc.rules} rules${xc.est ? `, ~${k(xc.est)}/h expected` : ""}), the rest through J7 (free)${wk?.xHookRejected ? ` · ${wk.xHookRejected} webhook calls refused${admin ? " (set X_HOOK_SECRET, see the README)" : ""}` : ""}` : aliveIn ? "no X report yet" : "", level: !xc || (!xc.thisHour && !xc.lastHour) ? "idle" : lvl(xc.thisHour <= xc.budget && !xc.paused, xc.thisHour <= xc.budget * 1.5) },
+        { k: "Chain reads (RPC)", v: rpc ? `${rpc.perSec}/s` : nil(aliveIn), s: rpc ? `plan ${rpc.plan}/s · ${rpc.throttled1m ? `${rpc.throttled1m} rate-limited in the last minute` : "never rate-limited this minute"}${slowest && slowest.waitMs > 500 ? ` · ${slowest.lane} wait ${(slowest.waitMs / 1000).toFixed(1)}s` : ""}${rpc.methods?.top?.length ? ` · this hour: ${rpc.methods.top.slice(0, 4).map(([k, n]) => `${k.replace(":", " ")} ${M(n)}`).join(", ")}` : ""}` : "worker report pending", level: rpc ? lvl(!rpc.throttled1m && (slowest?.waitMs ?? 0) <= 2000, rpc.throttled1m < 20) : "idle" },
+        { k: "Chain budget (today)", v: day ? M(day.today) : nil(aliveIn), s: day ? `${day.budget ? `of ${M(day.budget)} a day, on pace ${M(day.pace)} by now${day.today > day.pace * 1.05 ? " · OVER PACE: rats, agents and historian wait (resets 00:00 UTC), the desk keeps running" : ""}` : "no daily cap set"} · at this minute's rate ~${M(day.perMonth)} a month · historian ${M(Number(day.byLane?.historian || 0))} of ${M(day.histCap)}` : aliveIn ? "no budget report yet" : "", level: day && day.today ? (day.budget ? lvl(day.today <= day.pace * 1.05, day.today <= day.budget * 1.15) : lvl(day.perMonth <= 10_000_000, day.perMonth <= 15_000_000)) : "idle" },
         // v0.1.40: the database plan's bandwidth, paced through the day (lib/bwgov.ts). v0.1.41: the hour's rate too,
         // and an old report (worker silent for 10+ minutes) shows as old, not green
         (() => {
           const old = !!alive?.bw && Date.now() - alive.bw.at > 10 * 60_000;
           const g2 = bw as any;
-          return { k: "Redis bandwidth (today)", v: bw ? gb(bw.dayMB) : "…", s: bw ? `of ${gb(bw.allowMB)} a day, on pace ${gb(bw.paceMB)} by now${g2?.hourMB != null ? ` · this hour ${g2.hourMB}MB (${g2.hourRate}x the hourly allowance)` : ""}${bw.level ? ` · SAVING MODE ${bw.level}: pages cache ${[1, 3, 6, 10][bw.level]}x longer, background learning slows, the desk keeps running` : ""}${old ? ` · report is ${ago(alive!.bw!.at)} old` : ""}` : "shown when you are logged in as admin (or the worker report is pending)", level: !bw ? "idle" : old ? "warn" : lvl(bw.level === 0, bw.level < 2) } as Tile;
+          return { k: "Redis bandwidth (today)", v: bw ? gb(bw.dayMB) : nil(aliveIn), s: bw ? `of ${gb(bw.allowMB)} a day, on pace ${gb(bw.paceMB)} by now${g2?.hourMB != null ? ` · this hour ${g2.hourMB}MB (${g2.hourRate}x the hourly allowance)` : ""}${bw.level ? ` · SAVING MODE ${bw.level}: pages cache ${[1, 3, 6, 10][bw.level]}x longer, background learning slows, the desk keeps running` : ""}${old ? ` · report is ${ago(alive!.bw!.at)} old` : ""}` : "shown when you are logged in as admin (or the worker report is pending)", level: !bw ? "idle" : old ? "warn" : lvl(bw.level === 0, bw.level < 2) } as Tile;
         })(),
-        { k: "Worker", v: wk?.bootAt ? `up ${ago(wk.bootAt).replace(" ago", "")}` : "…", s: wk ? `${wk.boots} starts${lastExit ? ` · last restart ${ago(lastExit.at)}: ${lastExit.why}` : ""}${wk.takeovers ? ` · minute ping took over ${wk.takeovers}x, last ${ago(wk.takeoverAt)}` : ""}${wk.streamReconnects ? ` · stream reconnected ${wk.streamReconnects}x` : ""}` : "", level: wk?.bootAt ? lvl(!lastExit || Date.now() - lastExit.at > 3600_000, true) : "idle" },
-        { k: "Desk heartbeat", v: beatAge != null ? `${beatAge}s` : "…", s: "open positions priced from the live feed, checked on the chain at most every 2s", level: beatAge == null ? "idle" : lvl(beatAge <= 5, beatAge <= 30) },
+        { k: "Worker", v: wk?.bootAt ? `up ${ago(wk.bootAt).replace(" ago", "")}` : nil(aliveIn), s: wk ? `${wk.boots} starts${lastExit ? ` · last restart ${ago(lastExit.at)}: ${lastExit.why}` : ""}${wk.takeovers ? ` · minute ping took over ${wk.takeovers}x, last ${ago(wk.takeoverAt)}` : ""}${wk.streamReconnects ? ` · stream reconnected ${wk.streamReconnects}x` : ""}` : aliveIn ? "no worker report yet" : "", level: wk?.bootAt ? lvl(!lastExit || Date.now() - lastExit.at > 3600_000, true) : "idle" },
+        { k: "Desk heartbeat", v: beatAge != null ? `${beatAge}s` : nil(deskIn), s: "open positions priced from the live feed, checked on the chain at most every 2s", level: beatAge == null ? "idle" : lvl(beatAge <= 5, beatAge <= 30) },
         (() => {
           const st = parts.find((p) => p.name === "stream");
           const m = /lastTradeSec:(\d+|never)/.exec((st as any)?.note || "");
@@ -66,34 +71,34 @@ export default function StatusBoard() {
           // tapes come from the chain and FLASH waits. That is the plan, not a fault
           const tradeLine = keyed ? (tr === undefined ? "" : tradesOk ? ` · last trade ${tr}s ago` : " · NO TRADES arriving on the keyed stream") : " · trade stream off (needs a PumpPortal key): tapes from the chain, FLASH paused";
           const feedLine = fd ? ` · Helius price feed ${fd.replace(/ accts /, " accounts (open positions), ").replace(/ px /, " prices, ")}` : "";
-          return { k: "Live stream", v: st?.age != null ? `${st.age}s` : "…", s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : keyed && !tradesOk && tr !== undefined ? "warn" : fd && /^down/.test(fd) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
+          return { k: "Live stream", v: st?.age != null ? `${st.age}s` : nil(aliveIn), s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : keyed && !tradesOk && tr !== undefined ? "warn" : fd && /^down/.test(fd) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
         })(),
       ],
     },
     {
       title: "Speed (seconds after a launch is born)",
       tiles: [
-        { k: "Launch dug", v: sp.stream ? `${sp.stream.p50}s` : sp.chain ? "~1s" : "…", s: `${sp.stream ? `stream delivers launches ${sp.stream.p50}s after their block (sampled)` : "stream lag being sampled"}${sp.chain ? ` · chain backfill catches misses in ${sp.chain.p50}s` : ""}`, level: sp.stream ? lvl(sp.stream.p50 <= 3, sp.stream.p50 <= 10) : sp.chain ? lvl(sp.chain.p50 <= 30, sp.chain.p50 <= 120) : "idle" },
-        { k: "First read (FLASH)", v: sp.flash ? `${sp.flash.p50}s` : "…", s: "target 15s", level: sp.flash ? lvl(sp.flash.p50 <= 20, sp.flash.p50 <= 60) : "idle" },
-        { k: "Minute-1 read", v: sp.early ? `${sp.early.p50}s` : "…", s: "target 60s", level: sp.early ? lvl(sp.early.p50 <= 75, sp.early.p50 <= 150) : "idle" },
-        { k: "King call", v: sp.call ? `${sp.call.p50}s` : "…", s: "target 300s", level: sp.call ? lvl(sp.call.p50 <= 330, sp.call.p50 <= 600) : "idle" },
-        { k: "Signal to fill", v: sp.fill ? `${sp.fill.p50}s` : "–", s: "FLASH entries", level: sp.fill ? lvl(sp.fill.p50 <= 3, sp.fill.p50 <= 8) : "idle" },
+        { k: "Launch dug", v: sp.stream ? `${sp.stream.p50}s` : sp.chain ? "~1s" : nil(deskIn), s: `${sp.stream ? `stream delivers launches ${sp.stream.p50}s after their block (sampled)` : "stream lag being sampled"}${sp.chain ? ` · chain backfill catches misses in ${sp.chain.p50}s` : ""}`, level: sp.stream ? lvl(sp.stream.p50 <= 3, sp.stream.p50 <= 10) : sp.chain ? lvl(sp.chain.p50 <= 30, sp.chain.p50 <= 120) : "idle" },
+        { k: "First read (FLASH)", v: sp.flash ? `${sp.flash.p50}s` : nil(deskIn), s: sp.flash || !deskIn ? "target 15s" : "target 15s · no FLASH reads measured yet", level: sp.flash ? lvl(sp.flash.p50 <= 20, sp.flash.p50 <= 60) : "idle" },
+        { k: "Minute-1 read", v: sp.early ? `${sp.early.p50}s` : nil(deskIn), s: sp.early || !deskIn ? "target 60s" : "target 60s · none measured yet", level: sp.early ? lvl(sp.early.p50 <= 75, sp.early.p50 <= 150) : "idle" },
+        { k: "King call", v: sp.call ? `${sp.call.p50}s` : nil(deskIn), s: sp.call || !deskIn ? "target 300s" : "target 300s · none measured yet", level: sp.call ? lvl(sp.call.p50 <= 330, sp.call.p50 <= 600) : "idle" },
+        { k: "Signal to fill", v: sp.fill ? `${sp.fill.p50}s` : nil(deskIn), s: sp.fill || !deskIn ? "FLASH entries" : "FLASH entries · no FLASH fills yet", level: sp.fill ? lvl(sp.fill.p50 <= 3, sp.fill.p50 <= 8) : "idle" },
       ],
     },
     {
       title: "Learning",
       tiles: [
-        { k: "Historian", v: hist ? `${(hist.lessons ?? 0).toLocaleString()} lessons` : "…", s: hist ? `${(hist.bondsFound ?? 0).toLocaleString()} bonds found${hist.lastError ? ` · last error: ${String(hist.lastError).slice(0, 40)}` : ""}` : "", level: hist ? lvl(!hist.lastError, true) : "idle" },
-        { k: "King v1", v: king?.v1 ? (king.v1.ready ? "live" : "not calibrated yet") : "…", s: king?.v1 ? `${(king.v1.lessons ?? 0).toLocaleString()} lessons, ${king.v1.bonds ?? 0} bonds` : "", level: king?.v1 ? lvl(!!king.v1.ready, true) : "idle" },
-        { k: "CATCH model", v: catcher?.model ? (catcher.model.ready ? "live" : `${catcher.model.n}/${catcher.model.need}`) : "…", s: catcher?.fast ? `2h model ${catcher.fast.ready ? "live" : `${catcher.fast.n} labels`}` : "", level: catcher?.model ? lvl(!!catcher.model.ready, true) : "idle" },
-        { k: "FLASH model", v: flash?.model ? (flash.model.ready ? "live" : `${flash.model.n}/${flash.model.need}`) : "…", s: flash?.stages ? `${flash.stages.filter((x: any) => x.cut).length} of 3 look times trading` : "", level: flash?.model ? lvl(!!flash.model.ready, true) : "idle" },
+        { k: "Historian", v: hist ? `${(hist.lessons ?? 0).toLocaleString()} lessons` : "…", s: hist ? `${(hist.bondsFound ?? 0).toLocaleString()} bonds found${hist.lastError ? ` · last error: ${String(hist.lastError).slice(0, 40)}` : ""}` : "", level: !hist || !hist.lessons ? "idle" : lvl(!hist.lastError, true) },
+        { k: "King v1", v: king?.v1 ? (king.v1.ready ? "live" : "not calibrated yet") : "…", s: king?.v1 ? `${(king.v1.lessons ?? 0).toLocaleString()} lessons, ${king.v1.bonds ?? 0} bonds` : "", level: king?.v1?.ready ? "ok" : "idle" },
+        { k: "CATCH model", v: catcher?.model ? (catcher.model.ready ? "live" : `${catcher.model.n}/${catcher.model.need}`) : "…", s: catcher?.fast ? `2h model ${catcher.fast.ready ? "live" : `${catcher.fast.n} labels`}` : "", level: catcher?.model?.ready ? "ok" : "idle" },
+        { k: "FLASH model", v: flash?.model ? (flash.model.ready ? "live" : `${flash.model.n}/${flash.model.need}`) : "…", s: flash?.stages ? `${flash.stages.filter((x: any) => x.cut).length} of 3 look times trading` : "", level: flash?.model?.ready ? "ok" : "idle" },
       ],
     },
     {
       title: "Desk",
       tiles: [
-        { k: "Exam", v: ex ? `${passed}/${ex.checks?.length ?? 5}` : "…", s: desk?.live ? "live wallet" : "paper until every check passes", level: ex ? lvl(passed === (ex.checks?.length ?? 5), true) : "idle" },
-        { k: "Open positions", v: desk ? String((desk.positions || []).length) : "…", s: desk?.state ? `${desk.state.closed} closed, ${desk.state.wins} won` : "", level: desk ? "ok" : "idle" },
+        { k: "Exam", v: ex ? `${passed}/${ex.checks?.length ?? 6}` : nil(deskIn), s: desk?.live ? "live wallet" : "paper until every check passes", level: ex ? lvl(passed === (ex.checks?.length ?? 6), true) : "idle" },
+        { k: "Open positions", v: desk ? String((desk.positions || []).length) : "…", s: desk?.state ? `${desk.state.closed} closed, ${desk.state.wins} won${now && !now.running ? " · desk paused" : ""}` : "", level: now?.running ? "ok" : "idle" },
       ],
     },
   ];

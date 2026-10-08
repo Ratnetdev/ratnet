@@ -57,7 +57,9 @@ export type Trip = {
   tokens?: number;
   held?: number;
   entryMc?: number | null;
-  exitMc?: number | null;
+  exitMc?: number | null; // average over every sell (v0.1.49)
+  lastMc?: number | null;
+  sells?: number;
   nowMc?: number | null;
   peakMc?: number | null;
   ctx?: Ctx | null;
@@ -112,7 +114,17 @@ export function dur(ms: number) {
 const okMs = (ms: unknown): ms is number => typeof ms === "number" && Number.isFinite(ms) && Math.abs(ms) < 8.64e15;
 const stamp = (ms: number) => (okMs(ms) ? `${new Date(ms).toISOString().slice(5, 19).replace("T", " ")} UTC` : "–");
 const hhmm = (ms: number) => (okMs(ms) ? new Date(ms).toISOString().slice(11, 19) : "–");
-/** Market cap now or at exit, vs entry. */
+/** v0.1.49: more than one sell (initials, ladder, then the rest): the exit numbers are averages over every sell. */
+export const multiSell = (t: Trip) => !t.open && t.exits.length > 1;
+/** The exits in short words, in order: "initials → trailing stop" (it showed only the last one). */
+export function exitPath(t: Trip) {
+  if (!t.exits.length) return t.open ? "holding" : "–";
+  const words = t.exits.map((x) => x.reason.replace(/^send ladder: /, "").split(/[:(,]/)[0].replace(/ at [\d.]+x$/, "").replace(/ \d+% off the peak$/, "").trim());
+  const out: string[] = [];
+  for (const w of words) if (out[out.length - 1] !== w) out.push(w);
+  return (t.open ? [...out, "holding"] : out).join(" → ");
+}
+/** Market cap now or at exit (the average over every sell), vs entry. */
 export function moveOf(t: Trip): number | null {
   const end = t.open ? t.nowMc : t.exitMc;
   if (t.entryMc && end) return Math.round((end / t.entryMc - 1) * 1000) / 10;
@@ -191,19 +203,22 @@ export default function TripDetail({ t, coinLink = true }: { t: Trip; coinLink?:
   const c = t.ctx;
   const move = moveOf(t);
   const end = t.open ? t.nowMc : t.exitMc;
-  const left = t.peakMc && end && !t.open ? Math.max(0, Math.round((t.peakMc / end - 1) * 1000) / 10) : null;
-  const call = c?.king ? `King ${c.king.verdict} ${c.king.score}` : c?.early ? `Early ${c.early.verdict} ${c.early.score}` : t.king != null ? `King ${t.king}` : "–";
+  // v0.1.49: how far under the peak it sold, on the average exit ("69% left on the table" compared the peak with the
+  // last sell only and read as money lost)
+  const under = t.peakMc && end && !t.open ? Math.max(0, Math.round((1 - end / t.peakMc) * 100)) : null;
+  const multi = multiSell(t);
+  const call = c?.king ? `King ${c.king.verdict} ${c.king.score}` : c?.early ? `Early ${c.early.verdict} ${c.early.score}` : t.king ? `King ${t.king}` : "–";
   const tp = c?.tape;
   const g = c?.graph;
   return (
     <div className="td">
       <div className="td-head">
         <KV k="Entry market cap" v={usd(t.entryMc)} sub={c?.curve != null ? `curve ${c.curve}%` : t.how === "stalk" ? "pullback" : ""} />
-        <KV k={t.open ? "Market cap now" : "Exit market cap"} v={usd(end)} sub={t.open ? "live" : t.closedAt ? stamp(t.closedAt) : ""} />
-        <KV k="Change" v={move != null ? `${sgn(move)}%` : "–"} c={col(move ?? 0)} sub="market cap, entry to exit" />
-        <KV k="Peak while held" v={usd(t.peakMc)} sub={t.peakPct != null ? `${sgn(t.peakPct)}% from entry` : ""} />
-        <KV k="P&L" v={`${sgn(t.pnlSol, 3)} ◎`} c={col(t.pnlSol)} sub={`${sgn(t.pnlPct)}% on ${t.costSol.toFixed(3)} ◎`} />
-        <KV k="Held" v={dur(t.holdMs)} sub={left != null ? `${left}% left on the table` : t.open ? "still open" : ""} />
+        <KV k={t.open ? "Market cap now" : multi ? "Average exit" : "Exit market cap"} v={usd(end)} sub={t.open ? "live" : multi ? `${t.exits.length} sells: ${t.exits.map((x) => usd(x.mc)).join(" + ")}` : t.closedAt ? stamp(t.closedAt) : ""} />
+        <KV k="Change" v={move != null ? `${sgn(move)}%` : "–"} c={col(move ?? 0)} sub={multi ? "entry to average exit, before costs" : "entry to exit, before costs"} />
+        <KV k="Peak while held" v={usd(t.peakMc)} sub={t.peakPct != null ? `${sgn(t.peakPct)}% from entry${under != null && under > 0 ? `, sold ${under}% under it` : ""}` : ""} />
+        <KV k="P&L" v={`${sgn(t.pnlSol, 3)} ◎`} c={col(t.pnlSol)} sub={`${sgn(t.pnlPct)}% on ${t.costSol.toFixed(3)} ◎ after all costs`} />
+        <KV k="Held" v={dur(t.holdMs)} sub={t.open ? "still open" : exitPath(t)} />
       </div>
 
       <div className="td-grid">
@@ -296,7 +311,7 @@ export default function TripDetail({ t, coinLink = true }: { t: Trip; coinLink?:
           {t.exits.map((x, i) => (
             <div key={i} className="td-fill">
               <span className="d">{stamp(x.at)}</span>
-              <b className="sell">SELL</b>
+              <b className="sell">SELL{t.tokens && x.tokens ? ` ${Math.round((x.tokens / t.tokens) * 100)}%` : ""}</b>
               <span>{x.sol.toFixed(3)} ◎</span>
               <span>{usd(x.mc)}</span>
               <span style={{ color: col(x.pnlPct ?? 0) }}>{x.pnlPct != null ? `${sgn(x.pnlPct)}%` : ""}</span>

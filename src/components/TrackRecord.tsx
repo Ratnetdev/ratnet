@@ -4,7 +4,7 @@ import { useState } from "react";
 import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { ago, usd } from "./fmt";
-import TripDetail, { Trip, col, dur, moveOf, sgn } from "./TripDetail";
+import TripDetail, { Trip, col, dur, exitPath, moveOf, multiSell, sgn } from "./TripDetail";
 import { fullUrl, useAdmin } from "./useAdmin";
 import { TradeIcons } from "./venues";
 import CoinImg from "./CoinImg";
@@ -22,7 +22,7 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
   const [open, setOpen] = useState(false);
   const move = moveOf(t);
   const end = t.open ? t.nowMc : t.exitMc;
-  const lastReason = t.exits.length ? t.exits[t.exits.length - 1].reason.split(/[:(]/)[0].trim() : t.open ? "holding" : "–";
+  const lastReason = exitPath(t);
   return (
     <>
       <tr className={`trip click ${open ? "on" : ""}`} onClick={() => setOpen(!open)}>
@@ -36,7 +36,7 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
         </td>
         {full && <td className="muted">{ago(t.openedAt)} ago{t.ctx ? <div className="tiny mute2">coin {dur(t.ctx.ageMs)} old</div> : null}</td>}
         <td>{usd(t.entryMc)}{full && t.ctx?.curve != null ? <div className="tiny mute2">curve {t.ctx.curve}%</div> : null}</td>
-        <td>{t.open ? <LiveMc mint={t.mint} usd={end} /> : usd(end)}{full ? <div className="tiny mute2">{t.open ? "now" : "exit"}</div> : null}</td>
+        <td>{t.open ? <LiveMc mint={t.mint} usd={end} /> : usd(end)}{full ? <div className="tiny mute2">{t.open ? "now" : multiSell(t) ? `avg of ${t.exits.length} sells` : "exit"}</div> : null}</td>
         <td style={{ color: col(move ?? 0) }}>{move != null ? `${sgn(move)}%` : "–"}</td>
         <td style={{ color: col(t.pnlSol) }}>{sgn(t.pnlSol, 3)} ◎{full ? <div className="tiny" style={{ color: col(t.pnlPct) }}>{sgn(t.pnlPct)}%</div> : null}</td>
         {full && <td className="muted">{dur(t.holdMs)}</td>}
@@ -58,7 +58,7 @@ function Card({ t }: { t: Trip }) {
   const [open, setOpen] = useState(false);
   const move = moveOf(t);
   const end = t.open ? t.nowMc : t.exitMc;
-  const lastReason = t.exits.length ? t.exits[t.exits.length - 1].reason.split(/[:(]/)[0].trim() : t.open ? "holding" : "–";
+  const lastReason = exitPath(t);
   return (
     <li className={`rc ${open ? "on" : ""}`}>
       <button type="button" className="rc-main" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -71,7 +71,7 @@ function Card({ t }: { t: Trip }) {
           <span className="rc-pnl" style={{ color: col(t.pnlSol) }}>{sgn(t.pnlSol, 3)} ◎<em style={{ color: col(t.pnlPct) }}>{sgn(t.pnlPct)}%</em></span>
         </span>
         <span className="rc-mid">
-          <span>{usd(t.entryMc)} <i aria-hidden>→</i> {t.open ? <LiveMc mint={t.mint} usd={end} /> : usd(end)}</span>
+          <span>{usd(t.entryMc)} <i aria-hidden>→</i> {t.open ? <LiveMc mint={t.mint} usd={end} /> : usd(end)}{multiSell(t) ? <em className="rc-avg"> avg</em> : null}</span>
           <span style={{ color: col(move ?? 0) }}>{move != null ? `${sgn(move)}%` : "–"}</span>
         </span>
         <span className="rc-meta">

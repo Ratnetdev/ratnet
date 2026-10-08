@@ -640,6 +640,7 @@ th .info, .k .info { gap: 4px; }
 .td-head > div { padding: 12px 14px; border-right: 1px solid var(--line); display: grid; gap: 3px; min-width: 0; }
 .td-head > div:last-child { border-right: 0; }
 .td-head span, .td-kv span { font-size: 10.5px; color: var(--dim); letter-spacing: 0.4px; }
+.td-head > div { align-content: start; }
 .td-head b { font-size: 16px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
 .td-head em, .td-kv em { font-style: normal; font-size: 11px; color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .td-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
@@ -655,7 +656,7 @@ th .info, .k .info { gap: 4px; }
 .td-checks span { color: var(--text); }
 .td-checks em { font-style: normal; color: var(--mute); font-size: 11px; text-align: right; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .td-fills { display: grid; font-size: 12px; }
-.td-fill { display: grid; grid-template-columns: 150px 44px 78px 70px 58px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.04); align-items: baseline; font-variant-numeric: tabular-nums; }
+.td-fill { display: grid; grid-template-columns: 150px 66px 78px 70px 58px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.04); align-items: baseline; font-variant-numeric: tabular-nums; }
 .td-fill .d { color: var(--mute); }
 .td-fill b { font-weight: 500; font-size: 11px; letter-spacing: 1px; }
 .td-fill b.buy { color: var(--watch); }
@@ -684,7 +685,7 @@ th .info, .k .info { gap: 4px; }
   .td-head > div:nth-child(2n) { border-right: 0 !important; }
   .td-kv { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .td-checks { grid-template-columns: minmax(0, 1fr); }
-  .td-fill { grid-template-columns: 58px 34px minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; }
+  .td-fill { grid-template-columns: 58px auto minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; }
   .td-fill > span:nth-child(5) { text-align: right; }
   .td-fill .d { white-space: normal; line-height: 1.3; }
   .td-fill .r { grid-column: 1 / -1; padding-left: 0; }
@@ -1239,3 +1240,8 @@ a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible
   /* v0.1.47: the folded live dot as a small pill (it was a ~60px box over the page) */
   .lt-dot { min-width: 0; min-height: 0; height: 36px; padding: 0 9px; box-sizing: border-box; border-radius: 18px; }
 }
+
+/* v0.1.49: average exit marker on the phone trade card */
+.rc-avg { font-style: normal; font-size: 10px; color: var(--mute); letter-spacing: 0.5px; }
+/* v0.1.49: the line under each trade number wraps to two lines instead of being cut */
+.td-head > div > em { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.35; }

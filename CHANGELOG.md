@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.49 · Trade card: the average exit, not the last sell
+- Bug (display): a trade with more than one sell showed only the last sell as its exit. $ERARI (8 Oct 22:12 UTC) sold half at $174.9K (initials, +36%) and the rest at $111.2K (trailing stop), and the card said exit $111.2K, change -13.5%, next to a +4.4% P&L. The money was always counted right; the card was wrong.
+- The exit market cap and the change are now the token-weighted average over every sell ($143.1K, +11.3% for $ERARI). The card says "Average exit" with each sell under it ("2 sells: $174.9K + $111.2K"), and the change says it is before costs (P&L is after all costs, so the two can differ by the fees and slippage).
+- "69% left on the table" is gone: the peak tile says how far under the peak it sold, on the average exit ("sold 24% under it"). The Held tile shows the exit path in order ("initials → trailing stop"); so does the record table and the phone card. Every fill shows its share of the bag ("SELL 50%").
+- The Telegram close alert uses the same average ("$128.6K → $143.1K avg (+11.3%)", "Sells 2 · last one at $111.2K", "Last exit"), and a partial sell alert says the market cap it sold at.
+- The initials reason reads "initials at 1.4x, cost is back (taken early: momo coins usually top out near 1.08x)" instead of a peak figure that looked like it contradicted the 1.4x.
+- MOMO, CATCH and other non-King trades show "–" for the call (they showed "King 0").
+- /status: green only for parts that actually ran (X reads and the chain budget at zero, the historian with no lessons, open positions while the desk is paused, and models that are not live yet are grey, not green or amber); one placeholder style ("…" while loading, "–" with a plain reason once loaded with nothing to show; the exam counts 6 checks). The desk's learning column uses the same style.
+- Test fix: v040's saving-mode check failed after ~22:00 UTC (the pace reaches the whole day's allowance by then); it is pinned to noon UTC.
+- New test suite v049test (built on the real $ERARI fills). All suites, tsc and next build pass.
+
 ## v0.1.48 · Desk fixes from the live record
 - Why: after the 16:54 restart the paper desk had 1 winner in 11 trades. The live record showed three causes, two of them our own.
 - Bug: a coin bought after migration (MOMO, CATCH runners) whose dig record had no outcome yet was sold on the very first exit check ("migrated before initials", held 0 minutes, about -6%: pure cost). It hit paper and ghost alike, and its losses paused MOMO in PM. The position now knows it was bought in the pool from where the buy filled. MOMO is unpaused once on deploy (its record is kept).

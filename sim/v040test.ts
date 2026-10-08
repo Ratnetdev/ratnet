@@ -158,14 +158,19 @@ const server = http.createServer((req, res) => {
   gov._bwSet(pace * 1.6, noon);
   ok(gov.bwLevel(noon) === 2, "1.5x pace: saving mode 2");
   ok(gov.bwLevel(noon + 6 * 60_000) === 0, "a stale reading (no flush for 5 minutes) never throttles");
-  gov._bwSet(gov.paceNow() * 1.1);
+  // v0.1.49: pinned to noon UTC today. The pace reaches the whole day's allowance by ~22:00 UTC, so after that no
+  // saving mode 1 exists and this check failed at night
+  const realNow = Date.now;
+  const d0 = new Date();
+  const noonT = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate(), 12, 0, 0);
+  Date.now = () => noonT;
+  gov._bwSet(gov.paceNow(noonT) * 1.1, noonT);
   ok(gov.bwMul() === 3, "saving mode 1 stretches caches 3x");
   const { memo } = await import("../src/lib/memo");
   let loads = 0;
   const load = async () => ++loads;
   await memo("t:memo", 1_000, load);
-  const realNow = Date.now;
-  Date.now = () => realNow() + 2_000; // past the 1s TTL, inside 3x
+  Date.now = () => noonT + 2_000; // past the 1s TTL, inside 3x
   await memo("t:memo", 1_000, load);
   ok(loads === 1, "memo holds 3x longer in saving mode 1");
   Date.now = realNow;

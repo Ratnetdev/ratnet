@@ -82,6 +82,8 @@ export type Pos = {
   tokens: number; // tokens still held
   tokens0: number;
   soldSol: number;
+  sells?: number; // v0.1.49: how many sells so far
+  soldPxTok?: number; // v0.1.49: sum of sell price x tokens sold, for the average exit across partial sells
   tp1Done: boolean; // initials taken
   sendHit?: boolean; // CATCH send ladder: the target market cap was reached and the runner third sold
   lastPx: number;
@@ -1561,7 +1563,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           if (gain <= stopAt) [sellFrac, reason] = [1, `stop loss ${fmtPct(gain)}`];
           else if (drainHit && drainOn) [sellFrac, reason] = [1, `sellers took over: curve ${drain.toFixed(0)}%, price ${pxOff.toFixed(0)}% in 40s`];
           // CATCH send ladder, step 1: 40% at the initials (2x to start, the exit lab tunes it), 60% rides
-          else if (gain >= initialsAt) [sellFrac, reason] = [ca ? c2.catchFirstFrac ?? 0.4 : cfg.initialsFrac, `${ca ? "send ladder: " : ""}initials at ${mult.toFixed(1)}x${pf?.medPk && initialsAt !== cfg.initialsAt ? ` (${sl} coins peak around ${pf.medPk}x)` : ""}, cost is back`];
+          else if (gain >= initialsAt) [sellFrac, reason] = [ca ? c2.catchFirstFrac ?? 0.4 : cfg.initialsFrac, `${ca ? "send ladder: " : ""}initials at ${mult.toFixed(1)}x, cost is back${pf?.medPk && initialsAt !== cfg.initialsAt ? ` (taken early: ${sl} coins usually top out near ${pf.medPk}x)` : ""}`];
           else if (q.grad && q.src !== "dex" && !p.gradSeen) {
             p.gradSeen = true;
             if (p.pn < cfg.gradKeepP) [sellFrac, reason] = [1, `migrated before initials, P(next) ${Math.round(p.pn * 100)}%: out`];
@@ -2684,6 +2686,8 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   const pnl = proceeds - costPart;
   p.tokens -= amt;
   p.soldSol += proceeds;
+  p.soldPxTok = (p.soldPxTok || 0) + px * amt;
+  p.sells = (p.sells || 0) + 1;
   state.realized += pnl;
   const now = Date.now();
   const pnlPct = pct(proceeds, costPart);
@@ -2726,10 +2730,18 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     const total = p.soldSol - p.costSol;
     if (total > 0) state.wins++;
     log(b, "LEDGER", `closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))})`, total >= 0 ? "win" : "loss", coin);
-    alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(px, sol$), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason, sig }, ALERT_CFG);
-  } else alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, sig, partial: { frac: amt / p.tokens0, sol: proceeds } }, ALERT_CFG);
+    alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(avgExitPx(p, px), sol$), lastMc: mcUsd(px, sol$), sells: sellCount(p), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason, sig }, ALERT_CFG);
+  } else alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, sig, partial: { frac: amt / p.tokens0, sol: proceeds, mc: mcUsd(px, sol$) } }, ALERT_CFG);
   return true;
 }
+
+/** v0.1.49: the average price the whole position was sold at (token-weighted over every sell). The close alert and
+ *  the track record used the last sell only, so a trade that took initials at 1.4x and trailed the rest out at 0.9x
+ *  showed an exit below entry next to a winning P&L. */
+export function avgExitPx(p: Pick<Pos, "soldPxTok" | "tokens0">, lastPx: number) {
+  return p.soldPxTok && p.tokens0 > 0 ? p.soldPxTok / p.tokens0 : lastPx;
+}
+const sellCount = (p: Pos) => p.sells || 1;
 
 // ---------------------------------------------------------------- ghost desk
 
@@ -2784,12 +2796,14 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   const pnl = proceeds - costPart;
   p.tokens -= amt;
   p.soldSol += proceeds;
+  p.soldPxTok = (p.soldPxTok || 0) + px * amt;
+  p.sells = (p.sells || 0) + 1;
   const now = Date.now();
   const sol$ = await solUsd().catch(() => null);
   (b.ghost ||= []).push({ id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pct(proceeds, costPart) * 10) / 10, live: false, mc: mcUsd(px, sol$) });
   log(b, "RISK", `ghost: ${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, "info", coin);
   if (p.tokens > 1e-9) {
-    alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, partial: { frac: amt / p.tokens0, sol: proceeds } }, ALERT_CFG);
+    alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, partial: { frac: amt / p.tokens0, sol: proceeds, mc: mcUsd(px, sol$) } }, ALERT_CFG);
     return false;
   }
   p.tokens = 0;
@@ -2806,7 +2820,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   if (note) log(b, "PM", note, "win");
   const total = p.soldSol - p.costSol;
   log(b, "LEDGER", `ghost desk closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))}). not counted`, "info", coin);
-  alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(px, sol$), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason }, ALERT_CFG);
+  alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(avgExitPx(p, px), sol$), lastMc: mcUsd(px, sol$), sells: sellCount(p), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason }, ALERT_CFG);
   return true;
 }
 
@@ -3090,7 +3104,9 @@ export type Trip = {
   tokens?: number; // bought
   held?: number; // still held
   entryMc?: number | null; // USD market cap at the buy
-  exitMc?: number | null; // at the last sell
+  exitMc?: number | null; // average over every sell (token-weighted), v0.1.49
+  lastMc?: number | null; // at the last sell
+  sells?: number;
   nowMc?: number | null; // live, open trips
   peakMc?: number | null; // best seen while held
   ctx?: EntryCtx | null;
@@ -3101,7 +3117,7 @@ export type Trip = {
   how?: string;
   entryPx?: number;
   peakPct?: number | null; // best price seen while held, vs entry
-  exitPct?: number | null; // last sell price vs entry
+  exitPct?: number | null; // average sell price vs entry
   series?: [number, number][];
 };
 
@@ -3130,7 +3146,7 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
         prev.open = false;
         prev.closedAt = prev.exits.length ? prev.exits[prev.exits.length - 1].at : t.at;
       }
-      const trip: Trip = { mint: t.mint, symbol: t.symbol, openedAt: t.at, closedAt: null, open: true, live: t.live, costSol: t.sol, backSol: 0, valueSol: 0, pnlSol: 0, pnlPct: 0, why: t.reason, exits: [], buySig: t.sig, holdMs: 0, tokens: t.tokens, entryMc: t.mc ?? (t.px ? mcUsd(t.px, sol) : null), ctx: t.ctx ?? null };
+      const trip: Trip = { mint: t.mint, symbol: t.symbol, openedAt: t.at, closedAt: null, open: true, live: t.live, costSol: t.sol, backSol: 0, valueSol: 0, pnlSol: 0, pnlPct: 0, why: t.reason, exits: [], buySig: t.sig, holdMs: 0, tokens: t.tokens, entryPx: t.px || undefined, entryMc: t.mc ?? (t.px ? mcUsd(t.px, sol) : null), ctx: t.ctx ?? null };
       trips.push(trip);
       openBy[t.mint] = trip;
     } else {
@@ -3175,8 +3191,20 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
       trip.series = src.series.filter((_, i, a) => i % step === 0 || i === a.length - 1);
     }
     const lastExit = trip.exits[trip.exits.length - 1];
-    trip.exitPct = trip.entryPx && lastExit?.px ? Math.round((lastExit.px / trip.entryPx - 1) * 1000) / 10 : null;
-    trip.exitMc = !isOpen ? lastExit?.mc ?? null : null;
+    // v0.1.49: the exit is the token-weighted average over every sell. The last sell alone showed $ERARI exiting at
+    // -13.5% next to a +4.4% P&L (half was sold at +36% first).
+    const xs = trip.exits.filter((x) => x.tokens && x.tokens > 0);
+    const tk = xs.reduce((a, x) => a + x.tokens!, 0);
+    const avg = (f: (x: Trip["exits"][number]) => number | null | undefined) => {
+      if (!tk || xs.some((x) => !f(x))) return null;
+      return xs.reduce((a, x) => a + f(x)! * x.tokens!, 0) / tk;
+    };
+    const avgPx = xs.length > 1 ? avg((x) => x.px) : null;
+    const avgMc = xs.length > 1 ? avg((x) => x.mc) : null;
+    trip.sells = trip.exits.length;
+    trip.exitPct = trip.entryPx && (avgPx || lastExit?.px) ? Math.round(((avgPx || lastExit!.px!) / trip.entryPx - 1) * 1000) / 10 : null;
+    trip.exitMc = !isOpen ? (avgMc ? Math.round(avgMc) : lastExit?.mc ?? null) : null;
+    trip.lastMc = lastExit?.mc ?? null;
     trip.nowMc = isOpen && p ? (p.usd ?? mcUsd(p.lastPx, sol)) : null;
     trip.held = isOpen && p ? p.tokens : 0;
     if (!trip.ctx) trip.ctx = (isOpen && p ? p.ctx : m?.ctx) ?? null;
