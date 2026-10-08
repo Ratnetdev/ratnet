@@ -317,7 +317,9 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
   ]);
   miss.forEach((m, i) => {
     const run = got[i] as Run | null;
-    if (run) RUNC.set(m, { at: now, json: JSON.stringify(run), run });
+    // v0.1.44: a copy just read from Redis counts as written (it is what Redis holds). Without wroteAt every reload, and
+    // every worker restart, wrote each followed run again on its next small move, past the one-a-minute throttle
+    if (run) RUNC.set(m, { at: now, json: JSON.stringify(run), run, wroteAt: now, hi: run.hi, b: run.bondedAt ?? null });
     else RUNC.delete(m);
   });
   const runs = all.map((m) => RUNC.get(m)?.run ?? null);

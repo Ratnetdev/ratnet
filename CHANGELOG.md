@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.44 · Hotfix: the worker restart loop in saving mode 3
+- Why: after v0.1.42 and v0.1.43 went live, Redis reached saving mode 3 (369MB in the hour, 3.35x the allowance). In mode 3 the agents rest 5 minutes between sessions, but the watchdog treats an agents loop silent for 275 seconds as stuck: it restarted the worker every 5 minutes (14:43, 14:48, 14:53 UTC). Every restart starts with empty memory caches and reads them again from Redis, which kept the bandwidth in mode 3.
+- The agents' rest now beats the heartbeat every 20 seconds and ends as soon as the saving mode drops.
+- Runner: a run read from Redis counts as written. Before, every reload (every 5 minutes) and every worker restart wrote each followed run again on its next small move, past the one-a-minute throttle.
+- All suites, tsc and next build pass.
+
 ## v0.1.43 · Run 11: better entries, and a paper restart
 - Why: on 8 Oct the paper desk lost 22% per trade (15 trades, 2 wins) while the ghost desk made 13% (12 trades, 5 wins). Same rules and same exits; ghost's profit came from 3 trades. Across both books the strategy lost about 6.5% per trade after costs. The cause was the entries: King BOND buys on coins nano scored 1 to 20, buys into coins already turning (most never got more than 8% above the entry), and MOMO buying the volume spike at $109K to $824K (4 of 5 lost).
 - King buys need nano: needNano is on. Until nano has 200 live lessons (and after, whenever nano does not say BOND), the King's calls go to the ghost desk, so the King's record keeps building at no cost.

@@ -555,8 +555,18 @@ async function agentLoop() {
     sessionAt = t0;
     try {
       const r: any = await runSession(SESSION_MS, { desk: false, historian: false });
-      // v0.1.40: in Redis saving mode the agents rest between sessions (30s, or 2 minutes in mode 2)
-      if (bwLevel()) await new Promise((res) => setTimeout(res, [0, 30_000, 120_000, 300_000][bwLevel()]));
+      // v0.1.40: in Redis saving mode the agents rest between sessions (30s, 2 minutes in mode 2, 5 minutes in mode 3).
+      // v0.1.44: the rest beats the heartbeat every 20s and ends early when the mode drops. A 5-minute rest used to
+      // look like a stuck loop to the watchdog (limit 275s): on 8 Oct mode 3 restarted the worker every 5 minutes, and
+      // every restart re-read its caches, which kept the bandwidth in mode 3
+      const lvl = bwLevel();
+      if (lvl) {
+        const until = Date.now() + [0, 30_000, 120_000, 300_000][lvl];
+        while (Date.now() < until && bwLevel() >= lvl) {
+          sessionAt = Date.now();
+          await new Promise((res) => setTimeout(res, Math.min(20_000, Math.max(0, until - Date.now()))));
+        }
+      }
       console.log(new Date().toISOString(), `session ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ momo: r?.momo, mind: r?.mind, lens: r?.lens, catch: r?.catch, hound: r?.hound, overseer: r?.overseer }).slice(0, 500));
     } catch (e: any) {
       console.log("session error", e?.message || e);
