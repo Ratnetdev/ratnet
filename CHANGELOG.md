@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.43 · Run 11: better entries, and a paper restart
+- Why: on 8 Oct the paper desk lost 22% per trade (15 trades, 2 wins) while the ghost desk made 13% (12 trades, 5 wins). Same rules and same exits; ghost's profit came from 3 trades. Across both books the strategy lost about 6.5% per trade after costs. The cause was the entries: King BOND buys on coins nano scored 1 to 20, buys into coins already turning (most never got more than 8% above the entry), and MOMO buying the volume spike at $109K to $824K (4 of 5 lost).
+- King buys need nano: needNano is on. Until nano has 200 live lessons (and after, whenever nano does not say BOND), the King's calls go to the ghost desk, so the King's record keeps building at no cost.
+- No buys into a falling coin: before every buy (King, early, MIND, CATCH, MOMO; tweet coins and FLASH excepted) the desk reads the price twice more 1.5 seconds apart and skips the coin when it sits 10%+ under the last minute's high, made three lower prices in a row (3%+ down), or the live tape shows the last minute down 10%+ with more sellers than buyers. The ghost desk uses the same rule. Skips show in FLOW and FILM as "falling knife".
+- MOMO buys pullbacks: a clean MOMO signal now waits up to 10 minutes for a 12% dip and buys the 5% bounce off the low (momoPullback, momoStalkMins). A migration no longer ends a MOMO watch; MOMO slots and the daily loss limit are checked again at the bounce.
+- Live is approved by hand: desk mode "auto" becomes "paper" once on deploy (and "paper" is the default). Choose "auto" or "live" in Admin when you want the desk to trade real money.
+- Once on deploy: the paper desk restarts (never while live). The old record is archived for 60 days; COACH, the exit lab, PM's record, priors, FILM, the ghost book and every model keep what they learned. PM pauses are cleared.
+- New test suite v043test (the falling-knife rule, ghost routing for nano, the restart and its settings). All suites pass.
+
 ## v0.1.42 · Run 10: the worker's biggest reads, and clean data
 - Why: after v0.1.41 Redis ran at about 1.2x the hourly allowance (saving mode 1). Five worker reads made up most of it, and the audit found places where good data was overwritten or bad data was learned.
 - Bandwidth:

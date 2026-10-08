@@ -27,7 +27,7 @@ import { K, dayKey, redis } from "./redis";
 import { conn, getCurves, safeErr, CurveView, solUsd, RPS } from "./solana";
 import { getMarket } from "./market";
 import { readPools, type PoolRead } from "./pool";
-import { getSettings } from "./settings";
+import { getSettings, saveSettings } from "./settings";
 import { tokenAmounts, progressFromSol, readTape } from "./tape";
 import { xMentions } from "./buzz";
 import { levelOf, loadRunner, MILESTONES, pNext, RK, Run } from "./runner";
@@ -275,7 +275,8 @@ type After = { mint: string; symbol: string; at: number; exitPx: number; peakHel
 // 30% within hours, so the two sides of one switch were measured differently.
 type Case = { kind: "dev" | "drain"; key: string; mint: string; symbol: string; at: number; px0: number; sold: boolean };
 const CASES = "rn:desk:cases";
-type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean };
+// v0.1.43: `how` and `rec` for MOMO's pullback entries (a MOMO coin may never have been dug, so its record rides along)
+type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean; how?: "momo"; rec?: Launch; mins?: number };
 
 // the desk lock lives this long past its last renewal (one pass, including a swap waiting for confirmation)
 const LOCK_MS = 75_000;
@@ -447,6 +448,25 @@ export async function resetOnceForFinal() {
   if (st?.live) return false;
   if (!(await r.set("rn:desk:reset:0.1.39", Date.now(), { nx: true }))) return false;
   await resetDesk("v0.1.39: clean start for the final verification run");
+  await pmClearPauses().catch(() => null);
+  return true;
+}
+
+/**
+ * v0.1.43 (Run 11): one paper restart with the new entries (King needs nano, MOMO buys pullbacks, no falling coins).
+ * Same rules as before: never while live, once, the old record archived, everything learned kept, PM pauses cleared.
+ * The saved settings get needNano on, and mode "auto" becomes "paper": the desk no longer goes live by itself when the
+ * exam passes (Admin > desk mode "live" or "auto" to allow it).
+ */
+export async function resetOnceForNano() {
+  const r = redis();
+  if (await r.get("rn:desk:reset:0.1.43")) return false;
+  const st = await r.get<DeskState>(K.deskState);
+  if (st?.live) return false;
+  if (!(await r.set("rn:desk:reset:0.1.43", Date.now(), { nx: true }))) return false;
+  const cur = await getSettings();
+  await saveSettings({ desk: { ...cur.desk, needNano: true, mode: cur.desk.mode === "auto" ? "paper" : cur.desk.mode } });
+  await resetDesk("v0.1.43: King needs nano, MOMO buys pullbacks, no buys into a falling coin");
   await pmClearPauses().catch(() => null);
   return true;
 }
@@ -1176,6 +1196,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     // older desk still running cannot write its books back over the reset)
     await resetOnceForCosts().catch(() => false);
     await resetOnceForFinal().catch(() => false);
+    await resetOnceForNano().catch(() => false);
     await dropWicksOnce().catch(() => null);
     await slimTradesOnce().catch(() => null);
     const s = await getSettings();
@@ -1310,6 +1331,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         if (Object.keys(dx).length) log(b, "RISK", `chain read failed (${safeErr(e)}): ${Object.keys(dx).length} open positions priced from DexScreener this beat`, "info");
         return Object.fromEntries(Object.entries(dx).map(([m, v]) => [m, { px: v.px, real: v.sol, curve: null, grad: false, src: "dex" } as Px]));
       });
+      notePx(px, now);
       if (now - lastRunsAt > 10_000) {
         lastRunsAt = now;
         sol = (await solUsd()) || sol;
@@ -1635,7 +1657,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             early
               ? { rule: "early_read_bond", ok: true, v: `BOND ${rec.early!.score} at minute 1` }
               : { rule: "king_or_nano_bond", ok: rec.call!.verdict === "BOND" || rec.call!.nano?.verdict === "BOND", v: `${rec.call!.verdict} ${rec.call!.score}` },
-            { rule: "nano_agrees", ok: early || !cfg.needNano || rec.call!.nano?.verdict === "BOND", v: `${rec.call?.nano ? `${rec.call.nano.verdict} ${rec.call.nano.score}` : "learning"}${cfg.needNano ? "" : " (not required yet)"}` },
+            { rule: "nano_agrees", ok: early || !cfg.needNano || rec.call!.nano?.verdict === "BOND", v: `${rec.call?.nano ? `${rec.call.nano.verdict} ${rec.call.nano.score}` : `still learning (${NANO_MIN} live lessons first)`}${cfg.needNano ? "" : " (not required)"}` },
             { rule: "curve_window", ok: early || curve >= cfg.minCurve, v: `${curve}%` },
             // PRIOR: a curve already past maxCurve at the call usually dumps at migration. Skipped calls are followed in
             // shadow and COACH drops the rule if they do clearly better ($FLY: skipped at 74%, then 54x)
@@ -1672,7 +1694,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           await r.hincrby(dk, "seen", 1);
           await r.expire(dk, 3 * 86400);
           // blocked only by the desk itself (loss limit, full slots), not by anything about the coin: the ghost desk takes it
-          const deskBlock = !!fail && fails.every((c) => DESK_RULES.has(c.rule)) && !posMap[m] && !stalks[m];
+          // v0.1.43: a King call nano does not back (or nano still learning) goes to the ghost desk too, so the King's
+          // record keeps building at no cost while the real desk waits for nano
+          const deskBlock = !!fail && fails.every((c) => GHOSTABLE.has(c.rule)) && !posMap[m] && !stalks[m];
           if (fail && deskBlock) log(b, "VET", `$${rec.symbol} passes every check on the coin; the desk is blocked (${fails.map((c) => `${c.rule.replace(/_/g, " ")} ${c.v}`).join(", ")}). ghost desk follows it`, "info", coin);
           if (fail && !deskBlock) {
             log(b, "VET", `skipped $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
@@ -1739,19 +1763,28 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       for (const sk of Object.values(stalks)) {
         const q = px[sk.mint];
         const coin = { mint: sk.mint, symbol: sk.symbol };
-        if (!q || q.grad || now - sk.at > cfg.stalkMins * 60_000 || q.px < sk.px0 * 0.5) {
+        const mo = sk.how === "momo"; // MOMO coins are often migrated already: a migration does not end their stalk
+        if (!q || (q.grad && !mo) || now - sk.at > (sk.mins ?? cfg.stalkMins) * 60_000 || q.px < sk.px0 * 0.5) {
           await r.hdel(K.deskStalk, sk.mint);
-          log(b, "SIZE", `$${sk.symbol} stalk ended: ${!q ? "no price" : q.grad ? "migrated" : q.px < sk.px0 * 0.5 ? "broke down" : "no pullback in time"}`, "info", coin);
+          log(b, "SIZE", `$${sk.symbol} ${mo ? "MOMO pullback watch" : "stalk"} ended: ${!q ? "no price" : q.grad && !mo ? "migrated" : q.px < sk.px0 * 0.5 ? "broke down" : "no pullback in time"}`, "info", coin);
           continue;
         }
         const t: ArmTrack = { hi: sk.hi, lo: sk.lo, armed: sk.armed, fill: null };
         stepArm(t, sk.depth, q.px, sk.px0);
         if (t.fill != null) {
           await r.hdel(K.deskStalk, sk.mint);
-          const rec = await getLaunch(sk.mint);
+          const rec = (await getLaunch(sk.mint)) || sk.rec || null;
           if (!rec) continue;
-          log(b, "FLOW", `$${sk.symbol} pulled back ${Math.round((1 - t.lo / t.hi) * 100)}% and bounced. entering ${fmtPct(pct(q.px, sk.px0))} vs the signal`, "ok", coin);
-          await enter(b, state, rec, q.px, q.real, eq.value, walletSol, kp, cfg, "stalk", null);
+          if (mo && sk.rec?.description) rec.description = sk.rec.description;
+          if (mo) {
+            const held = Object.values(await loadPositions(K.deskPos)).filter((p) => p.how === "momo" && takesSlot(p)).length;
+            if (held >= ((cfg as any).momoMaxOpen ?? 3) || pct(eq.value, state.dayStart) <= -cfg.dailyLoss) {
+              log(b, "SIZE", `$${sk.symbol} (MOMO) bounced, but ${held >= ((cfg as any).momoMaxOpen ?? 3) ? "the MOMO slots are full" : "the daily loss limit is hit"}: not bought`, "info", coin);
+              continue;
+            }
+          }
+          log(b, "FLOW", `$${sk.symbol} pulled back ${Math.round((1 - t.lo / t.hi) * 100)}% and bounced. entering ${fmtPct(pct(q.px, sk.px0))} vs the signal${mo ? " (MOMO)" : ""}`, "ok", coin);
+          await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eq.value, walletSol, kp, cfg, mo ? "momo" : "stalk", null, true);
         } else await r.hset(K.deskStalk, { [sk.mint]: { ...sk, hi: t.hi, lo: t.lo, armed: t.armed } });
       }
 
@@ -1957,7 +1990,57 @@ function fallbackRun(p: Pos): Run {
 
 type Cfg = Awaited<ReturnType<typeof getSettings>>["desk"];
 
-async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null) {
+// v0.1.43: prices the desk has seen per coin over the last 90 seconds (memory only), for the falling-knife check
+const PXR = new Map<string, [number, number][]>();
+function notePx(px: Record<string, Px>, now: number) {
+  if (PXR.size > 3000) PXR.clear();
+  for (const [m, q] of Object.entries(px)) {
+    if (!q?.px || q.src === "dex") continue;
+    const a = PXR.get(m) || [];
+    a.push([now, q.px]);
+    while (a.length && now - a[0][0] > 90_000) a.shift();
+    PXR.set(m, a);
+  }
+}
+// strategies that skip the check: tweet coins and FLASH live on seconds, a stalk fill has just bounced
+const KNIFE_SKIP = new Set(["wire", "flash", "stalk"]);
+/**
+ * v0.1.43: is the coin falling right now? On 8 Oct most paper buys never got more than +8% above the entry: the desk
+ * bought coins that had already turned. Two fresh chain reads 1.5 seconds apart, the prices the desk saw in the last
+ * minute, and the live tape when the stream follows the coin. Falling = 10%+ under the last minute's high, or three
+ * lower prices in a row (3%+ down), or the tape's last minute down 10%+ with more sellers than buyers.
+ */
+async function knife(m: string, px0: number, cfg: Cfg): Promise<{ falling: boolean; why: string; px: number }> {
+  const c: any = cfg;
+  const s: number[] = [px0];
+  for (let i = 0; i < 2; i++) {
+    await new Promise((res) => setTimeout(res, c.knifeGapMs ?? 1500));
+    const q = (await priceOf([m], true).catch(() => ({} as Record<string, Px>)))[m];
+    if (q?.px) s.push(q.px);
+  }
+  const now = Date.now();
+  const ring = (PXR.get(m) || []).filter((x) => now - x[0] <= 60_000).map((x) => x[1]);
+  const rt = ((globalThis as any).__rnRt as ((ms: string[]) => Record<string, any>) | undefined)?.([m])?.[m];
+  return knifeVerdict(s, ring, rt, cfg);
+}
+/** The falling-knife rule on its own (exported for the tests): samples oldest first, ring = prices of the last minute. */
+export function knifeVerdict(s: number[], ring: number[], rt: { span: number; mcCh60: number; s20: number; b20: number } | null | undefined, cfg: Cfg) {
+  const c: any = cfg;
+  const hi = Math.max(...ring, ...s);
+  const last = s[s.length - 1];
+  const off = hi > 0 ? pct(last, hi) : 0;
+  const slide = s.length >= 3 && s[2] < s[1] && s[1] < s[0] && pct(s[2], s[0]) <= -(c.knifeSlide ?? 3);
+  const tapeDown = !!rt && rt.span >= 20 && rt.mcCh60 <= -(c.knifeTape ?? 10) && rt.s20 > rt.b20;
+  const maxOff = c.knifeOff ?? 10;
+  const falling = off <= -maxOff || slide || tapeDown;
+  const why = off <= -maxOff ? `${Math.round(off)}% under the last minute's high` : slide ? `three lower prices in 3s (${pct(s[2], s[0]).toFixed(1)}%)` : tapeDown ? `tape: ${rt!.mcCh60}% in the last minute, ${rt!.s20} sells vs ${rt!.b20} buys in 20s` : `${off.toFixed(1)}% off the minute's high`;
+  return { falling, why, px: last };
+}
+/** v0.1.43: which failed checks still let the ghost desk follow a signal (exported for the tests). */
+export const ghostable = (rules: string[]) => rules.length > 0 && rules.every((x) => GHOSTABLE.has(x));
+const FALL_SKIPS = new Map<string, number>(); // one skip per coin per 2 minutes in the log and FILM
+
+async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null, bounced = false) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
   // never the same coin twice: two signals for one coin in the same beat (CATCH and the King, or a repeat signal) used
@@ -1965,10 +2048,26 @@ async function enter(b: Batch, state: DeskState, rec: Launch, px: number, real: 
   if (ENTERING.has(rec.mint) || (await loadPositions(K.deskPos))[rec.mint]) return;
   ENTERING.add(rec.mint);
   try {
+    if (!bounced && !KNIFE_SKIP.has(how)) {
+      const k = await knife(rec.mint, px, cfg);
+      if (k.falling) {
+        skipFalling(b, rec, how, k);
+        return;
+      }
+      px = k.px;
+    }
     await enterInner(b, state, rec, px, real, eqValue, walletSol, kp, cfg, how, xm, r, coin);
   } finally {
     ENTERING.delete(rec.mint);
   }
+}
+function skipFalling(b: Batch, rec: Launch, how: string, k: { why: string; px: number }, ghost = false) {
+  const now = Date.now();
+  if (now - (FALL_SKIPS.get(rec.mint) || 0) < 120_000) return;
+  FALL_SKIPS.set(rec.mint, now);
+  if (FALL_SKIPS.size > 2000) FALL_SKIPS.clear();
+  log(b, "FLOW", `${ghost ? "ghost: " : ""}not buying $${rec.symbol} (${how}): falling, ${k.why}`, "info", { mint: rec.mint, symbol: rec.symbol });
+  if (!ghost) logSkip("falling_knife", k.why, rec.mint, rec.symbol, k.px).catch(() => {});
 }
 const ENTERING = new Set<string>();
 async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null, r: ReturnType<typeof redis>, coin: { mint: string; symbol: string }) {
@@ -2003,7 +2102,7 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   const pmw = await sleeveWeight(sl).catch(() => ({ w: 1, paused: false, until: 0 }));
   if (pmw.paused) {
     log(b, "PM", `$${rec.symbol}: ${sl} sleeve is paused until ${new Date(pmw.until).toISOString().slice(11, 16)} UTC after a bad run. ghost desk takes it`, "info", coin);
-    await ghostEnter(b, rec, px, real, how, `${sl} sleeve paused by PM`, cfg);
+    await ghostEnter(b, rec, px, real, how, `${sl} sleeve paused by PM`, cfg, true);
     return;
   }
   // RISK: tracked wallets in the coin move the size, by how copying their class has actually done (bounded 0.7x to 1.4x)
@@ -2023,7 +2122,7 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   if (want > liqCap && liqCap < cfg.maxSol) log(b, "SIZE", `$${rec.symbol}: liquidity caps the buy at ${liqCap.toFixed(2)} SOL (max ${cfg.maxImpact ?? 6}% price impact on a ${vSol.toFixed(0)} SOL curve)`, "info", coin);
   if (size < cfg.minSol * 0.99) {
     log(b, "SIZE", `no room for $${rec.symbol}: ${avail.toFixed(3)} SOL free. ghost desk takes it`, "info", coin);
-    await ghostEnter(b, rec, px, real, how, `no paper balance free (${avail.toFixed(3)} SOL)`, cfg);
+    await ghostEnter(b, rec, px, real, how, `no paper balance free (${avail.toFixed(3)} SOL)`, cfg, true);
     return;
   }
   log(b, "SIZE", `${size.toFixed(3)} SOL on $${rec.symbol} (${cfg.sizePct}% of desk, ${how} entry)`, "info", coin);
@@ -2206,6 +2305,15 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
     return;
   }
   log(b, "VET", `MOMO's $${rec.symbol} clean: ${checks.slice(0, 4).map((x) => x.v).join(", ")}`, "ok", coin);
+  // v0.1.43: MOMO buys a pullback, not the spike. On 8 Oct it bought right after the volume burst at $109K to $824K and
+  // lost 4 of 5. It now waits up to 10 minutes for a 12% dip (momoPullback) and buys the 5% bounce off the low.
+  const dip = c.momoPullback ?? 12;
+  if (dip > 0) {
+    if (await r.hexists(K.deskStalk, m)) return;
+    await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: q.px, depth: dip, hi: q.px, lo: q.px, armed: false, early: false, how: "momo", rec, mins: c.momoStalkMins ?? 10 } satisfies Stalk });
+    log(b, "SIZE", `$${rec.symbol} (MOMO): waiting for a -${dip}% pullback and a bounce, up to ${c.momoStalkMins ?? 10}m`, "info", coin);
+    return;
+  }
   await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "momo", null);
 }
 
@@ -2454,13 +2562,22 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
 // ---------------------------------------------------------------- ghost desk
 
 /** Take a trade in the ghost book: same fill rules as paper, a fixed size, nothing touches the real books. */
-async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: Pos["how"], blocked: string, cfg: Cfg) {
+async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: Pos["how"], blocked: string, cfg: Cfg, checked = false) {
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
   if (!px || (await r.hexists(GHOST_POS, rec.mint))) return;
   if (((await r.hlen(GHOST_POS)) || 0) >= GHOST_MAX) {
     log(b, "SIZE", `$${rec.symbol}: ghost desk full (${GHOST_MAX} open), not followed`, "info", coin);
     return;
+  }
+  // v0.1.43: the ghost desk skips falling coins too, so its record keeps measuring what the real desk would do
+  if (!checked && !KNIFE_SKIP.has(how || "")) {
+    const k = await knife(rec.mint, px, cfg);
+    if (k.falling) {
+      skipFalling(b, rec, how || "direct", k, true);
+      return;
+    }
+    px = k.px;
   }
   const sol = cfg.ghostSol ?? 0.1;
   // same costs as paper; a migrated coin with no pool read is costed on a fresh migration pool (~85 SOL)
@@ -2698,6 +2815,7 @@ const ghostTrades = () => listCached<Trade>(GHOST_TRADES, SEQ.gtrades, 2000, tra
 const tripMetas = (ghost: boolean) => listCached<TripMeta>(ghost ? GHOST_TRIPS : TRIPS_KEY, ghost ? SEQ.gtrips : SEQ.trips, 1000, tripMetaId);
 const GHOST_MAX = 10;
 const DESK_RULES = new Set(["daily_loss_ok", "open_slots"]);
+const GHOSTABLE = new Set([...DESK_RULES, "nano_agrees"]);
 // strategies with their own slot count (the King's lane never fills up with them, nor they with the King's)
 const OWN_LANE = new Set(["wire", "mind", "momo", "catch", "flash"]);
 /**

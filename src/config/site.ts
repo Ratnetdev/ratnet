@@ -70,7 +70,7 @@ export const DEFAULT_SETTINGS = {
     runner: true, // post-bond candles from GeckoTerminal for the runner model
   },
   desk: {
-    mode: "auto" as "off" | "paper" | "auto" | "live", // auto = paper until the exam is passed, then live
+    mode: "paper" as "off" | "paper" | "auto" | "live", // auto = paper until the exam is passed, then live. v0.1.43: paper by default, live is approved by hand
     start: 1, // paper starting balance in SOL
     sizePct: 5, // % of equity per trade
     minSol: 0.05,
@@ -81,7 +81,7 @@ export const DEFAULT_SETTINGS = {
     maxCurve: 70,
     maxDevBuy: 5, // SOL
     serialDev: 5, // reject devs with this many launches and 0 bonds
-    needNano: false, // require nano BOND too
+    needNano: true, // v0.1.43: King buys need nano BOND too (until nano is ready, King calls go to the ghost desk)
     minFlow: 0.55, // share of 1h trades that are buys
     sl: -35, // % loss before initials: sell all
     timeStop: 45, // minutes without taking initials: sell all
