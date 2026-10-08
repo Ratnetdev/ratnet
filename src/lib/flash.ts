@@ -15,6 +15,7 @@
 // at). FLASH trades nothing until its own record earns it: a look time trades only once a score band in it has 30+
 // looks and a hit rate of 10%+ and 5x the base rate. Earlier looks are cheaper but noisier; the record decides which
 // look time is worth acting on, nobody picks it by hand.
+import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { K, redis } from "./redis";
 import { memo } from "./memo";
 import { agentLog } from "./agents";
@@ -143,7 +144,7 @@ export async function flashLook(looks: FlashLook[]) {
   const [model, recStat, recs] = await Promise.all([
     memo("fl:model", 30_000, loadModel),
     memo("fl:rec", 30_000, () => r.hgetall<Record<string, number>>(REC).then((x) => (x || {}) as Record<string, number>)),
-    r.mget<(Launch | null)[]>(...looks.map((l) => K.launch(l.mint))),
+    getLaunches(looks.map((l) => l.mint)),
   ]);
   const cuts: Record<number, ReturnType<typeof cutoff>> = {};
   for (const st of FL_STAGES) cuts[st] = model.n >= FL_MIN && model.pos >= 15 ? cutoff(recStat, st) : null;
@@ -206,17 +207,24 @@ export async function flashFollow() {
   if (!ids.length) return { labelled: 0 };
   const snaps = ((await r.hmget<Record<string, Snap>>(SNAP, ...ids)) || {}) as Record<string, Snap | null>;
   const mints = Array.from(new Set(ids.map((id) => id.split(":")[0])));
-  const recArr = await r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m)));
+  const recArr = await getLaunches(mints);
   const recBy: Record<string, Launch | null> = {};
   mints.forEach((m, i) => (recBy[m] = recArr[i] || null));
   const model = await loadModel();
   const inc: Record<string, number> = {};
   const hist: any[] = [];
   let n = 0;
+  const later: string[] = [];
   for (const id of ids) {
     const sp = snaps[id];
     if (!sp) continue;
     const rec = recBy[sp.mint];
+    // v0.1.42: a full curve without an outcome yet (migration not confirmed, or stuck not yet known) waits 5 minutes
+    // (3 hours after launch at most): it used to count as bonded straight away, and a stuck curve taught a false win
+    if (rec?.completeAt && !rec.outcome && !rec.stuck && now - sp.createdAt < 3 * 3600_000) {
+      later.push(id);
+      continue;
+    }
     // a full curve that later proved stuck (never migrated) is a miss, whatever order the flags arrived in
     // v0.1.33 label: did the coin double from the look AND still hold the look's price an hour after launch (or bond)?
     // "Bonded within an hour" taught FLASH to buy coins that pumped, bonded and dumped below its entry; a trade needs
@@ -241,8 +249,13 @@ export async function flashFollow() {
     n++;
   }
   const p = r.pipeline();
-  p.zrem(DUE, ...ids);
-  p.hdel(SNAP, ...ids);
+  const wait = new Set(later);
+  const gone = ids.filter((id) => !wait.has(id));
+  if (gone.length) {
+    p.zrem(DUE, ...gone);
+    p.hdel(SNAP, ...gone);
+  }
+  if (later.length) p.zadd(DUE, ...(later.map((id) => ({ score: now + 5 * 60_000, member: id })) as [any, ...any[]]));
   for (const [k, v] of Object.entries(inc)) p.hincrby(REC, k, v);
   p.set(W, model);
   if (hist.length) {

@@ -29,6 +29,8 @@ const L = makeCache<Launch | null>();
 
 /** Launch records for many mints, from memory when read in the last `ttlMs`. Same order as `mints`. */
 export async function launchesCached(mints: string[], ttlMs = 30_000): Promise<(Launch | null)[]> {
+  // v0.1.42: in the worker every launch record lives in one write-through cache (lib/launches.ts)
+  if (process.env.RATNET_WORKER === "1") return (await import("./launches")).getLaunches(mints, Math.max(ttlMs, 60_000));
   const now = Date.now();
   ttlMs *= bwMul();
   const miss = Array.from(new Set(mints.filter((x) => {
@@ -106,4 +108,13 @@ export async function mgetCached<T>(keys: string[], ttlMs: number): Promise<(T |
     miss.forEach((k, i) => G.put(k, got[i] ?? null));
   }
   return keys.map((k) => (G.m.get(k)?.v ?? null) as T | null);
+}
+
+// v0.1.42: the top of the hot-curve ranking (rn:radar), shared by the slow lane, CATCH and the trade stream's
+// subscription list in the worker: one read every 8s instead of three or four.
+export async function radarTop(n: number): Promise<string[]> {
+  const { memo } = await import("./memo");
+  const top = await memo("radar:top200", 8_000, async () => ((await redis().zrange<string[]>(K.radar, 0, 199, { rev: true })) || []) as string[]);
+  if (n <= 200) return top.slice(0, n);
+  return ((await redis().zrange<string[]>(K.radar, 0, n - 1, { rev: true })) || []) as string[];
 }

@@ -3,6 +3,7 @@
 // talking about the coin on X right now, and the Telegram. Every step streams live to the LensCam on the site, and
 // the result is a dossier: a 0-100 score with the red flags and the good signs in plain words.
 // LENS informs; it does not block a buy. Its score rides along on every trade so COACH and FILM can learn what it is worth.
+import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { safeFetch } from "./safefetch";
 import { acquire, release, renew } from "./lock";
 import { K, redis } from "./redis";
@@ -393,7 +394,7 @@ export async function lensSession(ms: number) {
       const old = await r.get<Dossier>(LENS_D(mint));
       if (old?.done && Date.now() - old.at < 2 * 3600_000 && why !== "buy") continue;
       if (old?.done && Date.now() - old.at < 10 * 60_000) continue;
-      const rec = await r.get<Launch>(K.launch(mint));
+      const rec = await getLaunch(mint);
       if (!rec) continue;
       await r.incr(hk);
       await r.expire(hk, 7200);

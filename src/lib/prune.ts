@@ -66,7 +66,7 @@ async function pruneByAge(key: string, timeOf: (v: any) => number, maxAge: numbe
   return drop.length;
 }
 
-export const PRUNE_CAPS = { dev: 250_000, wallet: 250_000, funder: 100_000, fof: 200_000, near: 5_000 };
+export const PRUNE_CAPS = { dev: 250_000, wallet: 250_000, funder: 100_000, fof: 200_000, near: 5_000, pools: 60_000, recm: 150_000, xacc: 4_000 };
 
 export async function pruneRedis(now = Date.now()) {
   const r = redis();
@@ -85,6 +85,41 @@ export async function pruneRedis(now = Date.now()) {
   await safe("fof", () => pruneCache(GK.fof, PRUNE_CAPS.fof));
   await safe("ctLast", () => pruneByAge("rn:ct:last", (v) => Number(v?.at), DAY, now));
   await safe("runFin", () => pruneByAge("rn:run:fin", (v) => Number(v?.pkAt || v?.bondedAt || v?.createdAt), 14 * DAY, now));
+  // v0.1.42: four more tables that only grew
+  await safe("runBest", async () => {
+    // only the top of the board is ever read: keep the best 2,000 runs
+    const n = Number((await r.zcard("rn:run:best")) || 0);
+    if (n <= 2_500) return 0;
+    await r.zremrangebyrank("rn:run:best", 0, -2001);
+    return n - 2000;
+  });
+  await safe("pools", () => pruneCache("rn:pools", PRUNE_CAPS.pools));
+  for (const k of ["rn:ct:recm", "rn:ct:recm2"]) {
+    await safe(k.slice(3), async () => {
+      const n = Number((await r.scard(k)) || 0);
+      if (n <= PRUNE_CAPS.recm) return 0;
+      const drop = n - Math.floor(PRUNE_CAPS.recm * 0.8);
+      await r.spop(k, drop);
+      return drop;
+    });
+  }
+  await safe("xAcc", async () => {
+    // muted accounts go first once the book passes its cap, then the counters of accounts no longer in the book
+    const n = Number((await r.hlen("rn:x:acc")) || 0);
+    let dropped = 0;
+    if (n > PRUNE_CAPS.xacc) {
+      const drop = await scanFields("rn:x:acc", ([, v]) => (v as any)?.tier !== "muted", n - Math.floor(PRUNE_CAPS.xacc * 0.8));
+      if (drop.length) await hdelMany(["rn:x:acc"], drop);
+      dropped += drop.length;
+    }
+    const keep = new Set(((await r.hkeys("rn:x:acc")) || []).map((h) => String(h).toLowerCase()));
+    if (keep.size) {
+      const orphans = await scanFields("rn:x:st", ([f]) => /:k[cs2]$/.test(f) || keep.has(f.slice(0, f.lastIndexOf(":")).toLowerCase()), 50_000);
+      if (orphans.length) await hdelMany(["rn:x:st"], orphans);
+      dropped += orphans.length;
+    }
+    return dropped;
+  });
   await safe("near", async () => {
     const n = Number((await r.scard(K.near)) || 0);
     if (n <= PRUNE_CAPS.near) return 0;

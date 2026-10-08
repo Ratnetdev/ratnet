@@ -12,6 +12,7 @@
 //     drop out. The best lessons go into every new judgement.
 //  3. School. Every hour it reads what the KOLs and traders it follows posted and keeps the reusable lessons, and the
 //     admin can teach it directly (a thread, a video transcript, your own rules).
+import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { K, redis } from "./redis";
 import { memo } from "./memo";
 import { acquire, release, renew } from "./lock";
@@ -106,11 +107,31 @@ export function enqueueMind(p: { zadd: Function; zremrangebyrank: Function }, mi
 }
 
 async function prices(mints: string[]) {
+  return (await pricesF(mints)).out;
+}
+
+/** v0.1.42: every mint is priced (DexScreener in batches of 30; it used to stop after the first 30, so the rest
+ *  counted as dead), and `failed` holds the mints whose read failed: unknown, not -95%. */
+async function pricesF(mints: string[]) {
   const out: Record<string, { px: number; grad: boolean; sol: number }> = {};
-  if (!mints.length) return out;
-  const curves = await getCurves(mints).catch(() => ({} as Record<string, any>));
+  const failed = new Set<string>();
+  if (!mints.length) return { out, failed };
+  let curves: Record<string, any> = {};
+  let bad = false;
+  try {
+    curves = (await getCurves(mints)) as Record<string, any>;
+  } catch {
+    bad = true;
+  }
   const done = mints.filter((m) => !curves[m] || curves[m]!.complete);
-  const pools = done.length ? await readPools(done).catch(() => ({} as Record<string, any>)) : {};
+  let pools: Record<string, any> = {};
+  if (done.length) {
+    try {
+      pools = (await readPools(done)) as Record<string, any>;
+    } catch {
+      bad = true;
+    }
+  }
   for (const m of mints) {
     const c = curves[m];
     if (c && !c.complete && c.priceSol > 0) out[m] = { px: c.priceSol, grad: false, sol: c.realSol };
@@ -118,17 +139,27 @@ async function prices(mints: string[]) {
   }
   // not on a pump.fun curve or pool (older coins, other launchpads): DexScreener's biggest pair
   const rest = mints.filter((m) => !out[m]);
-  if (rest.length) {
-    const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${rest.slice(0, 30).join(",")}`, { cache: "no-store" }).catch(() => null);
-    const pairs: any[] = res?.ok ? ((await res.json().catch(() => [])) as any[]) : [];
-    for (const pr of pairs || []) {
+  for (let i = 0; i < rest.length; i += 30) {
+    const part = rest.slice(i, i + 30);
+    const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${part.join(",")}`, { cache: "no-store" }).catch(() => null);
+    const pairs: any[] | null = res?.ok ? ((await res.json().catch(() => null)) as any[] | null) : null;
+    if (!Array.isArray(pairs)) {
+      for (const m of part) failed.add(m);
+      continue;
+    }
+    for (const pr of pairs) {
       const m = pr?.baseToken?.address;
       const liqSol = Number(pr?.liquidity?.quote || 0);
       if (m && Number(pr.priceNative) > 0 && (!out[m] || liqSol > out[m].sol)) out[m] = { px: Number(pr.priceNative), grad: true, sol: liqSol };
     }
   }
-  return out;
+  // a chain read that failed: whatever DexScreener did not price is unknown
+  if (bad) for (const m of rest) if (!out[m]) failed.add(m);
+  return { out, failed };
 }
+
+/** Put a follow-up back 10 minutes when its price read failed (6 times at most). */
+const RETRY_MS = 10 * 60_000;
 
 /** A coin the rats never dug (older, or from another launchpad) that a KOL or tracked wallet bought: build what MIND
  *  needs from DexScreener. MIND judges it and follows it on record; the desk only trades pump.fun coins. */
@@ -308,7 +339,7 @@ async function setLive(v: Record<string, unknown>) {
 
 async function judge(mint: string, why: MindWhy): Promise<Judgement | null> {
   const r = redis();
-  const rec = (await r.get<Launch>(K.launch(mint))) || (why === "kol" || why === "wallets" || why === "momo" ? await stubLaunch(mint).catch(() => null) : null);
+  const rec = (await getLaunch(mint)) || (why === "kol" || why === "wallets" || why === "momo" ? await stubLaunch(mint).catch(() => null) : null);
   if (!rec) return null;
   const [px, sol] = await Promise.all([prices([mint]), solUsd().catch(() => null)]);
   const q = px[mint];
@@ -391,7 +422,7 @@ async function follow() {
   if (!ids.length) return 0;
   const got = ((await r.hmget<Record<string, Pick>>(PICKS, ...ids)) || {}) as Record<string, Pick | null>;
   const picks = ids.map((id) => got[id]).filter(Boolean) as Pick[];
-  const px = await prices(Array.from(new Set(picks.map((p) => p.mint))));
+  const { out: px, failed } = await pricesF(Array.from(new Set(picks.map((p) => p.mint))));
   const p = r.pipeline();
   for (const k of ids) p.zrem(DUE, k);
   for (const pk of picks) {
@@ -399,6 +430,14 @@ async function follow() {
     const [hk] = HZ[done] || [];
     if (!hk) continue;
     const q = px[pk.mint];
+    const t = pk as Pick & { tries?: number };
+    if (!q && failed.has(pk.mint) && (t.tries || 0) < 6) {
+      t.tries = (t.tries || 0) + 1;
+      p.zadd(DUE, { score: now + RETRY_MS, member: pk.id });
+      p.hset(PICKS, { [pk.id]: pk });
+      continue;
+    }
+    t.tries = 0;
     // no price = dead (rugged, pool drained): count it as -95%
     const ret = q ? Math.log(Math.max(1e-9, q.px) / pk.px0) : Math.log(0.05);
     pk.r[hk] = Math.round(ret * 1000) / 1000;
@@ -571,14 +610,19 @@ async function kolFollow() {
   if (!ids.length) return 0;
   const got = ((await r.hmget<Record<string, any>>(KC, ...ids)) || {}) as Record<string, any>;
   const calls = ids.map((i) => got[i]).filter(Boolean);
-  const px = await prices(Array.from(new Set(calls.map((c) => c.mint))));
+  const { out: px, failed } = await pricesF(Array.from(new Set(calls.map((c) => c.mint))));
   const p = r.pipeline();
-  for (const i of ids) {
-    p.zrem(KDUE, i);
-    p.hdel(KC, i);
-  }
+  for (const i of ids) p.zrem(KDUE, i);
   for (const c of calls) {
     const q = px[c.mint];
+    const id = `${c.h}:${c.mint}`;
+    if (!q && failed.has(c.mint) && (c.tries || 0) < 6) {
+      c.tries = (c.tries || 0) + 1;
+      p.hset(KC, { [id]: c });
+      p.zadd(KDUE, { score: Date.now() + RETRY_MS, member: id });
+      continue;
+    }
+    p.hdel(KC, id);
     const ret = q ? Math.log(Math.max(1e-9, q.px) / c.px0) : Math.log(0.05);
     p.hincrby(XST, `${c.h}:kc`, 1);
     p.hincrbyfloat(XST, `${c.h}:ks`, Math.max(-3, Math.min(5, ret)));

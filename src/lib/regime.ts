@@ -40,10 +40,17 @@ export async function ensureSolHistory() {
   for (const c of h?.data?.attributes?.ohlcv_list || []) hours[hourKey(c[0] * 1000)] = Number(c[4]);
   const days: Record<string, number> = {};
   for (const c of d?.data?.attributes?.ohlcv_list || []) days[new Date(c[0] * 1000).toISOString().slice(0, 10)] = Number(c[4]);
+  // v0.1.42: nothing came back (GeckoTerminal down or rate limited): try again in 10 minutes, not 12 hours. On a fresh
+  // database every regime input stayed empty half a day.
+  if (!Object.keys(hours).length && !Object.keys(days).length) {
+    await r.set(RG.at, Date.now() - 12 * 3600_000 + 10 * 60_000);
+    return;
+  }
   const p = r.pipeline();
   if (Object.keys(hours).length) p.hset(RG.solh, hours);
   if (Object.keys(days).length) p.hset(RG.sold, days);
   await p.exec();
+  cache.clear();
 }
 
 /** The live rats write the current SOL price into the history every run. */
@@ -52,12 +59,17 @@ export async function recordSol(price: number | null) {
   await redis().hset(RG.solh, { [hourKey()]: price });
 }
 
-const cache = new Map<string, Regime>();
+// v0.1.42: a complete reading is kept for good; one with a missing input only for a minute (at a cold start the SOL
+// history and the hour counters are empty, and that null used to be cached for the rest of the hour)
+const cache = new Map<string, Regime & { _at?: number }>();
 
 export async function regimeAt(t: number): Promise<Regime> {
   const hk = hourKey(t);
   const c = cache.get(hk);
-  if (c) return c;
+  if (c && (!c._at || Date.now() - c._at < 60_000)) {
+    const { _at, ...g } = c;
+    return g;
+  }
   const r = redis();
   const h24 = hourKey(t - 24 * 3600_000);
   const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -76,7 +88,9 @@ export async function regimeAt(t: number): Promise<Regime> {
     lrate: Number(lr || 0) || Number(dug || 0) || null,
   };
   if (cache.size > 2000) cache.clear();
-  cache.set(hk, g);
+  // the historian's old hours stay incomplete for good (no launch counts that far back): those are kept too
+  const whole = (g.sol24 != null && g.sol7d != null && g.lrate != null) || Date.now() - t > 3 * 3600_000;
+  cache.set(hk, whole ? g : { ...g, _at: Date.now() });
   return g;
 }
 

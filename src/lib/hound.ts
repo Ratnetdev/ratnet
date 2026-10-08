@@ -17,6 +17,7 @@
 // what and how much, MIND gets the coin when several tracked wallets pile in (or one strong one), and every buy is
 // followed 1h, 6h and 24h later, so each wallet and each class gets a copy-trade record of its own. MIND and RISK
 // see those records; nothing is followed blindly.
+import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { postTo } from "./board";
 import { memo } from "./memo";
 import { safeEq, secretFor } from "./admin";
@@ -420,12 +421,24 @@ export async function syncHook(force = false) {
   const body = { webhookURL: `${SITE.url}/api/hound/hook`, transactionTypes: ["SWAP"], accountAddresses: addrs, webhookType: "enhanced", authHeader: hookAuth() };
   const base = "https://api.helius.xyz/v0/webhooks";
   const post = () => fetch(`${base}?api-key=${key}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
-  let res = prev?.id ? await fetch(`${base}/${prev.id}?api-key=${key}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null) : await post();
+  const put = (id: string) => fetch(`${base}/${id}?api-key=${key}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+  // v0.1.42: no remembered id (a new database, or the key was cleared): reuse the webhook Helius already has for this
+  // site's URL instead of creating a second one (two webhooks = every swap delivered and billed twice)
+  let id = prev?.id || "";
+  if (!id) {
+    const list = await fetch(`${base}?api-key=${key}`, { cache: "no-store" }).catch(() => null);
+    const hooks: any[] = list?.ok ? (((await list.json().catch(() => [])) as any[]) || []) : [];
+    id = (Array.isArray(hooks) ? hooks : []).find((h) => String(h?.webhookURL || "").replace(/\/+$/, "") === body.webhookURL)?.webhookID || "";
+  }
+  let res = id ? await put(id) : await post();
   // v0.1.41: the remembered webhook was deleted on Helius (404/400): make a new one instead of reporting "done"
-  if (prev?.id && res && (res.status === 404 || res.status === 400)) res = await post();
+  if (id && res && (res.status === 404 || res.status === 400)) {
+    id = "";
+    res = await post();
+  }
   const j: any = res?.ok ? await res.json().catch(() => null) : null;
   if (!res?.ok) return { hook: `failed ${res?.status ?? "no answer"}` };
-  await r.set(HOOK, { id: j?.webhookID || prev?.id || "", n: addrs.length, at: Date.now() });
+  await r.set(HOOK, { id: j?.webhookID || id || "", n: addrs.length, at: Date.now() });
   await r.del(DIRTY);
   return { hook: `${addrs.length} wallets live` };
 }
@@ -454,7 +467,7 @@ export async function onSwaps(txs: any[]) {
     out.push({ id: t.signature, w: wl.w, name: wl.name, cls: wl.cls, conf: wl.conf, mint, symbol: "", sol, at: (t.timestamp || Date.now() / 1000) * 1000, sig: t.signature, side });
   }
   if (!out.length) return { buys: 0 };
-  const recs = ((await r.mget<any[]>(...out.map((b) => K.launch(b.mint)))) || []) as any[];
+  const recs = ((await getLaunches(out.map((b) => b.mint))) || []) as any[];
   out.forEach((b, i) => (b.symbol = recs[i]?.symbol || ""));
   const p = r.pipeline();
   const hot = new Set<string>();
@@ -490,31 +503,53 @@ export async function onSwaps(txs: any[]) {
 
 // ---------------------------------------------------------------- copy-trade records
 
-async function prices(mints: string[]) {
+/** Prices in SOL. `failed` holds the mints whose read failed (RPC or DexScreener down): unknown, not worthless. */
+export async function copyPrices(mints: string[]) {
   const out: Record<string, number> = {};
-  if (!mints.length) return out;
-  const curves = await getCurves(mints).catch(() => ({} as Record<string, any>));
+  const failed = new Set<string>();
+  if (!mints.length) return { px: out, failed };
+  let curves: Record<string, any> = {};
+  let curvesOk = true;
+  try {
+    curves = (await getCurves(mints)) as Record<string, any>;
+  } catch {
+    curvesOk = false;
+  }
   const done = mints.filter((m) => !curves[m] || curves[m]!.complete);
-  const pools = done.length ? await readPools(done).catch(() => ({} as Record<string, any>)) : {};
+  let pools: Record<string, any> = {};
+  let poolsOk = true;
+  if (done.length) {
+    try {
+      pools = (await readPools(done)) as Record<string, any>;
+    } catch {
+      poolsOk = false;
+    }
+  }
   const rest: string[] = [];
   for (const m of mints) {
     const c = curves[m];
     if (c && !c.complete && c.priceSol > 0) out[m] = c.priceSol;
     else if (pools[m]?.px) out[m] = pools[m].px;
+    else if (!curvesOk || !poolsOk) failed.add(m);
     else rest.push(m);
   }
   // not a pump.fun coin: DexScreener's biggest pair
   for (let i = 0; i < rest.length; i += 30) {
-    const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${rest.slice(i, i + 30).join(",")}`, { cache: "no-store" }).catch(() => null);
-    const pairs: any[] = res?.ok ? ((await res.json().catch(() => [])) as any[]) : [];
+    const part = rest.slice(i, i + 30);
+    const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${part.join(",")}`, { cache: "no-store" }).catch(() => null);
+    const pairs: any[] | null = res?.ok ? ((await res.json().catch(() => null)) as any[] | null) : null;
+    if (!Array.isArray(pairs)) {
+      for (const m of part) failed.add(m);
+      continue;
+    }
     const best: Record<string, any> = {};
-    for (const pr of pairs || []) {
+    for (const pr of pairs) {
       const m = pr?.baseToken?.address;
       if (m && (!best[m] || (pr.liquidity?.usd || 0) > (best[m].liquidity?.usd || 0))) best[m] = pr;
     }
     for (const [m, pr] of Object.entries(best)) if (Number(pr.priceNative) > 0) out[m] = Number(pr.priceNative);
   }
-  return out;
+  return { px: out, failed };
 }
 
 async function follow() {
@@ -523,11 +558,21 @@ async function follow() {
   if (!ids.length) return 0;
   const got = ((await r.hmget<Record<string, any>>(BUY, ...ids)) || {}) as Record<string, any>;
   const items = ids.map((i) => got[i]).filter(Boolean);
-  const px = await prices(Array.from(new Set(items.map((b) => b.mint))));
+  const { px, failed } = await copyPrices(Array.from(new Set(items.map((b) => b.mint))));
   const p = r.pipeline();
   for (const i of ids) p.zrem(DUE, i);
   for (const b of items) {
     const now = px[b.mint];
+    // v0.1.42: a failed price read is tried again in 10 minutes (6 times at most), never scored as a -95% loss
+    if (!now && failed.has(b.mint)) {
+      b.tries = (b.tries || 0) + 1;
+      if (b.tries > 6) p.hdel(BUY, b.id);
+      else {
+        p.hset(BUY, { [b.id]: b });
+        p.zadd(DUE, { score: Date.now() + 10 * 60_000, member: b.id });
+      }
+      continue;
+    }
     if (b.px0 == null) {
       // first look a minute after the buy sets the copy price (what we could have bought at)
       if (!now) {
@@ -548,6 +593,7 @@ async function follow() {
       if (ret >= Math.log(2)) p.hincrby(EV, `${key}:${hk}:x2`, 1);
     }
     b.step++;
+    b.tries = 0;
     if (b.step < 3) {
       p.hset(BUY, { [b.id]: b });
       p.zadd(DUE, { score: b.at + [3600_000, 6 * 3600_000, 24 * 3600_000][b.step], member: b.id });

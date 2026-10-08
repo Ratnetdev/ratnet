@@ -1,4 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
+import { getLaunch, getLaunches, putLaunch } from "./launches";
+import { radarTop } from "./lcache";
 import { launchesCached } from "./lcache";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
@@ -268,8 +270,14 @@ async function flush(c: Ctx) {
     p.lpush(K.feed, ...c.feed);
     p.ltrim(K.feed, 0, 299);
   }
+  // v0.1.42: the lessons are parked in the same pipeline that marks the launches learned, then the trainer takes them.
+  // Before, a failed training call after the save lost them for good (they were already marked learned).
+  if (c.ops.length) {
+    p.rpush(NANO_PENDING, ...c.ops);
+    p.ltrim(NANO_PENDING, -20_000, -1);
+  }
   await p.exec();
-  if (c.ops.length) await applyNano(c.ops);
+  if (c.ops.length) await applyNano([]);
 }
 
 export type NanoOp = { k: 0 | 1; x: number[]; y: boolean; pw?: number; sw?: number; rp?: boolean };
@@ -295,8 +303,8 @@ export function tapeFloor(d: { tapeMinCurve?: number; earlyMinCurve?: number }) 
 const NANO_VER = "rn:nano:ver";
 let NANO_MEM: { ver: string; m: NanoModel; m1: NanoModel } | null = null;
 export async function applyNano(ops0: NanoOp[]) {
-  if (!ops0.length) return;
   const r = redis();
+  if (!ops0.length && !Number((await r.llen(NANO_PENDING).catch(() => 0)) || 0)) return;
   let l: Lock | null = null;
   for (let i = 0; i < 30 && !l; i++) {
     l = await acquire("rn:lock:nano", 15_000);
@@ -636,7 +644,7 @@ export async function ingestStream(items: { mint: string; sig: string; creator: 
     const fresh = items.filter((x) => x.mint);
     if (!fresh.length) return { dug: 0 };
     // never overwrite a launch already dug (the chain backfill may have it)
-    const have = await r.mget<(Launch | null)[]>(...fresh.map((x) => K.launch(x.mint))).catch(() => [] as (Launch | null)[]);
+    const have = await getLaunches(fresh.map((x) => x.mint), 60_000).catch(() => [] as (Launch | null)[]);
     const todo = fresh.filter((_, i) => !have[i]);
     const markSeen = async (xs: typeof fresh) => {
       if (!xs.length) return;
@@ -656,8 +664,28 @@ export async function ingestStream(items: { mint: string; sig: string; creator: 
   });
 }
 
-/** Every new launch, from the stream or the chain: metadata, dev record, WIRE and PULSE matches, the checkpoints. */
-async function ingest(model: NanoModel, launches: { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number }[], via: "stream" | "chain") {
+// v0.1.42: mints being dug right now. The stream and the chain backfill can see the same launch within a second; the
+// second one used to write a fresh record (cp {}, peak = the curve then) over the first, losing its checkpoints.
+const DIGGING = new Set<string>();
+type NewLaunch = { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number };
+
+/** Every new launch, from the stream or the chain. A launch already stored or being dug is skipped, never rewritten. */
+async function ingest(model: NanoModel, launches: NewLaunch[], via: "stream" | "chain") {
+  const uniq = launches.filter((l, i) => l.mint && !DIGGING.has(l.mint) && launches.findIndex((x) => x.mint === l.mint) === i);
+  if (!uniq.length) return { dug: 0, via };
+  const have = await getLaunches(uniq.map((l) => l.mint), 60_000).catch(() => null);
+  if (!have) return { dug: 0, via, retry: uniq.length }; // unsure: the chain path retries, never a blind overwrite
+  const todo = uniq.filter((_, i) => !have[i]);
+  if (!todo.length) return { dug: 0, via };
+  for (const l of todo) DIGGING.add(l.mint);
+  try {
+    return await ingestNew(model, todo, via);
+  } finally {
+    for (const l of todo) DIGGING.delete(l.mint);
+  }
+}
+
+async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" | "chain") {
   const r = redis();
   const s = await getSettings();
   const creators = Array.from(new Set(launches.map((l) => l.creator).filter(Boolean)));
@@ -733,7 +761,7 @@ async function ingest(model: NanoModel, launches: { mint: string; sig: string; c
       completed(c, rec, LAUNCH_TTL);
       return;
     }
-    p.set(K.launch(l.mint), rec, { ex: LAUNCH_TTL });
+    putLaunch(p, rec, { ex: LAUNCH_TTL });
     (Object.keys(CHECKPOINTS) as Stage[]).forEach((st) => {
       const at = Math.max(l.createdAt + CHECKPOINTS[st], c.now + 1000);
       dueAdds.push({ score: at, member: `${l.mint}|${st}` });
@@ -899,7 +927,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
   }
   p.rpush(K.resolvedHour(hourKey(rec.createdAt)), compactRow(rec));
   p.expire(K.resolvedHour(hourKey(rec.createdAt)), 60 * 60 * 24 * 4);
-  p.set(K.launch(rec.mint), rec, { ex: outcome === "BONDED" ? BONDED_TTL : DEAD_TTL });
+  putLaunch(p, rec, { ex: outcome === "BONDED" ? BONDED_TTL : DEAD_TTL });
   p.zrem(K.hot, rec.mint);
   p.zrem(K.radar, rec.mint);
   p.zrem(K.peak, rec.mint);
@@ -950,7 +978,7 @@ export async function processDue(model: NanoModel) {
     return { m, mint, stage: stage as Stage };
   });
   const mints = Array.from(new Set(items.map((i) => i.mint)));
-  const recsArr = await r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m)));
+  const recsArr = await getLaunches(mints);
   const recs: Record<string, Launch> = {};
   mints.forEach((m, i) => {
     if (recsArr[i]) recs[m] = recsArr[i] as Launch;
@@ -1009,7 +1037,8 @@ export async function processDue(model: NanoModel) {
   const claimed = new Set<string>();
   await Promise.all(
     wantsCall.map(async (it) => {
-      const ok = await r.set(`rn:callclaim:${it.mint}`, c.now, { nx: true, ex: 6 * 3600 }).catch(() => "OK");
+      // a Redis error is not a claim (v0.1.42: it was, and the coin then got no call at all)
+      const ok = await r.set(`rn:callclaim:${it.mint}`, c.now, { nx: true, ex: 6 * 3600 }).catch(() => null);
       if (ok) claimed.add(it.mint);
     }),
   );
@@ -1072,9 +1101,15 @@ export async function processDue(model: NanoModel) {
     p.zadd(K.peak, { gt: true }, radarAdds[0], ...radarAdds.slice(1));
   }
 
-  for (const m of touched) p.set(K.launch(m), recs[m], { ex: LAUNCH_TTL });
+  for (const m of touched) putLaunch(p, recs[m], { ex: LAUNCH_TTL });
   p.zremrangebyrank(K.calls, 0, -5001);
-  await flush(c);
+  try {
+    await flush(c);
+  } catch (e) {
+    // v0.1.42: the calls were not saved: free their claims so the next pass can make them
+    if (claimed.size) await r.del(...Array.from(claimed).map((m) => `rn:callclaim:${m}`)).catch(() => 0);
+    throw e;
+  }
   await recordWork(work.counts, last, work.real);
   return { checked: items.length };
 }
@@ -1353,7 +1388,7 @@ async function wirePicks() {
     }
     rec.tape = lead.tape!;
     rec.wire = { ...rec.wire, pick: true, trac };
-    await r.set(K.launch(rec.mint), rec, { keepTtl: true });
+    await putLaunch(r, rec, { keepTtl: true });
     await closeTweet(d.tid, rec.mint, rec.wire.h);
     await notePickSet(d.tid, rec.wire.h, rec.mint, cands.map((x) => ({ mint: x.mint, symbol: x.c.symbol, x: x.f })));
     picked++;
@@ -1400,7 +1435,7 @@ async function vampPicks(s: Awaited<ReturnType<typeof getSettings>>) {
     const rec = v.rec!;
     rec.tape = tape;
     rec.wire = { ...(rec.wire || { tid, h: "?", score: v.score, how: "named after the post", lagSec: 0, text: "" }), pick: true, vamp: true, trac };
-    await r.set(K.launch(rec.mint), rec, { keepTtl: true });
+    await putLaunch(r, rec, { keepTtl: true });
     await addVamp(tid, rec.mint);
     n++;
     const { w } = await accountOf(rec.wire.h);
@@ -1427,13 +1462,13 @@ export const MIGRATE_GRACE = 30 * 60_000;
  */
 export async function streamComplete(mint: string, at = Date.now()) {
   const r = redis();
-  const rec = await r.get<Launch>(K.launch(mint));
+  const rec = await getLaunch(mint);
   if (!rec || rec.completeAt || rec.outcome) return false;
   rec.completeAt = at;
   rec.pNow = 100;
   rec.peak = Math.max(rec.peak ?? 0, 100);
   const p = r.pipeline();
-  p.set(K.launch(mint), rec, { keepTtl: true });
+  putLaunch(p, rec, { keepTtl: true });
   p.zadd(K.migr, { score: at, member: mint });
   await p.exec();
   return true;
@@ -1447,14 +1482,14 @@ function completed(c: Ctx, rec: Launch, ttl?: number) {
     c.p.zadd(K.migr, { score: c.now, member: rec.mint });
     c.feed.push({ kind: "resolve", rat: "LEDGER", mint: rec.mint, symbol: rec.symbol, name: rec.name, at: c.now, text: "curve full · checking the migration pool" });
   }
-  c.p.set(K.launch(rec.mint), rec, ttl ? { ex: ttl } : { keepTtl: true });
+  putLaunch(c.p, rec, ttl ? { ex: ttl } : { keepTtl: true });
 }
 
 async function migrations(model: NanoModel) {
   const r = redis();
   const mints = ((await r.zrange<string[]>(K.migr, 0, 199)) || []) as string[];
   if (!mints.length) return { migrating: 0 };
-  const [recs, pools] = await Promise.all([r.mget<(Launch | null)[]>(...mints.map((m) => K.launch(m))), readPools(mints)]);
+  const [recs, pools] = await Promise.all([getLaunches(mints), readPools(mints)]);
   const c = newCtx(model);
   let ok = 0;
   let stuck = 0;
@@ -1492,7 +1527,7 @@ async function lessons(model: NanoModel) {
   const now = Date.now();
   const due = (await r.zrange<string[]>(K.lessons, 0, now, { byScore: true, offset: 0, count: 300 })) || [];
   if (!due.length) return { lessons: 0 };
-  const recs = await r.mget<(Launch | null)[]>(...due.map((m) => K.launch(m)));
+  const recs = await getLaunches(due);
   const c = newCtx(model);
   let n = 0;
   const fresh: Lesson[] = [];
@@ -1537,7 +1572,7 @@ async function lessons(model: NanoModel) {
     // recall: every bond in the window, called or not
     if (bonded) inc(c, "lbonded");
     rec.learned = true;
-    c.p.set(K.launch(m), rec, { keepTtl: true });
+    putLaunch(c.p, rec, { keepTtl: true });
     if (x?.length || x1?.length) fresh.push({ x: x?.length ? x : null, x1: x1?.length ? x1 : null, y: bonded ? 1 : 0 });
   });
   c.p.zrem(K.lessons, ...due);
@@ -1592,7 +1627,7 @@ export async function hotWatch(model: NanoModel) {
   if (!total) return { hot: 0 };
   const off = (await r.incrby(K.hotCur, HOT_ROT)) % total;
   const [top, rot] = await Promise.all([
-    r.zrange<string[]>(K.radar, 0, HOT_TOP - 1, { rev: true }),
+    radarTop(HOT_TOP),
     r.zrange<(string | number)[]>(K.hot, off, off + HOT_ROT - 1, { withScores: true }),
   ]);
   const born: Record<string, number> = {};
@@ -1652,7 +1687,7 @@ export async function hotWatch(model: NanoModel) {
   if (newNear.length) await r.expire(K.near, 60 * 60 * 48);
   const need = [...bondedMints, ...newNear];
   if (need.length) {
-    const recs = await r.mget<(Launch | null)[]>(...need.map((m) => K.launch(m)));
+    const recs = await getLaunches(need);
     need.forEach((m, i) => {
       const rec = recs[i];
       if (!rec) {

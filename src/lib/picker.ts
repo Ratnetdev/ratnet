@@ -6,6 +6,7 @@
 // Vamps: a later copy sometimes overtakes the first runner and sends harder. For 30 minutes after a pick the post
 // stays on watch, and a copy that pulls clearly more SOL than the pick, faster, can be picked too (max 2 per post),
 // only on posts with proven traction. Vamps run in their own PM sleeve, so they are sized by their own record.
+import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { redis, K } from "./redis";
 import { agentLog } from "./agents";
 
@@ -89,7 +90,7 @@ export async function pickLessons() {
     await r.zrem(DUE, tid);
     const set = await r.get<{ h: string; picked: string; cands: { mint: string; symbol: string; x: number[] }[] }>(SET(tid));
     if (!set || set.cands.length < 2) continue;
-    const recs = ((await r.mget<any[]>(...set.cands.map((c) => K.launch(c.mint)))) || []) as any[];
+    const recs = ((await getLaunches(set.cands.map((c) => c.mint))) || []) as any[];
     // how far each copy went: bonded beats any curve %, then the highest curve it reached
     const reach = set.cands.map((c, i) => {
       const rec = recs[i];

@@ -4,11 +4,13 @@
 // it. It grows its own account list from what actually moves coins, and mutes accounts that never do.
 // Data: twitterapi.io filter rules push tweets to /api/x/hook within seconds (X_API_KEY + the webhook URL set in the
 // twitterapi.io dashboard). Without a key WIRE stays idle.
+import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { enqueueMind, noteKolCall, noteStudy } from "./mind";
 import { enqueueLens } from "./lens";
 import { redis } from "./redis";
 import { X_SEED } from "@/config/x-accounts";
 import { memo, memoPatch } from "./memo";
+import { listCached } from "./lcache";
 import { X_BUDGET, xAllowed, xCost, xSpend, xSpendView } from "./xcredits";
 import { agentLog } from "./agents";
 import { K } from "./redis";
@@ -25,6 +27,10 @@ const CALLERS = new Set(["kol", "trader"]); // accounts whose CA posts are calls
 const ACC = "rn:x:acc"; // handle -> Acc
 const ST = "rn:x:st"; // {h}:tweets|sparks|picks|runs|pnl (counters)
 const TW = "rn:x:tw"; // newest first, last 400 tweets
+// v0.1.42: its change counter: readers keep the list in memory and fetch only new posts (lib/lcache.ts listCached).
+// WIRE re-read the last 200 posts every 15s: 21.6MB an hour on 8 Oct.
+const TW_SEQ = "rn:x:tw:seq";
+const tweetsCached = () => listCached<XTweet>(TW, TW_SEQ, 400, (t) => `${t.id}|${t.src || ""}`);
 const SEEN = (id: string) => `rn:x:seen:${id}`;
 const CAND = (tid: string) => `rn:x:cand:${tid}`; // mints that match a tweet, scored by match strength
 const OPEN = "rn:x:open"; // tweets with candidates waiting for a pick, scored by first candidate time
@@ -133,6 +139,7 @@ export async function ingest(tweets: XTweet[]) {
     if (!isNew) continue;
     n++;
     p.lpush(TW, t);
+    p.incr(TW_SEQ);
     p.hincrby(ST, `${t.h.toLowerCase()}:tweets`, 1);
     notePulse(p as any, t);
     const key = t.h.toLowerCase();
@@ -160,7 +167,7 @@ export async function ingest(tweets: XTweet[]) {
   for (const t of cas) {
     const acc = accs[t.h.toLowerCase()] || newAccs[t.h.toLowerCase()];
     if (!t.ca || acc?.tier === "muted" || !(CALLERS.has(acc?.cat || "") || t.f >= 10_000)) continue;
-    const rec = await r.get<any>(K.launch(t.ca)).catch(() => null);
+    const rec: any = await getLaunch(t.ca).catch(() => null);
     await noteKolCall(t.h, t.ca, !!rec && !rec.outcome).catch(() => {});
     if (rec) {
       const q = r.pipeline();
@@ -175,11 +182,11 @@ export async function ingest(tweets: XTweet[]) {
 /** A tracked account posted a contract address. If the rats know the coin, it goes to the desk right away. */
 async function onCA(t: XTweet) {
   const r = redis();
-  const rec = await r.get<any>(K.launch(t.ca!));
+  const rec: any = await getLaunch(t.ca!);
   if (!rec || rec.outcome || rec.wire?.pick) return; // unknown coins are matched when the rats dig them (see matchOne)
   if (!(await r.set(PICKED(t.id), t.ca!, { nx: true, ex: 3 * 86400 }))) return;
   rec.wire = { tid: t.id, h: t.h, score: 1, how: "posted the CA", lagSec: Math.max(0, Math.round((t.at - rec.createdAt) / 1000)), text: t.text.slice(0, 160), pick: true };
-  await r.set(K.launch(rec.mint), rec, { keepTtl: true });
+  await putLaunch(r, rec, { keepTtl: true });
   await r.hincrby(ST, `${t.h.toLowerCase()}:picks`, 1);
   if (await r.set(SPARK(t.id), 1, { nx: true, ex: 3 * 86400 })) await r.hincrby(ST, `${t.h.toLowerCase()}:sparks`, 1);
   const { w } = await accountOf(t.h);
@@ -223,7 +230,7 @@ export function matchOne(l: { mint: string; name: string; symbol: string; descri
 
 export async function recentTweets(maxAgeMs = 3600_000) {
   // v0.1.40: read on every launch the stream delivers (~150KB each time); once per 15s per process now
-  const all = await memo("wire:tw200", 15_000, async () => ((await redis().lrange<XTweet>(TW, 0, 199)) || []) as XTweet[]);
+  const all = (await tweetsCached()).slice(0, 200);
   return all.filter((t) => Date.now() - t.at <= maxAgeMs && t.kind !== "reply");
 }
 
@@ -517,22 +524,40 @@ export async function wireViewPublic(limit = 100) {
 }
 /** X webhook posts wait here for the worker (it holds WIRE's account list in memory). */
 export const X_INQ = "rn:x:inq";
+// v0.1.42: the oldest 200 from the tail (new posts are pushed at the head), removed only after they were ingested.
+// Before, the newest 200 were taken and removed first: a failed ingest lost them, and under load the oldest posts
+// waited behind every new one.
+// A batch that fails 3 times in a row is dropped, so one bad post can never block the queue.
+let DRAINING = false;
+let DRAIN_FAILS = 0;
 export async function drainXQueue() {
+  if (DRAINING) return 0;
+  DRAINING = true;
   const r = redis();
-  const m = r.multi();
-  m.lrange(X_INQ, 0, 199);
-  m.ltrim(X_INQ, 200, -1);
-  const [got] = (await m.exec()) as [XTweet[] | null];
-  const tweets = ((got || []) as XTweet[]).filter((t) => t && typeof t === "object");
-  if (!tweets.length) return 0;
-  await ingest(tweets.reverse()); // oldest first
-  return tweets.length;
+  let got: unknown[] = [];
+  try {
+    got = ((await r.lrange<XTweet>(X_INQ, -200, -1)) || []) as unknown[];
+    if (!got.length) return 0;
+    const tweets = got.filter((t): t is XTweet => !!t && typeof t === "object" && typeof (t as any).id === "string" && typeof (t as any).h === "string" && typeof (t as any).text === "string");
+    if (tweets.length) await ingest(tweets.slice().reverse()); // oldest first
+    await r.ltrim(X_INQ, 0, -(got.length + 1));
+    DRAIN_FAILS = 0;
+    return tweets.length;
+  } catch (e) {
+    if (got.length && ++DRAIN_FAILS >= 3) {
+      DRAIN_FAILS = 0;
+      await r.ltrim(X_INQ, 0, -(got.length + 1)).catch(() => null);
+    }
+    throw e;
+  } finally {
+    DRAINING = false;
+  }
 }
 
 export async function wireView(limit = 100) {
   const r = redis();
   await ensureSeed();
-  const [tw, accs, st, found] = await Promise.all([r.lrange<XTweet>(TW, 0, 29), accsAll(), statsAll(), memo("wire:found", 60_000, async () => ((await r.hgetall<Record<string, number>>(FOUND)) || {}) as Record<string, number>)]);
+  const [tw, accs, st, found] = await Promise.all([tweetsCached().then((x) => x.slice(0, 30)), accsAll(), statsAll(), memo("wire:found", 60_000, async () => ((await r.hgetall<Record<string, number>>(FOUND)) || {}) as Record<string, number>)]);
   const S = (st || {}) as Record<string, number>;
   const A = (accs || {}) as Record<string, Acc>;
   const tweets = ((tw || []) as XTweet[]).filter((t) => t.kind !== "reply").slice(0, 20);
@@ -598,14 +623,14 @@ export async function tweetLinks() {
     const [tid, mint] = it.split("|");
     const t = byId[tid];
     if (!t) continue;
-    const rec = await r.get<any>(K.launch(mint));
+    const rec: any = await getLaunch(mint);
     if (!rec || rec.wire) continue;
     const lag = Math.max(0, Math.round((rec.createdAt - t.at) / 1000));
     // a post from days ago is decoration, not the story
     if (lag > 6 * 3600) continue;
     const m: WireMatch = { tid: t.id, h: t.h, score: 1, how: "links the post", lagSec: lag, text: t.text.slice(0, 160), f: t.f };
     rec.wire = m;
-    p.set(K.launch(mint), rec, { keepTtl: true });
+    putLaunch(p, rec, { keepTtl: true });
     noteMatch(p, mint, rec.createdAt, m);
     const key = t.h.toLowerCase();
     if (!accs[key] && !newAccs[key]) newAccs[key] = { h: t.h, cat: "found", tier: "found", added: Date.now(), why: "a launch linked their post", f: t.f };
@@ -613,6 +638,7 @@ export async function tweetLinks() {
     // the post joins WIRE's buffer, so copies named after it match too
     if (await r.set(SEEN(t.id), 1, { nx: true, ex: 3 * 86400 })) {
       p.lpush(TW, { ...t, src: "link" });
+      p.incr(TW_SEQ);
       notePulse(p as any, t);
     }
     if (t.f >= 20_000) enqueueLens(p, mint, "wire");

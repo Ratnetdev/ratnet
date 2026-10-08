@@ -10,6 +10,7 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { memo } from "./memo";
 import { listCached, listDrop } from "./lcache";
 import { ATA_RENT, roundTripCost, slipOf, sellProceeds, txCost, venueFee, type CostCfg } from "./costs";
@@ -1577,7 +1578,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             if (px[m]) await momoEntry(b, state, m, px[m], cfg, eq.value, walletSol, kp, posMap).catch((e) => log(b, "VET", `MOMO signal: ${safeErr(e)}`, "bad"));
             continue;
           }
-          const rec = await r.get<Launch>(K.launch(m));
+          const rec = await getLaunch(m);
           // MIND may buy after migration too; everything else trades the curve only
           if (!rec || (rec.outcome && !(mindSig && rec.outcome === "BONDED"))) continue;
           if (mindSig) {
@@ -1599,7 +1600,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             const tp = await readTape(m, rec.creator, rec.createdAt).catch(() => null);
             if (tp) {
               rec.tape = tp;
-              await r.set(K.launch(m), rec, { keepTtl: true });
+              await putLaunch(r, rec, { keepTtl: true });
               log(b, "TAPE", `$${rec.symbol}: read at the desk: ${tp.n} trades, ${tp.uniq} traders, bundle ${Math.round(tp.bundleShare * 100)}%${tp.farm?.farm ? `, FARM: ${tp.farm.why}` : ""}`, tp.farm?.farm ? "bad" : "info", coin);
             }
           }
@@ -1747,7 +1748,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         stepArm(t, sk.depth, q.px, sk.px0);
         if (t.fill != null) {
           await r.hdel(K.deskStalk, sk.mint);
-          const rec = await r.get<Launch>(K.launch(sk.mint));
+          const rec = await getLaunch(sk.mint);
           if (!rec) continue;
           log(b, "FLOW", `$${sk.symbol} pulled back ${Math.round((1 - t.lo / t.hi) * 100)}% and bounced. entering ${fmtPct(pct(q.px, sk.px0))} vs the signal`, "ok", coin);
           await enter(b, state, rec, q.px, q.real, eq.value, walletSol, kp, cfg, "stalk", null);
@@ -1769,7 +1770,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           log(b, "RISK", `$${re.symbol} reclaimed its entry after the stop. re-entries are off (last ${rr.n}: ${rr.avg}% avg, ${rr.win}% winners)`, "info", coin);
           continue;
         }
-        const known = await r.get<Launch>(K.launch(re.mint));
+        const known = await getLaunch(re.mint);
         const rec: Launch = known || ({ mint: re.mint, sig: "", createdAt: now, creator: "", name: re.symbol, symbol: re.symbol, uri: "", image: "", description: "re-entry after a stop-out", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: now, dugBy: "RISK", p0: 0, mcap0: 0, cp: {}, outcome: q.grad ? "BONDED" : undefined } as Launch);
         log(b, "RISK", `$${re.symbol} reclaimed its entry ${Math.round((now - re.at) / 60_000)}m after the stop (${fmtPct(pct(q.px, re.entryPx))} vs entry). buying back once`, "ok", coin);
         REENTRY_NEXT.add(re.mint);
@@ -2160,7 +2161,7 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
   const c: any = cfg;
   const h = await momoSignal(m);
   if (!h) return;
-  const known = await r.get<Launch>(K.launch(m));
+  const known = await getLaunch(m);
   // a coin the rats may never have dug (launched before they watched, or long ago): enough to trade and to show
   const rec: Launch = known || ({ mint: m, sig: "", createdAt: now - h.ageMin * 60_000, creator: "", name: h.name, symbol: h.symbol, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: now, dugBy: "MOMO", p0: 0, mcap0: 0, cp: {}, outcome: q.grad ? "BONDED" : undefined } as Launch);
   rec.description = `$${Math.round(h.v5 / 1000)}K volume in 5m, ${h.buyers5} buyers vs ${h.sellers5} sellers`;
@@ -2218,7 +2219,7 @@ async function catchEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg
   const c: any = cfg;
   const g = await catchSignal(m);
   if (!g) return;
-  const known = await r.get<Launch>(K.launch(m));
+  const known = await getLaunch(m);
   const rec: Launch = known || ({ mint: m, sig: "", createdAt: now, creator: "", name: g.sym, symbol: g.sym, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: now, dugBy: "CATCH", p0: 0, mcap0: 0, cp: {}, outcome: q.grad ? "BONDED" : undefined } as Launch);
   const coin = { mint: m, symbol: rec.symbol };
   const t = rec.tape;
@@ -2281,7 +2282,7 @@ async function flashEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg
   const c: any = cfg;
   const g = await flashSignal(m);
   if (!g) return;
-  const rec = await r.get<Launch>(K.launch(m));
+  const rec = await getLaunch(m);
   if (!rec) return;
   const coin = { mint: m, symbol: rec.symbol };
   const open = Object.values(posMap).filter((p) => p.how === "flash" && takesSlot(p)).length;

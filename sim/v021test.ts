@@ -61,7 +61,7 @@ async function main() {
     }
     await fl.flashLook(looks);
     // the strong ones bond 20 minutes in
-    for (const l of looks) if (l.strong) await R.set(K.launch(l.mint), { mint: l.mint, symbol: "S", createdAt: NOW, devN: 0, devB: 0, completeAt: NOW + 20 * 60_000, cp: {} });
+    for (const l of looks) if (l.strong) await R.set(K.launch(l.mint), { mint: l.mint, symbol: "S", createdAt: NOW, devN: 0, devB: 0, completeAt: NOW + 20 * 60_000, outcome: "BONDED", cp: {} });
     NOW += 61 * 60_000;
     await fl.flashFollow();
   }

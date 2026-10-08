@@ -18,8 +18,9 @@
 //
 // Starting numbers (target, horizon, cutoffs) are hints in the desk config (catch*). The model, its cutoff and the PM
 // sleeve size are learned. FILM follows every skip, the ghost desk takes what the desk can't.
-import { cachedRead, launchesCached } from "./lcache";
+import { cachedRead, launchesCached, radarTop } from "./lcache";
 import { memo, memoDrop } from "./memo";
+import { acquire, release, type Lock } from "./lock";
 import { bwLevel } from "./bwgov";
 import { poolSnaps, poolWatch, asHot, type PoolSnap } from "./pools";
 import { K, redis } from "./redis";
@@ -386,7 +387,7 @@ export async function catchPass(force = false) {
   // POOL WATCH: every migration of the last 2 hours, read in its pool once a minute (not only MOMO's list)
   await poolWatch().catch(() => null);
   const [radar, mv, recent, migRaw] = await Promise.all([
-    r.zrange<string[]>(K.radar, 0, (c.catchCurveTop ?? 60) - 1, { rev: true }),
+    radarTop(c.catchCurveTop ?? 60),
     momoView().catch(() => null),
     recentCoins(20 * 60_000, 40).catch(() => [] as string[]),
     r.zrange<string[]>(MIG, now - 2 * 3600_000, now, { byScore: true }),
@@ -524,12 +525,33 @@ export async function catchPass(force = false) {
   return { catch: `${scored.length} scanned, ${snaps} snapshots, ${sent.length} sent`, ready, ...fol };
 }
 
+// v0.1.42: the two CATCH models are trained by follow() and by the historian (learnHistory) in the same worker: both
+// loaded, trained and saved without a lock, so either side's lessons could be overwritten. One lock now.
+async function withModelLock<T>(fn: () => Promise<T>, waitMs: number): Promise<T | null> {
+  const t0 = Date.now();
+  let l: Lock | null = null;
+  while (!l && Date.now() - t0 <= waitMs) {
+    l = await acquire("rn:lock:ctmodel", 60_000);
+    if (!l) await new Promise((res) => setTimeout(res, 250));
+  }
+  if (!l) return null;
+  try {
+    return await fn();
+  } finally {
+    await release(l);
+  }
+}
+
 /** Follow the peak of every watched coin (once a minute) and label snapshots whose horizon ended or who hit. */
 async function follow(sol: number, target: number) {
   const r = redis();
   const now = Date.now();
-  if (now - Number((await r.get(PK_AT)) || 0) < 55_000) return {};
-  await r.set(PK_AT, now);
+  // one follower a minute (v0.1.42: a single SET NX; the read-then-write let a burst pass and the regular pass both in)
+  if (!(await r.set(PK_AT, now, { nx: true, px: 55_000 }).catch(() => null))) return {};
+  return (await withModelLock(() => followHeld(sol, target, now), 5_000)) ?? { labelled: "busy" };
+}
+async function followHeld(sol: number, target: number, now: number) {
+  const r = redis();
   await followMem();
   const watch = Object.fromEntries(WATCHM!) as Record<string, Watch>;
   const live = Object.entries(watch).filter(([, w]) => w.until > now - 60_000);
@@ -540,7 +562,8 @@ async function follow(sol: number, target: number) {
   }
   // peaks: curve price or the canonical pool, for up to 200 coins (one batched read each way)
   const { priceOf } = await import("./desk");
-  const mints = live.map(([m]) => m).slice(0, 200);
+  // every watched coin (v0.1.42: was the first 200; the rest were labelled misses at their horizon even when they hit)
+  const mints = live.map(([m]) => m).slice(0, 1500);
   const px = mints.length ? await priceOf(mints).catch(() => ({} as Record<string, any>)) : {};
   const upd: Record<string, any> = {};
   for (const m of mints) {
@@ -755,6 +778,9 @@ export function curveMcSol(progress: number) {
  */
 export async function learnHistory(items: { f: Record<string, number>; y: boolean; y2?: boolean; w: number }[]) {
   if (!items.length) return 0;
+  return (await withModelLock(() => learnHistoryHeld(items), 20_000)) ?? 0;
+}
+async function learnHistoryHeld(items: { f: Record<string, number>; y: boolean; y2?: boolean; w: number }[]) {
   const r = redis();
   const model = await loadModel();
   const model2 = await loadModel(W2H);

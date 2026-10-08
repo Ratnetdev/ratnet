@@ -186,6 +186,8 @@ export function pNext(model: NanoModel, emp: Record<string, number>, run: Run, i
 /** Start following a coin (called at the King's call for taped coins, and at bond for every coin). */
 export async function enroll(p: { set: Function; zadd: Function }, run: Run) {
   RUNC.delete(run.mint);
+  if (!run.bondedAt) PRE?.add(run.mint);
+  else PRE?.delete(run.mint);
   p.set(RK.run(run.mint), run, { ex: Math.ceil((FOLLOW_MS + 2 * 86400_000) / 1000) });
   if (run.bondedAt) p.zadd(RK.post, { score: run.bondedAt, member: run.mint });
   else p.zadd(RK.pre, { score: run.createdAt, member: run.mint });
@@ -255,6 +257,7 @@ function close(c: Ctx, p: any, run: Run) {
   p.hset(RK.fin, { [run.mint]: viewOf(run) });
   p.del(RK.run(run.mint));
   p.zrem(RK.pre, run.mint);
+  PRE?.delete(run.mint);
   p.zrem(RK.post, run.mint);
 }
 
@@ -262,8 +265,19 @@ function close(c: Ctx, p: any, run: Run) {
 // back only when something changed. Before, every slow pass (every ~4s) read and rewrote every followed run (~1.8KB
 // each, often 100+ of them): several GB a day of Redis traffic for numbers that mostly stood still. A run held in
 // memory is re-read from Redis every 5 minutes, so another process's write is picked up.
-const RUNC = new Map<string, { at: number; json: string; run: Run }>();
+const RUNC = new Map<string, { at: number; json: string; run: Run; wroteAt?: number; hi?: number; b?: number | null }>();
 const RUNC_MS = 5 * 60_000;
+// v0.1.42: which curve coins are followed (rn:run:pre), in memory, re-read every 5 minutes. Each slow pass sent the
+// whole hot list (~340 mints) to ZMSCORE just to learn this: 13MB an hour.
+let PRE: Set<string> | null = null;
+let PRE_AT = 0;
+async function preSet() {
+  if (!PRE || Date.now() - PRE_AT > 5 * 60_000) {
+    PRE = new Set((((await redis().zrange<string[]>(RK.pre, 0, -1)) || []) as string[]).map(String));
+    PRE_AT = Date.now();
+  }
+  return PRE;
+}
 
 /**
  * One runner pass, run from the dig loop.
@@ -273,8 +287,8 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
   const r = redis();
   const now = Date.now();
   const preMints = Object.keys(curveUsd);
-  const inPre = preMints.length ? ((await r.zmscore(RK.pre, preMints)) as (number | null)[]) : [];
-  const followPre = preMints.filter((_, i) => inPre[i] != null);
+  const pre = preMints.length ? await preSet() : new Set<string>();
+  const followPre = preMints.filter((m) => pre.has(m));
 
   // post-bond: rotate through followed coins, 30 per DexScreener call
   const total = await r.zcard(RK.post);
@@ -291,7 +305,8 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
   const quick = <T,>(p: Promise<T>, ms: number, d: T) => Promise.race([p.catch(() => d), new Promise<T>((res) => setTimeout(() => res(d), ms))]);
   const miss = all.filter((m) => {
     const h = RUNC.get(m);
-    return !h || now - h.at > RUNC_MS;
+    // a run with a peak still waiting to be written is never replaced by the older stored copy
+    return !h || (now - h.at > RUNC_MS && JSON.stringify(h.run) === h.json);
   });
   const [got, model, emp, pools, mkt] = await Promise.all([
     miss.length ? r.mget<(Run | null)[]>(...miss.map(RK.run)) : Promise.resolve([] as (Run | null)[]),
@@ -313,6 +328,7 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
     const run = runs[i];
     if (!run) {
       p.zrem(RK.pre, m);
+      PRE?.delete(m);
       p.zrem(RK.post, m);
       return;
     }
@@ -321,6 +337,7 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
       // curve full but never migrated: its numbers say nothing about real runners, drop it unlearned
       p.del(RK.run(m));
       p.zrem(RK.pre, m);
+      PRE?.delete(m);
       p.zrem(RK.post, m);
       p.zrem(RK.best, m);
       return;
@@ -329,6 +346,7 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
     if (events.bonded.includes(m) && !run.bondedAt) {
       run.bondedAt = now;
       p.zrem(RK.pre, m);
+      PRE?.delete(m);
       p.zadd(RK.post, { score: now, member: m });
     }
     const usd = curveUsd[m] ?? (pools[m] ? poolUsd(pools[m], solUsd, run.supply) : 0);
@@ -339,8 +357,15 @@ export async function runnerPass(curveUsd: Record<string, number>, events: { bon
     const json = JSON.stringify(run);
     const h = RUNC.get(m);
     if (h && h.json === json) return; // nothing changed: no write
+    // v0.1.42: a new milestone, a bond or a learned snapshot is written at once; a peak that only moved waits up to a
+    // minute (the record was rewritten on every small move: 19MB an hour)
+    const big = !h || h.hi !== run.hi || (h.b ?? null) !== (run.bondedAt ?? null) || !h.wroteAt;
+    if (!big && now - (h!.wroteAt || 0) < 60_000) {
+      RUNC.set(m, { ...h!, run });
+      return;
+    }
     p.set(RK.run(m), run, { keepTtl: true });
-    RUNC.set(m, { at: h?.at ?? now, json, run });
+    RUNC.set(m, { at: h?.at ?? now, json, run, wroteAt: now, hi: run.hi, b: run.bondedAt ?? null });
   });
   for (const l of c.log) p.lpush(RK.log, { at: now, text: l });
   if (c.log.length) p.ltrim(RK.log, 0, 99);

@@ -21,6 +21,7 @@ import { criticalChecks, redisDown } from "../src/lib/critical";
 import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 import { bwTick, installBwMeter } from "../src/lib/bwmeter";
+import { radarTop } from "../src/lib/lcache";
 import { bwFlush, bwLevel, bwMul, bwView } from "../src/lib/bwgov";
 import { drainXQueue, publishWireView } from "../src/lib/wire";
 import { publishSite } from "../src/lib/site";
@@ -120,15 +121,20 @@ async function siteTick() {
     await publishWireView().catch((e) => console.log("site wire", e?.message || e));
   }
 }
+// v0.1.42: the side checks of the heartbeat (alerts, critical checks) run one at a time; with Redis slow they used to
+// start again every 20 seconds while the last ones still waited
+let beatSide = false;
 async function beat() {
+  if (!beatSide) {
+    beatSide = true;
+    Promise.allSettled([stallAlerts(), criticalChecks()]).finally(() => (beatSide = false));
+  }
   const stuck = Date.now() - sessionAt;
   const deskStuck = Date.now() - deskAt;
   // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
   redis().set("rn:rpc", { at: Date.now(), ...rpcView() }, { ex: 120 }).catch(() => {});
   flushRpcDay().catch(() => {});
-  stallAlerts().catch(() => {});
-  criticalChecks().catch(() => {});
   bwFlush()
     .then(() => govAlert())
     .then(() => bwTick())
@@ -234,7 +240,7 @@ async function wantList() {
   const [pos, ghosts, radar, mig, cw] = await Promise.all([
     r.hkeys(K.deskPos).catch(() => []),
     r.hkeys("rn:ghost:pos").catch(() => []),
-    r.zrange<string[]>(K.radar, 0, 99, { rev: true }).catch(() => []),
+    radarTop(100).catch(() => [] as string[]),
     r.zrange<string[]>("rn:ct:mig", now - 2 * 3600_000, now, { byScore: true }).catch(() => []),
     r.hkeys("rn:ct:watch").catch(() => []),
   ]);
@@ -289,11 +295,19 @@ function flashTick() {
   if (looks.length) flashLook(looks).then((r) => markAlive("flash", r)).catch((e) => (console.log("flash error", e?.message || e), markAlive("flash", { error: String(e?.message || e) })));
 }
 
+// v0.1.42: one intake batch at a time. Every 300ms a new batch used to start even while the last was still waiting on
+// a slow gateway or Redis, and the batches piled up behind each other; now new launches wait in INTAKE and go together.
+let intakeBusy = false;
 async function flushIntake() {
-  if (!INTAKE.length) return;
+  if (intakeBusy || !INTAKE.length) return;
+  intakeBusy = true;
   const items = INTAKE;
   INTAKE = [];
-  await ingestStream(items).catch((e) => console.log("intake error", e?.message || e));
+  try {
+    await ingestStream(items).catch((e) => console.log("intake error", e?.message || e));
+  } finally {
+    intakeBusy = false;
+  }
 }
 
 let noteAt = 0;
@@ -349,10 +363,25 @@ function pumpportal() {
     }
     watched = want;
   };
+  // v0.1.42: one live socket at a time. Each open() gets a generation number; an older socket's events are ignored and
+  // a pending reconnect is cleared when the watchdog opens a fresh socket (the two used to race into two sockets,
+  // every launch and trade arriving twice)
+  let gen = 0;
+  let retry: ReturnType<typeof setTimeout> | null = null;
   const open = () => {
+    if (retry) clearTimeout(retry);
+    retry = null;
+    const my = ++gen;
     // PUMPPORTAL_API_KEY (optional): PumpPortal's keyed data stream, for when the free stream stops sending trades
-    ws = new WS(`wss://pumpportal.fun/api/data${PP_KEY ? `?api-key=${encodeURIComponent(PP_KEY)}` : ""}`);
-    ws.onopen = () => {
+    const sock = new WS(`wss://pumpportal.fun/api/data${PP_KEY ? `?api-key=${encodeURIComponent(PP_KEY)}` : ""}`);
+    ws = sock;
+    sock.onopen = () => {
+      if (my !== gen) {
+        try {
+          sock.close();
+        } catch {}
+        return;
+      }
       up = true;
       watched = new Set();
       ws.send(JSON.stringify({ method: "subscribeNewToken" }));
@@ -360,7 +389,8 @@ function pumpportal() {
       resync().catch(() => null);
       console.log("pumpportal: launches, migrations and live trades");
     };
-    ws.onmessage = (ev: any) => {
+    sock.onmessage = (ev: any) => {
+      if (my !== gen) return;
       lastMsgAt = Date.now();
       let msg: any = null;
       try {
@@ -402,14 +432,12 @@ function pumpportal() {
       }
     };
     // reconnect once per drop, 3s later (errors are always followed by a close)
-    let again = false;
-    ws.onclose = () => {
+    sock.onclose = () => {
+      if (my !== gen) return; // an old socket closing: the new one is already up
       up = false;
-      if (again) return;
-      again = true;
-      setTimeout(open, 3000);
+      if (!retry) retry = setTimeout(open, 3000);
     };
-    ws.onerror = () => {};
+    sock.onerror = () => {};
   };
   open();
   // a socket can die without ever closing (half-open): pump.fun launches every few seconds, so 30s of silence means
@@ -421,12 +449,12 @@ function pumpportal() {
     console.log(`pumpportal: no message for ${Math.round(quiet / 1000)}s, reconnecting`);
     lastMsgAt = Date.now();
     redis().incr("rn:stream:reconnects").catch(() => 0);
-    try {
-      ws.onclose = null;
-      ws.close();
-    } catch {}
     up = false;
-    open();
+    const old = ws;
+    open(); // the new generation first, so the old socket's close is ignored
+    try {
+      old.close();
+    } catch {}
   }, 5_000);
   setInterval(() => resync().catch(() => null), 15_000);
   setInterval(() => flushTape().catch(() => null), 1_000);

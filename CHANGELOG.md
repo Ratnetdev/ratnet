@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.1.42 · Run 10: the worker's biggest reads, and clean data
+- Why: after v0.1.41 Redis ran at about 1.2x the hourly allowance (saving mode 1). Five worker reads made up most of it, and the audit found places where good data was overwritten or bad data was learned.
+- Bandwidth:
+  - Launch records: in the worker every lane (fast and slow lane, CATCH, FLASH, WIRE, MIND, the desk, HOUND) now shares one in-memory copy per coin, written through on every save. Before, each lane read the same records again (about 41MB an hour) and wrote back its own copy.
+  - WIRE's 400 recent posts are read incrementally (a change counter), not whole every time.
+  - Runner: the list of followed pre-bond runs lives in memory (re-read every 5 minutes); a run is written at once when its peak or bond changes, otherwise at most once a minute.
+  - The hot-curve top (rn:radar) is read once per 8 seconds and shared by the slow lane, CATCH and the trade stream's subscriptions.
+- Clean data:
+  - Two lanes changing the same coin no longer overwrite each other (the shared record above): a fast bonder could be learned as a loss.
+  - A launch seen by both the stream and the chain path is dug once. The second sighting used to write a fresh record over the first and lose its checkpoints.
+  - Copy-trade (HOUND), MIND's picks and KOL calls: a failed price read is tried again in 10 minutes (6 times at most) instead of being scored as a -95% loss. MIND now prices every coin (DexScreener in batches of 30; only the first 30 were priced).
+  - FLASH: a full curve without a confirmed outcome waits 5 minutes (up to 3 hours after launch) before it is labelled; a stuck curve used to count as bonded.
+  - Nano lessons are parked in the same write as the dig, and the trainer picks them up even when no new lessons arrive. A call claim is released when its write fails.
+  - CATCH: the model is trained under one lock (the follow pass and the history pass could save over each other), and one follow pass per minute across processes.
+  - Regime inputs at a cold start: a reading with a missing input is kept one minute, not the whole hour; a failed SOL history download retries in 10 minutes, not 12 hours.
+- Worker:
+  - PumpPortal: one live socket at a time (the watchdog and the reconnect timer could open two, so every launch and trade arrived twice).
+  - New launches are dug one batch at a time; the heartbeat's alert checks do not stack up when Redis is slow.
+  - X queue: the oldest posts first, removed only after they are stored; a batch that fails 3 times is dropped so it never blocks the queue.
+- HOUND: with no saved webhook id (a new database), the webhook Helius already has for this site is found and updated instead of a second one being made.
+- Growth caps (6-hourly prune): the run board keeps its best 2,000, pool addresses 60,000, CATCH's record sets 150,000 each, WIRE's account book 4,000 (muted accounts first) and the counters of accounts no longer in the book.
+- Deferred: FLASH's first look at a fixed 15 seconds (curve0) needs a model version bump; planned with the next model change.
+- New test suite v042test (shared launch records, no double dig, the radar read, parked lessons, failed price reads, FLASH waiting, the X queue, the regime cold start, the run-board cap, the Helius webhook reuse). The v0.1.21 suite's bonded coins now carry a confirmed outcome. All suites pass.
+
 ## v0.1.41 · Run 9: bandwidth for real, and clean training
 - Why: 45 minutes after the new database went live, Redis ran at about 350MB an hour (roughly 8GB a day against the 2.8GB allowance), and the governor said "fine" because it only compared the whole UTC day. The King's nano model was also learning wrong: on an empty database it learns from the historian first, and the "replayed from history" input pushed every live coin toward BOND.
 - The worker builds what the pages read, as one compressed key each: the desk every ~6s, /api/live every ~10s, the explorer and the agent boards every minute, WIRE every 2 minutes. A server instance reads one key instead of building from raw data, and builds it itself only when the worker's copy is old (the age limit stretches with saving mode). The explorer index lives in the worker's memory.

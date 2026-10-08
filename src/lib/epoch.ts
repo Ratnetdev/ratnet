@@ -3,6 +3,7 @@
 // clean data: the HISTORIAN replays the past again with the migration proof, live lessons flow into fresh models.
 // Never touched: rats, litters, burns, payout rounds, sniffs, settings, the desk wallet and its paper book, dev launch counts.
 import { K, dayKey, hourKey, redis } from "./redis";
+import { putLaunch } from "./launches";
 import { GK, HGK } from "./graph";
 import { readPools, migrated } from "./pool";
 import type { Launch } from "./digger";
@@ -76,7 +77,7 @@ async function relabelStep(): Promise<Record<string, unknown> | null> {
       rec.outcome = "DIED";
       rec.stuck = true;
       delete rec.bondSecs;
-      p.set(K.launch(rec.mint), rec, { keepTtl: true });
+      putLaunch(p, rec, { keepTtl: true });
       fixed++;
     }
     await p.exec();
