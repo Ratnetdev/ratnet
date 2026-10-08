@@ -21,8 +21,9 @@ export default function StatusBoard() {
   const slowest = rpc ? [...rpc.lanes].sort((a, b) => b.waitMs - a.waitMs)[0] : null;
   const desk = usePoll<any>("/api/desk", 5000).data;
   const hist = usePoll<any>("/api/history", 20000).data;
-  const catcher = usePoll<any>("/api/catch", 15000).data;
-  const flash = usePoll<any>("/api/flash", 15000).data;
+  const boards = usePoll<any>("/api/boards", 15000).data;
+  const catcher = boards?.catch;
+  const flash = boards?.flash;
   const king = usePoll<any>("/api/king", 20000).data;
   const now = desk?.now;
   const sp: { call?: Lat; early?: Lat; flash?: Lat; chain?: Lat; fill?: Lat; stream?: Lat } = now?.speed || {};

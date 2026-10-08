@@ -8,12 +8,14 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { budgetState, lane, parsedTx, rpcView } from "../src/lib/solana";
+import { budgetState, lane, laneOpen, parsedTx, rpcView } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
 import { logCreate, logTrade, markFeedLive, pruneStream, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
+import { refreshPxCache } from "../src/lib/pxcache";
+import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, redisDown } from "../src/lib/critical";
 import { markAlive, markBusy } from "../src/lib/alive";
@@ -499,6 +501,16 @@ async function main() {
     FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), log: (x) => console.log(x) });
     setInterval(() => FEED && markFeedLive(FEED.live()), 1_000);
   }
+  // live prices for the site's pages (/api/px reads them): what viewers asked for, every 4s, on the agents' lane
+  let pxBusy = false;
+  setInterval(() => {
+    if (pxBusy || !laneOpen(2)) return;
+    pxBusy = true;
+    lane
+      .run(2, () => refreshPxCache((ms) => priceOf(ms, false, 8_000) as any))
+      .catch(() => null)
+      .finally(() => (pxBusy = false));
+  }, 4_000);
   setInterval(beat, 20_000);
   await beat();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);

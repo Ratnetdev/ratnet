@@ -67,7 +67,7 @@ function Browser({ l }: { l: Live }) {
 /** The live LensCam with the latest dossiers. On /desk. */
 export default function LensCam() {
   const box = useRef<HTMLElement>(null);
-  const v = usePoll<View>("/api/lens", 5000, { ref: box }).data;
+  const v = (usePoll<{ lens: View | null }>("/api/boards", 5000, { ref: box }).data?.lens ?? null);
   return (
     <section className="panel mt lens" ref={box}>
       <div className="ph">
@@ -94,7 +94,7 @@ export default function LensCam() {
 
 /** One coin's LENS dossier, with the live browser when LENS is on this coin right now. On coin pages. */
 export function LensDossier({ mint, dossier }: { mint: string; dossier: Dossier | null }) {
-  const v = usePoll<View>("/api/lens", 5000).data;
+  const v = usePoll<{ lens: View | null }>("/api/boards", 5000).data?.lens ?? null;
   const live = v?.live?.mint === mint && !v.live.done ? v.live : null;
   const d = dossier;
   if (!d && !live) return null;

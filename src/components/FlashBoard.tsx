@@ -16,7 +16,7 @@ const pc = (h: number, n: number) => (n ? `${((h / n) * 100).toFixed(1)}%` : "â€
 
 export default function FlashBoard() {
   const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
-  const v = usePoll<V>("/api/flash", 5000, { ref: box }).data;
+  const v = (usePoll<{ flash: V | null }>("/api/boards", 5000, { ref: box }).data?.flash ?? null);
   const ready = !!v?.model.ready;
   return (
     <section className="panel" ref={box}>

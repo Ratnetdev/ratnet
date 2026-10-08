@@ -79,3 +79,20 @@ export async function recentCoins(sinceMs = 30 * 60_000, max = 60) {
   for (let i = 0; i < raw.length; i += 2) if (Number(raw[i + 1]) >= Date.now() - sinceMs) out.push(String(raw[i]));
   return out;
 }
+
+
+/** The BOARD on /desk: coins where several agent families agree right now, with each agent's stance. */
+export async function boardTop() {
+  const mints = await recentCoins(30 * 60_000, 50);
+  const now = Date.now();
+  const rows = await Promise.all(
+    mints.map(async (m) => {
+      const posts = await board(m);
+      const cf = confluence(posts, now);
+      const sym = posts.find((x) => x.sym)?.sym || "";
+      return { mint: m, sym, score: cf.score, pos: cf.pos, neg: cf.neg, posts: posts.filter((x) => now - x.at < 45 * 60_000).sort((a, b) => b.at - a.at).map((x) => ({ a: x.a, s: Math.round(x.s * 100) / 100, at: x.at, t: x.t })) };
+    })
+  );
+  const top = rows.filter((x) => x.posts.length >= 2).sort((a, b) => b.pos - a.pos || b.score - a.score).slice(0, 12);
+  return { at: now, coins: top };
+}

@@ -7,6 +7,8 @@
   - FLASH, CATCH, MOMO, MIND, HOUND and LENS stop polling while they are off-screen;
   - every request has a 10-second timeout and is cancelled when nothing shows it any more; a page never shows the previous page's data;
   - a "data paused · reconnecting" chip appears when answers stop, so frozen numbers never pass for live ones.
+- One request for every agent board: FLASH, CATCH, the BOARD, MOMO, MIND, HOUND and LENS come from /api/boards (built every 3s, cached 3s for all viewers). They were seven requests per viewer on their own timers. The old endpoints stay for the API docs and the admin views.
+- Site prices from the worker: /api/px reads the worker's price cache and notes which coins viewers want; the worker prices them on its budgeted lane (at most every 8s per coin). Vercel no longer reads the chain for page prices (those reads used the same Helius key, outside the daily budget). A coin not priced yet shows DexScreener's price for a few seconds. The browser's PumpPortal trade socket is off (PumpPortal sends trades only to a funded key); pages refresh prices every 4s.
 - Numbers show as they are on first load (they used to roll up from 0 on every page load).
 - The Den and the Rat Cam stop drawing when they are off-screen or the tab is in the background; the Den is capped at ~30 frames a second.
 - One format for every number: USD and market caps ($950, $12.4K, $1.25M), SOL, signed percents; fill times say UTC. Six private copies of the USD formatter are gone.

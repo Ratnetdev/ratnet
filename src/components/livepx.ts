@@ -72,12 +72,17 @@ function flush() {
   else if (add.length) send({ method: "subscribeTokenTrade", keys: add });
 }
 
+// v0.1.38: PumpPortal streams trades only to a funded API key (since Oct 2026), so the browser's trade socket gets
+// nothing; it is off and prices come from /api/px (the worker's price cache), every 4 seconds.
+const STREAM = false;
 function want(mint: string) {
   const n = refs.get(mint) || 0;
   refs.set(mint, n + 1);
   if (!n) {
-    pending.add(mint);
-    if (!flushT) flushT = setTimeout(flush, 120);
+    if (STREAM) {
+      pending.add(mint);
+      if (!flushT) flushT = setTimeout(flush, 120);
+    }
     ensurePoll();
     setTimeout(poll, 300); // first number right away, not after 2 seconds
   }
@@ -102,7 +107,7 @@ let pollT: ReturnType<typeof setInterval> | null = null;
 async function poll() {
   if (typeof document !== "undefined" && document.hidden) return;
   const now = Date.now();
-  const stale = Array.from(refs.keys()).filter((m) => !data.get(m) || now - data.get(m)!.at > 3000).sort().slice(0, 60);
+  const stale = Array.from(refs.keys()).filter((m) => !data.get(m) || now - data.get(m)!.at > 3500).sort().slice(0, 60);
   if (!stale.length) return;
   try {
     const j = await fetch(`/api/px?m=${stale.join(",")}`).then((r) => r.json());
@@ -118,7 +123,7 @@ async function poll() {
   } catch {}
 }
 function ensurePoll() {
-  if (refs.size && !pollT) pollT = setInterval(poll, 2000);
+  if (refs.size && !pollT) pollT = setInterval(poll, 4000);
   if (!refs.size && pollT) {
     clearInterval(pollT);
     pollT = null;

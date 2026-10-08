@@ -31,6 +31,23 @@ const ok = (c: boolean, m: string) => {
   const second = await R.set("rn:callclaim:FLY", 1, { nx: true, ex: 60 });
   ok(!!first && !second, "a second pass cannot claim the same call (the $FLY double call)");
 
+  // site prices: /api/px only reads the worker's cache and notes what viewers want; the worker prices those coins
+  const pc = await import("../src/lib/pxcache");
+  const t0 = Date.now();
+  const px1 = await pc.readPxCache(["MINTA", "MINTB"], t0);
+  ok(Object.keys(px1).length === 0, "nothing cached yet: the site falls back to DexScreener (no chain read on Vercel)");
+  let asked: string[] = [];
+  const res = await pc.refreshPxCache(async (ms) => ((asked = ms), { MINTA: { px: 2e-8, grad: false }, MINTB: { px: 3e-8, grad: true, src: "dex" } }), t0 + 1000);
+  ok(asked.sort().join() === "MINTA,MINTB" && res.priced === 1, "the worker prices what viewers asked for (a DexScreener-only price is not cached)");
+  const px2 = await pc.readPxCache(["MINTA"], Date.now());
+  ok(!!px2.MINTA && px2.MINTA.px === 2e-8, "the next page load gets the worker's chain price");
+  const old = await pc.readPxCache(["MINTA"], Date.now() + 60_000);
+  ok(!old.MINTA, "a cached price older than 20s is not served");
+
+  // merged boards: one endpoint carries every agent board
+  const src = require("fs").readFileSync("src/app/api/boards/route.ts", "utf8");
+  ok(["flashView", "catchView", "boardTop", "momoView", "mindView", "houndView(false)", "lensView"].every((x) => src.includes(x)) && /w: \[\]/.test(src), "/api/boards carries all seven boards, public views only");
+
   console.log(fail ? `\n${fail} FAILED` : "\nall v0.1.38 checks passed");
   process.exit(fail ? 1 : 0);
 })().catch((e) => {

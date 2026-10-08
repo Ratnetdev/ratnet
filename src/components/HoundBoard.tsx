@@ -18,7 +18,10 @@ const pc = (n: number | null) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n}%`
 export default function HoundBoard() {
   const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
   const admin = useAdmin();
-  const v = usePoll<View>(fullUrl("/api/hound", admin), 5000, { ref: box }).data;
+  // the public view comes with every other board in one request; the admin's full book has its own endpoint
+  const adminV = usePoll<View>(admin ? fullUrl("/api/hound", true) : null, 5000, { ref: box }).data;
+  const publicV = usePoll<{ hound: View | null }>(admin ? null : "/api/boards", 5000, { ref: box }).data?.hound ?? null;
+  const v = (admin ? adminV : publicV);
   return (
     <section className="panel mt hound" ref={box}>
       <div className="ph">

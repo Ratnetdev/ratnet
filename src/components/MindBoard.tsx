@@ -44,7 +44,7 @@ export function MindCard({ j, symbol, foot = true }: { j: Judgement; symbol?: st
 
 export default function MindBoard() {
   const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
-  const v = usePoll<View>("/api/mind", 5000, { ref: box }).data;
+  const v = (usePoll<{ mind: View | null }>("/api/boards", 5000, { ref: box }).data?.mind ?? null);
   const l = v?.live;
   const send = v?.record.find((r) => r.verdict === "SEND");
   return (

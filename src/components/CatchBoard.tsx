@@ -26,8 +26,8 @@ const pc = (h: number, n: number) => (n ? `${Math.round((h / n) * 100)}%` : "–
 
 export default function CatchBoard() {
   const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
-  const v = usePoll<V>("/api/catch", 5000, { ref: box }).data;
-  const bd = usePoll<B>("/api/board", 5000, { ref: box }).data;
+  const v = (usePoll<{ catch: V | null; board: B | null }>("/api/boards", 5000, { ref: box }).data?.catch ?? null);
+  const bd = (usePoll<{ catch: V | null; board: B | null }>("/api/boards", 5000, { ref: box }).data?.board ?? null);
   const ready = !!v?.model.ready;
   const top = v?.live?.top || [];
   return (
