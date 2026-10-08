@@ -11,7 +11,7 @@
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
 import { getLaunch, getLaunches, putLaunch } from "./launches";
-import { memo } from "./memo";
+import { memo, memoDrop } from "./memo";
 import { listCached, listDrop } from "./lcache";
 import { ATA_RENT, roundTripCost, slipOf, sellProceeds, txCost, venueFee, type CostCfg } from "./costs";
 import { shield } from "./shield";
@@ -179,6 +179,7 @@ export type DeskState = {
   wallet?: string | null; // desk wallet the paper run is mirroring
   funded?: number | null; // its balance as last booked (deposits and withdrawals move the start, not the P&L)
   liveBal?: number | null; // live: wallet balance at the last reconcile (deposits and withdrawals are told apart from trades)
+  demotedAt?: number | null; // v0.1.45: last time the live drawdown sent the desk back to paper
 };
 export type Exam = { trades: number; winRate: number; pnlPct: number; maxDD: number; walletSol: number | null; checks: { label: string; need: string; now: string; ok: boolean }[]; passed: boolean };
 
@@ -343,6 +344,28 @@ async function syncWallet(state: DeskState, kp: Keypair | null, walletSol: numbe
 }
 
 const RESET_KEY = "rn:desk:resetat";
+const RESET_REQ = "rn:desk:resetreq";
+/**
+ * v0.1.45: the admin's reset. Refused while the desk trades real money (it used to wipe live positions from the books).
+ * When a desk session is running, it is asked to reset itself under its own lock (before, the running desk wrote its
+ * old books back within a second). When none is running, the reset is done here, holding the desk lock.
+ */
+export async function requestReset(): Promise<{ ok: boolean; how: string }> {
+  const r = redis();
+  const st = await r.get<DeskState>(K.deskState);
+  if (st?.live) return { ok: false, how: "refused: the desk is live. close the positions and set the mode to paper first" };
+  const lock = await acquire("rn:lock:desk", LOCK_MS);
+  if (lock) {
+    try {
+      await resetDesk("manual");
+      return { ok: true, how: "reset done" };
+    } finally {
+      await release(lock);
+    }
+  }
+  await r.set(RESET_REQ, { at: Date.now() }, { ex: 600 });
+  return { ok: true, how: "asked the running desk to reset; it does within a few seconds" };
+}
 /**
  * Start the paper desk over: books, positions, trades and the track record. What the desk learned stays (COACH, the
  * exit lab, PM, priors, FILM). The old track record is kept under rn:desk:trips:<date> for reference.
@@ -585,8 +608,10 @@ async function dropPos(key: string, mint: string) {
 let SHM: Record<string, Shadow> | null = null;
 let AFM: Record<string, After> | null = null;
 let shafSavedAt = 0;
+let SHAF_AT = 0;
 async function loadShaf() {
   if (SHM && AFM) return;
+  SHAF_AT = Date.now();
   const r = redis();
   const [sh, af] = await Promise.all([r.hgetall<Record<string, Shadow>>(K.deskShadow), r.hgetall<Record<string, After>>(K.deskAfter)]);
   SHM = (sh || {}) as Record<string, Shadow>;
@@ -620,6 +645,10 @@ async function flushPositions() {
 const EXAM_FULL = "rn:desk:examfull";
 const PENDING = "rn:desk:pending"; // live swaps sent and not yet booked
 let LIVE_FLOW = 0; // live: SOL in/out from trades since the last balance reconcile
+// v0.1.45: SOL in/out from trades since the last balance READ. Live equity and sizing are the balance read plus this, so
+// a buy made a few seconds after the read no longer leaves its SOL counted as cash (the read is every 15s)
+let FLOW_SINCE_BAL = 0;
+const liveCash = (state: DeskState) => (LAST_BAL?.sol ?? state.liveBal ?? 0) + FLOW_SINCE_BAL;
 let LAST_BAL: { sol: number; at: number } | null = null;
 let RECON_AT = 0;
 
@@ -633,13 +662,14 @@ async function liveReconcile(b: Batch, state: DeskState, kp: Keypair, bal: numbe
   const { swapsInFlight } = await import("./exec");
   if (swapsInFlight() > 0) return;
   const r = redis();
-  const pend = ((await r.hgetall<Record<string, { mint: string; side: string; at: number }>>(PENDING).catch(() => null)) || {}) as Record<string, { mint: string; side: string; at: number }>;
+  const pend = ((await r.hgetall<Record<string, PendingSwap>>(PENDING).catch(() => null)) || {}) as Record<string, PendingSwap>;
   const stalePend = Object.values(pend).filter((x) => Date.now() - x.at > 180_000);
   if (state.liveBal != null && !Object.keys(pend).length) {
     const ext = bal - (state.liveBal + LIVE_FLOW);
     if (Math.abs(ext) > 0.01) {
       state.liveStart = (state.liveStart ?? bal) + ext;
       state.peakEq += ext;
+      state.dayStart += ext; // v0.1.45: a deposit is not a profit for the daily loss limit either
       log(b, "LEDGER", `${ext > 0 ? "deposit" : "withdrawal"} of ${Math.abs(ext).toFixed(3)} SOL seen in the wallet: the drawdown baseline moved with it, not the P&L`, "info");
     }
   }
@@ -668,8 +698,24 @@ async function liveReconcile(b: Batch, state: DeskState, kp: Keypair, bal: numbe
     }
   }
   const known = new Set(pos.map((p) => p.mint));
+  // v0.1.45: a buy of ours that landed but was never booked (the process died, or the confirmation timed out) is
+  // adopted as a live position at its own size, so the exits manage it. Tokens we never tried to buy (airdrops, often
+  // scams) are never touched, only reported
+  for (const pd of stalePend) {
+    const amt = owned[pd.mint] ?? 0;
+    if (pd.side !== "buy" || !pd.sol || amt <= 0 || known.has(pd.mint)) continue;
+    const q = (await priceOf([pd.mint], true).catch(() => ({} as Record<string, Px>)))[pd.mint];
+    const now = Date.now();
+    const sym = pd.symbol || pd.mint.slice(0, 6);
+    const entryPx = pd.sol / amt;
+    const adopted: Pos = { mint: pd.mint, symbol: sym, name: sym, openedAt: pd.at, entryPx, costSol: pd.sol, tokens: amt, tokens0: amt, soldSol: 0, tp1Done: false, lastPx: q?.px ?? entryPx, peakPx: Math.max(q?.px ?? 0, entryPx), king: 0, nano: null, live: true, series: [[now, q?.px ?? entryPx, q?.real ?? 0]], kind: "meme", how: pd.how || "direct", msHi: -1, mkt: { grad: !!q?.grad, real: q?.real ?? 0 } };
+    await savePos(K.deskPos, adopted, true);
+    known.add(pd.mint);
+    b.trades.push({ id: `${now}${pd.mint.slice(0, 4)}b`, mint: pd.mint, symbol: sym, side: "buy", at: pd.at, sol: r4(pd.sol), cost: r4(pd.sol), tokens: amt, px: entryPx, reason: "adopted: a buy that landed but was never booked", live: true });
+    log(b, "LEDGER", `$${sym}: a buy of ${pd.sol.toFixed(3)} SOL landed but was never booked. adopted as a position (${amt.toFixed(0)} tokens); the exits manage it now`, "info", { mint: pd.mint, symbol: sym });
+  }
   const unknown = Object.entries(owned).filter(([m, a]) => a > 0 && !known.has(m) && m !== WSOL);
-  if (unknown.length) log(b, "LEDGER", `${unknown.length} token${unknown.length > 1 ? "s" : ""} in the wallet the books don't hold (airdrops, or a buy that was never booked): ${unknown.slice(0, 3).map(([m]) => m.slice(0, 6)).join(", ")}`, "info");
+  if (unknown.length) log(b, "LEDGER", `${unknown.length} token${unknown.length > 1 ? "s" : ""} in the wallet the books don't hold (airdrops, or dust): ${unknown.slice(0, 3).map(([m]) => m.slice(0, 6)).join(", ")}. not touched`, "info");
   if (stalePend.length) await r.hdel(PENDING, ...stalePend.map((x) => x.mint)).catch(() => 0);
 }
 
@@ -682,18 +728,21 @@ async function mustHoldDesk() {
     throw new Error("desk lock lost: swap refused (another desk may be running)");
   }
 }
-async function swap(kp: Keypair, inputMint: string, outputMint: string, amountRaw: bigint, slippageBps: number) {
+type PendingSwap = { mint: string; side: string; at: number; sol?: number; symbol?: string; how?: Pos["how"] };
+async function swap(kp: Keypair, inputMint: string, outputMint: string, amountRaw: bigint, slippageBps: number, meta: { symbol?: string; how?: Pos["how"] } = {}) {
   await mustHoldDesk();
   // a pending record before anything is sent: a process that dies mid-swap leaves it, and the next session reconciles
-  // the wallet before it trades again
+  // the wallet before it trades again. v0.1.45: a buy's record carries its size, so an unbooked buy can be adopted
   const mint = inputMint === WSOL ? outputMint : inputMint;
-  await redis().hset(PENDING, { [mint]: { mint, side: inputMint === WSOL ? "buy" : "sell", at: Date.now() } }).catch(() => {});
+  const side = inputMint === WSOL ? "buy" : "sell";
+  await redis().hset(PENDING, { [mint]: { mint, side, at: Date.now(), ...(side === "buy" ? { sol: Number(amountRaw) / 1e9, ...meta } : {}) } satisfies PendingSwap }).catch(() => {});
   let res: Awaited<ReturnType<typeof fastSwap>>;
   try {
     res = await fastSwap(kp, inputMint, outputMint, amountRaw, slippageBps, EXEC_CFG);
   } catch (e) {
     // an expired tx provably never landed; anything else (unknown state) keeps the pending record for the reconcile
-    if (/expired without landing|no route|swap build failed|refused|unexpected|not the desk wallet|does not go/i.test(String((e as any)?.message || e))) await redis().hdel(PENDING, mint).catch(() => 0);
+    // v0.1.45: a tx that landed with an error ("tx failed") moved nothing either, nor did a swap that was never built
+    if (/expired without landing|no route|swap build failed|swap-instructions|fast path off|no blockhash|tx failed|refused|unexpected|not the desk wallet|does not go/i.test(String((e as any)?.message || e))) await redis().hdel(PENDING, mint).catch(() => 0);
     throw e;
   }
   await redis().hdel(PENDING, mint).catch(() => 0);
@@ -791,7 +840,10 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
   // does not count yet (before v0.1.24 its first partial sell did, so the exam ran ahead of the track record), and a
   // coin bought twice counts twice. Only paper trades since this desk's start count.
   const [all0, openMints] = await Promise.all([deskTrades(), redis().hkeys(K.deskPos).catch(() => [] as string[])]);
-  const all = ((all0 || []) as Trade[]).filter((t) => !t.live && t.at >= (state.startedAt || 0)).sort((a, b) => a.at - b.at);
+  // v0.1.45: after a demotion only the paper trades since then count (the desk used to go straight back to live on the
+  // record that came before the losing live run)
+  const from = Math.max(state.startedAt || 0, state.demotedAt || 0);
+  const all = ((all0 || []) as Trade[]).filter((t) => !t.live && t.at >= from).sort((a, b) => a.at - b.at);
   const open = new Set(openMints || []);
   const list: { mint: string; pnl: number; sells: number; at: number }[] = [];
   const cur: Record<string, { mint: string; pnl: number; sells: number; at: number }> = {};
@@ -1116,7 +1168,12 @@ function scoreShadow(l: Learn, sh: Shadow, b: Batch) {
     const arm = l.arms[String(a)];
     if (arm.n < LEARN_RULES.stalkMin) continue;
     const edge = arm.sum / arm.n - direct.sum / Math.max(1, direct.n);
-    if (edge > bestEdge) [best, bestEdge] = [a, edge];
+    // v0.1.45: the edge has to be more than noise: a t-statistic of 2 to unlock, 1 to stay on (fat-tailed returns made
+    // a few lucky dips look like an edge)
+    const vr = (x: { n: number; sum: number; sq?: number }) => (x.n ? Math.max(0, (x.sq ?? 0) / x.n - (x.sum / x.n) ** 2) : 0);
+    const se = Math.sqrt(vr(arm as any) / arm.n + vr(direct as any) / Math.max(1, direct.n));
+    const tStat = se > 0 ? edge / se : 0;
+    if (edge > bestEdge && tStat >= (l.stalkOn ? 1 : 2)) [best, bestEdge] = [a, edge];
   }
   const was = l.stalkOn;
   // hysteresis: unlocks at the full edge, locks again only below half of it
@@ -1145,7 +1202,9 @@ function reviewExit(l: Learn, a: After, b: Batch): boolean {
     l.trailBy[sl] = Math.min(1.6, cur * 1.05);
     if (sl === "king") l.trailK = l.trailBy[sl];
     log(b, "COACH", `$${a.symbol} ran to ${(a.hi / a.exitPx).toFixed(1)}x after we sold (${a.reason}). ${sl} trails widened to ${l.trailBy[sl].toFixed(2)}x`, "bad", coin);
-  } else if (a.tunable && gaveBack >= 0.4) {
+  } else if (a.tunable && gaveBack >= 0.4 && a.hi < a.exitPx * 1.2) {
+    // v0.1.45: judged on what came after the exit too: a coin that gave back 40% and then climbed 20%+ past our exit
+    // was not a trail that held on too long
     l.late++;
     l.trailBy[sl] = Math.max(0.5, cur / 1.05); // the same step both ways (it was 6% wider vs 3% tighter)
     if (sl === "king") l.trailK = l.trailBy[sl];
@@ -1203,6 +1262,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     const cfg = s.desk;
     if (cfg.mode === "off") return { off: true };
     let state = await loadState(cfg.start);
+    // v0.1.45: a live desk is run only by the process with the wallet key. A takeover on Vercel used to book live
+    // equity from paper cash (the balance is never read there) into the equity line
+    if (state.live && !wallet()) return { skipped: "live desk: only the worker (with the wallet key) runs it" };
+    // the shadow and after-exit books: re-read after a takeover wrote them, and every 30 minutes
+    const tk = Number((await r.get("rn:takeover:at").catch(() => 0)) || 0);
+    if (SHAF_AT && (tk > SHAF_AT || Date.now() - SHAF_AT > 30 * 60_000)) {
+      SHM = null;
+      AFM = null;
+    }
     const kp0 = wallet();
     const ws0 = kp0 ? (await conn().getBalance(kp0.publicKey).catch(() => null)) : null;
     state = await syncWallet(state, kp0, ws0 == null ? null : ws0 / 1e9, cfg.minSol, b);
@@ -1233,7 +1301,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let lastSlowAt = 0;
     let lastInsAt = 0;
     let cfgAt = Date.now();
-    const resetAt0 = Number((await r.get(RESET_KEY).catch(() => 0)) || 0);
+    let resetAt0 = Number((await r.get(RESET_KEY).catch(() => 0)) || 0);
     while (Date.now() - t0 < budgetMs) {
       loops++;
       if (DESK_LOST || !(await renew(lock, LOCK_MS))) {
@@ -1248,6 +1316,19 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const fresh = (await getSettings().catch(() => null))?.desk;
         if (fresh) Object.assign(cfg, fresh);
         if ((cfg.mode as string) === "off") break;
+        // v0.1.45: the admin's reset, done here under this session's lock
+        if (await r.get(RESET_REQ).catch(() => null)) {
+          await r.del(RESET_REQ);
+          if (state.live) log(b, "LEDGER", "reset refused: the desk is live", "bad");
+          else {
+            await flushLog(b);
+            await resetDesk("manual");
+            resetAt0 = Number((await r.get(RESET_KEY).catch(() => 0)) || 0);
+            state = await loadState(cfg.start);
+            state = await syncWallet(state, kp0, walletSolC ?? (ws0 == null ? null : ws0 / 1e9), cfg.minSol, b);
+            continue;
+          }
+        }
         // a reset from the admin while this session runs: stop at once, before this session writes the old books back
         const ra = Number((await r.get(RESET_KEY).catch(() => 0)) || 0);
         if (ra !== resetAt0) {
@@ -1290,6 +1371,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         if (bal != null) {
           walletSolC = bal;
           LAST_BAL = { sol: bal, at: now };
+          FLOW_SINCE_BAL = 0;
           if (state.live) await liveReconcile(b, state, kp, bal).catch((e) => log(b, "LEDGER", `wallet check failed: ${safeErr(e)}`, "info"));
         }
       }
@@ -1301,8 +1383,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           state.liveStart = walletSol;
           state.liveBal = walletSol;
           LIVE_FLOW = 0;
+          FLOW_SINCE_BAL = 0;
           state.promotedAt = now;
           state.peakEq = walletSol || 0;
+          state.dayStart = walletSol || 0; // v0.1.45: the daily loss limit measures live money from the promotion on
           log(b, "LEDGER", `exam passed. going live with ${walletSol?.toFixed(3)} SOL`, "win");
         }
       }
@@ -1524,7 +1608,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             if (ok && /^sellers took over/.test(reason)) caseAdds.push({ kind: "drain", key: sleeveOf(p.how, p.wire?.vamp), mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
             if (ok && p.tokens <= 0) {
               // COACH follows the coin after we leave it
-              await setAfter(r, p.mint, { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After);
+              await setAfter(r, `${p.mint}:${p.openedAt}`, { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After);
             }
           }
           if (p.tokens > 0) await savePos(K.deskPos, p, sellFrac > 0);
@@ -1560,7 +1644,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             if (/^dev sold/.test(d.reason)) caseAdds.push({ kind: "dev", key: p.kind || "meme", mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
             if (/^sellers took over/.test(d.reason)) caseAdds.push({ kind: "drain", key: sleeveOf(p.how, p.wire?.vamp), mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
             // COACH reviews ghost exits like real ones (trail too tight or too loose)
-            if (closed) await setAfter(r, `g:${p.mint}`, { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(d.reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After);
+            if (closed) await setAfter(r, `g:${p.mint}:${p.openedAt}`, { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason: d.reason, hi: q.px, lo: q.px, tunable: d.tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(d.reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(d.reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After);
           }
           if (p.tokens > 0) await savePos(GHOST_POS, p, d.sellFrac > 0);
           else await dropPos(GHOST_POS, p.mint);
@@ -1577,7 +1661,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         state.dayKey = eq.dayKey;
         state.dayStart = eq.value;
       }
+      let tried = 0;
       for (const q0 of queued) {
+        // v0.1.45: entries never hold the exits back for long. Each entry can take seconds (VET, FLOW, the falling-knife
+        // reads); after the first one, once 4 seconds have gone the rest of the queue waits for the next beat, so open
+        // positions get their price first
+        if (tried++ > 0 && Date.now() - now > 4_000) break;
         // one bad signal never stops the others (or the exits on the next beat)
         try {
           await r.zrem(K.deskQ, q0);
@@ -1776,12 +1865,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const rec = (await getLaunch(sk.mint)) || sk.rec || null;
           if (!rec) continue;
           if (mo && sk.rec?.description) rec.description = sk.rec.description;
-          if (mo) {
-            const held = Object.values(await loadPositions(K.deskPos)).filter((p) => p.how === "momo" && takesSlot(p)).length;
-            if (held >= ((cfg as any).momoMaxOpen ?? 3) || pct(eq.value, state.dayStart) <= -cfg.dailyLoss) {
-              log(b, "SIZE", `$${sk.symbol} (MOMO) bounced, but ${held >= ((cfg as any).momoMaxOpen ?? 3) ? "the MOMO slots are full" : "the daily loss limit is hit"}: not bought`, "info", coin);
-              continue;
-            }
+          const noRoom = await roomFor(mo ? "momo" : "stalk", state, eq.value, cfg);
+          if (noRoom) {
+            log(b, "SIZE", `$${sk.symbol}${mo ? " (MOMO)" : ""} bounced, but ${noRoom}: not bought`, "info", coin);
+            continue;
           }
           log(b, "FLOW", `$${sk.symbol} pulled back ${Math.round((1 - t.lo / t.hi) * 100)}% and bounced. entering ${fmtPct(pct(q.px, sk.px0))} vs the signal${mo ? " (MOMO)" : ""}`, "ok", coin);
           await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eq.value, walletSol, kp, cfg, mo ? "momo" : "stalk", null, true);
@@ -1805,6 +1892,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
         const known = await getLaunch(re.mint);
         const rec: Launch = known || ({ mint: re.mint, sig: "", createdAt: now, creator: "", name: re.symbol, symbol: re.symbol, uri: "", image: "", description: "re-entry after a stop-out", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: now, dugBy: "RISK", p0: 0, mcap0: 0, cp: {}, outcome: q.grad ? "BONDED" : undefined } as Launch);
+        const noRoom = await roomFor(re.how || "momo", state, eq.value, cfg);
+        if (noRoom) {
+          log(b, "RISK", `$${re.symbol} reclaimed its entry after the stop, but ${noRoom}: no buy-back`, "info", coin);
+          continue;
+        }
         log(b, "RISK", `$${re.symbol} reclaimed its entry ${Math.round((now - re.at) / 60_000)}m after the stop (${fmtPct(pct(q.px, re.entryPx))} vs entry). buying back once`, "ok", coin);
         REENTRY_NEXT.add(re.mint);
         await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eq.value, walletSol, kp, cfg, re.how || "momo", null);
@@ -1819,6 +1911,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const wp = r.pipeline();
         const shUp: Record<string, Shadow> = {};
         const afUp: Record<string, After> = {};
+        let reviewedNow = false;
         for (const sh of Object.values(shadows)) {
           const q = px[sh.mint];
           if (q) {
@@ -1856,6 +1949,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           if (!a.reviewed && reviewExit(learnS, a, b)) {
             learnDirty = true;
             a.reviewed = true;
+            // v0.1.45: saved with the learning state in one request below, so a restart never reviews it twice
+            wp.hset(K.deskAfter, { [ak]: a });
+            reviewedNow = true;
           }
           // done when COACH has its verdict and the path covers 2 hours from the buy (or the coin went dark)
           if (!q || q.src === "dex") a.noq = (a.noq || 0) + 1;
@@ -1889,6 +1985,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           if (Object.keys(shUp).length) wp.hset(K.deskShadow, shUp);
           if (Object.keys(afUp).length) wp.hset(K.deskAfter, afUp);
         }
+        if (reviewedNow && !DESK_LOST) wp.set(K.deskLearn, learnS);
+        if (DESK_LOST) return; // a session that lost its lock writes nothing more
         await wp.exec().catch(() => {});
         // EXIT LAB re-learns every bucket with enough paths (every ~10 minutes)
         const learned = await labStep((sl2, tier) => labDefault(cfg, sl2, tier)).catch(() => []);
@@ -1929,9 +2027,12 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       if (state.live && state.liveStart && LAST_BAL && now - LAST_BAL.at < 60_000 && pct(eq2.value, state.liveStart) <= -EXAM.liveMaxDD) {
         state.live = false;
         state.demotions++;
+        state.demotedAt = now;
         state.cash = state.start;
         state.maxDD = 0;
         state.peakEq = state.start;
+        state.dayStart = state.start;
+        memoDrop("desk:exam");
         log(b, "LEDGER", `live drawdown hit ${EXAM.liveMaxDD}%. back to paper to re-take the exam`, "loss");
       }
       if (now - state.lastEqAt >= 60_000) {
@@ -1969,7 +2070,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     }
     if (digging) await digging;
     if (learning) await learning;
-    await r.set(K.deskLearn, learnS);
+    if (!DESK_LOST) await r.set(K.deskLearn, learnS);
     return { loops };
   } catch (e) {
     log(b, "LEDGER", `desk error: ${safeErr(e)}`, "bad");
@@ -2070,6 +2171,16 @@ function skipFalling(b: Batch, rec: Launch, how: string, k: { why: string; px: n
   if (!ghost) logSkip("falling_knife", k.why, rec.mint, rec.symbol, k.px).catch(() => {});
 }
 const ENTERING = new Set<string>();
+/** v0.1.45: is there room for one more buy in this strategy's lane? null = yes, otherwise the reason. Stalk fills and
+ *  re-entries skipped VET, so they used to buy past full slots and past the daily loss limit. */
+export async function roomFor(how: Pos["how"] | string, state: DeskState, eqValue: number, cfg: Cfg): Promise<string | null> {
+  if (pct(eqValue, state.dayStart) <= -cfg.dailyLoss) return "the daily loss limit is hit";
+  const c: any = cfg;
+  const pos = Object.values(await loadPositions(K.deskPos)).filter((p) => takesSlot(p));
+  if (how === "momo") return pos.filter((p) => p.how === "momo").length >= (c.momoMaxOpen ?? 3) ? "the MOMO slots are full" : null;
+  if (OWN_LANE.has(String(how))) return null; // their own entries checked their own slots
+  return pos.filter((p) => !OWN_LANE.has(p.how || "")).length >= cfg.maxOpen ? `all ${cfg.maxOpen} King slots are full` : null;
+}
 async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null, r: ReturnType<typeof redis>, coin: { mint: string; symbol: string }) {
   enqueueLens(r, rec.mint, "buy");
   if (state.live && !kp) {
@@ -2081,19 +2192,19 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
     log(b, "EXEC", `$${rec.symbol}: a previous swap is still being checked against the wallet. no new buy until it is settled`, "info", coin);
     return;
   }
-  // RISK: at the bag cap, the quietest house-money bag makes room (cash and attention go to the new signal)
+  // RISK: at the bag cap, the quietest house-money bag makes room (cash and attention go to the new signal).
+  // v0.1.45: chosen here, sold only after the new buy went through (a buy refused later used to cost the bag for nothing)
   const held = Object.values(await loadPositions(K.deskPos));
+  let capBag: Pos | null = null;
   if (held.length >= ((cfg as any).maxBags ?? 12)) {
-    const bag = held.filter((p) => p.tp1Done && p.mint !== rec.mint).sort((a, z) => (a.peakAt || a.openedAt) - (z.peakAt || z.openedAt))[0];
-    if (!bag) {
+    capBag = held.filter((p) => p.tp1Done && p.mint !== rec.mint).sort((a, z) => (a.peakAt || a.openedAt) - (z.peakAt || z.openedAt))[0] || null;
+    if (!capBag) {
       log(b, "RISK", `$${rec.symbol}: ${held.length} positions held and none is house money yet. skipping`, "info", coin);
       return;
     }
-    const ok = await sell(b, state, bag, 1, bag.lastPx, `bag cap: sold the quietest bag to make room for $${rec.symbol}`, cfg.slippageBps, kp);
-    if (ok && bag.tokens <= 0) await dropPos(K.deskPos, bag.mint);
   }
   // SIZE: research on fat tails says small, equal bets; never size up on conviction
-  const avail = state.live ? (walletSol ?? 0) - 0.02 : state.cash;
+  const avail = state.live ? (walletSol == null ? 0 : liveCash(state)) - 0.02 : state.cash;
   // liquidity cap: on the curve, buying S SOL moves the price by ((vSol + S) / vSol)^2 - 1, vSol = 30 + real SOL
   const vSol = 30 + Math.max(0, real);
   const liqCap = vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
@@ -2158,6 +2269,11 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   }
   const pos = await buy(b, state, rec, size, fresh.px, cfg.slippageBps, kp, fresh.real, how, fresh.grad);
   if (!pos) return;
+  if (capBag) {
+    const ok = await sell(b, state, capBag, 1, capBag.lastPx, `bag cap: sold the quietest bag to make room for $${rec.symbol}`, cfg.slippageBps, kp);
+    if (ok && capBag.tokens <= 0) await dropPos(K.deskPos, capBag.mint);
+    else if (ok) await savePos(K.deskPos, capBag, true);
+  }
   // RISK watches the insiders' bags from here: dev, bundle wallets, snipers, top early buyers. A tape built from the
   // stream has no token accounts, so the desk reads the chain once for them, only for coins it actually buys
   let ins = rec.tape?.insiders || [];
@@ -2183,7 +2299,7 @@ async function equity(state: DeskState, kp: Keypair | null, px: Record<string, {
     const q = px[p.mint];
     return a + sellProceeds(p.tokens, q?.px ?? p.lastPx, q?.grad ?? p.mkt?.grad ?? !!p.gradSeen, q?.real ?? p.mkt?.real ?? 0, COST, true);
   }, 0);
-  const cash = state.live && kp ? LAST_BAL?.sol ?? state.liveBal ?? 0 : state.cash;
+  const cash = state.live && kp ? liveCash(state) : state.cash;
   return { value: cash + held, dayKey: dayKey() };
 }
 
@@ -2195,14 +2311,17 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   let paperFixed = 0;
   if (state.live && kp) {
     try {
-      const res = await swap(kp, WSOL, rec.mint, BigInt(Math.floor(sol * 1e9)), slip);
+      const res = await swap(kp, WSOL, rec.mint, BigInt(Math.floor(sol * 1e9)), slip, { symbol: rec.symbol, how });
       sig = res.sig;
       // the books follow the confirmed transaction (tokens received, SOL spent incl. tip, fees and rent), not the quote
       const real = await realDelta(res.sig, kp.publicKey, rec.mint).catch(() => null);
       tokens = real && real.tok > 0 ? real.tok : Number(res.outRaw) / 1e6;
       if (real?.sol != null && real.sol < 0) paperFixed = -real.sol - sol;
       LIVE_FLOW += real?.sol ?? -sol;
-      fillPx = sol / Math.max(tokens, 1e-9);
+      FLOW_SINCE_BAL += real?.sol ?? -sol;
+      // v0.1.45: the entry price without the venue fee, as paper books it (the fee is in the cost, not the price), so a
+      // live gain reads the same as the paper gain on the same move
+      fillPx = (sol * (1 - venueFee(grad, px * SUPPLY))) / Math.max(tokens, 1e-9);
     } catch (e) {
       log(b, "EXEC", `buy $${rec.symbol} failed: ${safeErr(e)}`, "bad", coin);
       return null;
@@ -2516,6 +2635,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
       const real = await realDelta(res.sig, kp.publicKey, p.mint).catch(() => null);
       proceeds = real?.sol != null && real.sol > 0 ? real.sol : Number(res.outRaw) / 1e9;
       LIVE_FLOW += proceeds;
+      FLOW_SINCE_BAL += proceeds;
     } catch (e) {
       log(b, "RISK", `sell $${p.symbol} failed, retrying next beat: ${safeErr(e)}`, "bad", coin);
       return false;
@@ -2536,7 +2656,22 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   log(b, "RISK", `${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, pnl >= 0 ? "win" : "loss", coin);
   if (p.tokens <= 1e-9) {
     p.tokens = 0;
-    if (p.live && kp) closeEmptyAccount(kp, p.mint).catch(() => false);
+    if (p.live && kp) {
+      // v0.1.45: the token account's rent comes back on a full live exit; booked like paper does (it was left out, so
+      // live P&L read ~0.002 SOL worse than paper on every round trip)
+      const closed = await closeEmptyAccount(kp, p.mint).catch(() => false);
+      if (closed) {
+        p.soldSol += ATA_RENT;
+        state.realized += ATA_RENT;
+        LIVE_FLOW += ATA_RENT;
+        FLOW_SINCE_BAL += ATA_RENT;
+        const last = b.trades[b.trades.length - 1];
+        if (last?.mint === p.mint && last.side === "sell") {
+          last.sol = r4(last.sol + ATA_RENT);
+          last.pnlSol = r4((last.pnlSol ?? 0) + ATA_RENT);
+        }
+      }
+    }
     await noteStageResult(p).catch(() => {});
     // keep the whole trade for the public track record: chart, the call behind it, peak while held
     const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));

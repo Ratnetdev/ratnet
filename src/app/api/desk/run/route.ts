@@ -20,7 +20,9 @@ export async function GET(req: Request) {
   if (lockHeld) return json({ ok: true, desk: "locked by a running desk" });
   await redis().incr("rn:takeover:n").catch(() => 0);
   await redis().set("rn:takeover:at", Date.now()).catch(() => null);
-  if (new URL(req.url).searchParams.get("wait") === "1") return json(await runSession());
-  waitUntil(runSession().catch(() => null));
+  // v0.1.45: a 35-second run, so everything (the desk's last writes included) finishes inside Vercel's 60 seconds
+  const run = () => runSession(35_000, { takeover: true });
+  if (new URL(req.url).searchParams.get("wait") === "1") return json(await run());
+  waitUntil(run().catch(() => null));
   return json({ ok: true, started: new Date().toISOString() });
 }

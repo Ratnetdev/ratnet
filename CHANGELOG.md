@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.45 · Run 11, part 2: desk money and live safety
+- Why: the rest of the audit's money list. Most of it only matters once the desk trades real money, so it is fixed before you ever switch it on.
+- Exam: a live drawdown that sends the desk back to paper stores when it happened, and the exam counts only paper round trips after it. Before, the desk went straight back to live on the record from before the losing run.
+- Admin reset: refused while the desk is live (it wiped live positions from the books). When a desk session is running, it resets itself under its own lock (before, it wrote its old books back within a second); with no session running, the reset is done holding the lock.
+- An unbooked live buy (it landed, but the process died or the confirmation timed out) is adopted as a live position at its own size, so the exits manage it. Tokens the desk never tried to buy are never touched.
+- Live equity and sizing count the trades since the last balance read (the read is every 15 seconds). The daily loss limit restarts on promotion and demotion, and deposits move it like they move the drawdown baseline.
+- A session that lost its lock writes nothing on the way out. Stalk fills and re-entries check the slots and the daily loss limit again. Entries stop after about 4 seconds in a beat (one always runs), so open positions get their prices and exits first. A swap that landed with an error, or was never built, no longer leaves a pending record that blocks new buys.
+- COACH: after-exit reviews keyed by coin and open time (a re-entry overwrote the first review); a review is saved together with what it taught; the trail is only tightened when the coin did not recover after the exit; pullback entries unlock on a t-statistic of 2, not on a few lucky dips; the shadow and after-exit books are re-read after a takeover and every 30 minutes.
+- Paper and live book alike: the token account rent that comes back on a full live exit is booked; the live entry price leaves out the venue fee like paper; at the bag cap the quietest bag is sold only after the new buy went through.
+- Takeover (Vercel, when the worker is down): never runs a live desk (it booked paper cash as live equity); runs 35 seconds and stops everything inside Vercel's 60; starts from today's chain-read count and writes its reads back.
+- New test suite v045test. All suites pass.
+
 ## v0.1.44 · Hotfix: the worker restart loop in saving mode 3
 - Why: after v0.1.42 and v0.1.43 went live, Redis reached saving mode 3 (369MB in the hour, 3.35x the allowance). In mode 3 the agents rest 5 minutes between sessions, but the watchdog treats an agents loop silent for 275 seconds as stuck: it restarted the worker every 5 minutes (14:43, 14:48, 14:53 UTC). Every restart starts with empty memory caches and reads them again from Redis, which kept the bandwidth in mode 3.
 - The agents' rest now beats the heartbeat every 20 seconds and ends as soon as the saving mode drops.

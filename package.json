@@ -1,6 +1,6 @@
 {
   "name": "ratnet",
-  "version": "0.1.44",
+  "version": "0.1.45",
   "description": "",
   "scripts": {
     "dev": "next dev",

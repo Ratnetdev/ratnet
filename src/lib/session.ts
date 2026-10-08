@@ -18,6 +18,7 @@ import { agentLog } from "./agents";
 import { redis } from "./redis";
 import { lane } from "./solana";
 import { alive } from "./alive";
+import { flushRpcDay, seedRpcDay } from "./rpcday";
 import { X_SEED } from "@/config/x-accounts";
 
 
@@ -28,16 +29,22 @@ function within<T>(p: Promise<T>, ms: number, label: string): Promise<T | { time
 
 /** One run of every agent. `ms` is how long the desk loop stays on (55s from the minute ping). The worker runs the
  * desk in its own loop (desk: false here), so the agents' minute never holds the desk back. */
-export async function runSession(ms = 55_000, opts: { desk?: boolean; historian?: boolean } = {}) {
+export async function runSession(ms = 55_000, opts: { desk?: boolean; historian?: boolean; takeover?: boolean } = {}) {
   // every agent below reads the chain in the agents' lane (behind the desk and the rats, see lib/solana.ts)
   const ag = <T,>(f: () => Promise<T>) => lane.run(2, f);
   const withDesk = opts.desk !== false;
   const k = ms / 55_000;
+  const t0 = Date.now();
+  // v0.1.45: a takeover on Vercel starts from today's chain-read count (it began at 0 there, so the day budget looked
+  // untouched and the takeover overspent it) and writes its own reads back at the end
+  if (opts.takeover) await seedRpcDay().catch(() => null);
   const tg = (async () => {
-    // Telegram: flush the call queue a few times during the minute so calls go out within ~15s
+    // Telegram: flush the call queue a few times during the run so calls go out within ~15s (v0.1.45: bounded by the
+    // run's own length; it was 4 rounds of 12s whatever the length)
     let sent = 0;
-    for (let i = 0; i < Math.max(4, Math.round(4 * k)); i++) {
+    for (let i = 0; i === 0 || Date.now() - t0 < ms - 12_000; i++) {
       sent += (await tgFlush(8).catch(() => ({ sent: 0 }))).sent;
+      if (Date.now() - t0 >= ms - 12_000) break;
       await new Promise((r) => setTimeout(r, 12_000));
     }
     return { sent };
@@ -73,16 +80,19 @@ export async function runSession(ms = 55_000, opts: { desk?: boolean; historian?
   const overseer = alive("overseer", ag(() => overseerSession(Math.round(50_000 * k))).catch((e) => ({ overseer: "error", error: String(e?.message || e) })));
   const mind = alive("mind", ag(() => mindSession(Math.round(54_000 * k))).catch((e) => ({ mind: "error", error: String(e?.message || e) })));
   const lens = alive("lens", ag(() => lensSession(Math.round(52_000 * k))).catch((e) => ({ lens: "error", error: String(e?.message || e) })));
-  const cap = ms + 30_000; // nothing may hold the next session back by more than this
+  // nothing may hold the next session back by more than this. v0.1.45: a takeover runs inside Vercel's 60-second limit
+  // (it ran up to 55 + 90 seconds, and Vercel stopped it mid-write)
+  const cap = opts.takeover ? ms + 8_000 : ms + 30_000;
   const [desk, history, receipts, telegram, x] = await Promise.all([
-    withDesk ? within(deskSession(ms, () => dig()), ms + 90_000, "desk") : Promise.resolve({ desk: "own loop" }),
+    withDesk ? within(deskSession(ms, () => dig()), opts.takeover ? cap : ms + 90_000, "desk") : Promise.resolve({ desk: "own loop" }),
     opts.historian === false ? Promise.resolve({ history: "own loop" }) : within(historianSession(Math.round(45_000 * k)).catch((e) => ({ history: "error", error: String(e?.message || e) })), cap, "historian"),
     within(alive("receipts", sealDue().catch((e) => ({ sealed: 0, error: String(e?.message || e) }))), cap, "receipts"),
     within(alive("telegram", tg), cap, "telegram"),
     within(alive("wire", wire), cap, "wire"),
   ]);
-  const rest = await Promise.all([j7, lens, mind, hound, overseer, momo, caught].map((p, i) => within(p as Promise<unknown>, 15_000, ["j7", "lens", "mind", "hound", "overseer", "momo", "catch"][i])));
+  const rest = await Promise.all([j7, lens, mind, hound, overseer, momo, caught].map((p, i) => within(p as Promise<unknown>, opts.takeover ? Math.max(500, 50_000 - (Date.now() - t0)) : 15_000, ["j7", "lens", "mind", "hound", "overseer", "momo", "catch"][i])));
   const [j7r, lensr, mindr, houndr, overseerr, momor, catchr] = rest;
+  if (opts.takeover) await flushRpcDay().catch(() => null);
   return { desk, history, receipts, telegram, wire: x, j7: j7r, lens: lensr, mind: mindr, hound: houndr, overseer: overseerr, momo: momor, catch: catchr };
 }
 

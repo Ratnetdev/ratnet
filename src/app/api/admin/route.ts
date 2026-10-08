@@ -8,7 +8,7 @@ import { dig } from "@/lib/digger";
 import { isPubkey } from "@/lib/solana";
 import { K, redis } from "@/lib/redis";
 import { roundOf } from "@/lib/rats";
-import { resetDesk } from "@/lib/desk";
+import { requestReset } from "@/lib/desk";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -60,9 +60,11 @@ export async function POST(req: Request) {
         return json({ export: await exportDay(String(body.day)) });
       case "dig":
         return json(await dig());
-      case "desk-reset":
-        await resetDesk();
-        return json({ ok: true });
+      case "desk-reset": {
+        // v0.1.45: refused while live; a running desk resets itself under its own lock
+        const res = await requestReset();
+        return res.ok ? json(res) : fail(res.how, 409);
+      }
       case "desk-closeall":
         await redis().set("rn:desk:closeall", 1, { ex: 300 });
         return json({ ok: true });
