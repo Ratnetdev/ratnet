@@ -26,6 +26,7 @@ import { enqueueMind } from "./mind";
 import { addVamp, featOf, loadW, notePickSet, pickedOn, pickLessons, scoreOf, vampWatch, VAMP_MAX, type Cand } from "./picker";
 import { KING_V1, computeCal, loadCal, noteCal, posWeight, v1Verdict, type Cal } from "./kingcal";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
+import { memo } from "./memo";
 
 // Extra reads for the coins worth it (curve high enough at the read): trades, wallets, narrative.
 type Extra = { tape: Tape | null; g: Graph | null; meta: Meta | null; px: number; rg?: Regime | null };
@@ -427,13 +428,23 @@ async function digInner(): Promise<Record<string, unknown>> {
 }
 
 /** Shared state for a dig pass (models, SOL price, calibration). */
-async function digPrep() {
-  await ensureEpoch().catch(() => null);
-  const model = await loadModel();
-  M1 = await loadModel(K.nano1);
+// v0.1.38: the fast lane runs every second and used to read both models, the calibration and the epoch from Redis
+// and write the SOL price on every pass (~6 commands a second, the models are tens of KB each). The fast lane only
+// scores, so it reads them at most every 15s (calibration every 60s, epoch every 5 minutes); the slow lane, which
+// learns and writes the model, still reads it fresh every pass. The SOL price is written once an hour.
+let solHourWritten = "";
+async function digPrep(fast = false) {
+  if (fast) await memo("dig:epoch", 300_000, () => ensureEpoch().catch(() => null));
+  else await ensureEpoch().catch(() => null);
+  const model = fast ? await memo("dig:nano", 15_000, () => loadModel()) : await loadModel();
+  M1 = fast ? await memo("dig:nano1", 15_000, () => loadModel(K.nano1)) : await loadModel(K.nano1);
   SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
-  await recordSol(SOL_USD).catch(() => {});
-  CAL = await loadCal().catch(() => CAL);
+  const hr = new Date().toISOString().slice(0, 13);
+  if (hr !== solHourWritten && SOL_USD) {
+    solHourWritten = hr;
+    await recordSol(SOL_USD).catch(() => (solHourWritten = ""));
+  }
+  CAL = fast ? await memo("dig:cal", 60_000, () => loadCal()).catch(() => CAL) : await loadCal().catch(() => CAL);
   if (Date.now() - CAL_AT > 600_000) {
     CAL_AT = Date.now();
     CAL = await computeCal().catch(() => CAL);
@@ -947,6 +958,18 @@ export async function processDue(model: NanoModel) {
   items.sort((a, b) => order[a.stage] - order[b.stage]);
   p.zrem(K.due, ...members);
 
+  // one call per coin, whatever runs at the same time (v0.1.38). The King called $FLY twice within 4 seconds on
+  // 7 Oct: two passes read the launch before either had saved its call. Each call now claims the coin first in Redis
+  // (SET NX), and a pass that loses the claim skips it.
+  const wantsCall = items.filter((it) => it.stage === "t5" && recs[it.mint] && !recs[it.mint].call && !recs[it.mint].outcome && c.now - recs[it.mint].createdAt <= CALL_MAX_AGE_MS);
+  const claimed = new Set<string>();
+  await Promise.all(
+    wantsCall.map(async (it) => {
+      const ok = await r.set(`rn:callclaim:${it.mint}`, c.now, { nx: true, ex: 6 * 3600 }).catch(() => "OK");
+      if (ok) claimed.add(it.mint);
+    }),
+  );
+
   items.forEach((it, i) => {
     const rec = recs[it.mint];
     const rat = work.names[i];
@@ -976,8 +999,10 @@ export async function processDue(model: NanoModel) {
     } else if (it.stage === "t5" && !rec.call && age > CALL_MAX_AGE_MS) {
       // too late to count, and its features would describe the coin long after minute 5: no call, no lesson
       inc(c, "calls_missed");
-    } else if (it.stage === "t5" && !rec.call) {
+    } else if (it.stage === "t5" && !rec.call && claimed.has(it.mint)) {
       makeCall(c, rec, cp.p, extras[it.m] || { tape: null, g: null, meta: null, px: cv?.priceSol || 0 });
+    } else if (it.stage === "t5" && !rec.call) {
+      inc(c, "calls_dup_skipped");
     } else if (it.stage === "h1") {
       // Dead on arrival: nothing on the curve after an hour and it never got going. Resolve now so
       // the scoreboard and the learner see losers as fast as winners.

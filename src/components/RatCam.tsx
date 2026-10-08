@@ -102,8 +102,13 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
 
     // reduced motion: two frames a second instead of ~16
     const minGap = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 500 : 60;
+    // off-screen (scrolled past, or a background tab): no drawing at all (v0.1.38)
+    let onScreen = true;
+    const io = typeof IntersectionObserver !== "undefined" ? new IntersectionObserver(([x]) => (onScreen = !!x?.isIntersecting)) : null;
+    io?.observe(cv);
     const draw = (ts: number) => {
       raf = requestAnimationFrame(draw);
+      if (!onScreen || document.visibilityState !== "visible") return;
       if (ts - last < minGap) return;
       last = ts;
       frame++;
@@ -192,7 +197,10 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
       const ahead = nuggets.current.filter((n) => !n.hit).length;
       nuggets.current.push({ col: ratCol + 30 + ahead * 26, row: 5 + Math.floor(rnd() * (ROWS_N - 10)), color, label, big, hit: false });
     };
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      io?.disconnect();
+    };
   }, [active, canvas, nuggets, dims]);
 }
 

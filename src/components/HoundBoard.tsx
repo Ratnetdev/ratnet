@@ -1,4 +1,5 @@
 "use client";
+import { useRef } from "react";
 // HOUND on the desk: who among the tracked wallets is buying, live, with names.
 import Link from "next/link";
 import { usePoll } from "./usePoll";
@@ -15,10 +16,11 @@ export const CLS_COL: Record<string, string> = { "fomo-homerun": "var(--bond)", 
 const pc = (n: number | null) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n}%`);
 
 export default function HoundBoard() {
+  const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
   const admin = useAdmin();
-  const v = usePoll<View>(fullUrl("/api/hound", admin), 4000).data;
+  const v = usePoll<View>(fullUrl("/api/hound", admin), 5000, { ref: box }).data;
   return (
-    <section className="panel mt hound">
+    <section className="panel mt hound" ref={box}>
       <div className="ph">
         <span><Info k="hound"><b>HOUND</b></Info> · tracked wallets buying right now</span>
         <span className="tiny muted">{v ? `${v.counts.fomo} FOMO traders · ${v.counts.kol} KOLs (${v.counts.kolConfirmed} confirmed) · ${v.counts.smart} smart wallets${v.hook ? ` · ${v.hook.n} watched live` : " · live feed off"}` : ""}</span>

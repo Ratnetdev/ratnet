@@ -1,4 +1,5 @@
 "use client";
+import { useRef } from "react";
 // The LensCam: LENS's browser, live. Like watching someone open the website, the X account, the search and the
 // Telegram of a coin, one tab after another, ticking off a checklist and writing the verdict.
 import Link from "next/link";
@@ -65,9 +66,10 @@ function Browser({ l }: { l: Live }) {
 
 /** The live LensCam with the latest dossiers. On /desk. */
 export default function LensCam() {
-  const v = usePoll<View>("/api/lens", 1500).data;
+  const box = useRef<HTMLElement>(null);
+  const v = usePoll<View>("/api/lens", 5000, { ref: box }).data;
   return (
-    <section className="panel mt lens">
+    <section className="panel mt lens" ref={box}>
       <div className="ph">
         <span><Info k="lens"><b>LENS</b></Info> · hands-on look at the coins that matter{v?.live ? ` · ${ago(v.live.at)} ago` : ""}</span>
         <span className="tiny muted">{v ? `${v.queued} queued${v.x ? "" : " · X reads off (add X_API_KEY)"}` : ""}</span>
@@ -92,7 +94,7 @@ export default function LensCam() {
 
 /** One coin's LENS dossier, with the live browser when LENS is on this coin right now. On coin pages. */
 export function LensDossier({ mint, dossier }: { mint: string; dossier: Dossier | null }) {
-  const v = usePoll<View>("/api/lens", 2500).data;
+  const v = usePoll<View>("/api/lens", 5000).data;
   const live = v?.live?.mint === mint && !v.live.done ? v.live : null;
   const d = dossier;
   if (!d && !live) return null;

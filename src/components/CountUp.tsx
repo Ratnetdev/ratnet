@@ -4,9 +4,15 @@ import { useEffect, useRef, useState } from "react";
 /** Number that rolls to its new value. */
 export default function CountUp({ value, decimals = 0, suffix = "" }: { value: number | null | undefined; decimals?: number; suffix?: string }) {
   const [shown, setShown] = useState(value ?? 0);
-  const from = useRef(value ?? 0);
+  const from = useRef<number | null>(value ?? null);
   useEffect(() => {
     if (value == null) return;
+    // the first number shows as it is (it used to roll up from 0 on every page load)
+    if (from.current == null) {
+      from.current = value;
+      setShown(value);
+      return;
+    }
     // reduced motion: the new number, no roll
     if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
       from.current = value;
@@ -14,7 +20,7 @@ export default function CountUp({ value, decimals = 0, suffix = "" }: { value: n
       return;
     }
     const start = performance.now();
-    const a = from.current;
+    const a = from.current as number;
     const b = value;
     let raf = 0;
     const step = (t: number) => {

@@ -97,7 +97,8 @@ function After({ t }: { t: Trip }) {
   );
 }
 
-export const sgn = (n: number, d = 1) => `${n > 0 ? "+" : ""}${n.toFixed(d)}`;
+export { sgn } from "./fmt";
+import { sgn } from "./fmt";
 export const col = (n: number) => (n > 0 ? "var(--rat)" : n < 0 ? "var(--dust)" : "var(--dim)");
 export function dur(ms: number) {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -109,7 +110,7 @@ export function dur(ms: number) {
 }
 // a missing or bad time shows as "–" (an Invalid Date used to throw and take the whole page down)
 const okMs = (ms: unknown): ms is number => typeof ms === "number" && Number.isFinite(ms) && Math.abs(ms) < 8.64e15;
-const stamp = (ms: number) => (okMs(ms) ? new Date(ms).toISOString().slice(5, 19).replace("T", " ") : "–");
+const stamp = (ms: number) => (okMs(ms) ? `${new Date(ms).toISOString().slice(5, 19).replace("T", " ")} UTC` : "–");
 const hhmm = (ms: number) => (okMs(ms) ? new Date(ms).toISOString().slice(11, 19) : "–");
 /** Market cap now or at exit, vs entry. */
 export function moveOf(t: Trip): number | null {

@@ -1796,7 +1796,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       }
       // only the lock holder writes the books (a desk that lost its lock must not overwrite the new holder's state)
       if (!DESK_LOST) await r.set(K.deskState, state);
-      await r.set(BEAT_KEY, now);
+      // the heartbeat key every 5s (it was every beat; readers only need to know the desk ran in the last 90s)
+      if (now - beatWrittenAt >= 5_000) {
+        beatWrittenAt = now;
+        await r.set(BEAT_KEY, now);
+      }
       if (hadErr) {
         hadErr = false;
         log(b, "LEDGER", "back to normal, every beat on time", "ok");
@@ -2398,6 +2402,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
 // ---------------------------------------------------------------- read side
 
 const BEAT_KEY = "rn:desk:beat"; // last time a desk beat finished
+let beatWrittenAt = 0;
 const DAY_KEY = (t: number) => `rn:desk:day:${new Date(t).toISOString().slice(0, 10)}`;
 
 /** What the desk is doing right now, what it is waiting for, and what unlocks next. */

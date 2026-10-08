@@ -19,13 +19,30 @@ export function countdown(to: number) {
   const ss = s % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
+// ---- one format for every number on the site (v0.1.38) ----
+
+/** USD amounts and market caps: $950, $12.4K, $1.25M, $2.10B. */
 export function usd(n: number | null | undefined) {
-  if (n == null) return "–";
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
-  return `$${Math.round(n)}`;
+  if (n == null || !Number.isFinite(n)) return "–";
+  const a = Math.abs(n);
+  const s = n < 0 ? "-" : "";
+  if (a >= 1e9) return `${s}$${(a / 1e9).toFixed(2)}B`;
+  if (a >= 1e6) return `${s}$${(a / 1e6).toFixed(2)}M`;
+  if (a >= 1e3) return `${s}$${(a / 1e3).toFixed(1)}K`;
+  return `${s}$${Math.round(a)}`;
 }
+/** Same as usd(); kept for older call sites. */
+export const usdK = (n: number | null | undefined) => (n ? usd(n) : "–");
+/** A signed number: +1.2, -0.034. */
+export const sgn = (n: number, d = 1) => `${n > 0 ? "+" : ""}${n.toFixed(d)}`;
+/** SOL with its sign and symbol: +0.034 ◎. */
+export const sol = (n: number | null | undefined, d = 3, signed = false) => (n == null || !Number.isFinite(n) ? "–" : `${signed ? sgn(n, d) : n.toFixed(d)} ◎`);
+/** A signed percent: +12.5%, -3.0%. */
+export const spct = (n: number | null | undefined, d = 1) => (n == null || !Number.isFinite(n) ? "–" : `${sgn(n, d)}%`);
+/** A time in UTC, always labelled: 14:03:22 UTC. */
+export const utc = (ms: number) => (Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(11, 19)} UTC` : "–");
+/** Date and time in UTC, labelled: 10-08 14:03 UTC. */
+export const utcStamp = (ms: number) => (Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")} UTC` : "–");
 export const chg = (n: number | null | undefined) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n.toFixed(n >= 100 || n <= -100 ? 0 : 1)}%`);
 export type Mkt = { mc: number | null; v5: number; v1: number; v24: number; c5: number | null; c1: number | null; liq: number | null; b1: number; s1: number; dex: string; url: string };
 

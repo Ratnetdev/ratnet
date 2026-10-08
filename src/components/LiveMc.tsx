@@ -1,11 +1,11 @@
 "use client";
+import { usd as fmtUsd } from "./fmt";
 // A market cap that moves with every trade: live from the trade stream when there is one, the server's number until
 // then. Flashes green on a buy, red on a sell; a small dot marks it as live.
 import { useEffect, useRef, useState } from "react";
 import { useLivePx } from "./livepx";
 import { useLive } from "./Live";
 
-const fmt = (n: number) => (n >= 1e9 ? `$${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(1)}K` : `$${Math.round(n)}`);
 
 export default function LiveMc({ mint, usd, className = "" }: { mint?: string | null; usd?: number | null; className?: string }) {
   const lp = useLivePx(mint);
@@ -29,7 +29,7 @@ export default function LiveMc({ mint, usd, className = "" }: { mint?: string | 
     <span className={`livemc ${flash} ${className}`} title={live != null ? (lp?.mcUsd != null ? "live from the chain" : "live from the trade stream") : "last reading"}>
       {/* the dot's slot is always there, so the number never shifts when the live price arrives or drops */}
       <i className={`livemc-dot ${live != null ? "" : "off"}`} aria-hidden />
-      {fmt(val)}
+      {fmtUsd(val)}
     </span>
   );
 }

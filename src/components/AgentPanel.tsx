@@ -132,7 +132,7 @@ function Activity({ ev, color }: { ev: Ev[]; color: string }) {
 }
 
 export default function AgentPanel({ name, role, color, onClose }: { name: string; role: string; color: string; onClose: () => void }) {
-  const d = usePoll<Agent>(`/api/desk/agent?name=${name}`, 4000).data;
+  const d = usePoll<Agent>(`/api/desk/agent?name=${name}`, 5000).data;
   const p = PROFILE[name];
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();

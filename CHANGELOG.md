@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.38 · Speed and consistency (Run 7)
+- Polling diet (lib usePoll):
+  - components asking for the same data share one request and one answer (the desk page asked /api/desk, /api/rats and /api/king two or three times over);
+  - nothing polls faster than every 5 seconds (LENS was 1.5s, MIND 2.5s, FLASH and the radar 3s);
+  - FLASH, CATCH, MOMO, MIND, HOUND and LENS stop polling while they are off-screen;
+  - every request has a 10-second timeout and is cancelled when nothing shows it any more; a page never shows the previous page's data;
+  - a "data paused · reconnecting" chip appears when answers stop, so frozen numbers never pass for live ones.
+- Numbers show as they are on first load (they used to roll up from 0 on every page load).
+- The Den and the Rat Cam stop drawing when they are off-screen or the tab is in the background; the Den is capped at ~30 frames a second.
+- One format for every number: USD and market caps ($950, $12.4K, $1.25M), SOL, signed percents; fill times say UTC. Six private copies of the USD formatter are gone.
+- Tables: every numeric column is right-aligned automatically, on every page.
+- Navigation: the phone tab bar now has the same order and names as the top menu (feed, desk, coins, king, rats); Receipts and Status count as King pages. The desk page has a section bar (right now, record, balance, agents, signals, den, film room) that stays under the header.
+- The "right now" panel no longer runs wider than a phone screen.
+- One King call per coin: each call claims the coin in Redis first, so two passes can no longer both call it (the King called $FLY twice within 4 seconds on 7 Oct).
+- Redis diet: the rats' fast lane reads the models every 15s, the calibration every 60s and the epoch every 5 minutes instead of every second; the SOL price is written once an hour instead of every pass; settings are read at most every 3s per process; the desk heartbeat is written every 5s instead of every beat.
+
 ## v0.1.37 · Hotfix: honest track record, lighter desk reads
 - Track record P&L now matches the balance:
   - a trade's cost includes the tip, priority fee, base fee and token-account rent (it counted only the size). On 8 Oct the record showed +0.009 SOL realized and 33% wins while the balance was down 3.9%; with the fees counted it was -0.016 SOL and 22%, the same as the exam;

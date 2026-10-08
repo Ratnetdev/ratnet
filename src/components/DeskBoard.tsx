@@ -4,7 +4,7 @@ import { usePoll } from "./usePoll";
 import DenScene, { AGENT_COLOR } from "./DenScene";
 import Info from "./Info";
 import CountUp from "./CountUp";
-import { safeHref, ago, short, solscanAcc, solscanTx } from "./fmt";
+import { safeHref, ago, short, solscanAcc, solscanTx, usdK } from "./fmt";
 import DeskNow, { type DeskNowData } from "./DeskNow";
 import TrackRecord from "./TrackRecord";
 import AgentPanel from "./AgentPanel";
@@ -85,7 +85,6 @@ type Desk = {
   stalks?: Stalk[];
   learn?: Learn;
 };
-const usdK = (n?: number) => (!n ? "–" : n >= 1e6 ? `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : `$${Math.round(n / 1000)}K`);
 
 const ROLES: [string, string][] = [
   ["HISTORIAN", "replays past launches, trains the models"],
@@ -180,6 +179,12 @@ export default function DeskBoard() {
 
   return (
     <>
+      <nav className="sec-bar" aria-label="Desk sections">
+        {[["now", "right now"], ["record", "record"], ["balance", "balance"], ["agents", "agents"], ["signals", "signals"], ["den", "den"], ["film", "film room"]].map(([id, label]) => (
+          <a key={id} href={`#${id}`}>{label}</a>
+        ))}
+      </nav>
+      <div id="now" className="sec-anchor" />
       <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam?.checks || []} pm={(d as any)?.pm || []} />
 
       {d && today <= -d.cfg.dailyLoss ? (
@@ -189,7 +194,7 @@ export default function DeskBoard() {
       ) : null}
       <TrackRecord />
 
-      <section className="desk-top mt">
+      <section className="desk-top mt" id="balance">
         <div>
           <div className="row" style={{ gap: 10 }}>
             <span className={`tag ${d?.live ? "v-BOND" : "v-WATCH"}`}>{d ? (d.mode === "off" ? "OFF" : d.live ? "LIVE" : "PAPER") : "…"}</span>
@@ -227,7 +232,7 @@ export default function DeskBoard() {
       </section>
 
       {agent && <AgentPanel name={agent} role={ROLES.find(([x]) => x === agent)?.[1] || ""} color={AGENT_COLOR[agent]} onClose={() => setAgent(null)} />}
-      <section className="agents mt">
+      <section className="agents mt" id="agents">
         {ROLES.map(([a, role]) => {
           const e = d?.agents?.[a];
           const hot = e && now - e.at < 6000;
@@ -251,6 +256,7 @@ export default function DeskBoard() {
       </section>
 
       <AlivePanel />
+      <div id="signals" className="sec-anchor" />
       <FlashBoard />
       <CatchBoard />
       <MomoBoard />
@@ -258,7 +264,7 @@ export default function DeskBoard() {
       <HoundBoard />
       <LensCam />
 
-      <section className="panel mt" style={{ overflow: "hidden" }}>
+      <section className="panel mt" id="den" style={{ overflow: "hidden" }}>
         <div className="ph">
           <span><b>the den</b> · <Info k="den">agents at work</Info></span>
           <span className="row" style={{ gap: 6 }}><span className={`dot ${error ? "off" : ""}`} /> {d?.mode === "off" ? "desk off" : "trading"}</span>
@@ -495,7 +501,7 @@ export default function DeskBoard() {
         </div>
       </section>
 
-      <section className="panel mt film">
+      <section className="panel mt film" id="film">
         <div className="ph"><span><Info k="film"><b>film room</b></Info> · every decision, reviewed against what happened next</span><span className="tiny muted">{d?.film ? `${d.film.pending} reviews queued` : ""}</span></div>
         <div className="film-grid">
           <div>

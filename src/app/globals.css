@@ -655,7 +655,7 @@ th .info, .k .info { gap: 4px; }
 .td-checks span { color: var(--text); }
 .td-checks em { font-style: normal; color: var(--mute); font-size: 11px; text-align: right; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .td-fills { display: grid; font-size: 12px; }
-.td-fill { display: grid; grid-template-columns: 118px 44px 78px 70px 58px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.04); align-items: baseline; font-variant-numeric: tabular-nums; }
+.td-fill { display: grid; grid-template-columns: 150px 44px 78px 70px 58px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.04); align-items: baseline; font-variant-numeric: tabular-nums; }
 .td-fill .d { color: var(--mute); }
 .td-fill b { font-weight: 500; font-size: 11px; letter-spacing: 1px; }
 .td-fill b.buy { color: var(--watch); }
@@ -1197,3 +1197,20 @@ a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible
 .dn-wait { margin-top: 14px; padding: 10px 12px; border: 1px solid rgba(255, 181, 71, 0.35); background: rgba(255, 181, 71, 0.05); }
 .dn-wait .dn-k { color: var(--bond); }
 .dn-wait .dn-p { margin: 6px 0 0; }
+
+/* v0.1.38 · Run 7 */
+.stale-chip { position: fixed; left: 50%; transform: translateX(-50%); top: calc(var(--hdr, 56px) + 8px); z-index: 75; display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: #1a1206; border: 1px solid rgba(255, 181, 71, 0.5); color: var(--bond); font-size: 12px; letter-spacing: 0.5px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+.stale-chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--bond); animation: lmpulse 1.2s infinite; }
+/* desk page: a section bar under the header, same square terminal look as the tabs */
+.sec-bar { position: sticky; top: var(--hdr, 56px); z-index: 30; display: flex; gap: 0; overflow-x: auto; scrollbar-width: none; margin: 0 0 14px; background: rgba(6, 8, 7, 0.95); border: 1px solid var(--line2); backdrop-filter: blur(6px); }
+.sec-bar::-webkit-scrollbar { display: none; }
+.sec-bar a { flex: none; padding: 10px 14px; min-height: 40px; display: inline-flex; align-items: center; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); border-right: 1px solid var(--line2); }
+.sec-bar a:hover { color: var(--text); background: rgba(255, 255, 255, 0.03); text-decoration: none; }
+.sec-anchor, #record, #balance, #agents, #den, #film { scroll-margin-top: calc(var(--hdr, 56px) + 54px); }
+/* numeric columns line up on the right (set by AlignNumbers) */
+.tbl td.num, .tbl th.num { text-align: right; }
+.tbl th.num .info, .tbl th.num button { justify-content: flex-end; }
+/* the "right now" panel never runs wider than the screen (its long "still needed" items used to push it to ~440px) */
+.dn-main, .dn-side { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) { .dn-need { white-space: normal; } .dn-main, .dn-side { padding: 16px 14px; } .dn-steps li { padding: 12px 14px; } }
+@media (max-width: 760px) { .record > .ph .rec-tabs button { white-space: nowrap; padding: 0 6px; } }

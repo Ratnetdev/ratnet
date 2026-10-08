@@ -1,4 +1,5 @@
 "use client";
+import { useRef } from "react";
 // FLASH on /desk: every launch read from the live stream at 15, 45 and 90 seconds. Its honest record per look time
 // (bonded within the hour), whether a look time has earned the right to trade, and what it is looking at now.
 import Link from "next/link";
@@ -14,10 +15,11 @@ type V = {
 const pc = (h: number, n: number) => (n ? `${((h / n) * 100).toFixed(1)}%` : "–");
 
 export default function FlashBoard() {
-  const v = usePoll<V>("/api/flash", 3000).data;
+  const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
+  const v = usePoll<V>("/api/flash", 5000, { ref: box }).data;
   const ready = !!v?.model.ready;
   return (
-    <section className="panel">
+    <section className="panel" ref={box}>
       <div className="ph">
         <span><b>FLASH</b> · every launch read at 15, 45 and 90 seconds, from the live trade stream</span>
         <span className="tiny muted">{v ? (ready ? `model live · ${v.model.n} labels, ${v.model.pos} bonds` : `learning · ${v.model.n}/${v.model.need} labels`) : ""}</span>

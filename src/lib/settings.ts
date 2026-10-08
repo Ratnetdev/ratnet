@@ -1,9 +1,19 @@
 import { DEFAULT_SETTINGS, Settings } from "@/config/site";
 import { K, redis } from "./redis";
 
+// v0.1.38: read at most every 3s per process (20 call sites read it, several of them every loop); a save in this
+// process clears it at once
+let cached: { at: number; v: Partial<Settings> | null } | null = null;
+async function readRaw() {
+  if (cached && Date.now() - cached.at < 3_000) return cached.v;
+  const v = await redis().get<Partial<Settings>>(K.settings);
+  cached = { at: Date.now(), v };
+  return v;
+}
+
 export async function getSettings(): Promise<Settings> {
   try {
-    const s = await redis().get<Partial<Settings>>(K.settings);
+    const s = await readRaw();
     return {
       ...DEFAULT_SETTINGS,
       ...(s || {}),
@@ -21,6 +31,7 @@ export async function getSettings(): Promise<Settings> {
 }
 
 export async function saveSettings(patch: Partial<Settings>) {
+  cached = null; // a save always starts from what is stored
   const cur = await getSettings();
   const next: Settings = {
     ...cur,
@@ -33,5 +44,6 @@ export async function saveSettings(patch: Partial<Settings>) {
     history: { ...cur.history, ...(patch.history || {}) },
   };
   await redis().set(K.settings, next);
+  cached = null;
   return next;
 }

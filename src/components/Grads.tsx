@@ -17,13 +17,8 @@ export type Grad = {
   run?: { pk: number; now?: number; cUsd?: number | null; x: number | null } | null;
 };
 
-export function usdK(n?: number | null) {
-  if (!n) return "–";
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
-  if (n >= 1e5) return `$${Math.round(n / 1000)}K`;
-  if (n >= 1e3) return `$${(n / 1000).toFixed(1).replace(/\.0$/, "")}K`;
-  return `$${Math.round(n)}`;
-}
+import { usdK } from "./fmt";
+export { usdK };
 
 export function fmtSecs(s: number) {
   if (s < 60) return `${s}s`;

@@ -16,6 +16,8 @@ import CmdK, { SearchButton } from "@/components/CmdK";
 import { WalletProvider, WalletButton } from "@/components/Wallet";
 import { SITE } from "@/config/site";
 import Boundary from "@/components/Boundary";
+import StaleChip from "@/components/StaleChip";
+import AlignNumbers from "@/components/AlignNumbers";
 
 
 export const metadata: Metadata = {
@@ -57,6 +59,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div className="wrap">{children}</div>
           </main>
           <Boundary name="TabBar"><TabBar /></Boundary>
+          <Boundary name="StaleChip"><StaleChip /></Boundary>
+          <Boundary name="AlignNumbers"><AlignNumbers /></Boundary>
           <footer>
             <div className="wrap row between wrapx">
               <span>RATNET · $RAT · rats dig, the king learns, every trade is on the record.</span>

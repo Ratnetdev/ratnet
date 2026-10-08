@@ -29,7 +29,7 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       }
     };
     load(true);
-    const t = setInterval(() => load(), 4000);
+    const t = setInterval(() => load(), 5000);
     const vis = () => load();
     document.addEventListener("visibilitychange", vis);
     return () => {

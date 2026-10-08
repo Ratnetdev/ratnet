@@ -101,6 +101,9 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
     let raf = 0;
     let lastDraw = 0;
     const reduce = !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    let denOn = true;
+    const denIo = typeof IntersectionObserver !== "undefined" ? new IntersectionObserver(([x]) => (denOn = !!x?.isIntersecting)) : null;
+    denIo?.observe(el);
     const charts = ORDER.map(() => Array.from({ length: 16 }, () => Math.random()));
 
     const deskPos = (i: number) => {
@@ -118,8 +121,10 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
 
     const draw = (ts: number) => {
       raf = requestAnimationFrame(draw);
-      // reduced motion: two quiet frames a second instead of sixty
-      if (reduce && ts - lastDraw < 500) return;
+      // off-screen or a background tab: nothing drawn; otherwise capped at ~30 frames a second (v0.1.38)
+      if (!denOn || document.visibilityState !== "visible") return;
+      // reduced motion: two quiet frames a second
+      if (ts - lastDraw < (reduce ? 500 : 33)) return;
       lastDraw = ts;
       const st = state.current;
       ctx.clearRect(0, 0, W, H);
@@ -258,6 +263,7 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      denIo?.disconnect();
     };
   }, []);
 

@@ -4,7 +4,7 @@ import { usePoll } from "./usePoll";
 import RadarTable, { RadarRow } from "./Radar";
 
 export default function RadarBoard() {
-  const { data, error } = usePoll<{ radar: RadarRow[] }>("/api/radar", 3000);
+  const { data, error } = usePoll<{ radar: RadarRow[] }>("/api/radar", 5000);
   const [min, setMin] = useState(0);
   const [called, setCalled] = useState(false);
   const [fresh, setFresh] = useState(false);

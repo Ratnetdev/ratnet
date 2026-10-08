@@ -1,9 +1,10 @@
 "use client";
+import { useRef } from "react";
 // MIND on the desk: the coin it is thinking about right now, its latest calls, and its record.
 import Link from "next/link";
 import { usePoll } from "./usePoll";
 import Info from "./Info";
-import { ago } from "./fmt";
+import { ago, usdK } from "./fmt";
 import CoinImg from "./CoinImg";
 
 type H = { k: string; n: number; avg: number | null; up: number | null; x2: number };
@@ -15,7 +16,6 @@ export type Judgement = { verdict: string; conviction: number; thesis: string; r
 
 const WHY: Record<string, string> = { board: "several agents agree", catch: "CATCH sender", momo: "MOMO runner", wallets: "tracked wallets buying", kol: "a KOL posted it", wire: "tweet coin", bond: "BOND call", bonded: "just migrated", pulse: "rising narrative", lens: "LENS look" };
 export const VCOL: Record<string, string> = { SEND: "var(--rat)", WATCH: "var(--watch)", PASS: "var(--mute)" };
-const usdK = (n: number | null) => (n == null ? "" : n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(1)}K` : `$${n}`);
 const pc = (n: number | null) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n}%`);
 
 /** One judgement, as a card. Used on /desk (live) and on coin pages. */
@@ -43,11 +43,12 @@ export function MindCard({ j, symbol, foot = true }: { j: Judgement; symbol?: st
 }
 
 export default function MindBoard() {
-  const v = usePoll<View>("/api/mind", 2500).data;
+  const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
+  const v = usePoll<View>("/api/mind", 5000, { ref: box }).data;
   const l = v?.live;
   const send = v?.record.find((r) => r.verdict === "SEND");
   return (
-    <section className="panel mt mind">
+    <section className="panel mt mind" ref={box}>
       <div className="ph">
         <span><Info k="mind"><b>MIND</b></Info> · the trader&apos;s mind: the meme, the narrative, who is talking, the timing</span>
         <span className="tiny muted">{v ? (v.on ? `${v.queued} queued · ${v.lessons.n} lessons (${v.lessons.proven} proven)` : "off · add ANTHROPIC_API_KEY") : ""}</span>

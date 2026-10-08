@@ -1,11 +1,12 @@
 "use client";
+import { useRef } from "react";
 // CATCH on /desk: what it is looking at right now, its honest record by score band, and the latest labels.
 // Next to it, the BOARD: coins where several agent families agree, each agent's stance as a chip.
 import Link from "next/link";
 import { usePoll } from "./usePoll";
 import Info from "./Info";
 import CoinImg from "./CoinImg";
-import { ago } from "./fmt";
+import { ago, usdK } from "./fmt";
 import { AGENT_COLOR } from "./DenScene";
 
 type Top = { mint: string; sym: string; stage: "curve" | "pool"; mc: number; p: number; prior: number; why: string[]; conf: number; age: number };
@@ -21,16 +22,16 @@ type V = {
 };
 type B = { coins: { mint: string; sym: string; score: number; pos: number; neg: number; posts: { a: string; s: number; at: number; t: string }[] }[] };
 
-const usdK = (n: number) => (n >= 1e6 ? `$${(n / 1e6).toFixed(2)}M` : `$${Math.round(n / 1000)}K`);
 const pc = (h: number, n: number) => (n ? `${Math.round((h / n) * 100)}%` : "–");
 
 export default function CatchBoard() {
-  const v = usePoll<V>("/api/catch", 4000).data;
-  const bd = usePoll<B>("/api/board", 5000).data;
+  const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
+  const v = usePoll<V>("/api/catch", 5000, { ref: box }).data;
+  const bd = usePoll<B>("/api/board", 5000, { ref: box }).data;
   const ready = !!v?.model.ready;
   const top = v?.live?.top || [];
   return (
-    <section className="panel mt catch">
+    <section className="panel mt catch" ref={box}>
       <div className="ph">
         <span><Info k="catch"><b>CATCH</b></Info> · the sender catcher: coins moving like the ones that ran to $300K+</span>
         <span className="tiny muted">{v ? (ready ? `model live · ${v.model.n} labels` : `learning · ${v.model.n}/${v.model.need} labels, ${v.model.pos} senders`) : ""}{v?.hist?.n ? ` · ${v.hist.n} from replayed history` : ""}{v?.fast ? ` · 2h model ${v.fast.ready ? "live" : "learning"}, ${v.fast.n} labels` : ""}</span>
