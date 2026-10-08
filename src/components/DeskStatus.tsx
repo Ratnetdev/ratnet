@@ -9,7 +9,7 @@ export default function DeskStatus() {
   const d = (useLive().data as any)?.desk as { eq: number; base: number; live: boolean; exam?: Exam | null } | null;
   const ex = d?.exam;
   const live = !!d?.live;
-  const total = ex?.total ?? 5;
+  const total = ex?.total ?? 6; // v0.1.47: the exam has six checks
   const passed = ex?.passed ?? 0;
   const pnl = d && d.base ? ((d.eq - d.base) / d.base) * 100 : null;
   return (
@@ -23,7 +23,7 @@ export default function DeskStatus() {
         <span>
           {live
             ? `Every buy and sell on chain${ex?.walletSol != null ? `, wallet ${ex.walletSol.toFixed(2)} SOL` : ""}${pnl != null ? `, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}%` : ""}.`
-            : `It takes over its own wallet${ex?.walletSol != null ? ` (${ex.walletSol.toFixed(2)} SOL)` : ""} by itself once it passes its exam.${pnl != null ? ` Paper ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}% so far.` : ""}`}
+            : `It earns its own wallet${ex?.walletSol != null ? ` (${ex.walletSol.toFixed(2)} SOL)` : ""} by passing its exam.${pnl != null ? ` Paper ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}% so far.` : ""}`}
         </span>
       </span>
       {!live && (
@@ -31,7 +31,7 @@ export default function DeskStatus() {
           {Array.from({ length: total }, (_, i) => (
             <i key={i} className={i < passed ? "ok" : ""} />
           ))}
-          <em>{passed}/{total}</em>
+          <em>{d ? `${passed}/${total}` : "…"}</em>
         </span>
       )}
       <span className="ds-go">watch →</span>

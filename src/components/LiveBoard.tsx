@@ -94,7 +94,8 @@ export default function LiveBoard() {
           <div className="pb stat">
             <div className="k"><Info k="bond">Graduated</Info></div>
             <div className="big" style={{ color: "var(--bond)" }}><CountUp value={s?.bonded ?? 0} /></div>
-            <div className="s">{s ? `DUST calls right ${s.dust.rate != null ? s.dust.rate + "%" : "–"} · ${num(s.calls)} calls` : "–"}</div>
+            {/* v0.1.47: the caption says what the number is (it showed the DUST record under the graduation count) */}
+            <div className="s">{s ? `filled the curve and migrated · DUST calls right ${s.dust.rate != null ? s.dust.rate + "%" : "–"}` : "–"}</div>
           </div>
         </div>
       </section>

@@ -1,4 +1,5 @@
 "use client";
+import { useAdmin } from "./useAdmin";
 import { useRef } from "react";
 // MIND on the desk: the coin it is thinking about right now, its latest calls, and its record.
 import Link from "next/link";
@@ -43,6 +44,7 @@ export function MindCard({ j, symbol, foot = true }: { j: Judgement; symbol?: st
 }
 
 export default function MindBoard() {
+  const admin = useAdmin(); // v0.1.47: setup hints (env var names) only for the admin
   const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
   const v = (usePoll<{ mind: View | null }>("/api/boards", 10000, { ref: box }).data?.mind ?? null);
   const l = v?.live;
@@ -51,7 +53,7 @@ export default function MindBoard() {
     <section className="panel mt mind" ref={box}>
       <div className="ph">
         <span><Info k="mind"><b>MIND</b></Info> · the trader&apos;s mind: the meme, the narrative, who is talking, the timing</span>
-        <span className="tiny muted">{v ? (v.on ? `${v.queued} queued · ${v.lessons.n} lessons (${v.lessons.proven} proven)` : "off · add ANTHROPIC_API_KEY") : ""}</span>
+        <span className="tiny muted">{v ? (v.on ? `${v.queued} queued · ${v.lessons.n} lessons (${v.lessons.proven} proven)` : admin ? "off · add ANTHROPIC_API_KEY" : "off") : ""}</span>
       </div>
       <div className="mind-grid">
         <div className="mind-live">
@@ -72,7 +74,7 @@ export default function MindBoard() {
               )}
             </div>
           ) : (
-            <div className="muted small pb">{v?.on ? "Waiting for the first coin worth a look: KOL calls, tweet coins, BOND calls, fresh migrations and narrative coins." : "MIND needs a language model. Add ANTHROPIC_API_KEY in Vercel and it starts judging within a minute."}</div>
+            <div className="muted small pb">{v?.on ? "Waiting for the first coin worth a look: KOL calls, tweet coins, BOND calls, fresh migrations and narrative coins." : admin ? "MIND needs a language model. Add ANTHROPIC_API_KEY in Vercel and it starts judging within a minute." : "MIND is resting right now."}</div>
           )}
         </div>
         <div>

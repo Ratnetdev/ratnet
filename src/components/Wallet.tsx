@@ -114,6 +114,11 @@ export function useWallet() {
 export function WalletButton() {
   const { address, connect, disconnect, available } = useWallet();
   const [err, setErr] = useState("");
+  useEffect(() => {
+    if (!err) return;
+    const t = setTimeout(() => setErr(""), 6000);
+    return () => clearTimeout(t);
+  }, [err]);
   const [open, setOpen] = useState(false);
   if (address)
     return (
@@ -158,7 +163,8 @@ export function WalletButton() {
           ))}
         </span>
       )}
-      {err && <span className="err" style={{ position: "absolute", right: 0, top: "110%", width: 260 }}>{err}</span>}
+      {/* v0.1.47: a readable popover (the bare red text floated over the page on phones); tap to close, gone after 6s */}
+      {err && <span className="err wal-err" role="alert" onClick={() => setErr("")}>{err}<em>tap to close</em></span>}
     </span>
   );
 }

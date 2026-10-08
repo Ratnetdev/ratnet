@@ -214,7 +214,7 @@ export default function Admin() {
       <div className="panel">
         <div className="ph"><span><b>desk</b> · mode off | paper | auto | live</span></div>
         <div className="pb">
-          <p className="muted small" style={{ marginTop: 0 }}>auto = paper until the exam passes and DESK_WALLET_SECRET holds 0.5+ SOL, then it goes live on its own. live = skip the exam (only if you are sure).</p>
+          <p className="muted small" style={{ marginTop: 0 }}>paper = never real money (the default since v0.1.43). auto = paper until the exam passes and DESK_WALLET_SECRET holds 0.5+ SOL, then it goes live on its own. live = skip the exam (only if you are sure).</p>
           <textarea className="input" style={{ minHeight: 260, fontSize: 12 }} value={deskJson} onChange={(e) => setDeskJson(e.target.value)} spellCheck={false} />
           <div className="row wrapx mt">
             <button className="btn" onClick={() => run("Save desk", () => call({ action: "settings", settings: { desk: JSON.parse(deskJson) } }))}>Save desk</button>

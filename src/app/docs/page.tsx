@@ -70,7 +70,7 @@ export default function Docs() {
       </p>
       <h3>nano · learning live</h3>
       <p>
-        Next to v0 runs <b>Rat King nano</b>, a model born at zero that learns from every outcome the rats record. One gradient step per launch once its 2-hour label is in, 41 features frozen at the 5-minute mark (curve, socials, dev history, trade speed, bundles, snipers, smart wallets, the dev&apos;s funder cluster, and the story: the post behind the coin, its author&apos;s reach and the narrative), nothing borrowed. The HISTORIAN replays past launches in time order so it starts trained. Its calls count once it has 200 lessons. From King v1 on, nano leads and its BOND line is set from the last 7 days of graded lessons. Loss curve, the honest scoreboard and a head to head against v0 are public in <a href="/lab">the Lab</a>.
+        Next to v0 runs <b>Rat King nano</b>, a model born at zero that learns from every outcome the rats record. One gradient step per launch once its 2-hour label is in, 41 features frozen at the 5-minute mark (curve, socials, dev history, trade speed, bundles, snipers, smart wallets, the dev&apos;s funder cluster, and the story: the post behind the coin, its author&apos;s reach and the narrative), nothing borrowed. The HISTORIAN replays past launches in time order so it starts trained. Its calls count once it has 200 live lessons. From King v1 on, nano leads and its BOND line is set from the last 7 days of graded lessons. Loss curve, the honest scoreboard and a head to head against v0 are public in <a href="/lab">the Lab</a>.
       </p>
       <h3>v1 · training</h3>
       <p>

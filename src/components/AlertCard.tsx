@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { chg, short, usd } from "./fmt";
 import CoinImg from "./CoinImg";
+import { usePoll } from "./usePoll";
 
 // A fast, information-dense alert: who called it, how strong, what the tape and the wallets say, and one tap to trade.
 
@@ -47,23 +48,9 @@ type Coin = {
   run?: null | { pk: number; x: number | null };
 };
 
+// v0.1.47: through the shared poller (one request per coin for every card showing it, paused in hidden tabs)
 function useCoin(mint: string) {
-  const [d, setD] = useState<Coin | null>(null);
-  useEffect(() => {
-    let dead = false;
-    const go = () =>
-      fetch(`/api/coin/${mint}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j) => !dead && j && setD(j))
-        .catch(() => {});
-    go();
-    const t = setInterval(go, 5000);
-    return () => {
-      dead = true;
-      clearInterval(t);
-    };
-  }, [mint]);
-  return d;
+  return usePoll<Coin>(`/api/coin/${mint}`, 5000).data ?? null;
 }
 
 function useAge(at: number) {

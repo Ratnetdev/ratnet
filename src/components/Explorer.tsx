@@ -152,6 +152,7 @@ export default function Explorer() {
     return () => clearTimeout(t);
   }, [viewKey, data?.now]);
 
+  const [more, setMore] = useState(false);
   return (
     <>
       <section className="panel glow">
@@ -164,9 +165,11 @@ export default function Explorer() {
               <Chip key={p.label} on={false} onClick={() => setF({ ...DEF, win: f.win, ...p.f })}>{p.label}</Chip>
             ))}
             <Chip on={false} onClick={() => setF(DEF)}>reset</Chip>
+            {/* v0.1.47: on phones the detailed filters fold away under the presets (they filled two screens) */}
+            <button className="btn sm ghost ex-more" onClick={() => setMore(!more)} aria-expanded={more}>{more ? "fewer filters ▴" : "all filters ▾"}</button>
           </span>
         </div>
-        <div className="pb grid" style={{ gap: 10 }}>
+        <div className={`pb grid ex-groups ${more ? "open" : ""}`} style={{ gap: 10 }}>
           <Group label="King">
             {["", "B", "W", "D"].map((v) => <Chip key={v} on={f.king === v} onClick={() => set({ king: v })}>{v ? VNAME[v] : "any"}</Chip>)}
             <span className="tiny muted" style={{ marginLeft: 10 }}>min score</span>

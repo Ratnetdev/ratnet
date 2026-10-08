@@ -126,7 +126,7 @@ export default function KingBoard() {
           <div className="panel">
             <div className="ph"><span><Info k="nano"><b>nano</b></Info> · learning live</span><a href="/lab">lab →</a></div>
             <div className="pb small muted">
-              Next to v0, Rat King nano learns from scratch on every outcome the rats record. {data?.nano ? `${data.nano.n} lessons so far, ${data.nano.pos} of them bonds.` : ""} Its calls count once it has {data?.nano?.min ?? 200} lessons. After nano comes v1: a model pretrained from scratch on the full dataset, weights on Hugging Face.
+              Next to v0, Rat King nano learns from scratch on every outcome the rats record. {data?.nano ? `${data.nano.n} lessons so far, ${data.nano.pos} of them bonds.` : ""} Its calls count once it has {data?.nano?.min ?? 200} live lessons (history replays train it too, but do not count). King v1 is the next step: nano leads, and its BOND line is calibrated on the last 7 days of graded lessons.
             </div>
           </div>
         </div>

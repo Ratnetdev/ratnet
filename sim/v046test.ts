@@ -71,11 +71,14 @@ const ok = (c: boolean, m: string) => {
   const p = ta.openText({ ...base, book: "paper" });
   const l = ta.openText({ ...base, book: "live", sig: "5sigxyz" });
   ok(g.startsWith("👻 <b>GHOST · BUY</b>") && p.startsWith("📄 <b>PAPER · BUY</b>") && l.startsWith("💰 <b>LIVE · BUY</b>"), "ghost, paper and live open alerts start differently");
-  ok(/Blocked by/.test(g) && /REAL MONEY/.test(l) && /solscan\.io\/tx\/5sigxyz/.test(l) && /\/c\/EPjF/.test(p) && /\/desk/.test(p), "ghost says why it was blocked, live says real money with Solscan, every alert links the coin and the desk");
+  ok(/Not real because/.test(g) && /REAL MONEY/.test(l) && /solscan\.io\/tx\/5sigxyz/.test(l) && /\/c\/EPjF/.test(p) && /\/desk/.test(p), "ghost says why it was blocked, live says real money with Solscan, every alert links the coin and the desk");
   const c = ta.closeText({ book: "paper", mint: M, symbol: "TEST", how: "direct", costSol: 0.05, backSol: 0.0713, entryMc: 6200, exitMc: 8800, peakX: 1.61, openedAt: Date.now() - 252_000, reason: "trailing stop 16% off the peak" });
   ok(/PAPER · WIN/.test(c) && /\+42\.6%/.test(c) && /0\.0500 SOL → 0\.0713 SOL/.test(c) && /\$6\.2K → \$8\.8K/.test(c) && /Peak held<\/b>  \+61\.0%/.test(c) && /4m 12s/.test(c) && /trailing stop/.test(c), "the close alert: result in % and SOL, in and out, market caps, peak, time held, exit reason");
   const lo = ta.closeText({ book: "ghost", mint: M, symbol: "X", costSol: 0.1, backSol: 0.066, entryMc: 1, exitMc: 1, peakX: 1, openedAt: Date.now(), reason: "stop loss" });
   ok(/GHOST · LOSS/.test(lo) && /🔻/.test(lo), "a loss reads as a loss");
+
+  const gn = ta.openText({ ...base, book: "ghost", blocked: "nano agrees WATCH 50" });
+  ok(/nano did not back the King's call/.test(gn) && /nano says WATCH 50, the desk needs BOND/.test(gn), "a ghost trade from the nano rule says so in plain words (not 'blocked')");
 
   // 7. X webhook: field caps
   const { parseHook } = await import("../src/lib/wire");

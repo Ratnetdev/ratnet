@@ -214,7 +214,7 @@ export default function DeskBoard() {
         </div>
         <div className="panel exam">
           <div className="ph">
-            <span><b>{d?.live ? "live" : "live exam"}</b> · <Info k="exam">{d?.live ? "promoted by the desk itself" : `${passed}/${d?.exam?.checks.length ?? 5} passed`}</Info></span>
+            <span><b>{d?.live ? "live" : "live exam"}</b> · <Info k="exam">{d?.live ? "promoted by the desk itself" : `${passed}/${d?.exam?.checks.length ?? 6} passed`}</Info></span>
           </div>
           <div className="pb small">
             {d?.live ? (
@@ -267,7 +267,8 @@ export default function DeskBoard() {
       <section className="panel mt" id="den" style={{ overflow: "hidden" }}>
         <div className="ph">
           <span><b>the den</b> · <Info k="den">agents at work</Info></span>
-          <span className="row" style={{ gap: 6 }}><span className={`dot ${error ? "off" : ""}`} /> {d?.mode === "off" ? "desk off" : "trading"}</span>
+          {/* v0.1.47: the same running/paused value as RIGHT NOW (it said "trading" while RIGHT NOW said paused) */}
+          <span className="row" style={{ gap: 6 }}><span className={`dot ${error || (d && !d.now?.running) ? "off" : ""}`} /> {!d ? "loading…" : d.mode === "off" ? "desk off" : d.now?.running ? (d.live ? "trading live" : "trading on paper") : "paused"}</span>
         </div>
         <DenScene agents={d?.agents || {}} events={d?.events || []} />
       </section>
@@ -433,7 +434,7 @@ export default function DeskBoard() {
       </section>
       <section className="grid g-main mt">
         <div className="panel">
-          <div className="ph"><span><Info k="wire"><b>wire</b></Info> · X posts that spawn coins</span><span className="tiny muted">{d?.wire ? (d.wire.on ? `${Math.max(d.wire.j7?.covered ?? 0, (d.wire.counts?.active ?? d.wire.accounts.filter((a) => a.tier !== "muted").length)).toLocaleString("en-US")} accounts${d.wire.j7?.on ? ` · J7 ${d.wire.j7.last?.error ? "error" : "live"}` : ""}` : "waiting for J7_JWT or X_API_KEY") : ""}</span></div>
+          <div className="ph"><span><Info k="wire"><b>wire</b></Info> · X posts that spawn coins</span><span className="tiny muted">{d?.wire ? (d.wire.on ? `${Math.max(d.wire.j7?.covered ?? 0, (d.wire.counts?.active ?? d.wire.accounts.filter((a) => a.tier !== "muted").length)).toLocaleString("en-US")} accounts${d.wire.j7?.on ? ` · J7 ${d.wire.j7.last?.error ? "error" : "live"}` : ""}` : (admin ? "waiting for J7_JWT or X_API_KEY" : "not connected")) : ""}</span></div>
           <div className="wire-list">
             {(d?.wire?.tweets || []).slice(0, 10).map((t) => (
               <div key={t.id} className="wire-t">

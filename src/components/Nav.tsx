@@ -189,6 +189,10 @@ export default function Nav() {
               ))}
             </div>
           ))}
+          <button className="nav-item nav-lt-on" onClick={() => { try { localStorage.setItem("rn:lt:off", "0"); } catch {} window.dispatchEvent(new Event("rn:lt:on")); setMobile(false); }}>
+            <b>Live updates</b>
+            <span>Show the live agent updates again (if you switched them off)</span>
+          </button>
           <a className="nav-x-big" href={SITE.x} target="_blank" rel="noreferrer">
             <span className="xg">𝕏</span> Follow {SITE.handle}
           </a>

@@ -25,8 +25,9 @@ export default function FlashBoard() {
         <span className="tiny muted">{v ? (ready ? `model live · ${v.model.n} labels, ${v.model.pos} bonds` : `learning · ${v.model.n}/${v.model.need} labels`) : ""}</span>
       </div>
       <div className="pb">
+        <div className="scroll">
         <table className="tbl">
-          <thead><tr><th>Look</th><th>Looks labelled</th><th>Bonded within 1h</th><th>Trading</th></tr></thead>
+          <thead><tr><th>Look</th><th>Looks labelled</th><th>2x and held</th><th>Trading</th></tr></thead>
           <tbody>
             {(v?.stages || []).map((s) => (
               <tr key={s.stage}>
@@ -36,9 +37,12 @@ export default function FlashBoard() {
                 <td className={s.cut ? "green" : "muted"}>{s.cut ? `on: scores ${Math.round(s.cut.band * 100)}+ bond ${Math.round(s.cut.hit * 100)}% (base ${(s.cut.base * 100).toFixed(1)}%)` : "not yet: earns it with its record"}</td>
               </tr>
             ))}
+            {!(v?.stages || []).length ? <tr><td colSpan={4} className="muted small">No looks labelled yet.</td></tr> : null}
           </tbody>
         </table>
+        </div>
         <div className="tiny muted mt">Looking at now{v?.live ? ` · ${ago(v.live.at)} ago` : ""}</div>
+        <div className="scroll">
         <table className="tbl">
           <thead><tr><th>Coin</th><th>Look</th><th>Curve</th><th>Wallets</th><th>{ready ? "P(2x, held)" : "Score"}</th><th className="hide-m">Why</th></tr></thead>
           <tbody>
@@ -52,8 +56,10 @@ export default function FlashBoard() {
                 <td className="hide-m muted">{x.why.slice(0, 2).join(", ")}</td>
               </tr>
             ))}
+            {!(v?.live?.top || []).length ? <tr><td colSpan={6} className="muted small">Nothing in its first 90 seconds right now. FLASH looks at every launch at 15, 45 and 90 seconds.</td></tr> : null}
           </tbody>
         </table>
+        </div>
       </div>
     </section>
   );

@@ -26,8 +26,10 @@ const pc = (h: number, n: number) => (n ? `${Math.round((h / n) * 100)}%` : "–
 
 export default function CatchBoard() {
   const box = useRef<HTMLElement>(null); // below the fold: no polling while off-screen
-  const v = (usePoll<{ catch: V | null; board: B | null }>("/api/boards", 10000, { ref: box }).data?.catch ?? null);
-  const bd = (usePoll<{ catch: V | null; board: B | null }>("/api/boards", 10000, { ref: box }).data?.board ?? null);
+  // v0.1.47: one subscription for both parts
+  const boards = usePoll<{ catch: V | null; board: B | null }>("/api/boards", 10000, { ref: box }).data;
+  const v = boards?.catch ?? null;
+  const bd = boards?.board ?? null;
   const ready = !!v?.model.ready;
   const top = v?.live?.top || [];
   return (
@@ -39,6 +41,7 @@ export default function CatchBoard() {
       <div className="catch-grid">
         <div>
           <div className="sc-h">Looking at now <span className="muted">· {v?.live ? `${v.live.scanned} coins${v.live.pools ? `, ${v.live.pools} pools watched` : ""}${v.live.live ? `, ${v.live.live} on the live trade stream` : ""}, ${ago(v.live.at)} ago` : "waiting for the first pass"}</span></div>
+          <div className="scroll">
           <table className="tbl catch-tbl">
             <thead><tr><th>Coin</th><th>Stage</th><th>MC</th><th>{ready ? "P(send)" : "Score"}</th><th className="hide-m">Why</th></tr></thead>
             <tbody>
@@ -58,6 +61,7 @@ export default function CatchBoard() {
               {!top.length ? <tr><td colSpan={5} className="muted small">Nothing hot right now. CATCH looks every ~12 seconds.</td></tr> : null}
             </tbody>
           </table>
+          </div>
         </div>
         <div>
           <div className="sc-h">Record <span className="muted">· every look graded 6h later: did it reach $300K (or 2x)?</span></div>
@@ -66,6 +70,7 @@ export default function CatchBoard() {
             <div><span className="k">On the curve</span><b>{pc(v?.stages.curve.hit || 0, v?.stages.curve.n || 0)}</b><em>{v?.stages.curve.n || 0} looks</em></div>
             <div><span className="k">After migration</span><b>{pc(v?.stages.pool.hit || 0, v?.stages.pool.n || 0)}</b><em>{v?.stages.pool.n || 0} looks</em></div>
           </div>
+          <div className="scroll">
           <table className="tbl catch-bands">
             <thead><tr><th>{ready ? "Model band" : "Score band"}</th><th>Looks</th><th>Sent</th></tr></thead>
             <tbody>
@@ -78,6 +83,7 @@ export default function CatchBoard() {
               ))}
             </tbody>
           </table>
+          </div>
           <div className="sc-h mt">Latest labels</div>
           {(v?.recent || []).slice(0, 6).map((x) => (
             <Link key={x.mint + x.at} href={`/c/${x.mint}`} className="catch-lab">

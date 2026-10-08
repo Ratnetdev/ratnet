@@ -50,7 +50,7 @@ export const GLOSSARY: Record<string, string> = {
   radar: "Live coins filling their curve, closest to graduating on top.",
   feed: "Everything the rats do, as it happens.",
   desk: "Paper: real curve prices, simulated fills with fees and slippage. Live: a real wallet, every fill on Solscan.",
-  exam: "The desk trades on paper until it passes every line here. Then it goes live by itself with the funded wallet.",
+  exam: "The desk trades on paper until it passes every line here. Then it can trade the funded wallet, once the owner switches it on.",
   den: "Each rat is one agent. It hops and talks when it acts. A coin rolls down the line when the desk buys.",
   thresholds: "The exact rules the desk trades by, and how the last candidate scored on each one.",
   runners: "Every coin the rats followed after the King's call, for 7 days after it bonds. Peak is the highest market cap seen. x is peak vs the market cap at the call, where the King would have bought.",

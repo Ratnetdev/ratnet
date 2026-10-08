@@ -96,11 +96,11 @@ export default function Chart({ series, kind = "line", unit = "", bucket = "hour
         {ticks.map((v, i) => (
           <g key={i}>
             <line x1={L} x2={w - R} y1={y(v)} y2={y(v)} stroke="var(--line)" strokeDasharray={i === 0 ? undefined : "2 4"} />
-            <text x={L - 8} y={y(v) + 4} textAnchor="end" fontSize="10" fill="var(--dim)">{v >= 1000 ? `${Math.round(v / 100) / 10}K` : `${Math.round(v * 10) / 10}`}{unit && v < 1000 ? unit : ""}</text>
+            <text x={L - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="var(--dim)">{v >= 1000 ? `${Math.round(v / 100) / 10}K` : `${Math.round(v * 10) / 10}`}{unit && v < 1000 ? unit : ""}</text>
           </g>
         ))}
         {[0, Math.floor((n - 1) / 2), n - 1].filter((v, i, a) => a.indexOf(v) === i).map((i) => (
-          <text key={i} x={x(i)} y={H - 8} textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"} fontSize="10" fill="var(--dim)">{xLabel ? xLabel(i) : fmtT(pts[i].t, bucket)}</text>
+          <text key={i} x={x(i)} y={H - 8} textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"} fontSize="11" fill="var(--dim)">{xLabel ? xLabel(i) : fmtT(pts[i].t, bucket)}</text>
         ))}
         {kind === "bar"
           ? main.points.map((p, i) => (p.v == null ? null : <rect key={i} x={x(i) - bw / 2} y={Math.min(y(p.v), y(0))} width={bw} height={Math.max(1, Math.abs(y(0) - y(p.v)))} rx={2} fill={polar ? (p.v >= 0 ? "var(--rat)" : "var(--dust)") : main.color} opacity={hover == null || hover === i ? 0.9 : 0.45} />))

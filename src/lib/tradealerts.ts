@@ -38,10 +38,25 @@ function links(mint: string, sig?: string) {
   return `${parts.join(" · ")}\n<code>${mint}</code>`;
 }
 
-function head(book: Book, action: string, symbol: string) {
+/** v0.1.47: why a ghost trade is not a real one, in plain words (it said "the real desk was blocked" for every case,
+ *  also when the desk simply follows its rule that nano has to agree). */
+export function ghostWhy(blocked?: string) {
+  const b = String(blocked || "");
+  const nano = /nano agrees\s+(\w+)\s*(\d+)?/i.exec(b);
+  if (nano) return { note: "not counted · nano did not back the King's call", line: `nano says ${nano[1]}${nano[2] ? ` ${nano[2]}` : ""}, the desk needs BOND` };
+  if (/still learning/i.test(b)) return { note: "not counted · nano is still learning", line: "nano makes calls after 200 live lessons; until then King calls are tracked here" };
+  if (/paused by PM/i.test(b)) return { note: "not counted · this strategy is paused after a bad run", line: b };
+  if (/daily loss/i.test(b)) return { note: "not counted · the daily loss limit is hit", line: b };
+  if (/open slots|slots/i.test(b)) return { note: "not counted · every slot is full", line: b };
+  if (/paper balance/i.test(b)) return { note: "not counted · no paper balance free", line: b };
+  if (/starting score|earned/i.test(b)) return { note: "not counted · this strategy has not earned real trades yet", line: b };
+  return { note: BOOK.ghost.note, line: b };
+}
+
+function head(book: Book, action: string, symbol: string, note?: string) {
   const b = BOOK[book];
   const title = `${b.icon} <b>${b.label} · ${action}</b>  $${esc(symbol.slice(0, 20))}`;
-  return book === "ghost" ? `${title}\n<i>${b.note}</i>` : `${title}\n${book === "live" ? `<b>${b.note}</b>` : `<i>${b.note}</i>`}`;
+  return book === "live" ? `${title}\n<b>${b.note}</b>` : `${title}\n<i>${esc(note || b.note)}</i>`;
 }
 
 export type OpenAlert = { book: Book; mint: string; symbol: string; how?: string | null; sol: number; mcUsd: number | null; curve?: number | null; ageMs?: number | null; why: string; king?: number | null; nano?: number | null; blocked?: string; sig?: string };
@@ -49,13 +64,13 @@ export type CloseAlert = { book: Book; mint: string; symbol: string; how?: strin
 
 export function openText(a: OpenAlert) {
   const rows = [
-    head(a.book, "BUY", a.symbol),
+    head(a.book, "BUY", a.symbol, a.book === "ghost" ? ghostWhy(a.blocked).note : undefined),
     LINE,
     `<b>Strategy</b>  ${stratName(a.how)}${a.king ? ` · King ${a.king}` : ""}${a.nano != null ? ` · nano ${a.nano}` : ""}`,
     `<b>Size</b>  ${sol(a.sol)}`,
     `<b>Entry</b>  ${usd(a.mcUsd)} mcap${a.curve != null ? ` · curve ${Math.round(a.curve)}%` : " · migrated"}${a.ageMs != null ? ` · coin ${held(a.ageMs)} old` : ""}`,
     `<b>Why</b>  ${esc(a.why.slice(0, 160))}`,
-    ...(a.blocked ? [`<b>Blocked by</b>  ${esc(a.blocked.slice(0, 160))}`] : []),
+    ...(a.blocked ? [`<b>Not real because</b>  ${esc(ghostWhy(a.blocked).line.slice(0, 160))}`] : []),
     LINE,
     links(a.mint, a.sig),
   ];

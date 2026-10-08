@@ -1,4 +1,5 @@
 "use client";
+import { useAdmin } from "./useAdmin";
 import { useRef } from "react";
 // The LensCam: LENS's browser, live. Like watching someone open the website, the X account, the search and the
 // Telegram of a coin, one tab after another, ticking off a checklist and writing the verdict.
@@ -66,13 +67,14 @@ function Browser({ l }: { l: Live }) {
 
 /** The live LensCam with the latest dossiers. On /desk. */
 export default function LensCam() {
+  const admin = useAdmin(); // v0.1.47: setup hints (env var names) only for the admin
   const box = useRef<HTMLElement>(null);
   const v = (usePoll<{ lens: View | null }>("/api/boards", 10000, { ref: box }).data?.lens ?? null);
   return (
     <section className="panel mt lens" ref={box}>
       <div className="ph">
         <span><Info k="lens"><b>LENS</b></Info> · hands-on look at the coins that matter{v?.live ? ` · ${ago(v.live.at)} ago` : ""}</span>
-        <span className="tiny muted">{v ? `${v.queued} queued${v.x ? "" : " · X reads off (add X_API_KEY)"}` : ""}</span>
+        <span className="tiny muted">{v ? `${v.queued} queued${v.x ? "" : admin ? " · X reads off (add X_API_KEY)" : " · X reads off"}` : ""}</span>
       </div>
       {v?.live ? <Browser l={v.live} /> : <div className="pb muted small">{v ? "LENS opens the website, the X account, an X search for the CA and the Telegram of every desk buy, tweet pick, BOND call and narrative coin. Waiting for the first one." : "loading…"}</div>}
       {v?.recent?.length ? (

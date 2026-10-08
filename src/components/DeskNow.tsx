@@ -97,13 +97,14 @@ export default function DeskNow({ now, live, open, closed, exam, pm = [] }: { no
     <section className="panel desk-now">
       <div className="ph">
         <span><Info k="exam"><b>right now</b></Info></span>
-        <span className="tiny muted">{now?.running ? <><i className="dn-live" /> running · beat {now.beatAt ? ago(now.beatAt) : "–"} ago</> : "paused"}</span>
+        {/* v0.1.47: "loading" until the data is in (the first paint said PAUSED and 0 of 5 for a moment) */}
+        <span className="tiny muted">{!now ? "loading…" : now.running ? <><i className="dn-live" /> running · beat {now.beatAt ? ago(now.beatAt) : "–"} ago</> : "paused"}</span>
       </div>
 
       <ol className="dn-steps">
         {[
-          ["Paper trading", live ? "done" : step === 1 ? `${closed} trade${closed === 1 ? "" : "s"} closed` : "done"],
-          ["Exam", live ? "passed" : `${passed} of ${exam.length || 5} passed`],
+          ["Paper trading", !now ? "…" : live ? "done" : step === 1 ? `${closed} trade${closed === 1 ? "" : "s"} closed` : "done"],
+          ["Exam", !now ? "…" : live ? "passed" : `${passed} of ${exam.length || 6} passed`],
           ["Own wallet", live ? "live" : "unlocks after the exam"],
         ].map(([label, sub], i) => {
           const n = i + 1;
@@ -166,7 +167,7 @@ export default function DeskNow({ now, live, open, closed, exam, pm = [] }: { no
               <p className="dn-p">Stays live while drawdown is under 40%. Past that it drops back to paper and re-takes the exam.</p>
             ) : (
               <p className="dn-p">
-                Pass the exam, then it switches to its own wallet by itself.
+                Pass the exam, then it can trade its own wallet once the owner switches it on.
                 {left.length ? <> Still needed: {left.map((c, i) => <span key={c.label}>{i ? ", " : " "}<span className="dn-need">{c.label} {c.now} / {c.need}</span></span>)}.</> : null}
               </p>
             )}

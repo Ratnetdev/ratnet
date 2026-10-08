@@ -893,7 +893,8 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
     { label: `win rate (last ${EXAM.trades})`, need: `≥ ${EXAM.winRate}%`, now: `${winRate.toFixed(0)}%`, ok: last.length >= EXAM.trades && winRate >= EXAM.winRate },
     { label: `realized profit (last ${EXAM.trades}, after every cost)`, need: `≥ +${EXAM.pnlPct}%`, now: fmtPct(pnlPct), ok: last.length >= EXAM.trades && pnlPct >= EXAM.pnlPct },
     { label: "profit factor without the best trade", need: `≥ ${EXAM.pfLessBest}`, now: pfLessBest >= 99 ? "no losses" : pfLessBest.toFixed(2), ok: last.length >= EXAM.trades && pfLessBest >= EXAM.pfLessBest },
-    { label: `worst drawdown (last ${EXAM.trades})`, need: `≤ ${EXAM.maxDD}%`, now: `${dd30.toFixed(0)}%`, ok: dd30 <= EXAM.maxDD },
+    // v0.1.47: pending (not green) until there is a trade to measure
+    { label: `worst drawdown (last ${EXAM.trades})`, need: `≤ ${EXAM.maxDD}%`, now: last.length ? `${dd30.toFixed(0)}%` : "no trades yet", ok: last.length > 0 && dd30 <= EXAM.maxDD },
     { label: "funded wallet", need: `≥ ${EXAM.minWallet} SOL`, now: walletSol == null ? "none" : `${walletSol.toFixed(2)} SOL`, ok: walletSol != null && walletSol >= EXAM.minWallet },
   ];
   return { trades: rounds.length, winRate, pnlPct, maxDD: Math.round(dd30 * 10) / 10, walletSol, checks, passed: checks.every((c) => c.ok) };

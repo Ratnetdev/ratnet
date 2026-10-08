@@ -414,6 +414,22 @@ function LiveToasts({ onOpen }: { onOpen: () => void }) {
   // v0.1.33: on screens without room beside the page (under 1880px) the feed starts folded into the small LIVE dot,
   // so it never sits on top of the page; on wide screens it docks in the empty right margin. The choice is remembered.
   const [hidden, setHidden0] = useState(false);
+  // v0.1.47: switched off completely (no dot either) until turned on again from the Rat Cam's "live updates" link
+  const [off, setOff0] = useState(false);
+  const setOff = (o: boolean) => {
+    setOff0(o);
+    try {
+      localStorage.setItem("rn:lt:off", o ? "1" : "0");
+    } catch {}
+  };
+  useEffect(() => {
+    try {
+      setOff0(localStorage.getItem("rn:lt:off") === "1");
+    } catch {}
+    const on = () => setOff(false);
+    window.addEventListener("rn:lt:on", on);
+    return () => window.removeEventListener("rn:lt:on", on);
+  }, []);
   const setHidden = (h: boolean) => {
     setHidden0(h);
     try {
@@ -470,6 +486,7 @@ function LiveToasts({ onOpen }: { onOpen: () => void }) {
     return () => clearInterval(t);
   }, []);
 
+  if (off) return null;
   if (hidden)
     return (
       <button className="lt-dot" onClick={() => setHidden(false)} aria-label="Show live updates">
@@ -484,7 +501,8 @@ function LiveToasts({ onOpen }: { onOpen: () => void }) {
         <span className="lt-live"><span className="dot" /> LIVE</span>
         <span className="lt-state">{paused ? `paused${waiting ? ` · ${waiting} waiting` : ""}` : waiting > 2 ? `${waiting} queued` : "rats digging"}</span>
         <button onClick={onOpen} title="Open the rat cam">cam</button>
-        <button onClick={() => setHidden(true)} title="Hide">×</button>
+        <button onClick={() => setHidden(true)} title="Fold into the small dot">×</button>
+        <button onClick={() => setOff(true)} title="Turn live updates off (turn them on again from the menu)">off</button>
       </div>
       <div className="lt-stack">
         {cards.map((c, i) => {

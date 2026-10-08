@@ -29,7 +29,8 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       }
     };
     load(true);
-    const t = setInterval(() => load(), 5000);
+    // v0.1.47: every 10s, the server's own cache time (5s polls got the same answer twice)
+    const t = setInterval(() => load(), 10_000);
     const vis = () => load();
     document.addEventListener("visibilitychange", vis);
     return () => {

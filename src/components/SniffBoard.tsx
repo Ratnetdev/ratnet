@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { usePoll } from "./usePoll";
+import { useLive } from "./Live";
 import { burnFlow, useWallet, WalletButton } from "./Wallet";
 import { ago, num, short } from "./fmt";
 import Info from "./Info";
@@ -63,7 +64,8 @@ export function ReportCard({ r }: { r: Report }) {
 
 export default function SniffBoard() {
   const { address, signAndSend } = useWallet();
-  const { data: live } = usePoll<Live>("/api/live", 20000);
+  // v0.1.47: the app-wide /api/live snapshot (it polled its own copy next to it)
+  const live = useLive().data as Live | null;
   const { data: recent, reload } = usePoll<{ sniffs: Report[] }>("/api/sniff", 10000);
   const [ca, setCa] = useState("");
   const [report, setReport] = useState<Report | null>(null);

@@ -928,6 +928,9 @@ th .info, .k .info { gap: 4px; }
 .lt-dot em { font-style: normal; font-size: 10px; color: var(--rat); font-family: var(--mono); }
 @media (max-width: 900px) {
   .lt, .lt-dot { bottom: calc(70px + env(safe-area-inset-bottom)); right: 10px; }
+  /* v0.1.47: a smaller dot on phones, so it covers less of the page */
+  .lt-dot { padding: 5px 7px; gap: 4px; opacity: 0.85; }
+  .lt-dot em { font-size: 9px; }
   .lt { width: min(300px, calc(100vw - 20px)); }
   .lt-stack .lt-card:not(:last-child) { display: none; }
 }
@@ -1214,3 +1217,25 @@ a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible
 .dn-main, .dn-side { min-width: 0; grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 760px) { .dn-need { white-space: normal; } .dn-main, .dn-side { padding: 16px 14px; } .dn-steps li { padding: 12px 14px; } }
 @media (max-width: 760px) { .record > .ph .rec-tabs button { white-space: nowrap; padding: 0 6px; } }
+
+/* v0.1.47 */
+.nav-lt-on { background: none; border: 0; text-align: left; width: 100%; cursor: pointer; font: inherit; color: inherit; }
+.tbl td[colspan] { white-space: normal; }
+/* the chart hint has its own line under the caption (it sat on top of the text) */
+.metric-card .stat { padding-bottom: 30px; }
+.ex-more { display: none; }
+@media (max-width: 700px) {
+  .ex-more { display: inline-flex; }
+  .ex-groups:not(.open) { display: none; }
+}
+.wal-err { position: absolute; right: 0; top: 110%; z-index: 61; width: min(280px, calc(100vw - 32px)); margin: 0; padding: 10px 12px; background: var(--panel); border: 1px solid rgba(255, 107, 107, 0.5); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); line-height: 1.45; cursor: pointer; }
+.wal-err em { display: block; margin-top: 4px; font-style: normal; color: var(--mute); font-size: 11px; }
+@media (max-width: 760px) {
+  /* 44px tap targets for the remaining small controls */
+  .seg button, .rec-tabs button, .lc-tab, .strat-tabs button, .vbtn, .fb-t, .lt-h button { min-height: 44px; }
+  .lt-h button { display: inline-flex; align-items: center; }
+}
+@media (max-width: 760px) {
+  /* v0.1.47: the folded live dot as a small pill (it was a ~60px box over the page) */
+  .lt-dot { min-width: 0; min-height: 0; height: 36px; padding: 0 9px; box-sizing: border-box; border-radius: 18px; }
+}

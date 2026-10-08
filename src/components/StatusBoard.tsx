@@ -1,6 +1,7 @@
 "use client";
 // The health overview: one tile per area (systems, speed, data, learning, desk), green / amber / red, with the
 // number behind it. Built only from public endpoints.
+import { useAdmin } from "./useAdmin";
 import { usePoll } from "./usePoll";
 
 type Lat = { p50: number; n: number } | null;
@@ -9,6 +10,7 @@ type Tile = { k: string; v: string; s: string; level: "ok" | "warn" | "bad" | "i
 const lvl = (ok: boolean, warn: boolean): Tile["level"] => (ok ? "ok" : warn ? "warn" : "bad");
 
 export default function StatusBoard() {
+  const admin = useAdmin(); // v0.1.47: setup hints (env var names) only for the admin
   const alive = usePoll<{ parts: { name: string; age: number | null; ok: boolean; stalled: boolean }[]; rpc?: { at: number; plan: number; capNow: number; perSec: number; throttled1m: number; methods?: { hour: string; top: [string, number][] }; lanes: { lane: string; perSec: number; waitMs: number; queued: number }[] } | null; x?: { budget: number; thisHour: number; lastHour: number; rules: number; paidAccounts: number; paused?: boolean; est?: number | null } | null; rpcDay?: { today: number; perMonth: number; perSecLive: number; budget: number; pace: number; histCap: number; byLane: Record<string, number> } | null; worker?: { boots: number; bootAt: number | null; exits: { at: number; why: string }[]; takeovers: number; takeoverAt: number | null; streamReconnects: number; streamNote?: { at: number; text: string } | null; xHookRejected?: number } | null; bw?: { at: number; hourMB: number; gov: { level: number; dayMB: number; paceMB: number; allowMB: number; hourMB?: number; hourRate?: number } | null } | null }>("/api/alive", 5000).data;
   const bw = alive?.bw?.gov || null;
   const gb = (mb: number) => `${(mb / 1000).toFixed(mb >= 10_000 ? 0 : 2)}GB`;
@@ -41,7 +43,7 @@ export default function StatusBoard() {
       title: "Systems",
       tiles: [
         { k: "Loops", v: parts.length ? `${parts.length - down - warn}/${parts.length}` : "…", s: `${down ? `${down} stalled${warn ? `, ${warn} with errors` : ""}` : warn ? `${warn} reported an error` : "all running"} · they run the 25 agents`, level: parts.length ? lvl(!down && !warn, !down) : "idle" },
-        { k: "X reads (credits)", v: xc ? `${k(xc.thisHour)}` : "…", s: xc ? `this hour, budget ${k(xc.budget)}/h${xc.paused ? " · BUDGET REACHED: paid rules off until the next hour" : ""} · last hour ${k(xc.lastHour)} · ${xc.paidAccounts} accounts watched live (${xc.rules} rules${xc.est ? `, ~${k(xc.est)}/h expected` : ""}), the rest through J7 (free)${wk?.xHookRejected ? ` · ${wk.xHookRejected} webhook calls refused (set X_HOOK_SECRET, see the README)` : ""}` : "", level: xc ? lvl(xc.thisHour <= xc.budget && !xc.paused, xc.thisHour <= xc.budget * 1.5) : "idle" },
+        { k: "X reads (credits)", v: xc ? `${k(xc.thisHour)}` : "…", s: xc ? `this hour, budget ${k(xc.budget)}/h${xc.paused ? " · BUDGET REACHED: paid rules off until the next hour" : ""} · last hour ${k(xc.lastHour)} · ${xc.paidAccounts} accounts watched live (${xc.rules} rules${xc.est ? `, ~${k(xc.est)}/h expected` : ""}), the rest through J7 (free)${wk?.xHookRejected ? ` · ${wk.xHookRejected} webhook calls refused${admin ? " (set X_HOOK_SECRET, see the README)" : ""}` : ""}` : "", level: xc ? lvl(xc.thisHour <= xc.budget && !xc.paused, xc.thisHour <= xc.budget * 1.5) : "idle" },
         { k: "Chain reads (RPC)", v: rpc ? `${rpc.perSec}/s` : "…", s: rpc ? `plan ${rpc.plan}/s · ${rpc.throttled1m ? `${rpc.throttled1m} rate-limited in the last minute` : "never rate-limited this minute"}${slowest && slowest.waitMs > 500 ? ` · ${slowest.lane} wait ${(slowest.waitMs / 1000).toFixed(1)}s` : ""}${rpc.methods?.top?.length ? ` · this hour: ${rpc.methods.top.slice(0, 4).map(([k, n]) => `${k.replace(":", " ")} ${M(n)}`).join(", ")}` : ""}` : "worker report pending", level: rpc ? lvl(!rpc.throttled1m && (slowest?.waitMs ?? 0) <= 2000, rpc.throttled1m < 20) : "idle" },
         { k: "Chain budget (today)", v: day ? M(day.today) : "…", s: day ? `${day.budget ? `of ${M(day.budget)} a day, on pace ${M(day.pace)} by now${day.today > day.pace * 1.05 ? " · OVER PACE: rats, agents and historian wait (resets 00:00 UTC), the desk keeps running" : ""}` : "no daily cap set"} · at this minute's rate ~${M(day.perMonth)} a month · historian ${M(Number(day.byLane?.historian || 0))} of ${M(day.histCap)}` : "", level: day ? (day.budget ? lvl(day.today <= day.pace * 1.05, day.today <= day.budget * 1.15) : lvl(day.perMonth <= 10_000_000, day.perMonth <= 15_000_000)) : "idle" },
         // v0.1.40: the database plan's bandwidth, paced through the day (lib/bwgov.ts). v0.1.41: the hour's rate too,
@@ -82,7 +84,7 @@ export default function StatusBoard() {
       title: "Learning",
       tiles: [
         { k: "Historian", v: hist ? `${(hist.lessons ?? 0).toLocaleString()} lessons` : "…", s: hist ? `${(hist.bondsFound ?? 0).toLocaleString()} bonds found${hist.lastError ? ` · last error: ${String(hist.lastError).slice(0, 40)}` : ""}` : "", level: hist ? lvl(!hist.lastError, true) : "idle" },
-        { k: "King v1", v: king?.v1 ? (king.v1.ready ? "live" : "warming up") : "…", s: king?.v1 ? `${(king.v1.lessons ?? 0).toLocaleString()} lessons, ${king.v1.bonds ?? 0} bonds` : "", level: king?.v1 ? lvl(!!king.v1.ready, true) : "idle" },
+        { k: "King v1", v: king?.v1 ? (king.v1.ready ? "live" : "not calibrated yet") : "…", s: king?.v1 ? `${(king.v1.lessons ?? 0).toLocaleString()} lessons, ${king.v1.bonds ?? 0} bonds` : "", level: king?.v1 ? lvl(!!king.v1.ready, true) : "idle" },
         { k: "CATCH model", v: catcher?.model ? (catcher.model.ready ? "live" : `${catcher.model.n}/${catcher.model.need}`) : "…", s: catcher?.fast ? `2h model ${catcher.fast.ready ? "live" : `${catcher.fast.n} labels`}` : "", level: catcher?.model ? lvl(!!catcher.model.ready, true) : "idle" },
         { k: "FLASH model", v: flash?.model ? (flash.model.ready ? "live" : `${flash.model.n}/${flash.model.need}`) : "…", s: flash?.stages ? `${flash.stages.filter((x: any) => x.cut).length} of 3 look times trading` : "", level: flash?.model ? lvl(!!flash.model.ready, true) : "idle" },
       ],
