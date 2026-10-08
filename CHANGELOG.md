@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.37 · Hotfix: honest track record, lighter desk reads
+- Track record P&L now matches the balance:
+  - a trade's cost includes the tip, priority fee, base fee and token-account rent (it counted only the size). On 8 Oct the record showed +0.009 SOL realized and 33% wins while the balance was down 3.9%; with the fees counted it was -0.016 SOL and 22%, the same as the exam;
+  - an open position is valued at what selling it would bring after every cost (the balance's own rule), not at the mid price;
+  - older trades take their cost from their own sells, so the history is corrected too; buys now store their full cost.
+- Desk panel: "Why no new buys" explains the paced budget (reads are spread evenly over 24 hours, the rats resume within minutes); the historian shows when it waits for the budget; minute-1 entries say "not better than minute 5 yet" instead of "1490 / 50 reads".
+- Desk chain reads in three speeds: positions and buy candidates as before (live feed, chain at most every 2s), pullback and re-entry watches every 5s, learning reviews every 30s. They were all read every 2s: about 1.4 reads a second, 40% of the plan's daily share, for the desk alone.
+
 ## v0.1.36 · Phone and UI foundations (Run 6)
 - Track record:
   - phones: a card per trade (coin, P&L in SOL and %, entry to exit market cap, change, when, how long, why it exited). Tap a card for the full trade detail at full width. A sort menu replaces the column headers;

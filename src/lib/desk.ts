@@ -151,6 +151,7 @@ export type Trade = {
   reason: string;
   pnlSol?: number;
   pnlPct?: number;
+  cost?: number; // buys (v0.1.36): what the buy really cost, size plus tip, priority fee, base fee and account rent
   live: boolean;
   sig?: string;
   mc?: number | null; // USD market cap at the fill
@@ -740,12 +741,12 @@ export type Px = { px: number; real: number; curve: CurveView | null; grad: bool
 const VERIFIED = new Map<string, { at: number; px: Px }>();
 const VERIFY_MS = 15_000;
 const CHAIN_MIN_MS = 2_000;
-export async function priceOf(mints: string[], fresh = false) {
+export async function priceOf(mints: string[], fresh = false, minGap = CHAIN_MIN_MS) {
   const now = Date.now();
   const fromStream: Record<string, Px> = {};
   for (const m of mints) {
     const v = VERIFIED.get(m);
-    if (!fresh && v && now - v.at < CHAIN_MIN_MS) {
+    if (!fresh && v && now - v.at < minGap) {
       fromStream[m] = v.px;
       continue;
     }
@@ -1188,10 +1189,19 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       const ghosts = Object.values(await loadPositions(GHOST_POS));
       // --- prices for everything we hold, stalk, shadow, review or might buy (ghost positions in the same batch)
-      const pxList = Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrcf]:/, "")), ...Object.keys(stalks), ...Object.keys(reents), ...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint), ...Object.values(cases).map((x) => x.mint)]));
+      // v0.1.36: three speeds. What we hold or are about to buy: live feed, chain at most every 2s. Pullback and
+      // re-entry watches: every 5s. Learning reviews (shadows, after-exit checks, dev cases): every 30s. Before, all of
+      // them were read every 2s, about 1.4 chain reads a second for the desk alone (40% of the plan's daily share)
+      const hot = Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrcf]:/, ""))]));
+      const watchList = Array.from(new Set([...Object.keys(stalks), ...Object.keys(reents)])).filter((m) => !hot.includes(m));
+      const cold = Array.from(new Set([...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint), ...Object.values(cases).map((x) => x.mint)])).filter((m) => !hot.includes(m) && !watchList.includes(m));
+      const tiered = async () => {
+        const [a, w, c] = await Promise.all([priceOf(hot), watchList.length ? priceOf(watchList, false, 5_000).catch(() => ({})) : {}, cold.length ? priceOf(cold, false, 30_000).catch(() => ({})) : {}]);
+        return { ...c, ...w, ...a } as Record<string, Px>;
+      };
       // positions first: if the RPC is busy or down, open positions still get a price (DexScreener) and their exits
       // keep working; everything else waits for the next beat
-      const px: Record<string, Px> = await priceOf(pxList).catch(async (e) => {
+      const px: Record<string, Px> = await tiered().catch(async (e) => {
         const held = positions.map((p) => p.mint);
         const dx = held.length ? await dexPx(held).catch(() => ({} as Record<string, { px: number; sol: number }>)) : {};
         if (Object.keys(dx).length) log(b, "RISK", `chain read failed (${safeErr(e)}): ${Object.keys(dx).length} open positions priced from DexScreener this beat`, "info");
@@ -1996,7 +2006,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   const now = Date.now();
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
-  b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
+  b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
   return {
     mint: rec.mint,
@@ -2344,7 +2354,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const now = Date.now();
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}`;
-  (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
+  (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, cost: r4(sol + fixed), tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ctx });
   const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, mkt: { grad, real: rl }, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];
   if (ins.length) {
@@ -2681,6 +2691,7 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
   const pos = (posMap || {}) as Record<string, Pos>;
   const trips: Trip[] = [];
   const openBy: Record<string, Trip> = {};
+  const costOut = new Map<Trip, number>();
   for (const t of list) {
     if (t.side === "buy") {
       const prev = openBy[t.mint];
@@ -2695,6 +2706,8 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
       const trip = openBy[t.mint];
       if (!trip) continue;
       trip.backSol += t.sol;
+      // what this sale cost us at entry, from the sell's own books (proceeds minus its P&L): exact, fees included
+      if (t.pnlSol != null) costOut.set(trip, (costOut.get(trip) || 0) + (t.sol - t.pnlSol));
       trip.exits.push({ at: t.at, sol: t.sol, reason: t.reason, pnlPct: t.pnlPct ?? null, sig: t.sig, px: t.px, mc: t.mc ?? (t.px ? mcUsd(t.px, sol) : null), tokens: t.tokens });
     }
   }
@@ -2704,11 +2717,19 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
     const isOpen = trip.open && !!p && openBy[trip.mint] === trip;
     trip.open = isOpen;
     if (!isOpen && trip.closedAt == null) trip.closedAt = trip.exits.length ? trip.exits[trip.exits.length - 1].at : trip.openedAt;
-    trip.valueSol = isOpen && p ? Math.max(0, p.tokens * (p.lastPx || 0)) : 0;
+    // v0.1.36: P&L the same way the books count it. Before, a trip cost only its size (the tip, priority fee and
+    // account rent were left out) and an open position was valued at the mid price, so the track record showed
+    // +0.009 SOL realized while the balance was down 3.9%. Now: the real cost (the position's own, or what its sells
+    // say it cost), and an open position at what selling it would bring after every cost.
+    if (isOpen && p) trip.costSol = p.costSol;
+    else if (costOut.has(trip)) trip.costSol = costOut.get(trip)!;
+    else trip.costSol = (list.find((x) => x.side === "buy" && x.mint === trip.mint && x.at === trip.openedAt)?.cost) ?? trip.costSol;
+    trip.valueSol = isOpen && p ? sellProceeds(p.tokens, p.lastPx || 0, p.mkt?.grad ?? !!p.gradSeen, p.mkt?.real ?? 0, COST, true) : 0;
     trip.pnlSol = r4(trip.backSol + trip.valueSol - trip.costSol);
     trip.pnlPct = trip.costSol ? Math.round(((trip.backSol + trip.valueSol) / trip.costSol - 1) * 1000) / 10 : 0;
     trip.backSol = r4(trip.backSol);
     trip.valueSol = r4(trip.valueSol);
+    trip.costSol = r4(trip.costSol);
     trip.holdMs = (trip.closedAt ?? now) - trip.openedAt;
     // context: live position while open, the saved record once closed
     const m = metaBy[`${trip.mint}|${trip.openedAt}`];

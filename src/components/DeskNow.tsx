@@ -59,8 +59,9 @@ const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit"
 export function waitingOn(now: DeskNowData | null | undefined, pm: Sleeve[]) {
   const out: string[] = [];
   const b = now?.budget;
-  if (b?.ratsPaused) out.push("King calls are paused: the day's chain-read budget ran ahead of pace. The rats dig again as the day's allowance catches up (it resets at 00:00 UTC). The desk itself keeps watching its positions.");
-  else if (b?.agentsPaused) out.push("CATCH and the other agents are paused for the day's chain-read budget; King calls still come in.");
+  // the budget is paced: 300K chain reads a day are handed out evenly (about 3.5 a second), not all at midnight
+  if (b?.ratsPaused) out.push("King calls wait a moment: chain reads are running ahead of the day's pace (the plan's reads are spread evenly over 24 hours). The rats dig again within minutes as the allowance catches up. The desk keeps pricing and exiting its positions.");
+  else if (b?.agentsPaused) out.push("CATCH and the other agents wait a moment: chain reads are running ahead of the day's pace (spread evenly over 24 hours). King calls and MOMO still come in.");
   const paused = pm.filter((x) => x.paused && x.paused > Date.now());
   for (const x of paused) out.push(`The ${x.sleeve} strategy is paused until ${hhmm(x.paused!)} after a bad run. Its signals go to the ghost desk meanwhile (not counted, learned from).`);
   return out;
@@ -176,7 +177,7 @@ export default function DeskNow({ now, live, open, closed, exam, pm = [] }: { no
           <div className="dn-k"><Info k="learn">Learning in the background</Info></div>
           <div className="dn-row">
             <span><Info k="historian">Historian replay</Info></span>
-            <span className="dn-v">{now?.history && now.history.phase !== "starting" ? (now.history.phase === "done" ? "done" : `${Math.round(now.history.done)}%`) : "starting"}</span>
+            <span className="dn-v">{now?.history && now.history.phase !== "starting" ? (now.history.phase === "done" ? "done" : now.budget && now.budget.used >= now.budget.pace * 0.75 ? `${Math.round(now.history.done)}% · waits for chain budget` : `${Math.round(now.history.done)}%`) : "starting"}</span>
             <Bar v={now?.history?.done ?? 0} />
           </div>
           <div className="dn-row">
@@ -186,7 +187,7 @@ export default function DeskNow({ now, live, open, closed, exam, pm = [] }: { no
           </div>
           <div className="dn-row">
             <span><Info k="early">Minute-1 entries</Info></span>
-            <span className="dn-v">{now ? (now.early.on ? "unlocked" : `${now.early.n} / ${now.early.min} reads`) : "–"}</span>
+            <span className="dn-v">{now ? (now.early.on ? "unlocked" : now.early.n >= now.early.min ? "not better than minute 5 yet" : `${now.early.n} / ${now.early.min} reads`) : "–"}</span>
             <Bar v={now ? (now.early.on ? 100 : (now.early.n / now.early.min) * 100) : 0} />
           </div>
           <div className="dn-row">
