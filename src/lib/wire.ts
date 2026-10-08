@@ -491,14 +491,22 @@ export async function xGuard() {
 }
 
 /** Per-account record: the weight WIRE gives an account's posts. Seeds start trusted, found accounts earn it. */
+// v0.1.48: alert and scanner bots post every new coin; their posts say nothing about which coin will run. On 8 Oct the
+// paper desk bought five coins off @AutorunAlert-style posts and lost on every one. They are still followed and their
+// record still builds, but they never send a coin to the desk.
+export const BOT_HANDLE = /alert|bot$|_bot|bots|scan|sniper|tracker|caller|calls$|signal|monitor|feed|newpairs|newcoins|launches|deploy|pumpfun|pump_fun|dexs|screener/i;
+
 export function weightOf(a: Acc | undefined, S: Record<string, number>) {
   if (!a || a.tier === "muted") return 0;
+  if (BOT_HANDLE.test(a.h)) return 0;
   const h = a.h.toLowerCase();
   const picks = Number(S[`${h}:picks`] || 0);
   const runs = Number(S[`${h}:runs`] || 0);
   // big accounts found through tweet links start with more trust than unknown ones
   const reach = (a.f ?? 0) >= 1_000_000 ? 0.45 : (a.f ?? 0) >= 100_000 ? 0.32 : (a.f ?? 0) >= 20_000 ? 0.22 : 0;
-  const prior = Math.max(reach, a.tier === "seed" ? (a.cat === "leader" || a.cat === "celeb" ? 0.5 : 0.3) : a.tier === "j7" ? 0.22 : 0.15);
+  // v0.1.48: accounts J7 found by itself start under the desk's bar (0.2) and earn trust with coins that ran; they
+  // started just over it (0.22), so any unknown account on the feed could send coins to the desk
+  const prior = Math.max(reach, a.tier === "seed" ? (a.cat === "leader" || a.cat === "celeb" ? 0.5 : 0.3) : 0.15);
   // shrunk toward the prior: 4 picks of evidence weigh as much as the prior
   return Math.round(((runs + prior * 4) / (picks + 4)) * 100) / 100;
 }

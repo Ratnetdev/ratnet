@@ -165,9 +165,9 @@ export const DEFAULT_SETTINGS = {
     // EXEC speed: own transaction with a live priority fee and a Jito tip, sent through Helius Sender and the RPC
     fastExec: true,
     maxPriorityLamports: 3_000_000, // cap on the priority fee per trade (0.003 SOL)
-    jitoTipMinSol: 0.0003,
+    jitoTipMinSol: 0.0001, // v0.1.48: was 0.0003; at 0.05 SOL trades the old floor alone cost 1.2% a round trip
     jitoTipMaxSol: 0.002, // tip = 0.4% of the trade, between these two
-    paperPrioritySol: 0.0005, // priority fee paper pays per transaction (live pays Helius's live estimate, capped above)
+    paperPrioritySol: 0.0003, // priority fee paper pays per transaction (live pays Helius's live estimate, capped above). v0.1.48: was 0.0005, above what live pays on a normal minute
     flowWaitMs: 1500, // FLOW watches the curve this long before a King buy (tweet coins: no wait)
     ghostSol: 0.1, // ghost desk: fixed size per trade (not counted anywhere, only learned from)
     slippageBps: 1500,

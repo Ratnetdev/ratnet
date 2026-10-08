@@ -496,6 +496,25 @@ export async function resetOnceForNano() {
 }
 
 /**
+ * v0.1.48, once on deploy: the paused MOMO sleeve is released (its bad run was mostly the migrated-coin exit bug: coins
+ * sold on the first check at -6%), and saved cost settings still on the old defaults move to the new ones. No reset:
+ * the paper record and everything learned stay.
+ */
+export async function fixOnce048() {
+  const r = redis();
+  if (!(await r.set("rn:fix:0.1.48", Date.now(), { nx: true }))) return false;
+  await pmClearPauses().catch(() => null);
+  const cur = await getSettings();
+  const d: any = cur.desk;
+  const patch: any = {};
+  if (d.jitoTipMinSol === 0.0003) patch.jitoTipMinSol = 0.0001;
+  if (d.paperPrioritySol === 0.0005) patch.paperPrioritySol = 0.0003;
+  if (Object.keys(patch).length) await saveSettings({ desk: { ...cur.desk, ...patch } });
+  await r.lpush(K.deskEv, { agent: "LEDGER", at: Date.now(), text: "v0.1.48: migrated buys keep their position (no instant exit), MOMO unpaused, WIRE trades only strong matches from trusted accounts, lower fixed costs per trade", tone: "info" });
+  return true;
+}
+
+/**
  * The desk wallet's key lives on the worker (Railway) only. On Vercel it is ignored unless DESK_ON_VERCEL=1: a web
  * function never needs to sign, and a key there is one more place it can leak from (v0.1.33).
  */
@@ -1258,6 +1277,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await resetOnceForCosts().catch(() => false);
     await resetOnceForFinal().catch(() => false);
     await resetOnceForNano().catch(() => false);
+    await fixOnce048().catch(() => false);
     await dropWicksOnce().catch(() => null);
     await slimTradesOnce().catch(() => null);
     const s = await getSettings();
@@ -1730,6 +1750,14 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const checks = wireSig
             ? [
                 { rule: "wire_post", ok: trust >= (cfg.wireMinW ?? 0.2), v: `@${rec.wire!.h} · ${rec.wire!.how} · ${rec.wire!.lagSec}s after the post · trust ${trust}` },
+                // v0.1.48: a strong match only. "name has" a word from the post, or a 3-letter name ("dip", "yin"), matched
+                // generic words; all six such paper trades on 8 Oct lost (peaks under 9%)
+                (() => {
+                  const how = rec.wire!.how || "";
+                  const named = /^named "(.+)"$/.exec(how);
+                  const ok = how === "posted the CA" || how === "links the post" || (!!named && named[1].length >= 4);
+                  return { rule: "wire_match", ok, v: how };
+                })(),
                 // PRIOR: most headlines move nothing. The post has to have spawned a wave (or the author posted the CA)
                 (() => {
                   const tr = rec.wire!.trac;
@@ -2373,8 +2401,10 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     ctx,
     creator: rec.creator,
     wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null,
-    // bought after migration: the migration rules do not apply
-    ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}),
+    // bought after migration: the migration rules do not apply. v0.1.48: decided by where the buy actually filled (the
+    // pool), not by the dig record's outcome: a MOMO coin whose record had no outcome yet was sold on the first exit
+    // check ("migrated before initials", held 0 minutes, -6% of pure cost), which also paused MOMO in PM
+    ...(grad || rec.outcome === "BONDED" ? { gradSeen: true } : {}),
   };
 }
 
@@ -2722,8 +2752,10 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
     px = k.px;
   }
   const sol = cfg.ghostSol ?? 0.1;
-  // same costs as paper; a migrated coin with no pool read is costed on a fresh migration pool (~85 SOL)
-  const grad = rec.outcome === "BONDED" || real === 0;
+  // same costs as paper; a migrated coin with no pool read is costed on a fresh migration pool (~85 SOL).
+  // v0.1.48: the venue from the curve itself (a full or missing curve = the pool), like the real desk's fill
+  const cvG = await getCurves([rec.mint]).then((x) => x[rec.mint]).catch(() => undefined);
+  const grad = rec.outcome === "BONDED" || (cvG === undefined ? real === 0 : !cvG || cvG.complete);
   const rl = grad && !real ? 85 : real;
   const fixed = txCost(sol, COST) + ATA_RENT;
   const fillPx = px * (1 + slipOf(sol, grad, rl));
@@ -2732,7 +2764,7 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}`;
   (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, cost: r4(sol + fixed), tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
-  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, mkt: { grad, real: rl }, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(rec.outcome === "BONDED" ? { gradSeen: true } : {}) };
+  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, mkt: { grad, real: rl }, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(grad ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];
   if (ins.length) {
     const amt = await tokenAmounts(ins.map((i) => i.acc)).catch(() => ({} as Record<string, number>));

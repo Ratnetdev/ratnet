@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.48 · Desk fixes from the live record
+- Why: after the 16:54 restart the paper desk had 1 winner in 11 trades. The live record showed three causes, two of them our own.
+- Bug: a coin bought after migration (MOMO, CATCH runners) whose dig record had no outcome yet was sold on the very first exit check ("migrated before initials", held 0 minutes, about -6%: pure cost). It hit paper and ghost alike, and its losses paused MOMO in PM. The position now knows it was bought in the pool from where the buy filled. MOMO is unpaused once on deploy (its record is kept).
+- WIRE: alert and scanner bots (@AutorunAlert and the like) never send coins to the desk; accounts J7 found by itself start under the trust bar and earn it with coins that ran (they started just over it); a real trade needs a strong match (the CA, a link to the post, or the exact name of 4+ letters). All six WIRE paper trades were "name has" or 3-letter matches from such posts, and all lost.
+- Costs: the Jito tip floor 0.0003 to 0.0001 SOL and the paper priority fee 0.0005 to 0.0003 SOL (live uses the same tip settings; its priority fee is the live estimate). At 0.05 SOL trades the round trip drops from about 8% to about 6.5%. Saved settings still on the old defaults move once.
+- New test suite v048test. All suites pass.
+
 ## v0.1.47 · Run 13: frontend polish
 - Telegram ghost alerts say why in plain words: "nano did not back the King's call" with "nano says WATCH 50, the desk needs BOND", or the paused strategy, the loss limit, full slots, no paper balance, a strategy still earning real trades. It used to say "the real desk was blocked" for every case.
 - Truth on screen: /desk shows "loading…" until its data is in (the first paint said PAUSED, 0 trades and 0 of 5 passed); the exam has six checks everywhere; the drawdown check is pending until there is a trade; the den shows the same running or paused as RIGHT NOW; wording no longer says the desk goes live by itself (paper is the default; you switch live on); King v1 wording is the same on every page and its /status tile says "not calibrated yet"; env var hints (API keys, secrets) only for the admin; the Graduated tile says what it counts.
