@@ -14,8 +14,10 @@ export default function CaBar() {
       <div className="wrap">
         {mint ? (
           <span>
-            CA <code>{mint}</code>{" "}
+            CA <code className="ca-full">{mint}</code><code className="ca-short" title={mint}>{mint.slice(0, 4)}…{mint.slice(-4)}</code>{" "}
             <button
+              type="button"
+              aria-label="copy the contract address"
               onClick={() => {
                 navigator.clipboard?.writeText(mint);
                 setCopied(true);

@@ -100,9 +100,11 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
     let raf = 0;
     let flash = 0;
 
+    // reduced motion: two frames a second instead of ~16
+    const minGap = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 500 : 60;
     const draw = (ts: number) => {
       raf = requestAnimationFrame(draw);
-      if (ts - last < 60) return;
+      if (ts - last < minGap) return;
       last = ts;
       frame++;
       // move rat forward one cell every other frame, wander vertically toward a target

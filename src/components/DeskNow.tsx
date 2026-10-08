@@ -7,6 +7,7 @@ export type DeskNowData = {
   running: boolean;
   today: { seen: number; passed: number; fails: { rule: string; n: number }[] };
   kingBond: number;
+  budget?: { used: number; pace: number; budget: number; ratsPaused: boolean; agentsPaused: boolean } | null;
   nano: { n: number; min: number };
   early: { n: number; min: number; on: boolean };
   stalkOn: boolean;
@@ -51,7 +52,22 @@ function Bar({ v }: { v: number }) {
   );
 }
 
-export default function DeskNow({ now, live, open, closed, exam }: { now: DeskNowData | null | undefined; live: boolean; open: number; closed: number; exam: Check[] }) {
+type Sleeve = { sleeve: string; paused: number | null };
+const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+/** What is holding new buys back right now, in plain words (v0.1.36). Empty when nothing is. */
+export function waitingOn(now: DeskNowData | null | undefined, pm: Sleeve[]) {
+  const out: string[] = [];
+  const b = now?.budget;
+  if (b?.ratsPaused) out.push("King calls are paused: the day's chain-read budget ran ahead of pace. The rats dig again as the day's allowance catches up (it resets at 00:00 UTC). The desk itself keeps watching its positions.");
+  else if (b?.agentsPaused) out.push("CATCH and the other agents are paused for the day's chain-read budget; King calls still come in.");
+  const paused = pm.filter((x) => x.paused && x.paused > Date.now());
+  for (const x of paused) out.push(`The ${x.sleeve} strategy is paused until ${hhmm(x.paused!)} after a bad run. Its signals go to the ghost desk meanwhile (not counted, learned from).`);
+  return out;
+}
+
+export default function DeskNow({ now, live, open, closed, exam, pm = [] }: { now: DeskNowData | null | undefined; live: boolean; open: number; closed: number; exam: Check[]; pm?: Sleeve[] }) {
+  const waiting = waitingOn(now, pm);
   const passed = exam.filter((c) => c.ok).length;
   const step = live ? 3 : passed === exam.length && exam.length ? 2 : 1;
   const left = exam.filter((c) => !c.ok);
@@ -67,7 +83,7 @@ export default function DeskNow({ now, live, open, closed, exam }: { now: DeskNo
     detail = now.beatAt ? `Last heartbeat ${ago(now.beatAt)} ago. It runs every minute when the scheduler pings it.` : "It starts on the first ping of the minute scheduler.";
   } else if (open > 0) {
     headline = `Holding ${open} ${live ? "" : "paper "}position${open > 1 ? "s" : ""}.`;
-    detail = "Every position is re-checked twice a second (paid RPC) against its exits: initials, trail, insider dumps.";
+    detail = "Every position is priced live and checked against its exits: initials, trail, insider dumps.";
   } else if (live) {
     headline = "Trading its own wallet. Waiting for the next clean BOND call.";
     detail = "It buys the moment a King call passes every check.";
@@ -117,6 +133,12 @@ export default function DeskNow({ now, live, open, closed, exam }: { now: DeskNo
         <div className="dn-main">
           <div className="dn-h">{headline}</div>
           {detail && <p className="dn-p">{detail}</p>}
+          {waiting.length ? (
+            <div className="dn-wait">
+              <div className="dn-k">Why no new buys</div>
+              {waiting.map((w) => <p key={w} className="dn-p">{w}</p>)}
+            </div>
+          ) : null}
 
           {!live && now && (now.running || now.today.seen > 0) && (
             <div className="dn-today">

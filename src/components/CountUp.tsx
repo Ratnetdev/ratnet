@@ -7,6 +7,12 @@ export default function CountUp({ value, decimals = 0, suffix = "" }: { value: n
   const from = useRef(value ?? 0);
   useEffect(() => {
     if (value == null) return;
+    // reduced motion: the new number, no roll
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      from.current = value;
+      setShown(value);
+      return;
+    }
     const start = performance.now();
     const a = from.current;
     const b = value;

@@ -10,6 +10,7 @@ import { TradeIcons } from "./venues";
 import CoinImg from "./CoinImg";
 import LiveMc from "./LiveMc";
 import RecordCharts, { RecKey } from "./RecordCharts";
+import Boundary from "./Boundary";
 
 type Rec = {
   live: boolean;
@@ -44,7 +45,7 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
       {open && (
         <tr className="trip-detail">
           <td colSpan={full ? 8 : 5}>
-            <TripDetail t={t} />
+            <Boundary name="TripDetail" fallback={<div className="muted tiny">This trade's detail could not be drawn.</div>}><TripDetail t={t} /></Boundary>
           </td>
         </tr>
       )}
@@ -52,6 +53,44 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
   );
 }
 
+/** One trade as a card (phones): the numbers that matter in two lines, tap for the full detail at full width. */
+function Card({ t }: { t: Trip }) {
+  const [open, setOpen] = useState(false);
+  const move = moveOf(t);
+  const end = t.open ? t.nowMc : t.exitMc;
+  const lastReason = t.exits.length ? t.exits[t.exits.length - 1].reason.split(/[:(]/)[0].trim() : t.open ? "holding" : "–";
+  return (
+    <li className={`rc ${open ? "on" : ""}`}>
+      <button type="button" className="rc-main" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="rc-top">
+          <span className="rc-coin"><CoinImg mint={t.mint} sym={t.symbol} size={20} /><b>${t.symbol}</b>
+            {t.open ? <span className="trip-tag open">open</span> : null}
+            {t.how === "wire" ? <span className="trip-tag">tweet</span> : t.how === "early" ? <span className="trip-tag">1m</span> : null}
+            {t.live ? <span className="trip-tag live">live</span> : null}
+          </span>
+          <span className="rc-pnl" style={{ color: col(t.pnlSol) }}>{sgn(t.pnlSol, 3)} ◎<em style={{ color: col(t.pnlPct) }}>{sgn(t.pnlPct)}%</em></span>
+        </span>
+        <span className="rc-mid">
+          <span>{usd(t.entryMc)} <i aria-hidden>→</i> {t.open ? <LiveMc mint={t.mint} usd={end} /> : usd(end)}</span>
+          <span style={{ color: col(move ?? 0) }}>{move != null ? `${sgn(move)}%` : "–"}</span>
+        </span>
+        <span className="rc-meta">
+          <span>{ago(t.openedAt)} ago · held {dur(t.holdMs)}</span>
+          <span className="rc-why">{lastReason}</span>
+          <span className="rc-caret" aria-hidden>{open ? "▴" : "▾"}</span>
+        </span>
+      </button>
+      {open && (
+        <div className="rc-detail">
+          <Link href={`/c/${t.mint}`} className="rc-open">open ${t.symbol} →</Link>
+          <Boundary name="TripDetail" fallback={<div className="muted tiny">This trade's detail could not be drawn.</div>}><TripDetail t={t} coinLink={false} /></Boundary>
+        </div>
+      )}
+    </li>
+  );
+}
+
+const PAGE = 50;
 type SortKey = "opened" | "entry" | "exit" | "move" | "pnl" | "held";
 const SORTS: Record<SortKey, (t: Trip) => number | null> = {
   opened: (t) => t.openedAt,
@@ -79,6 +118,7 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
   const [tab, setTab] = useState<"all" | "open" | "closed" | "ghost">("all");
   const [chart, setChart] = useState<RecKey | null>(null);
   const [sort, setSort] = useState<{ k: SortKey; dir: 1 | -1 }>({ k: "opened", dir: -1 });
+  const [limit, setLimit] = useState(PAGE);
   // each number opens its chart (full track record only)
   const st = (k: RecKey) => (compact ? {} : { className: `rec-stat-btn ${chart === k ? "on" : ""}`, role: "button" as const, tabIndex: 0, onClick: () => setChart(chart === k ? null : k), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter") setChart(chart === k ? null : k); } });
   const admin = useAdmin();
@@ -97,7 +137,9 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
         if (vb == null) return -1;
         return (va - vb) * sort.dir;
       });
-  const shown = compact ? trips.slice(0, 6) : sorted;
+  // no inner scroll box: the page scrolls, and long records load 50 at a time
+  const shown = compact ? trips.slice(0, 6) : sorted.slice(0, limit);
+  const more = compact ? 0 : sorted.length - shown.length;
   return (
     <section className="panel mt record" id="record">
       <div className="ph">
@@ -105,7 +147,7 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
         {compact ? <Link href="/desk#record">every trade →</Link> : (
           <span className="rec-tabs">
             {(["all", "open", "closed", "ghost"] as const).map((k) => (
-              <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{k}{k === "open" && s ? ` ${s.open}` : k === "closed" && s ? ` ${s.closed}` : ""}</button>
+              <button key={k} className={tab === k ? "on" : ""} onClick={() => (setTab(k), setLimit(PAGE))}>{k}{k === "open" && s ? ` ${s.open}` : k === "closed" && s ? ` ${s.closed}` : ""}</button>
             ))}
           </span>
         )}
@@ -119,8 +161,28 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
         {!compact && <div {...st("hold")}><span className="k">Avg hold</span><b>{s?.avgHoldMs ? dur(s.avgHoldMs) : "–"}</b><em>closed trades</em></div>}
       </div>
       {!compact && chart && d ? <RecordCharts which={chart} setWhich={setChart} trips={d.trips || []} start={d.summary.start} /> : null}
-      <div className="scroll" style={compact ? undefined : { maxHeight: 900 }}>
-        <table className="tbl rec-tbl">
+      {!compact && (
+        <label className="rc-sort">
+          <span>sort</span>
+          <select value={`${sort.k}:${sort.dir}`} onChange={(e) => { const [k, dir] = e.target.value.split(":"); setSort({ k: k as SortKey, dir: Number(dir) as 1 | -1 }); }}>
+            <option value="opened:-1">newest first</option>
+            <option value="opened:1">oldest first</option>
+            <option value="pnl:-1">P&amp;L, best first</option>
+            <option value="pnl:1">P&amp;L, worst first</option>
+            <option value="move:-1">change, highest first</option>
+            <option value="move:1">change, lowest first</option>
+            <option value="entry:-1">entry MC, highest first</option>
+            <option value="exit:-1">exit MC, highest first</option>
+            <option value="held:-1">held, longest first</option>
+          </select>
+        </label>
+      )}
+      <ul className="rc-list">
+        {shown.map((t) => <Card key={`${t.mint}${t.openedAt}`} t={t} />)}
+        {!shown.length && <li className="rc-empty muted">{d ? "No trades yet. The desk buys on paper the moment a King BOND call passes every check." : "loading…"}</li>}
+      </ul>
+      <div className="scroll rec-wrap">
+        <table className="tbl rec-tbl sticky1">
           <thead>
             <tr>
               <th>Coin</th>
@@ -150,8 +212,9 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
           </tbody>
         </table>
       </div>
+      {more > 0 && <button type="button" className="rec-more" onClick={() => setLimit(limit + PAGE)}>show {Math.min(PAGE, more)} more of {more}</button>}
       {!compact && isGhost && <div className="pb tiny muted">Trades the real desk was blocked from taking (daily loss limit, full slots, a paused strategy, no paper balance), taken anyway at a fixed size with the same entries and exits. They never touch the balance, the exam or the track record; COACH, FILM, PM and the priors learn from them.</div>}
-      {!compact && !isGhost && <div className="pb tiny muted">Click a trade for the full picture: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart and every fill. Paper fills use the real price at that moment, with fees and slippage. Live fills link to Solscan.</div>}
+      {!compact && !isGhost && <div className="pb tiny muted">Click or tap a trade for the full picture: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart and every fill. Paper fills use the real price at that moment, with fees and slippage. Live fills link to Solscan.</div>}
     </section>
   );
 }

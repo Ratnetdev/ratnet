@@ -90,6 +90,8 @@ export default function Chart({ series, kind = "line", unit = "", bucket = "hour
         onMouseLeave={() => setHover(null)}
         onTouchStart={(e) => onMove(e.touches[0].clientX - e.currentTarget.getBoundingClientRect().left)}
         onTouchMove={(e) => onMove(e.touches[0].clientX - e.currentTarget.getBoundingClientRect().left)}
+        onTouchEnd={() => setTimeout(() => setHover(null), 1200)}
+        style={{ touchAction: "pan-y" }}
       >
         {ticks.map((v, i) => (
           <g key={i}>

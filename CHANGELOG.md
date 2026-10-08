@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.36 · Phone and UI foundations (Run 6)
+- Track record:
+  - phones: a card per trade (coin, P&L in SOL and %, entry to exit market cap, change, when, how long, why it exited). Tap a card for the full trade detail at full width. A sort menu replaces the column headers;
+  - desktop: no more scroll box inside the page (it scrolled both ways). 50 trades at a time with "show more", the coin column stays in view, numbers right-aligned in fixed-width digits;
+  - a live market cap keeps its width when the live dot comes or goes (columns no longer jump every few seconds).
+- Every wide table (radar, explore, runners, grads, ledger, rats, desk): the first column stays put while the table scrolls sideways. On phones no inner scroll boxes: the page scrolls, tables only sideways.
+- Stability: the Rat Cam, alerts, CA bar and tab bar each sit in their own error boundary, and a bad /api/live answer never replaces the last good one. A trade with a missing time or field no longer crashes the page; its detail says it could not be drawn.
+- Phones:
+  - CA bar shows the short address with a copy button;
+  - inputs and selects at 16px (iOS no longer zooms in on tap);
+  - buttons at least 44px tall, header buttons 40px, the LIVE dot 44px;
+  - every label at least 12px;
+  - the Rat Cam sits above the tab bar; panel headers wrap instead of squeezing;
+  - viewport-fit cover with safe-area insets; menus and popups never scroll the page behind them; alerts popup has a max height.
+- Desk "right now" panel: a "Why no new buys" box says what is holding buys back, in plain words: King calls paused by the day's chain budget, or a strategy paused by PM after a bad run (until when, and that the ghost desk takes its signals meanwhile). On 8 Oct both happened at once and the desk looked dead with no reason shown.
+- Chain budget: the rats' chain backfill (launches the stream missed) runs every 10 seconds instead of every second (~78K credits a day saved; the stream delivers nearly every launch within a second). BACKFILL_MS changes it.
+- Accessibility: visible keyboard focus on every control, brighter secondary text (dim 5.4:1, hints 3.4:1, were 4.3:1 and 2.0:1), reduced motion respected (CSS animations, number roll, Den and Rat Cam canvases), charts let the page scroll vertically on touch and clear their tooltip after a tap.
+
 ## v0.1.35 · Hotfix: the X budget is enforced
 - The cause: X_CREDITS_PER_HOUR only limited RATNET's own reads. twitterapi.io bills the filter rules on its side (15 credits per check, 15 per post they return), so with the budget at 10K an hour the account still spent ~45K: 9 rules checked every minute (8.1K) and ~2,400 posts an hour from 104 accounts.
 - Hard cap: once this hour's spend reaches the budget, every paid rule is switched off until the next UTC hour (J7 keeps watching for free). A rule that will not switch off is deleted and rebuilt the next hour. WIRE posts when it happens.

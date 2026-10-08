@@ -99,6 +99,8 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
     const ro = new ResizeObserver(resize);
     ro.observe(el);
     let raf = 0;
+    let lastDraw = 0;
+    const reduce = !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const charts = ORDER.map(() => Array.from({ length: 16 }, () => Math.random()));
 
     const deskPos = (i: number) => {
@@ -116,6 +118,9 @@ export default function DenScene({ agents, events }: { agents: Record<string, Ev
 
     const draw = (ts: number) => {
       raf = requestAnimationFrame(draw);
+      // reduced motion: two quiet frames a second instead of sixty
+      if (reduce && ts - lastDraw < 500) return;
+      lastDraw = ts;
       const st = state.current;
       ctx.clearRect(0, 0, W, H);
       // back wall: tunnel bricks

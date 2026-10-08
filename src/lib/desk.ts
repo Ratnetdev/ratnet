@@ -2399,14 +2399,17 @@ async function rightNow(learnS: Learn) {
     return xs.length ? { p50: xs[Math.floor(xs.length / 2)], n: xs.length } : null;
   };
   const speedP = Promise.all([lat("call"), lat("early"), lat("flash"), lat("intake_rpc"), lat("sig2fill"), lat("stream")]).then(([call, early, flash, chain, fill, stream]) => ({ call, early, flash, chain, fill, stream }));
-  const [beat, day, hist, nano, st] = await Promise.all([
+  const [beat, day, hist, nano, st, rpc] = await Promise.all([
     r.get<number>(BEAT_KEY),
     r.hgetall<Record<string, number>>(DAY_KEY(now)),
     getHistory().catch(() => null as any),
     loadModel(K.nano),
     r.hmget<Record<string, number>>(K.stat, "bond_n"),
+    r.get<{ at: number; day?: { budget: number; used: number; pace: number } }>("rn:rpc").catch(() => null),
   ]);
   const d = (day || {}) as Record<string, number>;
+  // the day's chain budget (v0.1.36): past pace the rats (King calls) and the agents (CATCH) wait, the desk does not
+  const bd = rpc && now - Number(rpc.at || 0) < 120_000 && rpc.day?.budget ? rpc.day : null;
   const fails = Object.entries(d)
     .filter(([k]) => k.startsWith("f:"))
     .map(([k, v]) => ({ rule: k.slice(2), n: Number(v) }))
@@ -2417,6 +2420,7 @@ async function rightNow(learnS: Learn) {
     running: !!beat && now - Number(beat) < 90_000,
     today: { seen: Number(d.seen || 0), passed: Number(d.passed || 0), fails },
     kingBond: Number((st as any)?.bond_n || 0),
+    budget: bd ? { used: bd.used, pace: bd.pace, budget: bd.budget, ratsPaused: bd.used >= bd.pace * 1.05, agentsPaused: bd.used >= bd.pace } : null,
     nano: { n: nano.n, min: NANO_MIN },
     early: { n: learnS.earlyStat.n, min: LEARN_RULES.earlyMin, on: learnS.earlyOn },
     stalkOn: learnS.stalkOn,

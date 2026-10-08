@@ -107,8 +107,10 @@ export function dur(ms: number) {
   const h = Math.floor(m / 60);
   return h < 48 ? `${h}h ${m % 60}m` : `${Math.round(h / 24)}d`;
 }
-const stamp = (ms: number) => new Date(ms).toISOString().slice(5, 19).replace("T", " ");
-const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 19);
+// a missing or bad time shows as "–" (an Invalid Date used to throw and take the whole page down)
+const okMs = (ms: unknown): ms is number => typeof ms === "number" && Number.isFinite(ms) && Math.abs(ms) < 8.64e15;
+const stamp = (ms: number) => (okMs(ms) ? new Date(ms).toISOString().slice(5, 19).replace("T", " ") : "–");
+const hhmm = (ms: number) => (okMs(ms) ? new Date(ms).toISOString().slice(11, 19) : "–");
 /** Market cap now or at exit, vs entry. */
 export function moveOf(t: Trip): number | null {
   const end = t.open ? t.nowMc : t.exitMc;
@@ -245,9 +247,9 @@ export default function TripDetail({ t, coinLink = true }: { t: Trip; coinLink?:
               <KV k="Trades / traders" v={tp ? `${tp.n} / ${tp.uniq}` : "–"} sub={tp ? `${tp.vel}/min${tp.organic != null ? ` · ${tp.organic} organic` : ""}` : "not read"} />
               <KV k="SOL per buy" v={tp ? `${tp.spb} ◎` : "–"} sub={tp ? `buys ${Math.round(tp.buyShare * 100)}% of recent` : ""} />
               <KV k="Bundle / snipers" v={tp ? `${Math.round(tp.bundle * 100)}% / ${tp.snipers}` : "–"} c={tp && tp.bundle > 0.5 ? "var(--dust)" : undefined} sub={tp ? `${tp.bundleN} bundle wallets · top 5 ${Math.round(tp.top5 * 100)}%` : ""} />
-              <KV k="Dev" v={c ? `${c.dev.launches} launches, ${c.dev.bonded} bonded` : "–"} sub={c ? `bought ${c.dev.buySol} ◎${tp ? ` · sold ${tp.devSold > 0 ? `${tp.devSold} ◎` : "nothing"}` : ""}` : ""} c={tp && tp.devSold > 0 ? "var(--dust)" : undefined} />
+              <KV k="Dev" v={c?.dev ? `${c.dev.launches} launches, ${c.dev.bonded} bonded` : "–"} sub={c?.dev ? `bought ${c.dev.buySol} ◎${tp ? ` · sold ${tp.devSold > 0 ? `${tp.devSold} ◎` : "nothing"}` : ""}` : ""} c={tp && tp.devSold > 0 ? "var(--dust)" : undefined} />
               <KV k="Funder" v={g?.funder ? <a href={solscanAcc(g.funder)} target="_blank" rel="noreferrer">{short(g.funder, 4, 4)}</a> : "fresh"} sub={g ? `${g.clB}/${g.clN} bonded · ${g.clRatio}x edge` : ""} />
-              <KV k="Smart wallets" v={g ? g.smartN : "–"} c={g?.smartN ? "var(--bond)" : undefined} sub={c ? `${[c.socials.x && "X", c.socials.tg && "TG", c.socials.web && "web"].filter(Boolean).join(" · ") || "no socials"}${c.meta?.hot ? ` · meta "${c.meta.hot}"` : ""}${c.meta?.copy ? " · copycat" : ""}` : ""} />
+              <KV k="Smart wallets" v={g ? g.smartN : "–"} c={g?.smartN ? "var(--bond)" : undefined} sub={c ? `${[c.socials?.x && "X", c.socials?.tg && "TG", c.socials?.web && "web"].filter(Boolean).join(" · ") || "no socials"}${c.meta?.hot ? ` · meta "${c.meta.hot}"` : ""}${c.meta?.copy ? " · copycat" : ""}` : ""} />
             </div>
           ) : (
             <div className="muted small">Recorded for trades from v0.1.7 on.</div>

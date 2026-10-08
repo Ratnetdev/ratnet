@@ -5,8 +5,8 @@
   --line: #1a2620;
   --line2: #24342c;
   --text: #c8d3cc;
-  --dim: #6c7b73;
-  --mute: #3d4a43;
+  --dim: #7d8c84; /* 5.4:1 on the panel (was #6c7b73, 4.3:1) */
+  --mute: #5c6b63; /* 3.4:1 on the panel (was #3d4a43, 2.0:1: hint text was close to invisible) */
   --rat: #8cff5a;
   --rat-dim: #4f9a33;
   --bond: #ffb547;
@@ -1097,3 +1097,103 @@ th.sortable button:hover, th.sortable.on button { color: var(--rat); }
 th.sortable button:focus-visible { outline: 1px solid var(--rat); outline-offset: -2px; }
 .sort-ic { font-size: 10px; opacity: 0.45; min-width: 8px; }
 th.sortable.on .sort-ic { opacity: 1; }
+
+
+/* ------------------------------------------------------------------------------------------------------------------
+   v0.1.36 · Run 6: phone and UI foundations
+   ------------------------------------------------------------------------------------------------------------------ */
+
+/* numbers line up in every table, and a live market cap never changes width when its dot comes and goes */
+.tbl td, .tbl th { font-variant-numeric: tabular-nums; }
+.livemc-dot.off { visibility: hidden; animation: none; }
+
+/* track record: a table on wider screens (no inner scroll box, 50 trades at a time), cards on phones */
+.rc-list, .rc-sort { display: none; }
+.rec-tbl td:not(:first-child):not(:last-child), .rec-tbl th:not(:first-child):not(:last-child) { text-align: right; min-width: 92px; }
+.rec-tbl th.sortable button { justify-content: flex-end; }
+.rec-more { all: unset; box-sizing: border-box; display: block; width: 100%; min-height: 44px; padding: 13px; text-align: center; border-top: 1px solid var(--line); color: var(--dim); cursor: pointer; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+.rec-more:hover { color: var(--text); background: rgba(255, 255, 255, 0.02); }
+.ca-short { display: none; }
+
+/* sticky first column: the coin stays in view while a wide table scrolls sideways */
+.scroll > .tbl th:first-child, .scroll > .tbl td:first-child { position: sticky; left: 0; z-index: 1; background-color: var(--panel); }
+.scroll > .tbl td:first-child::after, .scroll > .tbl th:first-child::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 1px; background: var(--line2); }
+.scroll > .tbl tr:hover td:first-child { background-color: #0f1613; }
+.scroll { overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+
+@media (max-width: 760px) {
+  .rc-list { display: block; list-style: none; margin: 0; padding: 0; }
+  .rec-wrap { display: none; }
+  .rc-sort { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  .rc-sort select { flex: 1; min-height: 44px; padding: 0 10px; background: var(--bg2); color: var(--text); border: 1px solid var(--line2); border-radius: 0; font-family: var(--mono); font-size: 16px; }
+  .rc { border-bottom: 1px solid var(--line); }
+  .rc-main { all: unset; box-sizing: border-box; display: grid; gap: 7px; width: 100%; min-height: 44px; padding: 12px 14px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .rc.on .rc-main { background: rgba(255, 255, 255, 0.03); box-shadow: inset 2px 0 0 var(--rat); }
+  .rc-top, .rc-mid, .rc-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+  .rc-coin { display: inline-flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+  .rc-coin b { font-weight: 500; color: var(--text); font-size: 15px; }
+  .rc-coin .trip-tag { margin-left: 0; }
+  .rc-pnl { display: inline-flex; align-items: baseline; gap: 8px; white-space: nowrap; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .rc-pnl em { font-style: normal; font-size: 13px; }
+  .rc-mid { font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .rc-mid i { font-style: normal; color: var(--dim); padding: 0 4px; }
+  .rc-meta { font-size: 12px; color: var(--dim); }
+  .rc-meta > span:first-child { white-space: nowrap; }
+  .rc-why { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rc-caret { flex: none; width: 14px; text-align: right; }
+  .rc-detail { padding: 2px 14px 18px; background: rgba(255, 255, 255, 0.015); }
+  .rc-open { display: inline-flex; align-items: center; min-height: 44px; font-size: 13px; }
+  .rc-empty { padding: 14px; }
+  .rec-tabs button { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: center; }
+
+  /* no inner scroll boxes on phones: the page scrolls, tables only scroll sideways */
+  .scroll, .wire-list { max-height: none !important; overflow-y: visible; }
+
+  /* CA bar: the short address and a real button */
+  .ca-full { display: none; }
+  .ca-short { display: inline; }
+  .cabar button { display: inline-flex; align-items: center; min-height: 34px; padding: 0 6px; }
+
+  /* nothing smaller than 12px to read */
+  .tiny, .tag, .tbl th, .call-why, .board-chip, .trip-tag, .td-head span, .td-kv span, .td-after span, .td-note span, .td-fill b, .td-checks em,
+  .trip-top span, .trip-legend, .rec-stats .k, .rec-stats em, .ac-age, .acard kbd, .agent-last, .ratcam, .ratcam-pill, .nav-sheet-h, .td-fill .d { font-size: 12px; }
+  .tab { font-size: 11.5px; }
+  .tbl td { font-size: 13px; }
+
+  /* tap targets */
+  .btn { min-height: 44px; }
+  .btn.sm { min-height: 40px; }
+  .top .wrap > .row .btn, .top .wrap > .row button { min-height: 40px; min-width: 40px; }
+  .input, input, select, textarea { font-size: 16px !important; } /* under 16px iOS zooms the page on focus */
+}
+
+/* sheets and popups never scroll the page behind them */
+.nav-sheet, .alerts-pop { overscroll-behavior: contain; }
+.alerts-pop { max-height: min(70dvh, 560px); overflow-y: auto; }
+
+/* keyboard focus is always visible (many controls reset their styles with all: unset) */
+a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible,
+[role="button"]:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--rat) !important; outline-offset: 2px; }
+
+/* less motion when the viewer asks for it */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+@media (max-width: 760px) { .ratcam { bottom: calc(70px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 140px); } }
+@media (max-width: 760px) {
+  .panel > .ph { flex-wrap: wrap; row-gap: 8px; }
+  .record > .ph > span:first-child { flex: 1 1 100%; }
+  .record > .ph .rec-tabs { flex: 1 1 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .record > .ph .rec-tabs button { justify-content: center; }
+
+}
+/* the chart hint sits top right, clear of the numbers and the coin names under them */
+.rec-stat-btn::after { bottom: auto; top: 12px; right: 12px; }
+@media (max-width: 760px) {
+  /* every label of 9 to 11.5px reads at 12px on phones */
+  .nav-item span, .nav-sheet-h, .stat .k, .tiny, .tag, .tbl th, .pill, .ratcam, .ratcam-pill, .ac-who, .ac-age, .ac-name, .ac-ca, .ac-curve, .ac-flags span, .ac-sub, .ac-buy, .ac-btn, .ac-socials a, .ac-more, .mkt .k, .ratcam-hero, .agent-last, .ds-exam em, .ds-go, .re-n, .re-split-lbl, .re-stats .k, .re-tiers .k, .re-tier-row span, .dn-steps em, .dn-n, .dn-k, .dn-fails span, .earn-cap, .flow-k, .flow-pct, .rec-tabs button, .rec-stats .k, .rec-stats em, .trip-tag, .ap-k, .ap-when, .ap-stats span, .trip-top span, .trip-legend, .td h4, .td-head span, .td-kv span, .td-head em, .td-kv em, .td-note span, .td-checks em, .td-fill b, .cd-log-h, .cd-ev b, .cd-more, .why-k, .call-why, .rc-btn, .rc-res, .rc-sha, .fame-n, .fame-path em, .fame-foot, .td-after span, .td-after em, .film-k, .film-calls em, .wire-terms span, .pulse-r em, .vrow.sm .vbtn, .sc-h, .fb-v, .fb-t, .lc-tab, .lc-why, .lc-step em, .lc-tag, .ld-post, .ml-stage, .ml-facts, .mc-tag, .mc-meme, .les-row button, .ov-st, .lt-h, .lt-state, .lt-h button, .lt-top, .lt-text, .lt-dot em, .catch-rec .k, .catch-rec em, .board-n, .board-chip, .btn.sm, .alive-c .alive-n small, .chart-tip, .chart-legend, .metric-card .chart-hint, .seg button, .mchart-note, .status-k, .status-s { font-size: 12px; }
+}
+@media (max-width: 760px) { .lt-dot { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; } }
+.dn-wait { margin-top: 14px; padding: 10px 12px; border: 1px solid rgba(255, 181, 71, 0.35); background: rgba(255, 181, 71, 0.05); }
+.dn-wait .dn-k { color: var(--bond); }
+.dn-wait .dn-p { margin: 6px 0 0; }

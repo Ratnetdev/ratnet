@@ -27,7 +27,8 @@ export default function LiveMc({ mint, usd, className = "" }: { mint?: string | 
   if (val == null) return <span className={className}>–</span>;
   return (
     <span className={`livemc ${flash} ${className}`} title={live != null ? (lp?.mcUsd != null ? "live from the chain" : "live from the trade stream") : "last reading"}>
-      {live != null ? <i className="livemc-dot" /> : null}
+      {/* the dot's slot is always there, so the number never shifts when the live price arrives or drops */}
+      <i className={`livemc-dot ${live != null ? "" : "off"}`} aria-hidden />
       {fmt(val)}
     </span>
   );

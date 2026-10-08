@@ -446,12 +446,16 @@ async function digPrep() {
  * minute-5 calls the moment they are due. Before v0.1.21 all of this waited behind the slow work below in one pass,
  * and launches were dug ~12 minutes late, so the "minute-5" call was made at minute 12.
  */
+let lastBackfill = 0;
+const BACKFILL_MS = Number(process.env.BACKFILL_MS || 10_000);
 export async function digFast(): Promise<Record<string, unknown>> {
   const out = await withLock("rn:lock:digfast", 60_000, () => lane.run(1, async () => {
     const t0 = Date.now();
     try {
       const model = await digPrep();
-      const dug = await digNew(model).catch((e) => ({ digError: safeErr(e) }));
+      // the chain backfill (launches the stream missed) every 10s instead of every pass: one call a second was ~86K
+      // credits a day on its own, and the stream already delivers nearly every launch within a second (v0.1.36)
+      const dug = Date.now() - lastBackfill >= BACKFILL_MS ? ((lastBackfill = Date.now()), await digNew(model).catch((e) => ({ digError: safeErr(e) }))) : { dug: 0 };
       const wire = await wirePicks().catch((e) => ({ wireError: safeErr(e) }));
       const due = await processDue(model);
       return { ok: true, ...dug, ...wire, ...due, ms: Date.now() - t0 };

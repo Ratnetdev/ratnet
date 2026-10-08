@@ -180,7 +180,7 @@ export default function DeskBoard() {
 
   return (
     <>
-      <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam?.checks || []} />
+      <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam?.checks || []} pm={(d as any)?.pm || []} />
 
       {d && today <= -d.cfg.dailyLoss ? (
         <div className="panel mt ghost-note">

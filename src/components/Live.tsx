@@ -19,7 +19,9 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       try {
         const r = await fetch("/api/live", { cache: "no-store" });
         const j = await r.json();
-        if (!stop) setState((s) => (r.ok ? { data: j, error: false, tick: s.tick + 1 } : { ...s, error: true }));
+        // shape check: a half-written or error body never replaces a good snapshot (every always-on piece reads it)
+        const good = r.ok && liveShapeOk(j);
+        if (!stop) setState((s) => (good ? { data: j, error: false, tick: s.tick + 1 } : { ...s, error: true }));
       } catch {
         if (!stop) setState((s) => ({ ...s, error: true }));
       } finally {
@@ -40,3 +42,12 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
 }
 
 export const useLive = () => useContext(LiveCtx);
+
+/** The minimum /api/live must hold for the feed, Rat Cam, alerts and CA bar to render. */
+export function liveShapeOk(j: any) {
+  if (!j || typeof j !== "object" || Array.isArray(j)) return false;
+  if (j.stats != null && typeof j.stats !== "object") return false;
+  for (const k of ["feed", "calls", "bondCalls", "burns", "radar", "grads", "agents"]) if (j[k] != null && !Array.isArray(j[k])) return false;
+  if (j.live != null && typeof j.live !== "object") return false;
+  return true;
+}

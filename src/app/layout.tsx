@@ -15,6 +15,7 @@ import TabBar from "@/components/TabBar";
 import CmdK, { SearchButton } from "@/components/CmdK";
 import { WalletProvider, WalletButton } from "@/components/Wallet";
 import { SITE } from "@/config/site";
+import Boundary from "@/components/Boundary";
 
 
 export const metadata: Metadata = {
@@ -25,7 +26,8 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image", title: "RATNET", description: SITE.tagline },
   icons: { icon: "/icon.svg" },
 };
-export const viewport: Viewport = { themeColor: "#060807", width: "device-width", initialScale: 1 };
+// viewport-fit cover: the tab bar and popups use the safe-area insets, so the page can run under the notch and home bar
+export const viewport: Viewport = { themeColor: "#060807", width: "device-width", initialScale: 1, viewportFit: "cover" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -33,7 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <WalletProvider>
         <LiveProvider>
-          <RatCam />
+          <Boundary name="RatCam"><RatCam /></Boundary>
           <CmdK />
           <header className="top">
             <div className="wrap">
@@ -45,16 +47,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <span className="row" style={{ gap: 8 }}>
                 <SearchButton />
                 <XButton />
-                <Alerts />
+                <Boundary name="Alerts"><Alerts /></Boundary>
                 <WalletButton />
               </span>
             </div>
           </header>
-          <CaBar />
+          <Boundary name="CaBar"><CaBar /></Boundary>
           <main>
             <div className="wrap">{children}</div>
           </main>
-          <TabBar />
+          <Boundary name="TabBar"><TabBar /></Boundary>
           <footer>
             <div className="wrap row between wrapx">
               <span>RATNET · $RAT · rats dig, the king learns, every trade is on the record.</span>
