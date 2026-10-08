@@ -29,6 +29,7 @@ function run(cmd: any[]): any {
     case "expire": return 1;
     case "mget": return [k, ...a].map((x) => str(kv.get(x)));
     case "hset": { const h = hash(); for (let i = 0; i < a.length; i += 2) h[a[i]] = String(a[i + 1]); return a.length / 2; }
+    case "hincrby": { const h = hash(); h[a[0]] = String(Number(h[a[0]] || 0) + Number(a[1])); return Number(h[a[0]]); }
     case "hgetall": { const h = kv.get(k) || {}; return Object.entries(h).flatMap(([f, v]) => [f, v]); }
     case "hmget": { const h = kv.get(k) || {}; return a.map((f: string) => h[f] ?? null); }
     case "lpush": { const l = list(); for (const v of a) l.unshift(String(v)); return l.length; }

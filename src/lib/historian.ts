@@ -491,7 +491,7 @@ async function historianInner(budgetMs: number) {
         st.lessons++;
         // records for the live rats: the dev's funder cluster and the early wallets
         const early = rep.tape5?.early || [];
-        creditResolve(p, funder, early, bonded, GK);
+        creditResolve(p, funder, early, bonded, GK, bonded ? 1 : job.w);
         // CATCH: the minute-5 look and (if it bonded) the migration look, labelled by the candles after the bond
         const solAt = Number((await r.hget(RG.solh, hourKey(job.createdAt)).catch(() => null)) || 0) || solNow;
         const f5: Record<string, number> = {

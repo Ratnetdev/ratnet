@@ -419,12 +419,13 @@ export async function syncHook(force = false) {
   if (!addrs.length) return { hook: "no wallets yet" };
   const body = { webhookURL: `${SITE.url}/api/hound/hook`, transactionTypes: ["SWAP"], accountAddresses: addrs, webhookType: "enhanced", authHeader: hookAuth() };
   const base = "https://api.helius.xyz/v0/webhooks";
-  const res = prev?.id
-    ? await fetch(`${base}/${prev.id}?api-key=${key}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null)
-    : await fetch(`${base}?api-key=${key}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+  const post = () => fetch(`${base}?api-key=${key}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+  let res = prev?.id ? await fetch(`${base}/${prev.id}?api-key=${key}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => null) : await post();
+  // v0.1.41: the remembered webhook was deleted on Helius (404/400): make a new one instead of reporting "done"
+  if (prev?.id && res && (res.status === 404 || res.status === 400)) res = await post();
   const j: any = res?.ok ? await res.json().catch(() => null) : null;
-  if (!j?.webhookID && !prev?.id) return { hook: `failed ${res?.status ?? "no answer"}` };
-  await r.set(HOOK, { id: j?.webhookID || prev!.id, n: addrs.length, at: Date.now() });
+  if (!res?.ok) return { hook: `failed ${res?.status ?? "no answer"}` };
+  await r.set(HOOK, { id: j?.webhookID || prev?.id || "", n: addrs.length, at: Date.now() });
   await r.del(DIRTY);
   return { hook: `${addrs.length} wallets live` };
 }

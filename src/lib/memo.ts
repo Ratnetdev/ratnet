@@ -3,6 +3,18 @@
 // of Upstash bandwidth (the plan limit that took the whole site down on 7 Oct). One read per TTL per process now.
 import { bwMul } from "./bwgov";
 const store = new Map<string, { at: number; v: unknown; p?: Promise<unknown> }>();
+// v0.1.41: per-coin keys (coin pages, buyers, LENS) can come from any request: the store is capped, oldest first
+const MAX = 3000;
+function trim() {
+  if (store.size <= MAX) return;
+  let n = store.size - MAX + 500;
+  for (const [k, v] of store) {
+    if (n <= 0) break;
+    if (v.p) continue;
+    store.delete(k);
+    n--;
+  }
+}
 
 export async function memo<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
   const now = Date.now();
@@ -21,6 +33,7 @@ export async function memo<T>(key: string, ttlMs: number, load: () => Promise<T>
       throw e;
     });
   store.set(key, { at: hit?.at ?? 0, v: hit?.v, p });
+  trim();
   return p;
 }
 

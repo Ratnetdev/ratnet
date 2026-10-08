@@ -2,7 +2,7 @@ import { K, redis } from "./redis";
 import { dasAsset, fetchOffchain, getCurves } from "./solana";
 import { reportLines, score, KING_VERSION } from "./king";
 import { loadModel, type Launch } from "./digger";
-import { features, nanoScore, NANO_MIN } from "./nano";
+import { features, nanoReady, nanoScore, NANO_MIN } from "./nano";
 import { verdictOf } from "./king";
 
 export type SniffReport = {
@@ -101,7 +101,7 @@ export async function sniff(ca: string, wallet: string, sig: string, free: boole
     else if (b > 0) lines.plus.push(`dev has bonded ${b} of ${n} before`);
     else if (n >= 5) lines.minus.push(`dev launched ${n} coins, none bonded`);
     const model = await loadModel();
-    if (model.n >= NANO_MIN) {
+    if (nanoReady(model)) {
       const x = features({
         curve5: c.progress,
         curve0: dug.p0,

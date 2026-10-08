@@ -317,7 +317,8 @@ async function syncWallet(state: DeskState, kp: Keypair | null, walletSol: numbe
   if (state.wallet !== addr || state.funded == null || state.funded < minSol) {
     // new (or newly funded) wallet: fresh paper run from the real balance; old paper trades used other rules/sizes
     const r = redis();
-    await r.del(K.deskPos, K.deskTrades, K.deskEq, K.deskShadow, K.deskStalk, K.deskAfter, K.deskVet, SEQ.trades);
+    await r.del(K.deskPos, K.deskTrades, K.deskEq, K.deskShadow, K.deskStalk, K.deskAfter, K.deskVet);
+    await r.incrby(SEQ.trades, 1_000_000); // v0.1.41: change counters jump on a reset, never restart (lib/lcache.ts)
     SHM = null;
     AFM = null;
     listDrop(K.deskTrades);
@@ -355,7 +356,9 @@ export async function resetDesk(why = "manual") {
     await r.expire(arch, 60 * 86400);
   }
   POSC[K.deskPos]?.clear();
-  await r.del(K.deskState, K.deskPos, K.deskTrades, K.deskEv, K.deskQ, K.deskEq, K.deskAgent, K.deskVet, K.deskStalk, TRIPS_KEY, EXAM_FULL, K.deskExam, SEQ.trades, SEQ.trips);
+  await r.del(K.deskState, K.deskPos, K.deskTrades, K.deskEv, K.deskQ, K.deskEq, K.deskAgent, K.deskVet, K.deskStalk, TRIPS_KEY, EXAM_FULL, K.deskExam);
+  await r.incrby(SEQ.trades, 1_000_000);
+  await r.incrby(SEQ.trips, 1_000_000);
   listDrop(K.deskTrades);
   listDrop(TRIPS_KEY);
   await r.lpush(K.deskEv, { agent: "LEDGER", at: Date.now(), text: `paper desk reset (${why}). what it learned is kept`, tone: "info" });
@@ -383,7 +386,9 @@ export async function dropWicksOnce() {
   const bad = new Set(trades.filter((t) => t.side === "sell" && (t.pnlPct ?? 0) > 5000).map((t) => t.mint));
   if (bad.size) {
     const keep = trades.filter((t) => !bad.has(t.mint));
-    await r.del(GHOST_TRADES, SEQ.gtrades, SEQ.gtrips);
+    await r.del(GHOST_TRADES);
+    await r.incrby(SEQ.gtrades, 1_000_000);
+    await r.incrby(SEQ.gtrips, 1_000_000);
     if (keep.length) await r.rpush(GHOST_TRADES, ...keep);
     const trips = ((await r.lrange<TripMeta>(GHOST_TRIPS, 0, -1)) || []) as TripMeta[];
     const keepT = trips.filter((t) => !bad.has(t.mint));
@@ -408,8 +413,9 @@ export async function slimTradesOnce() {
     if (!rows.some((t) => t.ctx)) continue;
     const slim = rows.map(({ ctx, ...t }) => t);
     const m = r.multi();
-    m.del(key, seq);
+    m.del(key);
     m.rpush(key, ...slim);
+    m.incrby(seq, 1_000_000);
     await m.exec();
     listDrop(key);
     n += rows.length;
@@ -483,10 +489,11 @@ const SER_AT = new Map<string, number>(); // newest point already in the list
 // v0.1.40: the pages read each position's price path (up to 360 points) at most once a minute per server instance;
 // it only draws a sparkline. The worker always reads them fresh (its desk appends to them).
 const SER_CACHE = new Map<string, { at: number; v: Sample[] }>();
-export async function withSeries(key: string, pos: Record<string, Pos> | null) {
+export async function withSeries(key: string, pos: Record<string, Pos> | null, display = false) {
   const ms0 = Object.keys(pos || {}).filter((m) => !(pos![m].series || []).length);
   if (!ms0.length) return pos || {};
-  const site = process.env.RATNET_WORKER !== "1";
+  // v0.1.41: display reads (pages, the worker's page summaries) may use the 60s copy; the desk itself never does
+  const site = display || process.env.RATNET_WORKER !== "1";
   const now = Date.now();
   if (site) {
     for (const m of ms0) {
@@ -2512,6 +2519,13 @@ const BEAT_KEY = "rn:desk:beat"; // last time a desk beat finished
 let beatWrittenAt = 0;
 const DAY_KEY = (t: number) => `rn:desk:day:${new Date(t).toISOString().slice(0, 10)}`;
 
+/** The equity line for the desk page: the last 12 hours, one point every ~5 minutes (the full line is /api/desk/equity). */
+async function equityForPage() {
+  const xs = ((await redis().lrange<{ t: number; eq: number; live?: boolean }>(K.deskEq, -720, -1)) || []) as { t: number; eq: number; live?: boolean }[];
+  const step = Math.max(1, Math.ceil(xs.length / 150));
+  return xs.filter((_, i) => i % step === 0 || i === xs.length - 1);
+}
+
 /** What the desk is doing right now, what it is waiting for, and what unlocks next. */
 async function rightNow(learnS: Learn) {
   const r = redis();
@@ -2520,12 +2534,12 @@ async function rightNow(learnS: Learn) {
     const xs = ((await r.lrange<number>(`rn:lat:${k}`, 0, 99).catch(() => [])) || []).map(Number).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
     return xs.length ? { p50: xs[Math.floor(xs.length / 2)], n: xs.length } : null;
   };
-  const speedP = Promise.all([lat("call"), lat("early"), lat("flash"), lat("intake_rpc"), lat("sig2fill"), lat("stream")]).then(([call, early, flash, chain, fill, stream]) => ({ call, early, flash, chain, fill, stream }));
+  const speedP = memo("desk:speed:view", 60_000, () => Promise.all([lat("call"), lat("early"), lat("flash"), lat("intake_rpc"), lat("sig2fill"), lat("stream")]).then(([call, early, flash, chain, fill, stream]) => ({ call, early, flash, chain, fill, stream })));
   const [beat, day, hist, nano, st, rpc] = await Promise.all([
     r.get<number>(BEAT_KEY),
     r.hgetall<Record<string, number>>(DAY_KEY(now)),
-    getHistory().catch(() => null as any),
-    loadModel(K.nano),
+    memo("desk:hist:view", 30_000, () => getHistory()).catch(() => null as any),
+    memo("desk:nano:view", 60_000, () => loadModel(K.nano)),
     r.hmget<Record<string, number>>(K.stat, "bond_n"),
     r.get<{ at: number; day?: { budget: number; used: number; pace: number } }>("rn:rpc").catch(() => null),
   ]);
@@ -2543,7 +2557,7 @@ async function rightNow(learnS: Learn) {
     today: { seen: Number(d.seen || 0), passed: Number(d.passed || 0), fails },
     kingBond: Number((st as any)?.bond_n || 0),
     budget: bd ? { used: bd.used, pace: bd.pace, budget: bd.budget, ratsPaused: bd.used >= bd.pace * 1.05, agentsPaused: bd.used >= bd.pace } : null,
-    nano: { n: nano.n, min: NANO_MIN },
+    nano: { n: nano.nl || 0, min: NANO_MIN }, // v0.1.41: live lessons
     early: { n: learnS.earlyStat.n, min: LEARN_RULES.earlyMin, on: learnS.earlyOn },
     stalkOn: learnS.stalkOn,
     history: hist ? { phase: hist.phase, done: hist.done ?? 0, lessons: hist.lessons ?? 0, clock: hist.clock ?? null } : null,
@@ -2559,18 +2573,19 @@ export async function getDesk() {
   p.get(K.deskState);
   p.hgetall(K.deskPos);
   p.lrange(K.deskEv, 0, 59);
-  p.lrange(K.deskEq, -720, -1);
   p.hgetall(K.deskAgent);
   p.get(K.deskVet);
   p.hgetall(K.deskStalk);
   p.hlen(K.deskShadow);
   p.hlen(K.deskAfter);
-  const [[st, pos, ev, eqs, agents, vet, stalks, nShadow, nAfter], trades] = (await Promise.all([p.exec(), deskTrades().then((t) => t.slice(0, 60))])) as [any[], Trade[]];
+  // v0.1.41: the slow parts (equity, learning, COACH, FILM, PM, ghost counts, the wallet balance) at most once a
+  // minute per process; the page is rebuilt every few seconds by the worker (lib/site.ts) for every viewer
+  const [[st, pos, ev, agents, vet, stalks, nShadow, nAfter], trades, eqs] = (await Promise.all([p.exec(), deskTrades().then((t) => t.slice(0, 60)), memo("desk:eq", 60_000, () => equityForPage())])) as [any[], Trade[], { t: number; eq: number; live?: boolean }[]];
   const state: DeskState = st || (await loadState(s.desk.start));
-  await withSeries(K.deskPos, pos);
-  const learnS = await loadLearn();
+  await withSeries(K.deskPos, pos, true);
+  const learnS = await memo("desk:learn:view", 30_000, loadLearn);
   const addr = deskWalletAddress() || state.wallet || process.env.DESK_WALLET_ADDRESS || null;
-  const walletSol = addr ? await cachedBalance(addr) : null;
+  const walletSol = addr ? await memo("desk:wsol:view", 20_000, () => cachedBalance(addr)) : null;
   // the exam reads up to 2,000 trades (with their entry context) and 3,000 equity points: once per 30s for every
   // visitor, not on every page poll
   const exC = await r.get<{ at: number; ex: Exam }>(EXAM_FULL).catch(() => null);
@@ -2605,14 +2620,14 @@ export async function getDesk() {
     agents: agents || {},
     vet: vet || null,
     stalks: Object.values(stalks || {}),
-    coach: await coachStats().catch(() => null),
-    film: await filmStats().catch(() => null),
-    pm: await pmView().catch(() => null),
-    ghost: await (async () => {
+    coach: await memo("desk:coach:view", 60_000, () => coachStats()).catch(() => null),
+    film: await memo("desk:film:view", 60_000, () => filmStats()).catch(() => null),
+    pm: await memo("desk:pm:view", 20_000, () => pmView()).catch(() => null),
+    ghost: await memo("desk:ghost:view", 30_000, async () => {
       const r = redis();
       const [open, n] = await Promise.all([r.hlen(GHOST_POS), r.llen(GHOST_TRADES)]);
       return { open: open || 0, fills: n || 0, max: GHOST_MAX };
-    })().catch(() => null),
+    }).catch(() => null),
     wire: await wireViewPublic(40).catch(() => null),
     learn: { ...learnS, arms, shadows: nShadow || 0, reviewing: nAfter || 0, rules: LEARN_RULES, xConnected: !!process.env.X_BEARER_TOKEN },
     now: await rightNow(learnS).catch(() => null),
@@ -2798,7 +2813,7 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
   const ghost = book === "ghost";
   const [trades, posMap, st, metas, sol] = await Promise.all([
     ghost ? ghostTrades() : deskTrades(),
-    r.hgetall<Record<string, Pos>>(ghost ? GHOST_POS : K.deskPos).then((x) => withSeries(ghost ? GHOST_POS : K.deskPos, x)),
+    r.hgetall<Record<string, Pos>>(ghost ? GHOST_POS : K.deskPos).then((x) => withSeries(ghost ? GHOST_POS : K.deskPos, x, true)),
     r.get<DeskState>(K.deskState),
     tripMetas(ghost),
     solUsd().catch(() => null),

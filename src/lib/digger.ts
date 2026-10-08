@@ -6,7 +6,7 @@ import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr,
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
-import { contributions, emptyModel, features, FeatureInput, learn, NanoModel, nanoScore, NANO_MIN, NANO_V } from "./nano";
+import { contributions, emptyModel, features, FeatureInput, learn, NanoModel, nanoReady, nanoScore, NANO_MIN, NANO_V } from "./nano";
 import { readTape, Tape } from "./tape";
 import { whyOf, type Why } from "./why";
 import { noteCall } from "./receipts";
@@ -14,7 +14,7 @@ import { queueBonded, queueCall } from "./tg";
 import { reviewCall } from "./film";
 import { pulseMatch, pulseView } from "./pulse";
 import { candidatesOf, closeTweet, dueTweets, matchOne, noteBondLink, noteMatch, noteOutcome, noteTweetLink, recentTweets, tweetIdOf, tweetLinks, accountOf, type WireMatch, type XTweet } from "./wire";
-import { creditResolve, Graph, readGraph } from "./graph";
+import { creditResolve, GK, Graph, readGraph } from "./graph";
 import { Meta, metaBond, metaLaunch, readMeta } from "./meta";
 import { enroll, Run, runnerPass } from "./runner";
 import { migrated, poolUsd, readPools } from "./pool";
@@ -156,11 +156,26 @@ function idxRow(call: Call, bondSecs?: number): IdxRow {
   };
 }
 
+// v0.1.41: the worker keeps the explorer index in memory (it is the only writer); the explorer page is built from it
+// once a minute instead of every server instance reading the whole hash (a day of calls, up to ~1MB)
+let IDXM: Map<string, IdxRow> | null = null;
+let IDXM_AT = 0;
+export async function idxRows(): Promise<IdxRow[]> {
+  if (!IDXM || Date.now() - IDXM_AT > 30 * 60_000) {
+    const h = ((await redis().hgetall<Record<string, IdxRow>>(K.idx)) || {}) as Record<string, IdxRow>;
+    IDXM = new Map(Object.entries(h));
+    IDXM_AT = Date.now();
+  }
+  return Array.from(IDXM.values());
+}
+
 /** The explorer keeps every call the King or nano liked, plus every coin that bonded, for 24h. */
 function indexCall(c: Ctx, call: Call, bondSecs?: number) {
   const liked = call.verdict !== "DUST" || (call.nano && call.nano.verdict !== "DUST");
   if (!liked && call.outcome !== "BONDED") return;
-  c.p.hset(K.idx, { [call.mint]: idxRow(call, bondSecs) });
+  const row = idxRow(call, bondSecs);
+  IDXM?.set(call.mint, row);
+  c.p.hset(K.idx, { [call.mint]: row });
   c.p.zadd(K.idxT, { score: call.createdAt, member: call.mint });
 }
 
@@ -321,7 +336,9 @@ export async function applyNano(ops0: NanoOp[]) {
     const p = r.pipeline();
     if (d0) p.set(K.nano, m);
     if (d1) p.set(K.nano1, m1);
-    p.incr(NANO_VER);
+    // v0.1.41: a fresh random version (a counter could be deleted and climb back to the same number)
+    const newVer = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    p.set(NANO_VER, newVer);
     for (const l of logs) p.rpush(K.nanoLog, l);
     if (logs.length) p.ltrim(K.nanoLog, -500, -1);
     // a lock that expired mid-training: another trainer may have saved since; park these instead of overwriting it
@@ -329,9 +346,8 @@ export async function applyNano(ops0: NanoOp[]) {
       await r.rpush(NANO_PENDING, ...ops).catch(() => {});
       return;
     }
-    const res = (await p.exec()) as unknown[];
-    const v = res[(d0 ? 1 : 0) + (d1 ? 1 : 0)]; // the INCR's answer: sets first, then the INCR
-    NANO_MEM = Number.isFinite(Number(v)) ? { ver: String(v), m, m1 } : null;
+    await p.exec();
+    NANO_MEM = { ver: newVer, m, m1 };
   } finally {
     await release(l);
   }
@@ -343,7 +359,9 @@ export async function applyNano(ops0: NanoOp[]) {
  * (replays), so they are useful from the first call instead of starting at zero. The historian then replays its
  * window again with the v0.1.28 clean labels, and the runner model starts over on the same learner.
  */
-const WARM = "0.1.30";
+// v0.1.41: warm-started once more, because the history flag was standardized (live coins were pushed toward BOND):
+// the models restart from the stored live lessons, and the historian replays its window again (lib/nano.ts zOf)
+const WARM = "0.1.41";
 export async function migrateNano() {
   const l = await acquire("rn:lock:nano", 60_000);
   if (!l) return { nano: "busy" };
@@ -385,6 +403,9 @@ async function migrateNanoHeld() {
   p.set(K.nano1, m1);
   p.del(NANO_VER);
   NANO_MEM = null;
+  // v0.1.41: the historian replays its window again, so the wallet and cluster records it credited start over too
+  // (else every replayed launch would be counted twice). Funders (fof) stay: they are facts, not counts.
+  if (WARM === "0.1.41") p.del(GK.cN, GK.cB, GK.cM, GK.sN, GK.sB, GK.sM);
   // the historian walks its window again (clean labels since v0.1.28), the runner model starts over on v2
   p.del("rn:h:state2", "rn:h:q2", "rn:h:seen", "rn:runner", K.nanoLog);
   p.lpush(K.deskEv, { agent: "KING", at: Date.now(), text: `King v1.1: nano rebuilt (standardized inputs, small capped steps, one class weight). warm start on ${lessons.length} recent lessons, ${m.pos} bonds. v0 rules call until v1.1's own lines are calibrated`, tone: "info" });
@@ -910,6 +931,7 @@ async function pruneIndex() {
   p.hdel(K.idx, ...old);
   p.zrem(K.idxT, ...old);
   await p.exec();
+  for (const m of old) IDXM?.delete(m);
 }
 
 export async function processDue(model: NanoModel) {
@@ -1130,7 +1152,7 @@ function graphLine(g: Graph, meta: Meta | null) {
 function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   const x = features(featIn(rec, curveNow, ex));
   const v0 = score({ progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, description: rec.description, symbol: rec.symbol, name: rec.name, devBuySol: rec.devBuySol, farm: !!ex.tape?.farm?.farm, wire: !!rec.wire, pulse: !rec.wire && !!rec.pulse });
-  const sc = c.model1.n >= NANO_MIN ? nanoScore(c.model1, x) : v0.score;
+  const sc = nanoReady(c.model1) ? nanoScore(c.model1, x) : v0.score;
   const verdict = verdictOf(sc);
   rec.early = { at: c.now, score: sc, verdict, curve: curveNow, x };
   c.p.lpush(LAT("early"), Math.round((c.now - rec.createdAt) / 1000));
@@ -1178,7 +1200,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   // historian does. Before v0.1.28 the minute-1 tape stood in for minute 5, a picture the model never trained on
   const x = features(featIn(rec, curveNow, { ...ex, tape: ex.tape ?? null, g: ex.g ?? rec.g ?? null, meta: rec.meta ?? null }));
   const nano =
-    c.model.n >= NANO_MIN
+    nanoReady(c.model)
       ? (() => {
           const ns = nanoScore(c.model, x);
           return { score: ns, verdict: verdictOf(ns) };

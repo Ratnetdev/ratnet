@@ -52,7 +52,7 @@ const ok = (c: boolean, m: string) => {
   await sol.parsedTx("sig2").catch(() => (threw = true));
   ok(threw, "a timeout is still a failure (retried), not an empty result");
 
-  // nano: warm-started once more in v0.1.30 (the v0.1.28 code ran on the new model for a few minutes)
+  // nano: warm-started once more in v0.1.30 (the v0.1.28 code ran on the new model for a few minutes) (v0.1.41: once more, after the history-flag fix)
   const { K } = await import("../src/lib/redis");
   const nano = await import("../src/lib/nano");
   const m = nano.emptyModel();
@@ -64,7 +64,7 @@ const ok = (c: boolean, m: string) => {
   const a: any = await migrateNano();
   const nm = await loadModel();
   const v1: any = await R.get("rn:nano:v1");
-  ok(a.nano === "migrated" && nm.warm === "0.1.30" && nm.n === 50, `re-warmed from the lesson buffer (n=${nm.n})`);
+  ok(a.nano === "migrated" && ["0.1.30", "0.1.41"].includes(String(nm.warm)) && nm.n === 50, `re-warmed from the lesson buffer (n=${nm.n})`);
   ok(v1?.n === 5000, "the archived v1 model is not overwritten by a v2 one");
   const b: any = await migrateNano();
   ok(b.nano === "v2", "and only once");

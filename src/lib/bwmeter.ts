@@ -75,10 +75,13 @@ export async function bwTick() {
   const chat = ideasChat();
   if (!chat || !process.env.TELEGRAM_BOT_TOKEN) return;
   const gv = bwView();
+  const { bwSrcKey } = await import("./bwgov");
+  const src = ((await redis().hgetall<Record<string, number>>(bwSrcKey(now)).catch(() => null)) || {}) as Record<string, number>;
+  const srcLine = `Today by source: worker ${(Number(src.worker || 0) / 1e9).toFixed(2)}GB, site ${(Number(src.site || 0) / 1e9).toFixed(2)}GB.`;
   const lines = top.slice(0, 5).map(([k, v]) => `• ${esc(k)}: ${v}MB`).join("\n");
   await tgSend(
     chat,
-    `${alert ? "⚠️" : "📊"} <b>Redis bandwidth</b>: worker ${mb(total)}MB last hour (~${(perDay / 1000).toFixed(1)}GB a day). Today, worker and site together: ${(gv.dayMB / 1000).toFixed(2)}GB of ${(gv.allowMB / 1000).toFixed(1)}GB (pace now ${(gv.paceMB / 1000).toFixed(2)}GB)${gv.level ? `, <b>saving mode ${gv.level}</b>` : ""}. Compression saved ${mb(wireTotals.saved)}MB of writes so far.\n${lines}`,
+    `${alert ? "⚠️" : "📊"} <b>Redis bandwidth</b>: worker ${mb(total)}MB last hour (~${(perDay / 1000).toFixed(1)}GB a day). Today, worker and site together: ${(gv.dayMB / 1000).toFixed(2)}GB of ${(gv.allowMB / 1000).toFixed(1)}GB (pace now ${(gv.paceMB / 1000).toFixed(2)}GB)${gv.level ? `, <b>saving mode ${gv.level}</b>` : ""}. This hour ${gv.hourMB}MB (${gv.hourRate}x the hourly allowance). ${srcLine} Compression saved ${mb(wireTotals.saved)}MB of writes so far.\n${lines}`,
   ).catch(() => null);
 }
 

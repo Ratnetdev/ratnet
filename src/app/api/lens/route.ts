@@ -1,7 +1,7 @@
 import { lensDossier, lensView } from "@/lib/lens";
 import { isPubkey } from "@/lib/solana";
 import { memo } from "@/lib/memo";
-import { cached, fail } from "@/lib/http";
+import { cached, fail, ipOf, memLimit, tooMany } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +11,7 @@ export async function GET(req: Request) {
     const mint = new URL(req.url).searchParams.get("mint");
     if (mint) {
       if (!isPubkey(mint)) return fail("bad mint");
+      if (!memLimit(`lens:${ipOf(req)}`, 30, 60)) return tooMany();
       return cached({ dossier: await memo(`api:lens:${mint}`, 10_000, () => lensDossier(mint)) }, 10);
     }
     return cached(await memo("api:lens", 5_000, lensView), 5);

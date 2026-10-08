@@ -76,16 +76,42 @@ async function through(data: Uint8Array, t: CompressionStream | DecompressionStr
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+// v0.1.41: Node's own zlib when there is one (about 15x faster than the web stream; a full read of the desk's round
+// trips cost 0.4 to 0.8s of CPU with the stream), the web stream on the Edge runtime. Same deflate-raw format.
+const MAX_OUT = 4 * 1024 * 1024; // a stored value never inflates past 4MB (a crafted value cannot blow up memory)
+type Z = { deflateRawSync: (b: Uint8Array, o?: any) => Uint8Array; inflateRawSync: (b: Uint8Array, o?: any) => Uint8Array };
+let ZL: Z | null | undefined;
+function nodeZlib(): Z | null {
+  if (ZL !== undefined) return ZL;
+  ZL = null;
+  try {
+    const p: any = (globalThis as any).process;
+    ZL = p?.getBuiltinModule?.("zlib") || null;
+    if (!ZL && p?.versions?.node) ZL = (0, eval)("require")("zlib");
+  } catch {
+    ZL = null;
+  }
+  return ZL ?? null;
+}
+export const _wireEngine = () => (nodeZlib() ? "zlib" : "stream");
+
 export async function pack(v: string): Promise<string> {
   if (v.length < MIN || v.startsWith(MARK)) return v;
-  const z = MARK + b64(await through(new TextEncoder().encode(v), new CompressionStream("deflate-raw")));
+  const zl = nodeZlib();
+  const raw = new TextEncoder().encode(v);
+  const bytes = zl ? zl.deflateRawSync(raw, { level: 6 }) : await through(raw, new CompressionStream("deflate-raw"));
+  const z = MARK + b64(bytes);
   return z.length < v.length ? z : v;
 }
 
 export async function unpack(v: string): Promise<string> {
   if (!v.startsWith(MARK)) return v;
   try {
-    return new TextDecoder().decode(await through(unb64(v.slice(MARK.length)), new DecompressionStream("deflate-raw")));
+    const zl = nodeZlib();
+    const raw = unb64(v.slice(MARK.length));
+    const out = zl ? zl.inflateRawSync(raw, { maxOutputLength: MAX_OUT }) : await through(raw, new DecompressionStream("deflate-raw"));
+    if (out.byteLength > MAX_OUT) return v;
+    return new TextDecoder().decode(out);
   } catch {
     return v;
   }
@@ -192,6 +218,11 @@ export function installRedisWire(base?: string) {
       } catch {}
     }
     if (parsed && txt.includes(MARK)) out = JSON.stringify(await inflateDeep(parsed));
-    return new Response(out, { status: res.status, statusText: res.statusText, headers: { "content-type": res.headers.get("content-type") || "application/json" } });
+    // the answer's own headers (Upstash's sync token among them), minus the ones that describe the old body
+    const headers = new Headers(res.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    if (!headers.get("content-type")) headers.set("content-type", "application/json");
+    return new Response(out, { status: res.status, statusText: res.statusText, headers });
   };
 }

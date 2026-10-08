@@ -70,7 +70,8 @@ export async function listCached<T>(key: string, seqKey: string, max: number, id
   const c = LISTS.get(key);
   const now = Date.now();
   if (c && c.seq === seq && now - c.at < (seq == null ? 60_000 : FULL_EVERY)) return c.rows as T[];
-  if (c && seq != null && c.seq != null && Number(seq) > Number(c.seq) && now - c.at < FULL_EVERY) {
+  // a jump of more than 500 is a reset (v0.1.41: resets bump the counter by a million): read the list whole
+  if (c && seq != null && c.seq != null && Number(seq) > Number(c.seq) && Number(seq) - Number(c.seq) <= 500 && now - c.at < FULL_EVERY) {
     // only the newest rows: grow the window until it reaches the newest row already held
     const top = c.rows.length ? idOf(c.rows[0] as T) : null;
     for (const n of [Math.min(max, Number(seq) - Number(c.seq) + 4), 100]) {

@@ -10,6 +10,8 @@ const COLORS: Record<string, string> = { BOND: "#ffb547", WATCH: "#7fd1ff", DUST
 
 export async function GET(_: Request, props: { params: Promise<{ mint: string }> }) {
   const params = await props.params;
+  // v0.1.41: only real mint addresses reach the database
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(params.mint)) return new Response("bad mint", { status: 400 });
   let launch: L | null = null;
   let call: C | null = null;
   let run: { pk?: number; cUsd?: number | null } | null = null;

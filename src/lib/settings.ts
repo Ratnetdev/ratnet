@@ -4,11 +4,16 @@ import { K, redis } from "./redis";
 // v0.1.38: read at most every 3s per process (20 call sites read it, several of them every loop); a save in this
 // process clears it at once
 let cached: { at: number; v: Partial<Settings> | null } | null = null;
+let inflight: Promise<Partial<Settings> | null> | null = null;
 async function readRaw() {
   if (cached && Date.now() - cached.at < 3_000) return cached.v;
-  const v = await redis().get<Partial<Settings>>(K.settings);
-  cached = { at: Date.now(), v };
-  return v;
+  // v0.1.41: callers arriving together share one read
+  if (inflight) return inflight;
+  inflight = redis()
+    .get<Partial<Settings>>(K.settings)
+    .then((v) => ((cached = { at: Date.now(), v }), v))
+    .finally(() => (inflight = null));
+  return inflight;
 }
 
 export async function getSettings(): Promise<Settings> {

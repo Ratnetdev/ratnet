@@ -1,42 +1,15 @@
-import { venueTemplates } from "@/lib/venues";
-import { getBondCalls, getCalls, getFeed, getGrads, getRadar, getStats } from "@/lib/stats";
-import { getSettings } from "@/lib/settings";
+import { buildLive } from "@/lib/pages";
+import { readSite } from "@/lib/site";
 import { cached, fail } from "@/lib/http";
-import { memo } from "@/lib/memo";
-import { K, redis } from "@/lib/redis";
-import { solUsd } from "@/lib/solana";
 
 export const dynamic = "force-dynamic";
 
-// v0.1.40: polled by every open page; built at most every 5s per server instance (was on every CDN miss)
+// Polled by every open page. v0.1.41: the worker builds it every ~10s (lib/pages.ts); a server instance reads that
+// one key at most every 8s, and builds it itself only when the worker's copy is missing or old.
 export async function GET() {
   try {
-    // v0.1.40: 10s per server instance (call records, launch records and runs come from memory caches below it)
-    return cached(await memo("api:live", 10_000, build), 8);
+    return cached(await readSite("live", 8_000, 60_000, buildLive), 8);
   } catch (e) {
     return fail(e, 500);
-  }
-}
-
-async function build() {
-  {
-    const [stats, feed, calls, s, burns, radar, grads, desk, exam, bondCalls, ev] = await Promise.all([
-      getStats(),
-      getFeed(40),
-      getCalls(12),
-      getSettings(),
-      redis().lrange(K.burns, 0, 9),
-      getRadar(10),
-      getGrads(8),
-      redis().get<{ equity: number; start: number; live: boolean; liveStart: number | null; dayStart: number }>(K.deskState),
-      redis().get(K.deskExam),
-      getBondCalls(8).catch(() => []),
-      redis().lrange<any>(K.deskEv, 0, 19).catch(() => []),
-    ]);
-    const sol = await solUsd().catch(() => null);
-    // the agents' headline moments for the live toasts on every page: trades, sends, MOMO and MIND calls
-    const HEAD = new Set(["EXEC", "RISK", "KING", "MOMO", "MIND", "WIRE", "LEDGER", "HOUND", "PM", "CATCH", "SHIELD", "FLASH"]);
-    const agents = ((ev || []) as any[]).filter((e) => e && HEAD.has(e.agent) && (e.tone === "ok" || e.tone === "win" || e.tone === "loss")).slice(0, 12).map((e) => ({ agent: e.agent, at: e.at, mint: e.mint || "", symbol: e.symbol || "", text: String(e.text || "").slice(0, 160), tone: e.tone }));
-    return ({ stats, feed, agents, calls, bondCalls, burns, radar, grads, desk: desk ? { eq: desk.equity, base: desk.live ? desk.liveStart ?? desk.start : desk.start, live: desk.live, day: desk.dayStart, exam: exam || null } : null, live: { mint: s.mint, links: s.links, litter: s.litter, venues: venueTemplates(s) }, sol, now: Date.now() });
   }
 }

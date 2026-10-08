@@ -19,13 +19,14 @@
 // Starting numbers (target, horizon, cutoffs) are hints in the desk config (catch*). The model, its cutoff and the PM
 // sleeve size are learned. FILM follows every skip, the ghost desk takes what the desk can't.
 import { cachedRead, launchesCached } from "./lcache";
-import { memo } from "./memo";
+import { memo, memoDrop } from "./memo";
+import { bwLevel } from "./bwgov";
 import { poolSnaps, poolWatch, asHot, type PoolSnap } from "./pools";
 import { K, redis } from "./redis";
 import { agentLog } from "./agents";
 import { getSettings } from "./settings";
 import { getCurves, pmap, solUsd } from "./solana";
-import { board, confluence, recentCoins } from "./board";
+import { BB, BB_RECENT, board, confluence, recentCoins, type Post } from "./board";
 import { buyersOf } from "./hound";
 import { momoView, type Hot } from "./momo";
 import type { Launch } from "./digger";
@@ -89,9 +90,19 @@ async function loadModel(key = W): Promise<Model> {
 const pad = (x: number[]) => (x.length >= D ? x : [...x, ...new Array(D - x.length).fill(0)]);
 
 /** Standardised input (running mean and variance per feature; bias stays 1). */
+// v0.1.41: a variance floor and a cap at 5 deviations. Inputs that only exist live (the tape, tracked wallets, MIND,
+// LENS) are constant in the historian's rows, so their variance was ~1/n: after 5,000 history rows one live row sat 71
+// deviations out and a single label moved the weights by ~7 (every coin then scored 1.000). The history flag goes in
+// as it is (0 or 1).
+const CT_HIST = CT_FEATURES.indexOf("hist");
 function z(m: Model, x0: number[]) {
   const x = pad(x0);
-  return x.map((v, i) => (i === 0 ? 1 : (v - m.mu[i]) / Math.sqrt(Math.max(1e-6, m.m2[i] / Math.max(1, m.n)) + 1e-6)));
+  return x.map((v, i) => {
+    if (i === 0) return 1;
+    if (i === CT_HIST) return v;
+    const zz = (v - m.mu[i]) / Math.sqrt(Math.max(0.01, m.m2[i] / Math.max(1, m.n)));
+    return Math.max(-5, Math.min(5, zz));
+  });
 }
 export function predict(m: Model, x: number[]) {
   if (m.n < 30) return 0;
@@ -178,7 +189,7 @@ export function toX(f: Record<string, number>) {
 /** Build one snapshot's features from everything the agents already know about the coin. */
 async function features(c: Cand, rec: Launch | null, sol: number, prev: any, rt?: any, pl?: PoolSnap | null) {
   const now = Date.now();
-  const posts = await cachedRead(`bb:${c.mint}`, 15_000, () => board(c.mint)).catch(() => []);
+  const posts = BBC.get(c.mint)?.posts ?? (await cachedRead(`bb:${c.mint}`, 15_000, () => board(c.mint)).catch(() => []));
   const cf = confluence(posts, now);
   const tracked = (await cachedRead(`hb:${c.mint}`, 60_000, () => buyersOf(c.mint)).catch(() => [])).filter((x: any) => x.side !== "sell" && now - x.at < 2 * 3600_000).length;
   const t: any = rec?.tape;
@@ -280,6 +291,19 @@ async function resetRecordOnce() {
   await p.exec();
 }
 
+/** v0.1.41, once: both CATCH models and their records start over (they learned with unbounded inputs, see z()). */
+let retrained = false;
+async function retrainOnce() {
+  if (retrained) return;
+  const r = redis();
+  if (await r.set("rn:fix:ct:0.1.41", Date.now(), { nx: true })) {
+    await r.del(W, W2H, REC, REC2, RECM, RECM2, HIST);
+    for (const k of [W, W2H]) memoDrop(`ct:model:${k}`);
+    for (const k of [REC, REC2]) memoDrop(`ct:rec:${k}`);
+  }
+  retrained = true;
+}
+
 /** One pass: find candidates, snapshot them, score, signal the desk. Then follow peaks and learn from labels. */
 // v0.1.40: the last look at each coin lives in memory (it is read and rewritten for ~240 coins every pass); it is
 // written to Redis every 5 minutes so a restart keeps it. The live tape comes straight from the worker's memory when
@@ -297,9 +321,32 @@ async function lastFor(mints: string[]) {
   return Object.fromEntries(mints.map((m) => [m, LASTM.get(m)]));
 }
 async function rtFor(mints: string[]) {
+  // the live tape exists only in the worker's memory (v0.1.41: no Redis copy); elsewhere CATCH runs without it
   const local = (globalThis as any).__rnRt as ((ms: string[]) => Record<string, any>) | undefined;
-  if (local) return local(mints);
-  return ((await redis().hmget<Record<string, any>>("rn:rt", ...mints).catch(() => null)) || {}) as Record<string, any>;
+  return local ? local(mints) : ({} as Record<string, any>);
+}
+
+// v0.1.41: BOARD posts per coin in memory, re-read only for coins that got a new post since the last pass
+// (rn:bb:recent records every post time) or every 10 minutes. CATCH used to read 100 to 240 boards every 15s.
+const BBC = new Map<string, { at: number; posts: Post[] }>();
+let bbSeenAt = 0;
+async function refreshBoards(mints: string[]) {
+  const r = redis();
+  const now = Date.now();
+  const since = bbSeenAt ? bbSeenAt - 5_000 : 0;
+  const changed = new Set(((await r.zrange<string[]>(BB_RECENT, since, now + 60_000, { byScore: true }).catch(() => [])) || []).map(String));
+  bbSeenAt = now;
+  const need = mints.filter((m) => {
+    const h = BBC.get(m);
+    return !h || changed.has(m) || now - h.at > 10 * 60_000;
+  });
+  if (need.length) {
+    const p = r.pipeline();
+    for (const m of need) p.hgetall(BB(m));
+    const got = ((await p.exec().catch(() => [])) || []) as (Record<string, Post> | null)[];
+    need.forEach((m, i) => BBC.set(m, { at: now, posts: Object.values(got[i] || {}) }));
+  }
+  if (BBC.size > 3000) for (const [k, v] of BBC) if (now - v.at > 30 * 60_000) BBC.delete(k);
 }
 // the watched coins and every snapshot's own peak, in memory too (re-read every 15 minutes); follow() used to read
 // both whole hashes, thousands of entries, every minute
@@ -322,9 +369,12 @@ const ctRec = (k: string) => memo(`ct:rec:${k}`, 30_000, async () => ((await red
 export async function catchPass(force = false) {
   const r = redis();
   const now = Date.now();
+  // v0.1.41: saving mode 3 (the day's Redis allowance is gone): CATCH waits, the desk keeps its positions
+  if (bwLevel() >= 3) return { catch: "waiting: Redis saving mode 3" };
   if (!force && now - Number((await r.get(AT)) || 0) < 5_000) return { catch: "not due" };
   await r.set(AT, now);
   await resetRecordOnce();
+  await retrainOnce().catch(() => null);
   const s = await getSettings();
   const c: any = s.desk;
   if (c.catchMode === "off") return { catch: "off" };
@@ -392,6 +442,7 @@ export async function catchPass(force = false) {
     if (cand.stage === "curve" && (cand.prog || 0) < (c.catchMinCurve ?? 15)) continue;
     todo.push({ m, rec, cand, prev: last[m], hot, pl });
   }
+  await refreshBoards(todo.map((t) => t.m)).catch(() => null);
   const feats = await pmap(todo, 12, (t) => features(t.cand, t.rec, sol, t.prev, rtBy[t.m], t.pl).catch(() => null));
   const model2 = await ctModel(W2H);
   const rec2 = await ctRec(REC2);

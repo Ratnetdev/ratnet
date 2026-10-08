@@ -39,6 +39,7 @@ const ok = (c: boolean, m: string) => {
   let asked: string[] = [];
   const res = await pc.refreshPxCache(async (ms) => ((asked = ms), { MINTA: { px: 2e-8, grad: false }, MINTB: { px: 3e-8, grad: true, src: "dex" } }), t0 + 1000);
   ok(asked.sort().join() === "MINTA,MINTB" && res.priced === 1, "the worker prices what viewers asked for (a DexScreener-only price is not cached)");
+  (await import("../src/lib/memo")).memoDrop("pxall"); // v0.1.41: a server instance re-reads the cache every 4s
   const px2 = await pc.readPxCache(["MINTA"], Date.now());
   ok(!!px2.MINTA && px2.MINTA.px === 2e-8, "the next page load gets the worker's chain price");
   const old = await pc.readPxCache(["MINTA"], Date.now() + 60_000);

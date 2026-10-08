@@ -26,6 +26,20 @@ export async function limit(key: string, max: number, windowSec: number) {
   }
 }
 
+// v0.1.41: a per-instance limiter in memory, for public routes that take a coin or a filter. Costs no Redis command
+// (the Redis limiter above costs two per request, which is the bandwidth a flood is trying to burn).
+const ML = new Map<string, { at: number; n: number }>();
+export function memLimit(key: string, max: number, windowSec: number) {
+  const now = Date.now();
+  const w = ML.get(key);
+  if (!w || now - w.at > windowSec * 1000) {
+    if (ML.size > 20_000) ML.clear();
+    ML.set(key, { at: now, n: 1 });
+    return true;
+  }
+  return ++w.n <= max;
+}
+
 /** 429 response helper for public routes. */
 export const tooMany = () => NextResponse.json({ error: "Slow down a little." }, { status: 429, headers: { "cache-control": "no-store", "retry-after": "30" } });
 

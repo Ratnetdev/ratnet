@@ -117,13 +117,17 @@ export async function readGraph(creator: string, early: string[], base: number, 
 type Pipe = { hincrby: (k: string, f: string, n: number) => unknown };
 
 /** Credit the cluster and the early wallets once a taped launch resolves. */
-export function creditResolve(p: Pipe, funder: string | null | undefined, early: string[] | undefined, bonded: boolean, T: Tables = GK) {
+// v0.1.41: `weight` = how many launches this one stands for. The historian deep-reads every bonded launch but only 1
+// in 10 of the rest, so a sampled loser counts 10 (it counted 1, which made a sniper in 30 winners look ~5x better
+// than it was).
+export function creditResolve(p: Pipe, funder: string | null | undefined, early: string[] | undefined, bonded: boolean, T: Tables = GK, weight = 1) {
+  const n = Math.max(1, Math.round(weight));
   if (funder) {
-    p.hincrby(T.cN, funder, 1);
+    p.hincrby(T.cN, funder, n);
     if (bonded) p.hincrby(T.cB, funder, 1);
   }
   for (const w of early || []) {
-    p.hincrby(T.sN, w, 1);
+    p.hincrby(T.sN, w, n);
     if (bonded) p.hincrby(T.sB, w, 1);
   }
 }

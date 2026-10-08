@@ -126,9 +126,9 @@ export type ShieldInput = { mint: string; symbol: string; grad: boolean; sol: nu
 /** Run every check in parallel (about one second). */
 export async function shield(x: ShieldInput): Promise<ShieldResult> {
   const r = redis();
-  // v0.1.40: the worker's live tape from memory when SHIELD runs in the worker (rn:rt is only a slow copy)
+  // v0.1.40: the worker's live tape from memory when SHIELD runs in the worker 
   const local = (globalThis as any).__rnRt as ((ms: string[]) => Record<string, any>) | undefined;
-  const rt = (local ? local([x.mint])[x.mint] ?? null : await r.hget<any>("rn:rt", x.mint).catch(() => null)) as any;
+  const rt = (local ? local([x.mint])[x.mint] ?? null : null) as any; // v0.1.41: the tape lives only in the worker
   // a mint that passed its authority checks once stays clean (authorities can be revoked, never added back), so the
   // result is cached: a second signal on the same coin skips the chain read
   const mk = `rn:shield:mint:${x.mint}`;

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.41 · Run 9: bandwidth for real, and clean training
+- Why: 45 minutes after the new database went live, Redis ran at about 350MB an hour (roughly 8GB a day against the 2.8GB allowance), and the governor said "fine" because it only compared the whole UTC day. The King's nano model was also learning wrong: on an empty database it learns from the historian first, and the "replayed from history" input pushed every live coin toward BOND.
+- The worker builds what the pages read, as one compressed key each: the desk every ~6s, /api/live every ~10s, the explorer and the agent boards every minute, WIRE every 2 minutes. A server instance reads one key instead of building from raw data, and builds it itself only when the worker's copy is old (the age limit stretches with saving mode). The explorer index lives in the worker's memory.
+- Desk page: equity, learning, COACH, FILM, PM, ghost counts, the wallet balance, speed and the historian at most once a minute (20 to 60s); the equity line is downsampled to ~150 points; price paths for display from a 60s copy. /api/desk/equity read once a minute.
+- Prices: the worker writes the whole price cache as one value; pages read it at most every 4s and note what viewers want once per 25s per coin; /api/px cached 4s through the governor.
+- The live tape copy in Redis (rn:rt) is gone: CATCH and SHIELD read the worker's memory.
+- CATCH re-reads BOARD posts only for coins with a new post (rn:bb:recent), or every 10 minutes.
+- Governor rebuilt: a daily test and an hourly-rate test, the stricter wins; saving mode 3 (10x caches, CATCH and the agents wait) when the day is used up or the hour runs at 2.5x; each process flushes its bytes once a minute or at 256KB (and finishes the flush after the answer on Vercel). Daily bytes split by worker and site in the Telegram report and on /status; the /status tile shows the hour's rate and marks an old report.
+- Wire: Node's zlib on Node (about 15x faster than the web stream), the web stream on Edge, same format; a stored value never inflates past 4MB; Upstash's response headers are kept.
+- Public routes: /api/king accepts only real verdict filters; routes that take a coin are rate-limited in memory (no Redis cost); og cards check the mint first; the in-process cache is capped at 3,000 keys; settings reads are shared.
+- Lists: change counters jump by a million on a reset instead of being deleted (a cache could match the restarted counter); the nano version is a random tag.
+- HOUND: a webhook deleted on Helius is recreated (sync used to PUT to the old id and report done).
+- Training:
+  - nano: the history flag goes in raw (0 or 1), not standardized; nano and nano-1 make calls only after 200 live lessons (history replays still train them). The King page counts live lessons.
+  - CATCH: inputs are capped at 5 deviations with a variance floor (one live label could swing every score to 1.000).
+  - The historian credits wallet and cluster records with its sample weight (a sampled loser stands for 10).
+  - On the worker's start the epoch check runs before the nano warm start (it ran the other way round and wiped the historian's queue twice).
+  - Once on deploy: nano and nano-1 are warm-started again from the stored live lessons, the historian replays its window, the wallet and cluster counts start over, and both CATCH models and their records start over.
+- New test suite v041test (governor levels, zlib and the inflate cap, list resets, the history flag and live-lesson gate, CATCH caps, the memory limiter, the price cache, the Helius webhook). All suites pass.
+
 ## v0.1.40 · Redis bandwidth: built to fit the $20 plan
 - Why the database went down again: Upstash bills every byte sent to it and back, and the plan has 100GB a month. RATNET moved about 13GB a day, because many loops and pages read and rewrote the same large JSON values over and over: whole trade books, run records, model weights, account lists, every few seconds, often in several processes at once. The first round (below) cut the worst of it, but nothing capped the total. This build cuts the bytes and puts a hard pace on them.
 - Compression on the wire (lib/rediswire.ts): every value of 1KB or more is stored deflate-compressed (about a third of its size), and every answer is inflated before the code sees it, pipelines and transactions included. Keys, fields, set members and scores are never touched; old values stay readable. Works on Node, Vercel functions and the Edge runtime.

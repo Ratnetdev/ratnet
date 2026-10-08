@@ -89,32 +89,35 @@ async function govAlert() {
   const chat = ideasChat();
   if (!chat || !process.env.TELEGRAM_BOT_TOKEN) return;
   const text = lv
-    ? `⚠️ <b>Redis saving mode ${lv}</b>: ${(v.dayMB / 1000).toFixed(2)}GB used today, pace ${(v.paceMB / 1000).toFixed(2)}GB (allowance ${(v.allowMB / 1000).toFixed(1)}GB a day). Pages cache ${lv === 2 ? 6 : 3}x longer, the historian, agents and slow lane slow down. The desk keeps trading.`
+    ? `⚠️ <b>Redis saving mode ${lv}</b>: ${(v.dayMB / 1000).toFixed(2)}GB used today, pace ${(v.paceMB / 1000).toFixed(2)}GB (allowance ${(v.allowMB / 1000).toFixed(1)}GB a day). This hour ${v.hourMB}MB, ${v.hourRate}x the hourly allowance. Pages cache ${[1, 3, 6, 10][lv]}x longer, the historian, agents and slow lane slow down${lv >= 3 ? ", CATCH waits" : ""}. The desk keeps trading.`
     : `✅ <b>Redis back on pace</b>: ${(v.dayMB / 1000).toFixed(2)}GB today of ${(v.allowMB / 1000).toFixed(1)}GB. Normal speed again.`;
   await tgSend(chat, text).catch(() => null);
 }
 
-// v0.1.40: summaries the pages read as one key (lib/site.ts): the agent boards every ~20s, WIRE's view every 2 minutes
-let boardsAt = 0;
+// v0.1.41: everything the public pages read, built here once and stored as one compressed key each (lib/site.ts):
+// the desk every ~6s, /api/live every ~10s, the explorer and the agent boards every minute, WIRE every 2 minutes.
+// In saving mode every interval stretches 3x or 6x.
+const SITE: { name: string; every: number; at: number; busy: boolean; build: () => Promise<unknown> }[] = [
+  { name: "desk", every: 6_000, at: 0, busy: false, build: async () => (await import("../src/lib/desk")).getDesk() },
+  { name: "live", every: 10_000, at: 0, busy: false, build: async () => (await import("../src/lib/pages")).buildLive() },
+  { name: "coins", every: 60_000, at: 0, busy: false, build: async () => (await import("../src/lib/pages")).buildCoins() },
+  { name: "boards", every: 60_000, at: 0, busy: false, build: async () => (await import("../src/lib/boards")).buildBoards() },
+];
 let wireViewAt = 0;
-let siteBusy = false;
 async function siteTick() {
-  if (siteBusy) return;
-  siteBusy = true;
-  try {
-    const now = Date.now();
-    const m = bwMul();
-    if (now - boardsAt > 20_000 * m) {
-      boardsAt = now;
-      const { buildBoards } = await import("../src/lib/boards");
-      await publishSite("boards", buildBoards, 600).catch((e) => console.log("site boards", e?.message || e));
-    }
-    if (now - wireViewAt > 120_000 * m) {
-      wireViewAt = now;
-      await publishWireView().catch((e) => console.log("site wire", e?.message || e));
-    }
-  } finally {
-    siteBusy = false;
+  const now = Date.now();
+  const m = bwMul();
+  for (const j of SITE) {
+    if (j.busy || now - j.at < j.every * m) continue;
+    j.busy = true;
+    j.at = now;
+    publishSite(j.name, j.build, 900)
+      .catch((e) => console.log(`site ${j.name}`, e?.message || e))
+      .finally(() => (j.busy = false));
+  }
+  if (now - wireViewAt > 120_000 * m) {
+    wireViewAt = now;
+    await publishWireView().catch((e) => console.log("site wire", e?.message || e));
   }
 }
 async function beat() {
@@ -157,8 +160,6 @@ const LAST = new Map<string, { mc: number; at: number }>();
 let watched = new Set<string>();
 let lastMsgAt = Date.now();
 let lastStreamMark = 0;
-const FLUSHED = new Map<string, number>();
-let lastRtExpire = 0;
 
 function onTrade(m: any, kick: () => void) {
   const mint = String(m.mint);
@@ -202,8 +203,7 @@ function tapeOf(w: Trade[], now: number) {
   };
 }
 
-// v0.1.40: CATCH and SHIELD run in this process and read the tape straight from memory; rn:rt in Redis is only a
-// slow copy (every 15s, was every second) for anything outside the worker
+// CATCH and SHIELD run in this process and read the tape straight from memory (v0.1.40; v0.1.41 drops the Redis copy)
 (globalThis as any).__rnRt = (ms: string[]) => {
   const now = Date.now();
   const out: Record<string, unknown> = {};
@@ -215,7 +215,6 @@ function tapeOf(w: Trade[], now: number) {
   }
   return out;
 };
-let tapeFlushAt = 0;
 async function flushTape() {
   const now = Date.now();
   if (now - lastStreamMark > 10_000) {
@@ -223,25 +222,8 @@ async function flushTape() {
     const quiet = Math.round((now - lastMsgAt) / 1000);
     markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", ppKey: PP_KEY ? 1 : 0, lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
   }
-  if (now - tapeFlushAt < 15_000) return;
-  tapeFlushAt = now;
-  // only coins that traded since the last flush (the whole hash, hundreds of coins, used to be rewritten every second)
-  const out: Record<string, unknown> = {};
-  for (const [mint, w] of TAPE) {
-    const l = LAST.get(mint);
-    if (!l || now - l.at > 90_000 || FLUSHED.get(mint) === l.at) continue;
-    FLUSHED.set(mint, l.at);
-    out[mint] = { mc: l.mc, at: l.at, ...tapeOf(w, now) };
-  }
-  for (const m of Array.from(FLUSHED.keys())) if (!TAPE.has(m)) FLUSHED.delete(m);
-  if (Object.keys(out).length) {
-    const r = redis();
-    await r.hset("rn:rt", out).catch(() => {});
-    if (now - lastRtExpire > 30_000) {
-      lastRtExpire = now;
-      await r.expire("rn:rt", 180).catch(() => {});
-    }
-  }
+  // v0.1.41: no copy of the tape in Redis any more (rn:rt). CATCH and SHIELD read it from this process's memory
+  // (__rnRt); the copy was only for readers outside the worker, which only run when the worker is down.
 }
 
 /** Which coins to stream trades for: open positions, the 100 hottest curves, every migration of the last 2 hours
@@ -364,7 +346,6 @@ function pumpportal() {
     if (drop.length) {
       if (PP_KEY) ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: drop }));
       drop.forEach((k) => (TAPE.delete(k), LAST.delete(k), SEEN.delete(k)));
-      redis().hdel("rn:rt", ...drop).catch(() => 0);
     }
     watched = want;
   };
@@ -512,7 +493,7 @@ async function digSlowLoop() {
     await markAlive("rats_slow", { ...r, ...(f?.flashError ? { flashError: f.flashError } : {}) });
     if (n++ % 15 === 0 || r?.error || Date.now() - t0 > 30_000) console.log(new Date().toISOString(), "dig slow", `${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ ...r, ...f }).slice(0, 300));
     // v0.1.40: every ~4s, or every 12s / 30s in Redis saving mode 1 / 2
-    await new Promise((res) => setTimeout(res, Math.max(500, [4000, 12_000, 30_000][bwLevel()] - (Date.now() - t0))));
+    await new Promise((res) => setTimeout(res, Math.max(500, [4000, 12_000, 30_000, 60_000][bwLevel()] - (Date.now() - t0))));
   }
 }
 
@@ -547,7 +528,7 @@ async function agentLoop() {
     try {
       const r: any = await runSession(SESSION_MS, { desk: false, historian: false });
       // v0.1.40: in Redis saving mode the agents rest between sessions (30s, or 2 minutes in mode 2)
-      if (bwLevel()) await new Promise((res) => setTimeout(res, bwLevel() === 2 ? 120_000 : 30_000));
+      if (bwLevel()) await new Promise((res) => setTimeout(res, [0, 30_000, 120_000, 300_000][bwLevel()]));
       console.log(new Date().toISOString(), `session ${Math.round((Date.now() - t0) / 1000)}s`, JSON.stringify({ momo: r?.momo, mind: r?.mind, lens: r?.lens, catch: r?.catch, hound: r?.hound, overseer: r?.overseer }).slice(0, 500));
     } catch (e: any) {
       console.log("session error", e?.message || e);
@@ -570,6 +551,10 @@ async function main() {
   await redis().incr("rn:worker:boots").catch(() => 0);
   await redis().set("rn:worker:bootAt", Date.now()).catch(() => null);
   await seedRpcDay().catch(() => null);
+  // v0.1.41: the epoch check first. On an empty database it wipes the models, so the warm start must come after it
+  // (on 8 Oct it ran the other way round and the historian's queue was wiped twice)
+  const { ensureEpoch } = await import("../src/lib/epoch");
+  await ensureEpoch().catch(() => null);
   // King v1.1: nano moves to the v2 learner once (warm start on recent lessons); a no-op afterwards
   console.log("nano", JSON.stringify(await migrateNano().catch((e) => ({ nano: "error", error: String(e?.message || e) }))));
   console.log(`RATNET worker up · desk in ${DESK_MS / 1000}s sessions, agents in ${SESSION_MS / 1000}s sessions, rats in a 1s fast lane and a 4s slow lane, launches from the stream`);
@@ -602,7 +587,7 @@ async function main() {
       .catch((e) => console.log("x queue", e?.message || e))
       .finally(() => (xqBusy = false));
   }, 1_500);
-  setInterval(() => siteTick().catch(() => null), 5_000);
+  setInterval(() => siteTick().catch(() => null), 2_000);
   await beat();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);
 }

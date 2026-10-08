@@ -2,7 +2,7 @@ import { getRecord, VET_KEY } from "@/lib/desk";
 import { coinLog } from "@/lib/agents";
 import { isPubkey } from "@/lib/solana";
 import { redis } from "@/lib/redis";
-import { fail } from "@/lib/http";
+import { fail, ipOf, memLimit, tooMany } from "@/lib/http";
 import { publicChecks, publicEvs, publicTrip, serve } from "@/lib/private";
 import { lensDossier } from "@/lib/lens";
 import { feedbackFor } from "@/lib/feedback";
@@ -17,6 +17,7 @@ export async function GET(req: Request) {
   try {
     const mint = new URL(req.url).searchParams.get("mint") || "";
     if (!isPubkey(mint)) return fail("bad mint");
+    if (!memLimit(`dcoin:${ipOf(req)}`, 30, 60)) return tooMany();
     const full = await wantsFull(req);
     const [rec, log, vet, lens, fb, call, mind] = await Promise.all([
       memo(`record:coin:${mint}`, 15_000, () => getRecord(mint)), // v0.1.40: was read on every request

@@ -4,6 +4,7 @@
 // When the worker is down (no fresh summary), a page builds the summary itself as before.
 import { redis } from "./redis";
 import { memo } from "./memo";
+import { bwMul } from "./bwgov";
 
 const KEY = (name: string) => `rn:site:${name}`;
 
@@ -17,7 +18,9 @@ export async function publishSite(name: string, build: () => Promise<unknown>, t
 export async function readSite<T>(name: string, memoMs: number, maxAgeMs: number, build: () => Promise<T>): Promise<T> {
   return memo(`site:${name}`, memoMs, async () => {
     const got = await redis().get<{ at: number; v: T }>(KEY(name)).catch(() => null);
-    if (got && Date.now() - Number(got.at) < maxAgeMs && got.v != null) return got.v;
+    // v0.1.41: in saving mode the worker publishes less often, so "old" stretches with it (the pages used to rebuild
+    // everything themselves exactly when bandwidth was short)
+    if (got && Date.now() - Number(got.at) < maxAgeMs * bwMul() && got.v != null) return got.v;
     return build();
   });
 }

@@ -49,7 +49,9 @@ export const NANO_FEATURES = [
   { key: "narrative", label: "rising narrative pace (log)" },
 ] as const;
 
-export const NANO_MIN = 200; // labelled samples before nano starts making counted calls
+export const NANO_MIN = 200; // live lessons (v0.1.41: not history replays) before nano starts making counted calls
+/** Has the model learned enough live lessons to make calls? */
+export const nanoReady = (m: NanoModel | null | undefined) => (m?.nl || 0) >= NANO_MIN;
 
 // v2 learner (v0.1.29, King v1.1). What changed and why:
 //  - inputs standardized (running mean and spread per input): a 0-1 flag and a log count now move the score on the
@@ -96,6 +98,7 @@ export type NanoModel = {
   av?: number[]; // Adam second moment
   t?: number; // Adam steps
   warm?: string; // build that warm-started it
+  nl?: number; // v0.1.41: live lessons learned (not replayed from history); verdicts count only past NANO_MIN of them
 };
 
 export type FeatureInput = {
@@ -143,9 +146,14 @@ function fit(m: NanoModel, d: number) {
   m.av = grow(m.av, 0);
 }
 /** Standardized input i (the bias stays 1). */
+const HIST_I = NANO_FEATURES.findIndex((f: any) => (f?.key ?? f) === "hist");
 function zOf(m: NanoModel, x: number[], i: number) {
   if (i === 0) return 1;
   const v = fin(x[i] ?? 0);
+  // v0.1.41: the "replayed from history" flag goes in as it is (0 or 1). Standardized, it was a constant 1 while the
+  // model learned only from the historian, so every live coin (0) sat 5 deviations away and got a large push toward
+  // BOND (simulated: 17 to 53% of live losers called BOND).
+  if (i === HIST_I) return v;
   if (m.v !== NANO_V) return v;
   const z = (v - (m.mu?.[i] ?? 0)) / Math.sqrt((m.va?.[i] ?? 1) + 1e-6);
   return Math.max(-Z_CAP, Math.min(Z_CAP, z));
@@ -273,6 +281,7 @@ export function learn(m: NanoModel, x0: number[], bonded: boolean, _posWeight?: 
   }
   m.acc = m.acc * (1 - EMA) + ((p >= 0.5) === bonded ? 1 : 0) * EMA;
   m.n += 1;
+  if (HIST_I > 0 && !x[HIST_I]) m.nl = (m.nl || 0) + 1;
   if (bonded) m.pos += 1;
   m.updatedAt = Date.now();
   return m;
