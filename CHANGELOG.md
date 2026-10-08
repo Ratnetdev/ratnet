@@ -15,7 +15,11 @@
   - the Rat Cam sits above the tab bar; panel headers wrap instead of squeezing;
   - viewport-fit cover with safe-area insets; menus and popups never scroll the page behind them; alerts popup has a max height.
 - Desk "right now" panel: a "Why no new buys" box says what is holding buys back, in plain words: King calls paused by the day's chain budget, or a strategy paused by PM after a bad run (until when, and that the ghost desk takes its signals meanwhile). On 8 Oct both happened at once and the desk looked dead with no reason shown.
-- Chain budget: the rats' chain backfill (launches the stream missed) runs every 10 seconds instead of every second (~78K credits a day saved; the stream delivers nearly every launch within a second). BACKFILL_MS changes it.
+- Chain budget:
+  - the rats' chain backfill (launches the stream missed) runs every 10 seconds instead of every second (~78K credits a day saved; the stream delivers nearly every launch within a second). BACKFILL_MS changes it;
+  - launches older than 10 minutes are never back-read (past their minute-1 read and minute-5 call). At 00:00 UTC on 8 Oct the rats read the whole night's gap and used the day's head start in 9 minutes (10.8K credits), then paused again;
+  - the historian stops at 75% of the day's pace and the agents at 95% (were 90% and 100%), so King calls keep their room;
+  - /status, Chain reads: the top RPC methods per lane this hour, so a lane that eats the budget shows what it does.
 - Accessibility: visible keyboard focus on every control, brighter secondary text (dim 5.4:1, hints 3.4:1, were 4.3:1 and 2.0:1), reduced motion respected (CSS animations, number roll, Den and Rat Cam canvases), charts let the page scroll vertically on touch and clear their tooltip after a tap.
 
 ## v0.1.35 · Hotfix: the X budget is enforced

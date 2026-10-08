@@ -516,7 +516,11 @@ async function digNew(model: NanoModel) {
   // the stream normally delivers every launch within a second: the chain read only fills what it missed, so a
   // launch the stream already brought costs nothing here (no parse, no RPC) and the backfill keeps up easily
   const seen = await r.mget<(number | null)[]>(...oldestFirst.map((x) => SEEN_SIG(x.signature))).catch(() => [] as (number | null)[]);
-  const unseen = oldestFirst.filter((x, i) => !seen[i]);
+  // v0.1.36: a launch older than 10 minutes is past its minute-1 read and its minute-5 call, so it is not read at all.
+  // After a budget pause the backfill used to read the whole gap (up to 1,000 creates) the moment the day reset, and
+  // spent the day's head start in minutes (8 Oct: 10.8K credits in the first 9 minutes, then the rats paused again)
+  const STALE_MS = 10 * 60_000;
+  const unseen = oldestFirst.filter((x, i) => !seen[i] && !!x.blockTime && Date.now() - x.blockTime * 1000 < STALE_MS);
   const batch = unseen.slice(0, MAX_TX_PER_RUN);
   // cursor: past everything the stream covered, up to the last tx we parse now
   const lastIdx = batch.length ? oldestFirst.indexOf(batch[batch.length - 1]) : oldestFirst.length - 1;
@@ -524,7 +528,7 @@ async function digNew(model: NanoModel) {
   const ok = batch.filter((x) => !x.err);
   if (!ok.length) {
     await r.set(K.cursor, newCursor);
-    return { dug: 0, scanned: oldestFirst.length, fromStream: oldestFirst.length - unseen.length };
+    return { dug: 0, scanned: oldestFirst.length, skipped: oldestFirst.length - unseen.length };
   }
 
   const FAIL = Symbol("fail");

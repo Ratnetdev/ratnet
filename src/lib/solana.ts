@@ -135,7 +135,8 @@ function budgetBlocks(l: number) {
   const b = budgetState();
   // the desk is never locked out: it must always be able to price and exit what it holds (v0.1.28 stopped it at 115%
   // of the day, so late in a heavy day it could not see its own positions). It is counted, and it is the smallest lane.
-  const lim = [Infinity, b.pace * 1.05, b.pace, b.pace * 0.9][Math.max(0, Math.min(3, l))];
+  // v0.1.36: the historian stops at 75% of pace and the agents at 95%, so the rats (King calls) keep their room
+  const lim = [Infinity, b.pace * 1.05, b.pace * 0.95, b.pace * 0.75][Math.max(0, Math.min(3, l))];
   return b.used >= lim;
 }
 /** Whether a lane may still read the chain today (loops check before a pass instead of failing call by call). */
@@ -149,6 +150,17 @@ const slot = (l: number, cost: number) =>
     pump();
   });
 export const rpcStats = { calls: 0, throttled: 0, byLane: [0, 0, 0, 0], fails: 0, lastError: "" };
+// which RPC methods each lane spends on, this hour (v0.1.36): /status shows the top ones, so a lane that eats the budget
+// says what it is doing
+let methodsHour = "";
+const METHODS = new Map<string, number>();
+export function noteMethod(l: number, method: string, n: number) {
+  const h = new Date().toISOString().slice(0, 13);
+  if (h !== methodsHour) (methodsHour = h), METHODS.clear();
+  const k = `${["desk", "rats", "agents", "historian"][l] || "?"}:${method}`;
+  METHODS.set(k, (METHODS.get(k) || 0) + n);
+}
+export const methodsView = () => ({ hour: methodsHour, top: Array.from(METHODS.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12) });
 const thr1m: number[] = [];
 /** The limiter's last minute, per lane: calls, average wait in the queue, what is waiting now, 429s, the live ceiling. */
 export function rpcView() {
@@ -161,7 +173,7 @@ export function rpcView() {
     const calls = xs.reduce((a, x) => a + x[2], 0);
     return { lane: name, perSec: Math.round((calls / 60) * 10) / 10, waitMs: xs.length ? Math.round(xs.reduce((a, x) => a + x[3], 0) / xs.length) : 0, queued: queues[l].length };
   });
-  return { plan: RPS, cap: CAP, capNow, day: budgetState(), perSec: Math.round((log1m.reduce((a, x) => a + x[2], 0) / 60) * 10) / 10, throttled1m: thr1m.length, lanes: by };
+  return { plan: RPS, cap: CAP, capNow, day: budgetState(), methods: methodsView(), perSec: Math.round((log1m.reduce((a, x) => a + x[2], 0) / 60) * 10) / 10, throttled1m: thr1m.length, lanes: by };
 }
 const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 8000);
 const BATCH_MAX = 10;
@@ -174,7 +186,8 @@ export async function limitedFetch(input: any, init?: any): Promise<Response> {
     if (b.startsWith("[")) {
       batch = JSON.parse(b) as unknown[];
       cost = Math.max(1, batch.length);
-    }
+      if (batch.length <= BATCH_MAX) for (const x of batch as any[]) noteMethod(l, String(x?.method || "?"), 1);
+    } else if (b) noteMethod(l, String(JSON.parse(b)?.method || "?"), 1);
   } catch {}
   // a big JSON-RPC batch (a tape read asks for ~42 transactions at once) goes out in slices of 10: it fits every lane's
   // share and never lands on the plan as one burst (the plan counts every call inside a batch)
