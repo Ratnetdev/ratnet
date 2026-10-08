@@ -46,7 +46,7 @@ async function tgInfo() {
 }
 
 export async function GET() {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   const r = redis();
   const [worker, hook, xsync, tg, hst, hn] = await Promise.all([
     r.get("rn:worker:at").catch(() => null),
@@ -76,7 +76,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   const { action } = await req.json().catch(() => ({ action: "" }));
   try {
     if (action === "tg") return json(await (await import("@/lib/tgbot")).setupHook());

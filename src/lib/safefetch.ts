@@ -5,7 +5,9 @@
 //  - redirects are followed by hand (max 3) and every hop is re-checked;
 //  - the body is streamed with a hard byte cap and a deadline that covers the whole read, not just the headers.
 import { lookup } from "dns/promises";
+import { lookup as dnsLookup, type LookupAddress } from "dns";
 import { isIP } from "net";
+import { Agent, fetch as ufetch } from "undici";
 
 const PRIVATE4 = [
   [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12],
@@ -47,6 +49,20 @@ export async function publicUrl(raw: string, httpsOnly = false) {
   return ok ? u : null;
 }
 
+// DNS rebinding guard (v0.1.39): the check above resolves the host, but fetch used to resolve it again on its own,
+// so a hostile DNS server could answer with a public address for the check and a private one for the connection.
+// Every connection now resolves through this lookup, which refuses private addresses at connect time.
+export function connectLookup(host: string, opts: any, cb: (err: NodeJS.ErrnoException | null, address: any, family?: number) => void) {
+  dnsLookup(host, { ...opts, all: true }, (err, addrs) => {
+    if (err) return cb(err, undefined as any);
+    const list = (Array.isArray(addrs) ? addrs : []) as LookupAddress[];
+    if (!list.length || list.some((a) => privateIp(a.address))) return cb(Object.assign(new Error("blocked address"), { code: "EBLOCKED" }), undefined as any);
+    if (opts?.all) cb(null, list);
+    else cb(null, list[0].address, list[0].family);
+  });
+}
+const guarded = new Agent({ connect: { lookup: connectLookup as any } });
+
 export type Got = { buf: Buffer; type: string; url: string; status: number; ok: boolean };
 
 /** Fetch a hostile URL safely. Throws on anything off. */
@@ -57,7 +73,7 @@ export async function safeFetch(raw: string, o: { maxBytes?: number; timeoutMs?:
   for (let hop = 0; hop < 4; hop++) {
     const u = await publicUrl(url, o.httpsOnly);
     if (!u) throw new Error("blocked url");
-    const r = await fetch(u, { redirect: "manual", signal: deadline, cache: "no-store", headers: { "user-agent": "Mozilla/5.0 (compatible; ratnet)", ...(o.headers || {}) } });
+    const r = await ufetch(u, { redirect: "manual", signal: deadline, dispatcher: guarded, headers: { "user-agent": "Mozilla/5.0 (compatible; ratnet)", ...(o.headers || {}) } });
     if (r.status >= 300 && r.status < 400) {
       const loc = r.headers.get("location");
       if (!loc) throw new Error("bad redirect");

@@ -60,7 +60,7 @@ function linesFor(f: FeedItem): Line[] {
   }
 }
 
-function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, nuggets: React.MutableRefObject<Nugget[]>, dims: Dims) {
+function useTunnel(canvas: React.RefObject<HTMLCanvasElement | null>, active: boolean, nuggets: React.MutableRefObject<Nugget[]>, dims: Dims) {
   useEffect(() => {
     if (!active) return;
     const { W, H, CELL, PX, FONT } = dims;
@@ -204,7 +204,7 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement>, active: boolean, 
   }, [active, canvas, nuggets, dims]);
 }
 
-function useRatStream(canvas: React.RefObject<HTMLCanvasElement>, keep: number) {
+function useRatStream(canvas: React.RefObject<HTMLCanvasElement | null>, keep: number) {
   const [lines, setLines] = useState<Line[]>([]);
   const [typing, setTyping] = useState<{ line: Line; n: number } | null>(null);
   const [rat, setRat] = useState("SCOUT-1");

@@ -10,6 +10,9 @@ const EPS: [string, string, string][] = [
   ["GET", "/api/coin/{CA}", "Everything the rats dug on one launch: metadata, dev history, checkpoints, call, outcome."],
   ["GET", "/api/king/weights", "Rat King nano's sample count, loss and training log."],
   ["GET", "/api/ledger", "Payout rounds, burns and the public dataset drops."],
+  ["GET", "/api/boards", "What every desk agent sees right now in one call: FLASH, CATCH, the BOARD, MOMO, MIND, HOUND and LENS. Cached 3s."],
+  ["GET", "/api/desk/record", "The desk's public track record: every round trip with entry, exits and P&L after every fee. Add ?book=ghost for the ghost desk."],
+  ["GET", "/api/px?m={CA},{CA}", "Live market caps (USD) for up to 60 coins, from the worker's chain reads. Cached 2s."],
   ["GET", "/api/og/{CA}", "1200×630 share card for a call. Use it as an image in bots and posts."],
 ];
 

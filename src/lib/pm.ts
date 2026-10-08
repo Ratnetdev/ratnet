@@ -28,6 +28,13 @@ async function load(): Promise<PM> {
   return { king: { ...empty(), ...(x.king || {}) }, early: { ...empty(), ...(x.early || {}) }, wire: { ...empty(), ...(x.wire || {}) }, vamp: { ...empty(), ...(x.vamp || {}) }, momo: { ...empty(), ...(x.momo || {}) }, mind: { ...empty(), ...(x.mind || {}) }, catch: { ...empty(), ...(x.catch || {}) }, flash: { ...empty(), ...(x.flash || {}) } };
 }
 
+/** A paper reset starts every strategy unpaused (what PM learned about each one is kept). */
+export async function pmClearPauses() {
+  const pm = await load();
+  for (const k of Object.keys(pm) as Sleeve[]) pm[k].pausedUntil = 0;
+  await redis().set(KEY, pm);
+}
+
 function stats(s: S) {
   const r = s.r;
   const n = r.length;

@@ -16,7 +16,7 @@ export async function GET(req: Request) {
   try {
     const mint = new URL(req.url).searchParams.get("mint") || "";
     if (!isPubkey(mint)) return fail("bad mint");
-    const full = wantsFull(req);
+    const full = await wantsFull(req);
     const [rec, log, vet, lens, fb, call, mind] = await Promise.all([
       getRecord(mint),
       coinLog(mint),

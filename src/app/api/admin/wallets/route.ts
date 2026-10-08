@@ -7,7 +7,7 @@ export const maxDuration = 30;
 
 // Admin: add a wallet to HOUND's book (checked for proof), switch one off, rename it.
 export async function POST(req: Request) {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   try {
     const b = await req.json();
     if (b.action === "add") return json({ ok: true, wallet: await addWallet(String(b.w || "").trim(), String(b.name || "wallet"), b.handle ? String(b.handle).replace(/^@/, "") : null, b.proof ? String(b.proof) : null, b.cls === "admin" ? "admin" : "kol") });

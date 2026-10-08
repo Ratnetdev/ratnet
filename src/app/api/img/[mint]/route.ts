@@ -67,7 +67,8 @@ function badge(sym: string, mint: string) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="hsl(${h},45%,18%)"/><rect x="1" y="1" width="62" height="62" rx="13" fill="none" stroke="hsl(${h},60%,45%)" stroke-opacity=".6"/><text x="32" y="41" text-anchor="middle" font-family="monospace" font-size="24" font-weight="700" fill="hsl(${h},85%,72%)">${t}</text></svg>`;
 }
 
-export async function GET(req: Request, { params }: { params: { mint: string } }) {
+export async function GET(req: Request, props: { params: Promise<{ mint: string }> }) {
+  const params = await props.params;
   const mint = params.mint;
   if (!MINT.test(mint)) return new Response("bad mint", { status: 400 });
   const sym = (new URL(req.url).searchParams.get("s") || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 8);

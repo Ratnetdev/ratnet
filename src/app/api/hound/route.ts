@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   try {
     const mint = new URL(req.url).searchParams.get("mint");
-    const full = wantsFull(req);
+    const full = await wantsFull(req);
     if (mint) {
       if (!isPubkey(mint)) return fail("bad mint");
       const b = await buyersOf(mint);

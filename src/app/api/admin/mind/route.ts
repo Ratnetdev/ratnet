@@ -7,12 +7,12 @@ export const maxDuration = 60;
 
 // MIND's lesson book (admin only): read it, switch lessons on or off, teach it.
 export async function GET() {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   return json({ lessons: await lessonBook() });
 }
 
 export async function POST(req: Request) {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   try {
     const b = await req.json();
     if (b.action === "teach") {

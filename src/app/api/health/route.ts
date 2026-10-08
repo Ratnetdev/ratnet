@@ -20,7 +20,7 @@ export async function GET(req: Request) {
     out.rpc = safeErr(e);
   }
   const ok = out.redis === true && typeof out.rpcSlot === "number";
-  if (!(new URL(req.url).searchParams.get("full") === "1" && isAdmin())) return cached({ ok }, 15);
+  if (!(new URL(req.url).searchParams.get("full") === "1" && (await isAdmin()))) return cached({ ok }, 15);
   out.ok = ok;
   out.blob = !!process.env.BLOB_READ_WRITE_TOKEN;
   out.admin = !!process.env.ADMIN_PASSWORD;

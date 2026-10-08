@@ -74,6 +74,7 @@ export async function pickedOn(tid: string) {
 }
 export async function addVamp(tid: string, mint: string) {
   await redis().sadd(VP(tid), mint);
+  await redis().expire(VP(tid), 3 * 86400); // v0.1.39: one set per post, gone after 3 days
 }
 
 /** Two hours on: which copy ran furthest? Move the weights toward the winner. */

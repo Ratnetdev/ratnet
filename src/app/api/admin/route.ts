@@ -14,13 +14,13 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET() {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   const [settings, rounds, sniffers] = await Promise.all([getSettings(), getRounds(), redis().smembers(K.sniffers)]);
   return json({ settings, rounds, currentRound: roundOf(), sniffers: sniffers.length });
 }
 
 export async function POST(req: Request) {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   try {
     const body = await req.json();
     switch (body.action) {

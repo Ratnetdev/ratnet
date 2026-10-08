@@ -5,7 +5,8 @@ import { publicCall } from "@/lib/private";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_: Request, { params }: { params: { mint: string } }) {
+export async function GET(_: Request, props: { params: Promise<{ mint: string }> }) {
+  const params = await props.params;
   if (!isPubkey(params.mint)) return fail("Not a valid CA");
   try {
     const { launch, call, mkt, run } = await getCoin(params.mint);

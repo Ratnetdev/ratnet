@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
 // The whole playbook in one place, admin only: every rule and threshold, every prior and what COACH made of it,
 // the King's rules and nano's weights, FILM's grades, the PM sleeves, WIRE's best accounts and your feedback.
 export async function GET() {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   try {
     const [d, nano, fb, cal, stats, book, mrec, unlock, picker] = await Promise.all([getDesk(), getNano(), feedbackSummary(), loadCal(), getStats(), lessonBook(), mindRecord(), mindUnlocked(), pickerView()]);
     const execLog = ((await (await import("@/lib/redis")).redis().lrange<any>("rn:exec:log", 0, 19)) || []) as any[];

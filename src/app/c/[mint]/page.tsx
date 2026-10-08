@@ -5,7 +5,8 @@ import { isPubkey } from "@/lib/solana";
 
 export const dynamic = "force-dynamic";
 
-export async function generateMetadata({ params }: { params: { mint: string } }): Promise<Metadata> {
+export async function generateMetadata(props: { params: Promise<{ mint: string }> }): Promise<Metadata> {
+  const params = await props.params;
   let title = "Coin · RATNET";
   let desc = "The Rat King's call on this launch.";
   try {
@@ -20,6 +21,7 @@ export async function generateMetadata({ params }: { params: { mint: string } })
   return { title, description: desc, openGraph: { title, description: desc, images: [img] }, twitter: { card: "summary_large_image", title, description: desc, images: [img] } };
 }
 
-export default function CoinPage({ params }: { params: { mint: string } }) {
+export default async function CoinPage(props: { params: Promise<{ mint: string }> }) {
+  const params = await props.params;
   return <CoinView mint={params.mint} />;
 }

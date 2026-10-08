@@ -33,7 +33,7 @@ import { NANO_MIN, type NanoModel } from "./nano";
 import { agentLog, type AgentEv } from "./agents";
 import { coachStats, coachStep, follow, followsFor, tripId, type Check } from "./coach";
 import { filmStats, filmStep, logSkip } from "./film";
-import { exitProfiles, noteExit, onClose as pmClose, onGhost as pmGhost, pmDropWicks, pmView, sleeveOf, sleeveWeight, type ExitProfile } from "./pm";
+import { exitProfiles, noteExit, onClose as pmClose, onGhost as pmGhost, pmClearPauses, pmDropWicks, pmView, sleeveOf, sleeveWeight, type ExitProfile } from "./pm";
 import { accountOf, notePnl, wireView } from "./wire";
 import { getHistory } from "./historian";
 import { enqueueLens, lensDossier } from "./lens";
@@ -397,6 +397,22 @@ export async function resetOnceForCosts() {
   if (st?.live) return false;
   if (!(await r.set("rn:desk:reset:0.1.31", Date.now(), { nx: true }))) return false;
   await resetDesk("v0.1.31: paper now pays live costs");
+  return true;
+}
+
+/**
+ * v0.1.39 (Run 8, final verification): one clean paper start, so the exam measures only the desk as it is after all
+ * eight audit runs. Same rules as the v0.1.31 reset: never while live, once, the old record archived, everything
+ * learned kept; strategies paused before the reset start unpaused.
+ */
+export async function resetOnceForFinal() {
+  const r = redis();
+  if (await r.get("rn:desk:reset:0.1.39")) return false;
+  const st = await r.get<DeskState>(K.deskState);
+  if (st?.live) return false;
+  if (!(await r.set("rn:desk:reset:0.1.39", Date.now(), { nx: true }))) return false;
+  await resetDesk("v0.1.39: clean start for the final verification run");
+  await pmClearPauses().catch(() => null);
   return true;
 }
 
@@ -1076,6 +1092,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     // v0.1.31: the paper desk starts over once, now that paper pays live costs (done here, under the desk lock, so an
     // older desk still running cannot write its books back over the reset)
     await resetOnceForCosts().catch(() => false);
+    await resetOnceForFinal().catch(() => false);
     await dropWicksOnce().catch(() => null);
     const s = await getSettings();
     const cfg = s.desk;

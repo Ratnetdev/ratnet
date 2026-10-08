@@ -6,13 +6,13 @@ import { fail, json } from "@/lib/http";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   return json({ options: FB_TAGS, ...(await feedbackSummary()) });
 }
 
 // Admin feedback on one trade, call or skip.
 export async function POST(req: Request) {
-  if (!isAdmin()) return fail("unauthorized", 401);
+  if (!(await isAdmin())) return fail("unauthorized", 401);
   try {
     const b = await req.json();
     if (!isPubkey(String(b.mint || ""))) return fail("bad mint");

@@ -8,7 +8,8 @@ type L = { symbol: string; name: string; outcome?: string; bondSecs?: number; pN
 
 const COLORS: Record<string, string> = { BOND: "#ffb547", WATCH: "#7fd1ff", DUST: "#ff5c5c", BONDED: "#ffb547", DIED: "#ff5c5c", ALIVE: "#8a9a91" };
 
-export async function GET(_: Request, { params }: { params: { mint: string } }) {
+export async function GET(_: Request, props: { params: Promise<{ mint: string }> }) {
+  const params = await props.params;
   let launch: L | null = null;
   let call: C | null = null;
   let run: { pk?: number; cUsd?: number | null } | null = null;

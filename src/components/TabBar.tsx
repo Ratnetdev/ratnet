@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 import { useLive } from "./Live";
 
 // App-style bottom bar on phones: the five places people actually go, one thumb away.
-const TABS: { href: string; label: string; match: string[]; icon: JSX.Element }[] = [
+const TABS: { href: string; label: string; match: string[]; icon: React.JSX.Element }[] = [
   { href: "/", label: "feed", match: ["/"], icon: <path d="M2 3h12v2H2zM2 7h12v2H2zM2 11h8v2H2z" /> },
   { href: "/desk", label: "desk", match: ["/desk"], icon: <path d="M1 12h14v2H1zM3 8h2v3H3zM7 5h2v6H7zM11 2h2v9h-2z" /> },
   { href: "/radar", label: "coins", match: ["/radar", "/explore", "/sniff", "/c"], icon: <path d="M7 1h2v2H7zM3 3h2v2H3zM11 3h2v2h-2zM1 7h2v2H1zM13 7h2v2h-2zM6 6h4v4H6zM3 11h2v2H3zM11 11h2v2h-2zM7 13h2v2H7z" /> },

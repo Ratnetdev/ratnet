@@ -107,7 +107,7 @@ The data never runs out. Every new launch is a new training sample, so the King 
 | History | HISTORIAN (`src/lib/historian.ts`) | Replays past launches in time order and trains every model on them, with no look-ahead. |
 | Runs | Runner model (`src/lib/runner.ts`) | Follows every bond for 7 days and learns P(next market cap milestone). |
 | Execution | The Desk (`src/lib/desk.ts`) | Vet, size, buy, manage and sell positions. Shadow entries, COACH exit reviews. Paper or live. |
-| Interface | Next.js 14 app + open API | Live feed, radar, explore, desk, lab, coin pages, share cards. |
+| Interface | Next.js 15 app + open API | Live feed, radar, explore, desk, lab, coin pages, share cards. |
 
 One scheduled ping per minute drives the whole system. Each ping opens a ~55 second session in which the desk re-reads open positions every 2 seconds and the rats dig every 10 seconds.
 
@@ -131,7 +131,7 @@ For each launch the rats:
 
 **Market caps from the chain.** Coins on the curve: price from the curve account. Graduated coins: price from the canonical pool's two vaults, one RPC call for up to 50 coins. DexScreener is only used for volume and buy/sell flow, never for the market cap, so post-bond peaks are exact and instant.
 
-**RPC budget.** The desk, the rats and the historian share one rate limiter (`RPC_RPS`). The desk and the dig always go first; the historian only uses spare capacity. A rate-limit answer slows everyone down and retries instead of failing. On top of the per-second limit there is a daily budget (`RPC_CALLS_PER_DAY`, default 300K = a 10M-a-month plan over 30 days), paced through the UTC day: the historian pauses first, then the agents, then the rats; the desk may go 15% over so it can always price and exit. Launch tapes and desk prices come from the PumpPortal stream first, so most of the day costs no chain reads.
+**RPC budget.** The desk, the rats, the agents and the historian share one rate limiter (`RPC_RPS`) in four lanes; the desk always goes first and the historian only uses spare capacity. On top of it there is a daily budget (`RPC_CALLS_PER_DAY`, default 300K = a 10M-a-month plan over 30 days), handed out evenly through the UTC day: the historian waits at 75% of pace, the agents at 95%, the rats at 105%; the desk never waits. What keeps the day inside it: open positions are priced from a Helius account feed (a few hundred bytes per price change), the chain at most every 2s per position and less for watches (5s) and learning reviews (30s); launch tapes are read only for launches with 8%+ of the curve at minute 5 (5%+ at minute 1); the back-read of missed launches runs every 10s and skips anything older than 10 minutes; the site's prices come from the worker's cache, never from chain reads on Vercel.
 
 **TAPE (trades).** For every coin moving at its read (curve 5%+ at minute 5, 3%+ at minute 1) the rats read the curve's transactions: trade count and speed, unique traders, SOL per buy, buy share, bundle wallets in the create slot, snipers in the next two slots, top-5 early concentration and whether the dev has sold. The token accounts of the dev, bundle wallets, snipers and top buyers are kept, so the desk can watch those bags while it holds.
 
@@ -533,17 +533,19 @@ RATNET is open source. To run your own instance, deploy on Vercel, add Upstash R
 | `ANTHROPIC_API_KEY` | Optional. Turns MIND on (the language model behind it). Without it MIND stays off and everything else runs. |
 | `MIND_MODEL` | Optional. Default `claude-sonnet-5-5`. `claude-haiku-4-5-20251001` is about 3x cheaper. |
 | `MIND_PER_HOUR` | Optional. Judgements per hour (default 30), plus up to 6 post-mortem and school calls. |
-| `X_API_KEY` | Optional. twitterapi.io key for WIRE and LENS (LENS uses it for X profiles, posts and the CA search; ~3 reads per coin, max 20 coins an hour). Without it LENS still reads websites, domains and Telegram. Set the webhook URL in the twitterapi.io dashboard to `https://www.ratnet.network/api/x/hook?key=<CRON_SECRET>`; WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `https://www.ratnet.network/api/x/sync?key=<CRON_SECRET>`). |
+| `X_API_KEY` | Optional. twitterapi.io key for WIRE and LENS (LENS uses it for X profiles, posts and the CA search; ~3 reads per coin, max 20 coins an hour). Without it LENS still reads websites, domains and Telegram. Set the webhook URL in the twitterapi.io dashboard to `https://www.ratnet.network/api/x/hook` (twitterapi.io sends your X_API_KEY as a header; or add `?key=<X_HOOK_SECRET>`); WIRE pushes its account list as filter rules every 10 minutes when it changes (or now: `https://www.ratnet.network/api/x/sync?key=<CRON_SECRET>`). |
 | `X_RULE_INTERVAL` | Optional. Seconds between twitterapi.io rule checks (default `60`). Every check is billed; lower is faster and costs more. |
-| `X_CREDITS_PER_HOUR` | Optional. twitterapi.io credit budget per hour for all of RATNET (default `25000`). Live rules get about half (the seeds plus the found accounts with the best results), LENS stops at 80% of it. The burn shows on /status. |
+| `X_CREDITS_PER_HOUR` | Optional. twitterapi.io credit budget per hour for all of RATNET (default `25000`; 10000 recommended). A hard cap: when the hour's spend reaches it, every paid rule is switched off until the next UTC hour and J7 keeps watching for free. The paid list is sized to ~60% of it on each account's measured posts per hour; LENS stops at 80%. The burn shows on /status. |
+| `X_RULE_FILTER` | Optional. Added to every paid rule (default `-is:retweet`: reposts are billed like posts and carry nothing to make a coin from). Empty turns it off. |
 | `X_RULE_ACCOUNTS` | Optional. Hard cap on accounts watched through paid rules (default: what the budget pays for, about 100). |
 | `LENS_PER_HOUR` | Optional. LENS dossiers per hour (default `20`). |
 | `HISTORIAN_CALLS_PER_DAY` | Optional. Chain reads the historian may use per day (default `60000`). Every call is billed by Helius; /status shows calls today and the monthly pace. |
-| `PUMPPORTAL_API_KEY` | Optional. A funded PumpPortal key (0.01 SOL per 10,000 messages). Without it, trades come from the Helius feed. |
+| `PUMPPORTAL_API_KEY` | Optional. A funded PumpPortal key (0.01 SOL per 10,000 messages, about 1 SOL a day). Without it the free stream still brings launches and migrations, the Helius feed prices open positions, launch tapes are read from the chain and FLASH waits (it reads the first seconds of trades). |
+| `BACKFILL_MS` | Optional. How often the rats back-read launches the stream missed (default `10000`). Launches older than 10 minutes are never back-read. |
 | `X_HOOK_SECRET` | Optional. Own secret for the X webhook URL (`/api/x/hook?key=...`). Without it, only twitterapi.io's X-API-Key header (your X_API_KEY) is accepted. |
 | `DESK_ON_VERCEL` | Leave unset. The desk wallet key (DESK_WALLET_SECRET) belongs on Railway only; Vercel ignores it unless this is 1. |
-| `HELIUS_WS_URL` | Optional. Helius websocket URL for the trade feed; by default derived from `HELIUS_RPC_URL` (https → wss). |
-| `RPC_CALLS_PER_DAY` | Optional. Total chain reads per day for the worker (default `300000`, a 10M-a-month Helius plan over 30 days). Paced through the day: historian, agents and rats pause in that order when ahead of pace; the desk may go 15% over. `0` turns the cap off. |
+| `HELIUS_WS_URL` | Optional. Helius websocket URL for the price feed (account updates of open positions); by default derived from `HELIUS_RPC_URL` (https → wss). |
+| `RPC_CALLS_PER_DAY` | Optional. Total chain reads per day for the worker (default `300000`, a 10M-a-month Helius plan over 30 days). Paced evenly through the UTC day (about 3.5 reads a second): the historian waits at 75% of pace, the agents at 95%, the rats at 105%; the desk never waits. `0` turns the cap off. /status shows the top methods per lane this hour. |
 | `FETCH_TIMEOUT_MS` | Optional. Deadline for any outside call that sets none of its own (default `20000`). |
 | `WORKER_DESK_MS` | Optional. Length of one desk session in the worker (default `300000`, 5 minutes). The desk runs in its own loop next to the agents. |
 | `X_BEARER_TOKEN` | Optional. X API token for BUZZ (CA mentions). Billed per post read; only desk candidates and open positions are checked, at most once a minute. |

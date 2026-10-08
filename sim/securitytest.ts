@@ -50,6 +50,11 @@ const ok = (cond: boolean, what: string) => {
   const { isPubkey } = await import("../src/lib/solana");
   ok(!isPubkey(["x"] as any) && !isPubkey("0OIl" + "1".repeat(40)) && isPubkey("So11111111111111111111111111111111111111112"), "isPubkey: strings of base58 only");
 
+  // v0.1.39: the connection itself refuses private addresses (DNS rebinding), not only the check before it
+  const { connectLookup } = await import("../src/lib/safefetch");
+  const blocked = await new Promise<string>((res) => connectLookup("localhost", {}, (e) => res(e ? String(e.message) : "connected")));
+  ok(blocked === "blocked address", `safeFetch: a host resolving to 127.0.0.1 is refused at connect time (${blocked})`);
+
   console.log(fails ? `\n${fails} FAILED` : "\nall passed");
   process.exit(fails ? 1 : 0);
 })();

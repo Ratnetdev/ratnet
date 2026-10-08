@@ -51,9 +51,10 @@ function validSession(tok: string) {
   return safeEq(tok.slice(i + 1), sign(key, payload));
 }
 
-export function isAdmin() {
+// Next 15: cookies() is async
+export async function isAdmin() {
   try {
-    return validSession(cookies().get(ADMIN_COOKIE)?.value || "");
+    return validSession((await cookies()).get(ADMIN_COOKIE)?.value || "");
   } catch {
     return false; // outside a request scope
   }

@@ -1247,6 +1247,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     inc(c, `${kv.verdict.toLowerCase()}_n`);
     if (nano) inc(c, `n${nano.verdict.toLowerCase()}_n`);
     c.p.hincrby(K.day(dayKey()), "calls", 1);
+    c.p.expire(K.day(dayKey()), 120 * 86400);
   } else inc(c, "calls_late");
   c.feed.push({
     kind: "call",

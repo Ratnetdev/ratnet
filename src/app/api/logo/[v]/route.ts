@@ -26,7 +26,8 @@ async function one(url: string) {
   return { buf, type };
 }
 
-export async function GET(_: Request, { params }: { params: { v: string } }) {
+export async function GET(_: Request, props: { params: Promise<{ v: string }> }) {
+  const params = await props.params;
   const d = DOMAIN[params.v];
   if (!d) return new Response("not found", { status: 404 });
   try {

@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 
 // Is this browser signed in to admin? Lets public pages ask for the full, unstripped data.
 export async function GET() {
-  return json({ admin: isAdmin() });
+  return json({ admin: await isAdmin() });
 }

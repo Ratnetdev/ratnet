@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.39 · Platform and final verification (Run 8)
+- Next.js 15.5 and React 19 (was Next 14 and React 18): admin checks read cookies the new async way, dynamic routes take their params async, ref and JSX types updated. Every page and API route checked after the upgrade.
+- The paper desk resets once on deploy for the final verification (never while live): the old record is archived, everything learned is kept, and strategies paused before the reset start unpaused.
+- Safer outside fetches: the connection itself now refuses private and internal addresses, so a hostile DNS server can no longer pass the first check with a public address and connect to a private one (DNS rebinding).
+- Redis: every growing key has a limit. Daily stat hashes expire after 120 days, the per-post copy sets after 3 days, and the LENS and MIND queues keep their 300 most urgent coins (they could only grow while X credits ran out).
+- A real "page not found" page with a way back (it was Next's plain 404 text).
+- API docs list /api/boards, /api/desk/record and /api/px. README updated for the current setup: price feed, paced budget and lane limits, the X hard cap, X_RULE_FILTER, BACKFILL_MS, PUMPPORTAL_API_KEY and what runs without it.
+- Verified locally: 16 pages on desktop and phone width (no errors, nothing wider than the screen), every GET API route (no 500s), admin login and full views, all 29 test suites.
+
 ## v0.1.38 · Speed and consistency (Run 7)
 - Polling diet (lib usePoll):
   - components asking for the same data share one request and one answer (the desk page asked /api/desk, /api/rats and /api/king two or three times over);

@@ -43,8 +43,9 @@ export type Dossier = {
 };
 
 /** Ask LENS to look at a coin (pipeline-safe). Higher priority and newer go first. */
-export function enqueueLens(p: { zadd: Function }, mint: string, why: LensWhy) {
+export function enqueueLens(p: { zadd: Function; zremrangebyrank: Function }, mint: string, why: LensWhy) {
   p.zadd(Q, { score: LENS_PRI[why] * 1e13 + Date.now(), member: `${why}:${mint}` });
+  p.zremrangebyrank(Q, 0, -301); // v0.1.39: the queue keeps its 300 most urgent coins (it could only grow while X credits ran out)
 }
 
 export async function lensDossier(mint: string) {

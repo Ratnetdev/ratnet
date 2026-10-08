@@ -99,8 +99,9 @@ const ipfs = (u: string) => {
 };
 
 /** Ask MIND to judge a coin (pipeline-safe). */
-export function enqueueMind(p: { zadd: Function }, mint: string, why: MindWhy) {
+export function enqueueMind(p: { zadd: Function; zremrangebyrank: Function }, mint: string, why: MindWhy) {
   p.zadd(Q, { score: MIND_PRI[why] * 1e13 + Date.now(), member: `${why}:${mint}:0` });
+  p.zremrangebyrank(Q, 0, -301); // v0.1.39: the queue keeps its 300 most urgent coins (it could only grow while X credits ran out)
 }
 
 async function prices(mints: string[]) {

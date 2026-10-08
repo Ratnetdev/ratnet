@@ -4,13 +4,13 @@
 import { isAdmin } from "./admin";
 import { cached, json } from "./http";
 
-export function wantsFull(req: Request) {
-  return new URL(req.url).searchParams.get("full") === "1" && isAdmin();
+export async function wantsFull(req: Request) {
+  return new URL(req.url).searchParams.get("full") === "1" && (await isAdmin());
 }
 
 /** Serve the full data to an admin who asked for it, the stripped copy (CDN-cached) to everyone else. */
-export function serve<T>(req: Request, data: T, strip: (d: T) => unknown, seconds = 3, swr = seconds * 5) {
-  return wantsFull(req) ? json({ ...(data as any), full: true }) : cached(strip(data), seconds, swr);
+export async function serve<T>(req: Request, data: T, strip: (d: T) => unknown, seconds = 3, swr = seconds * 5) {
+  return (await wantsFull(req)) ? json({ ...(data as any), full: true }) : cached(strip(data), seconds, swr);
 }
 
 type Check = { rule: string; ok: boolean; v?: string };
