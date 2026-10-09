@@ -6,7 +6,7 @@ const KEY = "rn:alive";
 // how often each part should report at the latest (seconds); past 3x this it shows as stalled
 export const EXPECT: Record<string, number> = {
   desk: 20, rats_fast: 15, rats_slow: 40, stream: 30, flash: 120, historian: 400,
-  catch: 180, momo: 180, hound: 180, mind: 180, lens: 180, overseer: 300, wire: 180, j7: 180, receipts: 300, telegram: 300,
+  catch: 180, momo: 180, hound: 180, mind: 180, lens: 180, overseer: 300, wire: 180, j7: 180, receipts: 300, telegram: 300, archive: 90,
 };
 
 const note = (r: any): { ok: boolean; note: string } => {

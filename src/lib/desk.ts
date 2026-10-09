@@ -46,6 +46,7 @@ import { momoSignal } from "./momo";
 import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
+import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE";
 export const AGENTS: { id: Agent; role: string }[] = [
@@ -83,6 +84,8 @@ export type Pos = {
   tokens0: number;
   soldSol: number;
   sells?: number; // v0.1.49: how many sells so far
+  build?: string; // v0.1.55: the build that opened it
+  cfg?: string; // v0.1.55: settings fingerprint at the open
   soldPxTok?: number; // v0.1.49: sum of sell price x tokens sold, for the average exit across partial sells
   tp1Done: boolean; // initials taken
   sendHit?: boolean; // CATCH send ladder: the target market cap was reached and the runner third sold
@@ -145,6 +148,8 @@ export type EntryCtx = {
   card?: { plus: string[]; minus: string[]; parts?: Record<string, number> | null; nc?: [string, number][] | null; lens?: { score: number; flags: string[]; good: string[] } | null };
 };
 export type Trade = {
+  v?: string; // v0.1.55: the build that made the trade
+  cfg?: string; // v0.1.55: fingerprint of the desk settings it was made under
   id: string;
   mint: string;
   symbol: string;
@@ -821,6 +826,9 @@ async function flushLog(b: Batch) {
       p.ltrim(K.feed, 0, 299);
     }
   }
+  // v0.1.55: every trade to the archive too (worker with DATABASE_URL only; a no-op elsewhere)
+  archiveTrades(b.trades, false);
+  archiveTrades(b.ghost, true);
   if (b.trades.length) {
     p.lpush(K.deskTrades, ...b.trades);
     p.ltrim(K.deskTrades, 0, 1999); // the full public track record
@@ -2376,10 +2384,12 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   const now = Date.now();
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
-  b.trades.push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
+  b.trades.push({ v: BUILD, cfg: cfgTag(ALERT_CFG), id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
   alertOpen({ book: state.live ? "live" : "paper", mint: rec.mint, symbol: rec.symbol, how, sol: sol + paperFixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, sig }, ALERT_CFG);
   return {
+    build: BUILD,
+    cfg: cfgTag(ALERT_CFG),
     mint: rec.mint,
     symbol: rec.symbol,
     name: rec.name,
@@ -2692,7 +2702,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   const now = Date.now();
   const pnlPct = pct(proceeds, costPart);
   const sol$ = await solUsd().catch(() => null);
-  b.trades.push({ id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pnlPct * 10) / 10, live: p.live, sig, mc: mcUsd(px, sol$) });
+  b.trades.push({ v: p.build, cfg: p.cfg, id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pnlPct * 10) / 10, live: p.live, sig, mc: mcUsd(px, sol$) });
   log(b, "RISK", `${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, pnl >= 0 ? "win" : "loss", coin);
   if (p.tokens <= 1e-9) {
     p.tokens = 0;
@@ -2730,6 +2740,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     const total = p.soldSol - p.costSol;
     if (total > 0) state.wins++;
     log(b, "LEDGER", `closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))})`, total >= 0 ? "win" : "loss", coin);
+    archiveTrip({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), costSol: p.costSol, backSol: p.soldSol, how: p.how, king: p.king, nano: p.nano, peakX: Math.max(p.peakPx || 0, px) / p.entryPx, reason, build: p.build, cfg: p.cfg, data: { entryPx: p.entryPx, avgExitPx: avgExitPx(p, px), sells: p.sells, ctx: p.ctx } });
     alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(avgExitPx(p, px), sol$), lastMc: mcUsd(px, sol$), sells: sellCount(p), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason, sig }, ALERT_CFG);
   } else alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, sig, partial: { frac: amt / p.tokens0, sol: proceeds, mc: mcUsd(px, sol$) } }, ALERT_CFG);
   return true;
@@ -2775,8 +2786,8 @@ async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: 
   const now = Date.now();
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}`;
-  (b.ghost ||= []).push({ id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, cost: r4(sol + fixed), tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
-  const pos: Pos = { mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, mkt: { grad, real: rl }, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(grad ? { gradSeen: true } : {}) };
+  (b.ghost ||= []).push({ v: BUILD, cfg: cfgTag(ALERT_CFG ?? cfg), id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol, cost: r4(sol + fixed), tokens, px: fillPx, reason: `${why} · ghost: ${blocked}`, live: false, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
+  const pos: Pos = { build: BUILD, cfg: cfgTag(ALERT_CFG ?? cfg), mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, ctx, creator: rec.creator, ghost: blocked, mkt: { grad, real: rl }, wire: rec.wire ? { h: rec.wire.h, tid: rec.wire.tid, text: rec.wire.text, vamp: !!rec.wire.vamp } : null, ...(grad ? { gradSeen: true } : {}) };
   const ins = rec.tape?.insiders || [];
   if (ins.length) {
     const amt = await tokenAmounts(ins.map((i) => i.acc)).catch(() => ({} as Record<string, number>));
@@ -2800,7 +2811,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   p.sells = (p.sells || 0) + 1;
   const now = Date.now();
   const sol$ = await solUsd().catch(() => null);
-  (b.ghost ||= []).push({ id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pct(proceeds, costPart) * 10) / 10, live: false, mc: mcUsd(px, sol$) });
+  (b.ghost ||= []).push({ v: p.build, cfg: p.cfg, id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pct(proceeds, costPart) * 10) / 10, live: false, mc: mcUsd(px, sol$) });
   log(b, "RISK", `ghost: ${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, "info", coin);
   if (p.tokens > 1e-9) {
     alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, partial: { frac: amt / p.tokens0, sol: proceeds, mc: mcUsd(px, sol$) } }, ALERT_CFG);
@@ -2820,6 +2831,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   if (note) log(b, "PM", note, "win");
   const total = p.soldSol - p.costSol;
   log(b, "LEDGER", `ghost desk closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))}). not counted`, "info", coin);
+  archiveTrip({ book: "ghost", mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, costSol: p.costSol, backSol: p.soldSol, how: p.how, king: p.king, nano: p.nano, peakX: Math.max(p.peakPx || 0, px) / p.entryPx, reason, build: p.build, cfg: p.cfg, data: { entryPx: p.entryPx, avgExitPx: avgExitPx(p, px), sells: p.sells, blocked: p.ghost, ctx: p.ctx } });
   alertClose({ book: "ghost", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(avgExitPx(p, px), sol$), lastMc: mcUsd(px, sol$), sells: sellCount(p), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason }, ALERT_CFG);
   return true;
 }

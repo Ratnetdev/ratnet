@@ -30,6 +30,8 @@ const security = [
 module.exports = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // v0.1.55: the archive's Postgres client runs on the worker only; never bundled into the site
+  serverExternalPackages: ["pg"],
   images: { unoptimized: true },
   async headers() {
     return [

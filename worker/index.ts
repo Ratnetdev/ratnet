@@ -14,6 +14,7 @@ import { LOG_MS, logCreate, logTrade, markFeedLive, pruneStream, setFollowHook, 
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
+import { archiveBoard, archiveFlush, archiveInit, archivePrune, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
@@ -226,7 +227,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", curves: CURVES ? `${CURVES.view().up ? "up" : "down"} ${CURVES.view().addrs} coins ${Math.round(CURVES.view().perDay / 1000)}K/day hit ${curveFeed.hits + curveFeed.misses ? Math.round((curveFeed.hits / (curveFeed.hits + curveFeed.misses)) * 100) : 0}%${CURVES.view().error ? ` err ${CURVES.view().error.slice(0, 30)}` : ""}` : "off", ppKey: PP_KEY ? 1 : 0, ...(PP_KEY ? { pp: `${watched.size} coins · ${ppCount()} trades today ~${((ppCount() / 10_000) * 0.01).toFixed(3)} SOL of ${PP_DAILY_SOL} SOL cap${ppCapped() ? " REACHED" : ""}` } : {}), lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", curves: CURVES ? `${CURVES.view().up ? "up" : "down"} ${CURVES.view().addrs} coins ${Math.round(CURVES.view().perDay / 1000)}K/day hit ${curveFeed.hits + curveFeed.misses ? Math.round((curveFeed.hits / (curveFeed.hits + curveFeed.misses)) * 100) : 0}%${CURVES.view().error ? ` err ${CURVES.view().error.slice(0, 30)}` : ""}` : "off", ppKey: PP_KEY ? 1 : 0, ...(PP_KEY ? { pp: `${watched.size} coins · ${ppCount()} trades today ~${((ppCount() / 10_000) * 0.01).toFixed(4)} SOL of ${PP_DAILY_SOL} SOL cap${ppCapped() ? " REACHED" : ""}` } : {}), lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
   }
   // v0.1.41: no copy of the tape in Redis any more (rn:rt). CATCH and SHIELD read it from this process's memory
   // (__rnRt); the copy was only for readers outside the worker, which only run when the worker is down.
@@ -351,6 +352,11 @@ let FEED: ReturnType<typeof heliusFeed> | null = null;
 // v0.1.53: the live curve stream for every launch in its first 7 minutes (the minute-1 read and the minute-5 call).
 // Its own socket, so the positions' feed never waits behind 400+ launch subscriptions.
 let CURVES: ReturnType<typeof heliusFeed> | null = null;
+// every curve update goes to the rats' memory and (sampled, every 10s per coin) to the archive (v0.1.55)
+const onCurveUpd = (mint: string, v: Parameters<typeof noteCurve>[1]) => {
+  noteCurve(mint, v);
+  archiveTick(mint, v);
+};
 const CURVE_MAX = Math.max(50, Number(process.env.CURVE_FEED_MAX || 800));
 const SHAPES = new Map<string, number>();
 let shapesAt = 0;
@@ -643,7 +649,7 @@ async function main() {
   // live prices of open positions from Helius account updates (with a PumpPortal key, its trades price them instead)
   // v0.1.54: the positions' Helius feed always runs (with a PumpPortal key it used to be switched off and positions
   // waited for PumpPortal trades); the trade stream now only adds who traded
-  FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), onCurve: noteCurve, log: (x) => console.log(x) });
+  FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), onCurve: onCurveUpd, log: (x) => console.log(x) });
   setInterval(() => FEED && markFeedLive(FEED.live()), 1_000);
   if (PP_KEY) {
     await ppSeed().catch(() => null);
@@ -655,13 +661,29 @@ async function main() {
     });
     setInterval(() => ppFlush().catch(() => null), 60_000);
   }
-  CURVES = heliusFeed({ want: async () => new Set(youngMints().slice(-CURVE_MAX)), onQuote: () => {}, onCurve: noteCurve, max: CURVE_MAX, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
+  CURVES = heliusFeed({ want: async () => new Set(youngMints().slice(-CURVE_MAX)), onQuote: () => {}, onCurve: onCurveUpd, max: CURVE_MAX, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
   setCurveLive(() => {
     const a = CURVES?.live() || new Set<string>();
     for (const m of FEED?.live() || []) a.add(m);
     return a;
   });
   setInterval(() => pruneCurves(), 5_000);
+  // v0.1.55: the archive (Railway Postgres). Without DATABASE_URL all of this does nothing
+  if (await archiveInit()) {
+    console.log("archive: connected, tables ready");
+    setInterval(() => archiveFlush().catch(() => null), 5_000);
+    const board = async () => {
+      const b = await archiveBoard().catch(() => null);
+      if (b) await redis().set("rn:archive:board", b, { ex: 86400 }).catch(() => null);
+    };
+    setTimeout(board, 20_000);
+    setInterval(board, 5 * 60_000);
+    setInterval(() => archivePrune().catch(() => null), 6 * 3600_000);
+  } else if (process.env.DATABASE_URL) console.log("archive: not connected:", archiveView().error);
+  setInterval(() => {
+    const v = archiveView();
+    markAlive("archive", !v.on ? { off: "DATABASE_URL not set" } : !v.ready ? { error: v.error || "not connected" } : { launches: v.written.launches, ticks: v.written.ticks, trades: v.written.trades, trips: v.written.trips, queued: v.queued, fails: v.fails, ...(v.lastError ? { last: v.lastError.slice(0, 60).replace(/,/g, ";") } : {}) }).catch(() => {});
+  }, 30_000);
   // live prices for the site's pages (/api/px reads them): what viewers asked for, every 4s, on the agents' lane
   let pxBusy = false;
   let pxAt = 0;

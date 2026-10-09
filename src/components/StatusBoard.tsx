@@ -79,6 +79,14 @@ export default function StatusBoard() {
           const feedLine = `${fd ? ` · Helius price feed ${fd.replace(/ accts /, " accounts (open positions), ").replace(/ px /, " prices, ")}` : ""}${cv && cv !== "off" ? ` · live curves ${cv.replace(/ coins /, " launches followed, ").replace(/ hit (\d+)%/, ", $1% of reads on followed coins answered from the stream")}` : ""}`;
           return { k: "Live stream", v: st?.age != null ? `${st.age}s` : nil(aliveIn), s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : ppStuck || (pp && / REACHED/.test(pp)) ? "warn" : (fd && /^down/.test(fd)) || (cv && /^down/.test(cv)) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
         })(),
+        // v0.1.55: the archive (Railway Postgres)
+        (() => {
+          const ar = parts.find((p) => p.name === "archive") as any;
+          const n = (k: string) => Number(new RegExp(`${k}:(\\d+)`).exec(ar?.note || "")?.[1] || 0);
+          const off = /off:/.test(ar?.note || "");
+          const err = ar && !ar.ok ? (/error:([^,]+)/.exec(ar.note || "")?.[1] || "not connected") : "";
+          return { k: "Archive (Postgres)", v: !ar ? nil(aliveIn) : off ? "off" : err ? "error" : M(n("launches") + n("ticks") + n("trades") + n("trips")), s: !ar ? "" : off ? "DATABASE_URL not set on the worker: nothing is archived" : err ? err : `rows written since the worker started: ${M(n("launches"))} launches, ${M(n("ticks"))} curve ticks, ${n("trades")} trades, ${n("trips")} trips${n("queued") > 1000 ? ` · ${M(n("queued"))} waiting` : ""}${n("fails") ? ` · ${n("fails")} failed batches` : ""}`, level: !ar || off ? "idle" : err ? "bad" : n("queued") > 20_000 ? "warn" : n("launches") + n("ticks") ? "ok" : "idle" } as Tile;
+        })(),
       ],
     },
     {

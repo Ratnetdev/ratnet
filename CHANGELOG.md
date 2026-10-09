@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.55 · The archive (Postgres) and a build tag on every trade
+- Roadmap step 3. With DATABASE_URL on the worker (Railway Postgres, private network), everything worth learning from is kept for good, next to Redis (which stays the desk's short-term memory):
+  - launches: every launch with its outcome, King and nano call, minute-1 read and tape (one row, re-written only when something that matters changed; dead launches keep the columns without the heavy detail)
+  - ticks: curve snapshots of followed launches, at most one per coin every 10 seconds, kept 30 days (for REPLAY)
+  - trades: every buy and sell of every book (paper, live, ghost)
+  - trips: every closed round trip with its result
+- Every trade and position is tagged with the build that made it and a fingerprint of the desk settings at that moment. "Results by build" on /desk shows trips, win rate, average and P&L per build and book over 30 days, so a push that helped or hurt is visible instead of guessed.
+- Writes are queued and sent in batches every 5 seconds; failed batches are retried and the queues are capped. Without DATABASE_URL nothing changes.
+- /status: an Archive tile (rows written, waiting, failed batches) and an "archive" line under All systems.
+- PumpPortal cost on /status with 4 decimals (it showed ~0.000 SOL).
+- New test suite v055test (on an in-memory Postgres). All suites, tsc and next build pass.
+
 ## v0.1.54 · PumpPortal trade stream for the shortlist, with a daily cap
 - Roadmap step 2. With a PumpPortal key (PUMPPORTAL_API_KEY on Railway) the worker streams the trades of a shortlist only: coins whose minute-1 tape was read (they passed the curve minimum), until their minute-5 call is made, plus open positions. Before, a key would have subscribed every launch, the radar, migrations and CATCH's whole watch list (~1 SOL a day or more).
 - The minute-1 chain read seeds the coin's log with its early trades; every trade after that streams in. The minute-5 tape is built from both, with no second chain read (getSignaturesForAddress plus a batch of getTransaction per coin before).

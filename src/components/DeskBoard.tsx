@@ -7,6 +7,7 @@ import CountUp from "./CountUp";
 import { safeHref, ago, short, solscanAcc, solscanTx, usdK } from "./fmt";
 import DeskNow, { type DeskNowData } from "./DeskNow";
 import TrackRecord from "./TrackRecord";
+import BuildBoard from "./BuildBoard";
 import AgentPanel from "./AgentPanel";
 import { useState } from "react";
 import LensCam from "./LensCam";
@@ -193,6 +194,7 @@ export default function DeskBoard() {
         </div>
       ) : null}
       <TrackRecord />
+      <BuildBoard />
 
       <section className="desk-top mt" id="balance">
         <div>

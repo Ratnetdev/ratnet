@@ -6,6 +6,7 @@
 // end up in the one record that is written. Other processes (the site, the Vercel fallback) read Redis as before.
 import { K, redis } from "./redis";
 import type { Launch } from "./digger";
+import { archiveLaunch } from "./archive";
 
 const IN_WORKER = () => process.env.RATNET_WORKER === "1";
 const LC = new Map<string, { rec: Launch | null; at: number }>();
@@ -53,6 +54,7 @@ type SetOpts = { ex: number } | { keepTtl: true };
 /** Write a launch record (on a pipeline or the client) and keep the worker's copy in step. */
 export function putLaunch<T>(p: { set: (k: string, v: unknown, o?: any) => T }, rec: Launch, opts: SetOpts = { keepTtl: true }): T {
   put(rec.mint, rec);
+  archiveLaunch(rec); // v0.1.55: the archive keeps every launch for good (only when something that matters changed)
   return p.set(K.launch(rec.mint), rec, opts);
 }
 
