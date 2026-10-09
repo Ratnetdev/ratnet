@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.62 · Redis: the real costs from the hourly breakdown
+- Measured on 9 Oct (worker, last full hour: 180MB against a 117MB hourly allowance). Fixed:
+  - hmget rn:pools (28MB/h): the launch-curve feed (v0.1.53) looked up pool vaults for its ~800 followed coins every 5 seconds; curve coins have no pool. It no longer does.
+  - Stalks (the desk's pullback watches): read and written whole on every beat, twice a second, and each MOMO stalk carried the coin's full launch record (100 to 300MB/h with 3 or 4 MOMO coins waiting, since v0.1.43). Now in memory, read every 15 seconds, written only when they move (armed, or high or low by 1%+), never with the launch record.
+  - zrange rn:x:cand (9.7MB/h): posts with coins were checked every second while their pick failed on the chain budget; picks wait while the rats' budget is closed, and a post still open after 30 minutes is dropped.
+  - zrange rn:due (8.5MB/h): the due pass reads at most 150 checks a second (was 300).
+  - mget rn:launch (15MB/h): the worker re-reads cached launch records after 30 minutes (was 10; no other process writes them).
+- Admin /status Redis tile: the 15 costliest keys (was 8) and today's split between the worker and the site.
+- New test suite v062test. All suites, tsc and next build pass.
+
 ## v0.1.61 · The desk takes ARENA's entry rules; less Redis
 - Once, on deploy: King calls no longer need nano to agree, and MOMO buys at the signal instead of waiting for a pullback. ARENA overnight: King without nano 10 trips, 60% won, +8.6% a trade (26 such calls were blocked on the desk today); MOMO now +2.7% a trade vs -14.5% for the desk's pullback entries. Small samples: ARENA keeps testing the alternatives, and both settings can be switched back in Admin (the "desk" panel, Save desk). A later change in Admin is never overwritten. The desk stays on paper.
 - ARENA writes less: an unchanged position at most once a minute (it was every few seconds), and the minute's summary reads the trips from memory instead of the whole list from Redis.

@@ -17,7 +17,7 @@ type Sub = { mint: string; kind: "curve" | "base" | "quote"; addr: string };
 const amountOf = (b: Buffer) => (b.length >= 72 ? Number(b.readBigUInt64LE(64)) : null);
 
 // v0.1.53: onCurve gets every curve update (migrations included), max caps the followed coins, label names the feed
-export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q: FeedQuote) => void; onCurve?: (mint: string, v: CurveView) => void; max?: number; label?: string; log?: (s: string) => void }) {
+export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q: FeedQuote) => void; onCurve?: (mint: string, v: CurveView) => void; max?: number; label?: string; pools?: boolean; log?: (s: string) => void }) {
   const WS: any = (globalThis as any).WebSocket;
   const http = process.env.HELIUS_RPC_URL || "";
   const url = process.env.HELIUS_WS_URL || (http.startsWith("http") ? http.replace(/^http/, "ws") : "");
@@ -44,7 +44,9 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q
     if (!state.up) return;
     const mints = Array.from(await opts.want().catch(() => new Set<string>())).slice(0, opts.max ?? 200);
     const r = redis();
-    const vaults = mints.length ? (((await r.hmget<Record<string, { bv: string; qv: string; vq?: number } | null>>(POOLS_KEY, ...mints).catch(() => null)) || {}) as Record<string, { bv: string; qv: string; vq?: number } | null>) : {};
+    // v0.1.62: pool vaults only for the positions' feed (pools: false on the launch-curve feed). The curve feed looked up
+    // ~800 mints in rn:pools every 5 seconds for coins that have no pool yet: 28MB of Redis an hour
+    const vaults = mints.length && opts.pools !== false ? (((await r.hmget<Record<string, { bv: string; qv: string; vq?: number } | null>>(POOLS_KEY, ...mints).catch(() => null)) || {}) as Record<string, { bv: string; qv: string; vq?: number } | null>) : {};
     const next = new Map<string, Sub>();
     for (const m of mints) {
       try {

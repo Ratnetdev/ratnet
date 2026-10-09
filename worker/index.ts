@@ -688,7 +688,7 @@ async function main() {
     setInterval(() => ppFlush().catch(() => null), 60_000);
   }
   // young launches first (the calls depend on them), then called coins in the hour after their call (v0.1.59)
-  CURVES = heliusFeed({ want: async () => new Set([...youngMints().slice(-CURVE_MAX), ...followedLonger()].slice(0, CURVE_MAX)), onQuote: () => {}, onCurve: onCurveUpd, max: CURVE_MAX, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
+  CURVES = heliusFeed({ want: async () => new Set([...youngMints().slice(-CURVE_MAX), ...followedLonger()].slice(0, CURVE_MAX)), onQuote: () => {}, onCurve: onCurveUpd, max: CURVE_MAX, pools: false, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
   setCurveLive(() => {
     const a = CURVES?.live() || new Set<string>();
     for (const m of FEED?.live() || []) a.add(m);

@@ -59,7 +59,7 @@ export async function bwTick() {
   if (now - hourStart < 3600_000) return;
   const rows = Array.from(hour.entries()).map(([k, r]) => [k, r.tx + r.rx, r.n] as [string, number, number]).sort((a, b) => b[1] - a[1]);
   const total = rows.reduce((a, r) => a + r[1], 0);
-  const top = rows.slice(0, 8).map((r) => [r[0], mb(r[1])] as [string, number]);
+  const top = rows.slice(0, 15).map((r) => [r[0], mb(r[1])] as [string, number]); // v0.1.62: 15 (was 8)
   lastHour = { at: now, mb: mb(total), top };
   hour = new Map();
   hourStart = now;

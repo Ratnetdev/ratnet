@@ -286,7 +286,37 @@ type After = { mint: string; symbol: string; at: number; exitPx: number; peakHel
 type Case = { kind: "dev" | "drain"; key: string; mint: string; symbol: string; at: number; px0: number; sold: boolean };
 const CASES = "rn:desk:cases";
 // v0.1.43: `how` and `rec` for MOMO's pullback entries (a MOMO coin may never have been dug, so its record rides along)
-type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean; how?: "momo"; rec?: Launch; mins?: number };
+type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean; how?: "momo"; rec?: Launch; desc?: string; mins?: number };
+
+// v0.1.62: the stalks (pullback watches) in memory, read from Redis every 15 seconds and written only when they change.
+// The desk read every stalk and wrote each one back on every beat (twice a second), and a MOMO stalk carried the coin's
+// whole launch record: with 3 or 4 MOMO coins waiting that was 100 to 300MB of Redis an hour (9 Oct, saving mode 3).
+let STALKC: Record<string, Stalk> | null = null;
+let STALK_AT = 0;
+const STALK_WROTE = new Map<string, string>();
+export async function loadStalks() {
+  if (!STALKC || Date.now() - STALK_AT > 15_000) {
+    STALKC = ((await redis().hgetall<Record<string, Stalk>>(K.deskStalk)) || {}) as Record<string, Stalk>;
+    STALK_AT = Date.now();
+    for (const sk of Object.values(STALKC)) if (sk.rec) (sk.desc = sk.desc || sk.rec.description), delete sk.rec;
+  }
+  return STALKC;
+}
+/** Save a stalk (never with a launch record; skipped when nothing that matters moved: armed, or high or low by 1%+). */
+export async function putStalk(sk: Stalk, force = false) {
+  const { rec, ...lean } = sk;
+  if (rec && !lean.desc) lean.desc = rec.description;
+  (STALKC ||= {})[sk.mint] = lean;
+  const sig = `${lean.armed}|${Math.round(Math.log(lean.hi || 1) * 100)}|${Math.round(Math.log(lean.lo || 1) * 100)}`;
+  if (!force && STALK_WROTE.get(sk.mint) === sig) return;
+  STALK_WROTE.set(sk.mint, sig);
+  await redis().hset(K.deskStalk, { [sk.mint]: lean });
+}
+async function dropStalk(mint: string) {
+  if (STALKC) delete STALKC[mint];
+  STALK_WROTE.delete(mint);
+  await redis().hdel(K.deskStalk, mint);
+}
 
 // the desk lock lives this long past its last renewal (one pass, including a swap waiting for confirmation)
 const LOCK_MS = 75_000;
@@ -330,6 +360,7 @@ async function syncWallet(state: DeskState, kp: Keypair | null, walletSol: numbe
     // new (or newly funded) wallet: fresh paper run from the real balance; old paper trades used other rules/sizes
     const r = redis();
     await r.del(K.deskPos, K.deskTrades, K.deskEq, K.deskShadow, K.deskStalk, K.deskAfter, K.deskVet);
+    STALKC = null;
     await r.incrby(SEQ.trades, 1_000_000); // v0.1.41: change counters jump on a reset, never restart (lib/lcache.ts)
     SHM = null;
     AFM = null;
@@ -391,6 +422,7 @@ export async function resetDesk(why = "manual") {
   }
   POSC[K.deskPos]?.clear();
   await r.del(K.deskState, K.deskPos, K.deskTrades, K.deskEv, K.deskQ, K.deskEq, K.deskAgent, K.deskVet, K.deskStalk, TRIPS_KEY, EXAM_FULL, K.deskExam);
+  STALKC = null;
   await r.incrby(SEQ.trades, 1_000_000);
   await r.incrby(SEQ.trips, 1_000_000);
   listDrop(K.deskTrades);
@@ -1407,7 +1439,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const shadows = slow ? SHM! : {};
       const afters = slow ? AFM! : {};
       const cases = slow ? ((await r.hgetall<Record<string, Case>>(CASES).catch(() => null)) || {}) : {};
-      const stalks = (await r.hgetall<Record<string, Stalk>>(K.deskStalk)) || {};
+      const stalks = await loadStalks();
       const reents = ((await r.hgetall<Record<string, { mint: string; symbol: string; how: Pos["how"]; entryPx: number; at: number }>>(REENT).catch(() => null)) || {}) as Record<string, { mint: string; symbol: string; how: Pos["how"]; entryPx: number; at: number }>;
 
       // --- promotion / demotion
@@ -1915,7 +1947,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const nowPx = again?.priceSol || q.px;
           if (!wireSig && !deskBlock && (learnS.stalkOn || chase > cfg.maxChase)) {
             if (learnS.stalkOn) {
-              await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: nowPx, depth: learnS.stalkArm || 30, hi: nowPx, lo: nowPx, armed: false, early } satisfies Stalk });
+              await putStalk({ mint: m, symbol: rec.symbol, at: now, px0: nowPx, depth: learnS.stalkArm || 30, hi: nowPx, lo: nowPx, armed: false, early } satisfies Stalk, true);
               log(b, "SIZE", `$${rec.symbol}: stalking a -${learnS.stalkArm || 30}% pullback for up to ${cfg.stalkMins}m`, "info", coin);
             } else {
               log(b, "VET", `$${rec.symbol} already ${fmtPct(chase)} above the call. not chasing (pullback entries still locked)`, "info", coin);
@@ -1937,17 +1969,17 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const coin = { mint: sk.mint, symbol: sk.symbol };
         const mo = sk.how === "momo"; // MOMO coins are often migrated already: a migration does not end their stalk
         if (!q || (q.grad && !mo) || now - sk.at > (sk.mins ?? cfg.stalkMins) * 60_000 || q.px < sk.px0 * 0.5) {
-          await r.hdel(K.deskStalk, sk.mint);
+          await dropStalk(sk.mint);
           log(b, "SIZE", `$${sk.symbol} ${mo ? "MOMO pullback watch" : "stalk"} ended: ${!q ? "no price" : q.grad && !mo ? "migrated" : q.px < sk.px0 * 0.5 ? "broke down" : "no pullback in time"}`, "info", coin);
           continue;
         }
         const t: ArmTrack = { hi: sk.hi, lo: sk.lo, armed: sk.armed, fill: null };
         stepArm(t, sk.depth, q.px, sk.px0);
         if (t.fill != null) {
-          await r.hdel(K.deskStalk, sk.mint);
+          await dropStalk(sk.mint);
           const rec = (await getLaunch(sk.mint)) || sk.rec || null;
           if (!rec) continue;
-          if (mo && sk.rec?.description) rec.description = sk.rec.description;
+          if (mo && (sk.desc || sk.rec?.description)) rec.description = (sk.desc || sk.rec?.description)!;
           const noRoom = await roomFor(mo ? "momo" : "stalk", state, eq.value, cfg);
           if (noRoom) {
             log(b, "SIZE", `$${sk.symbol}${mo ? " (MOMO)" : ""} bounced, but ${noRoom}: not bought`, "info", coin);
@@ -1955,7 +1987,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           }
           log(b, "FLOW", `$${sk.symbol} pulled back ${Math.round((1 - t.lo / t.hi) * 100)}% and bounced. entering ${fmtPct(pct(q.px, sk.px0))} vs the signal${mo ? " (MOMO)" : ""}`, "ok", coin);
           await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eq.value, walletSol, kp, cfg, mo ? "momo" : "stalk", null, true);
-        } else await r.hset(K.deskStalk, { [sk.mint]: { ...sk, hi: t.hi, lo: t.lo, armed: t.armed } });
+        } else await putStalk({ ...sk, hi: t.hi, lo: t.lo, armed: t.armed });
       }
 
       // --- re-entries: a stopped-out coin that reclaims its entry (+3%) within 30 minutes is bought back once
@@ -2520,8 +2552,8 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
   // lost 4 of 5. It now waits up to 10 minutes for a 12% dip (momoPullback) and buys the 5% bounce off the low.
   const dip = c.momoPullback ?? 12;
   if (dip > 0) {
-    if (await r.hexists(K.deskStalk, m)) return;
-    await r.hset(K.deskStalk, { [m]: { mint: m, symbol: rec.symbol, at: now, px0: q.px, depth: dip, hi: q.px, lo: q.px, armed: false, early: false, how: "momo", rec, mins: c.momoStalkMins ?? 10 } satisfies Stalk });
+    if ((await loadStalks())[m]) return;
+    await putStalk({ mint: m, symbol: rec.symbol, at: now, px0: q.px, depth: dip, hi: q.px, lo: q.px, armed: false, early: false, how: "momo", desc: rec.description, mins: c.momoStalkMins ?? 10 } satisfies Stalk, true);
     log(b, "SIZE", `$${rec.symbol} (MOMO): waiting for a -${dip}% pullback and a bounce, up to ${c.momoStalkMins ?? 10}m`, "info", coin);
     return;
   }

@@ -250,6 +250,8 @@ export function noteMatch(p: { zadd: Function; expire: Function; set: Function; 
 export async function dueTweets() {
   const r = redis();
   const now = Date.now();
+  // v0.1.62: a post still open after 30 minutes will never get its coin picked (its window is long gone): dropped
+  await r.zremrangebyscore(OPEN, 0, now - 30 * 60_000).catch(() => 0);
   const ids = ((await r.zrange<string[]>(OPEN, 0, now - 20_000, { byScore: true, offset: 0, count: 10 })) || []).map(String);
   const out: { tid: string; mints: { mint: string; score: number }[]; age: number }[] = [];
   for (const tid of ids) {

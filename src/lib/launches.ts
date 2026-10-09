@@ -11,7 +11,7 @@ import { archiveLaunch } from "./archive";
 const IN_WORKER = () => process.env.RATNET_WORKER === "1";
 const LC = new Map<string, { rec: Launch | null; at: number }>();
 const MAX = 25_000;
-const AGE = 10 * 60_000; // re-read after 10 minutes (only another process could have written it)
+const AGE = 30 * 60_000; // re-read after 30 minutes (only another process could have written it; v0.1.62: was 10)
 
 function put(mint: string, rec: Launch | null) {
   if (!IN_WORKER()) return;

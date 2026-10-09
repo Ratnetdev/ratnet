@@ -223,7 +223,7 @@ const BONDED_TTL = 60 * 60 * 24 * 7;
 const CALL_TTL = 60 * 60 * 24 * 2;
 const MAX_TX_PER_RUN = 60;
 export const BOND_CALLS = "rn:bondcalls"; // newest counted BOND calls (mints)
-const MAX_DUE_PER_RUN = 300;
+const MAX_DUE_PER_RUN = 150; // v0.1.62: was 300, read every second (8.5MB of Redis an hour); a pass rarely needs more
 const FRESH_MS = 10 * 60_000;
 const EARLY_MAX_AGE_MS = 3 * 60_000; // a minute-1 read later than 3 minutes is skipped, not made late
 const MAX_HOT_PER_RUN = 300;
@@ -463,7 +463,7 @@ async function digInner(): Promise<Record<string, unknown>> {
     }
     const dug = await digNew(model);
     const tl = await tweetLinks().catch((e) => ({ tlinkError: safeErr(e) }));
-    const wire = await wirePicks().catch((e) => ({ wireError: safeErr(e) }));
+    const wire = laneOpen(1) ? await wirePicks().catch((e) => ({ wireError: safeErr(e) })) : { wire: "waiting: daily chain budget" };
     const due = await processDue(model);
     const hot = await hotWatch(model);
     const mig = await migrations(model).catch((e) => ({ migError: safeErr(e) }));
@@ -518,7 +518,8 @@ export async function digFast(): Promise<Record<string, unknown>> {
       // the chain backfill (launches the stream missed) every 10s instead of every pass: one call a second was ~86K
       // credits a day on its own, and the stream already delivers nearly every launch within a second (v0.1.36)
       const dug = Date.now() - lastBackfill >= BACKFILL_MS ? ((lastBackfill = Date.now()), await digNew(model).catch((e) => ({ digError: safeErr(e) }))) : { dug: 0 };
-      const wire = await wirePicks().catch((e) => ({ wireError: safeErr(e) }));
+      // v0.1.62: picks read the chain; with the rats' budget closed they failed and re-read the posts every second
+      const wire = laneOpen(1) ? await wirePicks().catch((e) => ({ wireError: safeErr(e) })) : { wire: "waiting: daily chain budget" };
       const due = await processDue(model);
       return { ok: true, ...dug, ...wire, ...due, ms: Date.now() - t0 };
     } catch (e) {

@@ -23,9 +23,11 @@ export async function GET() {
 }
 
 async function bwView() {
-  const bw = await redis().get<any>("rn:bw").catch(() => null);
-  // v0.1.61: the keys that used the most in the worker's last full hour (admin only, like the rest of these figures)
-  return bw ? { at: bw.at, hourMB: bw.hourMB, gov: bw.gov ?? null, top: Array.isArray(bw.top) ? bw.top.slice(0, 8) : [] } : null;
+  const day = new Date().toISOString().slice(0, 10);
+  const [bw, src] = await Promise.all([redis().get<any>("rn:bw").catch(() => null), redis().hgetall<Record<string, number>>(`rn:bw:src:${day}`).catch(() => null)]);
+  // v0.1.61: the keys that used the most in the worker's last full hour (admin only, like the rest of these figures).
+  // v0.1.62: and today's split between the worker and the site (pages and APIs on Vercel)
+  return bw ? { at: bw.at, hourMB: bw.hourMB, gov: bw.gov ?? null, top: Array.isArray(bw.top) ? bw.top.slice(0, 15) : [], src: src ? Object.fromEntries(Object.entries(src).map(([k, v]) => [k, Math.round(Number(v) / 1e6)])) : null } : null;
 }
 
 async function build() {
