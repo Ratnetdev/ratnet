@@ -1859,7 +1859,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             : [
             early
               ? { rule: "early_read_bond", ok: true, v: `BOND ${rec.early!.score} at minute 1` }
-              : { rule: "king_or_nano_bond", ok: rec.call!.verdict === "BOND" || rec.call!.nano?.verdict === "BOND", v: `${rec.call!.verdict} ${rec.call!.score}` },
+              // v0.1.65: the King's own verdict only. "Or nano" let in nano's BOND calls on coins the King called DUST: nano's
+              // BOND calls bonded 1% of the time (14 of 1,352), half the base rate
+              : { rule: "king_or_nano_bond", ok: rec.call!.verdict === "BOND", v: `${rec.call!.verdict} ${rec.call!.score}` },
             { rule: "nano_agrees", ok: early || !cfg.needNano || rec.call!.nano?.verdict === "BOND", v: `${rec.call?.nano ? `${rec.call.nano.verdict} ${rec.call.nano.score}` : `still learning (${NANO_MIN} live lessons first)`}${cfg.needNano ? "" : " (not required)"}` },
             { rule: "curve_window", ok: early || curve >= cfg.minCurve, v: `${curve}%` },
             // PRIOR: a curve already past maxCurve at the call usually dumps at migration. Skipped calls are followed in

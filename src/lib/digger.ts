@@ -27,7 +27,7 @@ import { agentLog } from "./agents";
 import { enqueueLens } from "./lens";
 import { enqueueMind } from "./mind";
 import { addVamp, featOf, loadW, notePickSet, pickedOn, pickLessons, scoreOf, vampWatch, VAMP_MAX, type Cand } from "./picker";
-import { KING_V1, computeCal, loadCal, noteCal, posWeight, v1Verdict, type Cal } from "./kingcal";
+import { KING_V1, LEAD_KEY, computeCal, leaderOf, loadCal, noteCal, posWeight, v1Verdict, type Cal, type Lead } from "./kingcal";
 import { ensureSolHistory, recordSol, Regime, regimeAt } from "./regime";
 import { memo } from "./memo";
 import { bwMul } from "./bwgov";
@@ -103,6 +103,7 @@ export type Call = {
   progress: number;
   version: string;
   nano: { score: number; verdict: Verdict } | null;
+  v1v?: Verdict; // v0.1.65: v1's own verdict on this call (graded in shadow when v0 leads)
   x: number[];
   outcome: Outcome | null;
   devN?: number;
@@ -253,6 +254,18 @@ let RUN_EV: { bonded: string[]; died: string[]; stuck: string[] } = { bonded: []
 let CURVE_USD: Record<string, number> = {};
 let SOL_USD = 0;
 let CAL: Cal | null = null; // King v1 lines (lib/kingcal.ts), reloaded every dig
+let LEAD: Lead | null = null; // v0.1.65: which King version makes the calls (by honest record), every 60s
+async function loadLead() {
+  const st = ((await redis().hgetall<Record<string, unknown>>(K.stat).catch(() => null)) || {}) as Record<string, unknown>;
+  const l = leaderOf(st, KING_VERSION);
+  const prev = LEAD?.leader;
+  LEAD = l;
+  if (prev !== l.leader) await redis().set(LEAD_KEY, l).catch(() => null);
+  else if (!LEAD_SAVED || Date.now() - LEAD_SAVED > 600_000) await redis().set(LEAD_KEY, l).catch(() => null);
+  LEAD_SAVED = Date.now();
+  return l;
+}
+let LEAD_SAVED = 0;
 let CAL_AT = 0;
 
 function newCtx(model: NanoModel): Ctx {
@@ -457,6 +470,7 @@ async function digInner(): Promise<Record<string, unknown>> {
     await recordSol(SOL_USD).catch(() => {});
     ensureSolHistory().catch(() => {});
     CAL = await loadCal().catch(() => CAL);
+    LEAD = await memo("dig:lead", 60_000, () => loadLead()).catch(() => LEAD);
     if (Date.now() - CAL_AT > 600_000) {
       CAL_AT = Date.now();
       CAL = await computeCal().catch(() => CAL);
@@ -496,6 +510,7 @@ async function digPrep(fast = false) {
     await recordSol(SOL_USD).catch(() => (solHourWritten = ""));
   }
   CAL = await memo("dig:cal", 60_000, () => loadCal()).catch(() => CAL);
+  LEAD = await memo("dig:lead", 60_000, () => loadLead()).catch(() => LEAD);
   if (Date.now() - CAL_AT > 600_000) {
     CAL_AT = Date.now();
     CAL = await computeCal().catch(() => CAL);
@@ -1275,8 +1290,10 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
       : null;
   // Rat King v1: once nano is trained and its lines are calibrated on the last 7 days (lib/kingcal.ts), nano leads.
   // v0's rules stay on the card. A coin born from a big post keeps a v0 BOND: nano is only starting to see posts.
-  const v1 = nano && CAL?.ready ? v1Verdict(nano.score, CAL) : null;
-  if (nano && v1) nano.verdict = v1;
+  const v1c = nano && CAL?.ready ? v1Verdict(nano.score, CAL) : null;
+  if (nano && v1c) nano.verdict = v1c;
+  // v0.1.65: v1 only makes the call while its honest record matches v0's (lib/kingcal.ts leaderOf); else v0's rules do
+  const v1 = v1c && LEAD?.leader === "v1" ? v1c : null;
   const bigPost = !!rec.wire && ((rec.wire.f ?? 0) >= 100_000 || rec.wire.how === "posted the CA");
   const kv = v1
     ? farm || !(bigPost && sc.verdict === "BOND" && v1 !== "BOND")
@@ -1294,6 +1311,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     score: kv.score,
     verdict: kv.verdict,
     v0: { score: sc.score, verdict: sc.verdict },
+    v1v: v1c ?? undefined,
     counted,
     progress: curveNow,
     version: kv.version,
@@ -1595,6 +1613,15 @@ async function lessons(model: NanoModel) {
     if (rec.early?.verdict === "BOND") {
       inc(c, "lebond_n");
       if (bonded) inc(c, "lebond_hit");
+    }
+    // v0.1.65: both verdicts graded on every counted call, whichever led (the King's leader is picked on this record)
+    if (rec.call?.counted && rec.call.v0?.verdict === "BOND") {
+      inc(c, "lbv:v0:n");
+      if (bonded) inc(c, "lbv:v0:hit");
+    }
+    if (rec.call?.counted && rec.call.v1v === "BOND") {
+      inc(c, "lbv:v1:n");
+      if (bonded) inc(c, "lbv:v1:hit");
     }
     if (rec.call?.counted && rec.call.verdict === "BOND") {
       inc(c, "lbond_n");

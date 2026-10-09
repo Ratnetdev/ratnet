@@ -86,3 +86,29 @@ export function posWeight(n: number, pos: number) {
   if (n < 300 || pos < 5) return 8;
   return Math.max(4, Math.min(50, Math.round((n - pos) / pos)));
 }
+
+// v0.1.65: who makes the King's calls is decided by the honest record (BOND calls graded at their 2-hour label), not
+// by v1's own calibration. On 9 Oct v1.1 had taken over on its calibration alone and called BOND on 570 coins with a
+// 1.4% bond rate (below the 2.2% base rate), while v0.3's rules had 10.7% on 206. Every counted call now grades both
+// verdicts (v0 and v1, the one that did not lead in shadow), and v1 leads only once its record matches v0's.
+export const LEAD_KEY = "rn:king:leader";
+export const LEAD_MIN_V1 = 150; // v1 BOND calls graded before it can lead
+export const LEAD_MIN_V0 = 100;
+export type Lead = { at: number; leader: "v0" | "v1"; v0: { n: number; hit: number; prec: number | null }; v1: { n: number; hit: number; prec: number | null }; why: string };
+const prec = (h: number, n: number) => (n ? Math.round((h / n) * 1000) / 10 : null);
+/** From the stat hash: shadow counters (both verdicts graded) plus the per-version honest record before v0.1.65. */
+export function leaderOf(s: Record<string, unknown>, v0Version: string, v1Version = KING_V1): Lead {
+  const n = (k: string) => Number(s[k] || 0);
+  // once both have a fresh side-by-side record (same coins, graded the same way), only that counts; until then the
+  // per-version record from before v0.1.65 is added (so v0 leads from the first minute instead of v1 by default)
+  const fresh = n("lbv:v1:n") >= LEAD_MIN_V1 && n("lbv:v0:n") >= LEAD_MIN_V0;
+  const v0 = fresh ? { n: n("lbv:v0:n"), hit: n("lbv:v0:hit") } : { n: n("lbv:v0:n") + n(`lb:${v0Version}:n`), hit: n("lbv:v0:hit") + n(`lb:${v0Version}:hit`) };
+  const v1 = fresh ? { n: n("lbv:v1:n"), hit: n("lbv:v1:hit") } : { n: n("lbv:v1:n") + n(`lb:${v1Version}:n`), hit: n("lbv:v1:hit") + n(`lb:${v1Version}:hit`) };
+  const p0 = prec(v0.hit, v0.n), p1 = prec(v1.hit, v1.n);
+  let leader: "v0" | "v1" = "v0";
+  let why: string;
+  if (v1.n < LEAD_MIN_V1) why = `v0 rules lead: v1 has ${v1.n} graded BOND calls (needs ${LEAD_MIN_V1})`;
+  else if (v0.n >= LEAD_MIN_V0 && (p1 ?? 0) < (p0 ?? 0)) why = `v0 rules lead: ${p0}% of their BOND calls bonded vs ${p1}% for v1`;
+  else (leader = "v1"), (why = `v1 leads: ${p1}% of its BOND calls bonded vs ${p0 ?? "–"}% for v0`);
+  return { at: Date.now(), leader, v0: { ...v0, prec: p0 }, v1: { ...v1, prec: p1 }, why };
+}

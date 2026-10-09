@@ -18,11 +18,12 @@ const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 :
 
 export async function getStats() {
   const r = redis();
-  const [st, today, dueCount, since] = await Promise.all([
+  const [st, today, dueCount, since, lead] = await Promise.all([
     r.hgetall<Record<string, number>>(K.stat),
     r.hgetall<Record<string, number>>(K.day(dayKey())),
     r.zcard(K.due),
     r.get<number>("rn:epoch:at"),
+    r.get<{ leader: "v0" | "v1"; why: string; v0: { n: number; hit: number; prec: number | null }; v1: { n: number; hit: number; prec: number | null } }>("rn:king:leader").catch(() => null),
   ]);
   const s = st || {};
   const resolved = n(s.resolved);
@@ -64,6 +65,8 @@ export async function getStats() {
         byVersion: vers.map((v) => ({ v, n: n((s as any)[`lb:${v}:n`]), hit: n((s as any)[`lb:${v}:hit`]), prec: pct(n((s as any)[`lb:${v}:hit`]), n((s as any)[`lb:${v}:n`])) })).sort((a, b) => a.v.localeCompare(b.v)),
       };
     })(),
+    // v0.1.65: which King version makes the calls, picked on this honest record
+    leader: lead ? { leader: lead.leader, why: lead.why, v0: lead.v0, v1: lead.v1 } : null,
     gaps: n(s.gaps),
     burnedRat: n(s.burned),
     sniffs: n(s.sniffs),

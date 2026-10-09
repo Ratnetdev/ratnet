@@ -79,6 +79,7 @@ export default function LiveBoard() {
               {s ? `${num(s.bond.hit)} of ${num(s.bond.n)} BOND calls bonded${s.callsMissed ? ` · ${num(s.callsMissed)} missed (rats behind)` : ""}` : "warming up"}
               {lift ? ` · ${lift}x base rate` : ""}
             </div>
+            {(s as any)?.leader ? <div className="s">calling now: {(s as any).leader.leader === "v1" ? "nano (v1)" : "King rules (v0)"} · {(s as any).leader.why.replace(/^v[01] (rules )?leads?: /, "")}</div> : null}
           </div>
         </div>
         <div {...card("base")}>

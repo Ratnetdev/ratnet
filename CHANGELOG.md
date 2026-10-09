@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.65 · The King's caller is picked on its record
+- Found on 10 Oct: since v1.1 (nano) took over the King's calls on its own calibration, its BOND calls bonded 1.4% of the time (8 of 570 graded at 2 hours), below the 2.2% base rate. The v0.3 rules it replaced had 10.7% (22 of 206). This is why the King hit rate fell and why the desk (which takes King BOND calls since v0.1.61) stopped printing.
+- The leader is now picked on the honest record: v1 makes the calls only once it has 150+ graded BOND calls and a bond rate at least as good as v0's. Until then v0.3's rules call, as on 8 Oct.
+- Every counted call grades both verdicts (the one that did not lead in shadow), so v1 can earn the lead back on a fair side-by-side record.
+- The desk takes the King's verdict only: "King or nano BOND" let in nano's BOND calls on coins the King called DUST (nano BOND: 14 of 1,352 bonded, 1%).
+- The King tile on the home page says who is calling and why.
+- New test suite v065test. All suites, tsc and next build pass.
+
 ## v0.1.64 · Redis on Railway: no bandwidth limit, faster loops; ARENA says when a variant passes
 - Redis moves from Upstash to Railway's own Redis on the private network. Upstash bills every byte, and its daily share kept running out (3.85GB on 9 Oct against 2.8GB): saving modes paused the historian and CATCH and made the boards cache 10x longer. On Railway there is no per-byte bill, so no governor and no saving mode, and the worker's Redis calls take about a millisecond instead of a trip to Upstash.
 - No call site changes: the worker answers the Upstash client in-process from Railway's Redis (REDIS_URL), and the site talks to a small "redis-rest" service on Railway that speaks the same REST protocol (npm run rest). Compression stays on (less memory).
