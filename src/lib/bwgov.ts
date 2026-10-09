@@ -102,8 +102,16 @@ export async function bwFlush() {
 }
 
 /** 0 normal ... 3 hard. A stale reading (no flush for 5 minutes, or yesterday's) counts as 0. */
+/** v0.1.64: the governor only applies to Upstash (billed per byte). Railway's own Redis has no per-byte limit. */
+export function bwLimited() {
+  if (process.env.BW_GOVERNOR === "off") return false;
+  if (process.env.BW_GOVERNOR === "on") return true; // forced (tests)
+  if ((globalThis as any).__rnLocalRedis) return false;
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
+  return !url || /upstash\.io/i.test(url);
+}
 export function bwLevel(ms = Date.now()) {
-  if (process.env.BW_GOVERNOR === "off") return 0;
+  if (!bwLimited()) return 0;
   if (!S.totalAt || ms - S.totalAt > 5 * 60_000 || dayOf(S.totalAt) !== dayOf(ms)) return 0;
   // a new hour starts from the day test alone until this process flushes in it
   if (hourOf(S.totalAt) !== hourOf(ms)) return levelFor(S.total, 0, ms);
@@ -115,6 +123,7 @@ export const bwMul = () => [1, 3, 6, 10][bwLevel()] || 1;
 
 export function bwView(ms = Date.now()) {
   return {
+    limited: bwLimited(),
     level: bwLevel(ms),
     dayMB: Math.round(S.total / 1e6),
     paceMB: Math.round(paceNow(ms) / 1e6),

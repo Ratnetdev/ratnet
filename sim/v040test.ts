@@ -1,6 +1,7 @@
 // v0.1.40: the Redis wire layer (compression, inflate, byte counts), the bandwidth governor and the incremental list
 // cache, against the real @upstash/redis client talking to a small Upstash-compatible REST server.
 // Run: npx tsx sim/v040test.ts
+process.env.BW_GOVERNOR = "on"; // v0.1.64: the governor applies to Upstash only; this suite tests it
 import http from "http";
 
 let fail = 0;

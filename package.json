@@ -1,12 +1,13 @@
 {
   "name": "ratnet",
-  "version": "0.1.63",
+  "version": "0.1.64",
   "description": "",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "worker": "tsx worker/index.ts"
+    "worker": "tsx worker/index.ts",
+    "rest": "tsx rest/index.ts"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +22,7 @@
     "@vercel/blob": "^2.8.0",
     "@vercel/functions": "^3.9.11",
     "bs58": "^6.0.0",
+    "ioredis": "^5.11.1",
     "next": "^15.5.27",
     "pg": "8.13.1",
     "react": "^19.0.8",

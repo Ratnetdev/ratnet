@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.64 · Redis on Railway: no bandwidth limit, faster loops; ARENA says when a variant passes
+- Redis moves from Upstash to Railway's own Redis on the private network. Upstash bills every byte, and its daily share kept running out (3.85GB on 9 Oct against 2.8GB): saving modes paused the historian and CATCH and made the boards cache 10x longer. On Railway there is no per-byte bill, so no governor and no saving mode, and the worker's Redis calls take about a millisecond instead of a trip to Upstash.
+- No call site changes: the worker answers the Upstash client in-process from Railway's Redis (REDIS_URL), and the site talks to a small "redis-rest" service on Railway that speaks the same REST protocol (npm run rest). Compression stays on (less memory).
+- The move is automatic: on its first start with REDIS_URL set, the worker copies every Upstash key (values exactly as stored, expiries kept, locks skipped) before any loop runs, then marks it done. On Upstash it sets the worker heartbeat 30 days ahead, so the Vercel minute ping never runs a second desk on the old database. If Railway's Redis cannot be reached or the copy fails, the worker stays on Upstash and logs why.
+- /status: the Redis tile shows "Redis (Railway): no daily limit". Bandwidth alerts and reports only apply to Upstash.
+- ARENA: when a variant passes its exam (30 trips, 40%+ won, +10%+, profit factor 1.2+ without its best trade, drawdown 30% or less), the desk log and Telegram say so once: ready for live, small (roadmap step 11).
+- New test suites v064test (real redis-server, the real Upstash client and compression layer: the move, then 26 client operations in-process and over the REST service) and v064atest. All suites, tsc and next build pass.
+
 ## v0.1.63 · REGIME: the market switches strategies on and off
 - Roadmap step 8. Every 5 minutes the worker reads the market and switches the desk's King, minute-1 and MOMO strategies on, to half size, or off.
 - The market: launches per hour (last 3 hours vs the day), the share of launches that graduate (hours 2 to 4 ago vs the day, so late bonds are counted), SOL over 6 and 24 hours. States: hot, normal, cold, dead.

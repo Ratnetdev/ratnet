@@ -656,7 +656,34 @@ process.on("uncaughtException", (e: any) => {
   redis().hincrby("rn:worker:errs", "exception", 1).catch(() => 0);
 });
 
+// v0.1.64: Railway's own Redis (REDIS_URL, private network) instead of Upstash. On the first start the worker copies
+// every key from Upstash before any loop runs (lib/redismove.ts). If Railway's Redis cannot be reached or the copy
+// fails, the worker stays on Upstash and logs why (the next restart tries again).
+async function setupRedis() {
+  const url = process.env.REDIS_URL;
+  if (!url) return console.log("redis: Upstash (REDIS_URL not set)");
+  const { connectRedis, installLocal } = await import("../src/lib/redisrest");
+  const r = await connectRedis(url);
+  if (!r) return console.log("redis: REDIS_URL is set but Railway's Redis is not reachable: staying on Upstash");
+  const upUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
+  const upTok = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "";
+  if (/upstash\.io/i.test(upUrl) && upTok) {
+    const { moveFromUpstash, upstashRaw } = await import("../src/lib/redismove");
+    try {
+      const res = await moveFromUpstash(r, upstashRaw(upUrl, upTok));
+      console.log("redis move:", JSON.stringify(res));
+    } catch (e: any) {
+      console.log("redis move failed, staying on Upstash for now:", e?.message || e);
+      r.disconnect();
+      return;
+    }
+  }
+  installLocal(r);
+  console.log("redis: Railway's Redis (private network)");
+}
+
 async function main() {
+  await setupRedis();
   await redis().incr("rn:worker:boots").catch(() => 0);
   await redis().set("rn:worker:bootAt", Date.now()).catch(() => null);
   await seedRpcDay().catch(() => null);

@@ -173,6 +173,7 @@ export function installRedisWire(base?: string) {
   const g = globalThis as any;
   base = base || process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
   if (!base || typeof g.fetch !== "function" || g.__rnWire === base) return;
+  // v0.1.64: a second base (the worker switching to Railway's Redis) re-wraps the original fetch, never the wrapper
   const orig = g.__rnWireOrig || g.fetch.bind(globalThis);
   g.__rnWireOrig = orig;
   g.__rnWire = base;
@@ -197,7 +198,9 @@ export function installRedisWire(base?: string) {
         }
       } catch {}
     }
-    const res: Response = await orig(input, init);
+    // v0.1.64: the worker on Railway's Redis: answered in-process (lib/redisrest.ts), no network
+    const local = (globalThis as any).__rnLocalRedis;
+    const res: Response = local && url.startsWith("http://rn-local-redis") ? await local(url, body).then((a: { status: number; body: string }) => new Response(a.body, { status: a.status, headers: { "content-type": "application/json" } })) : await orig(input, init);
     const txt = await res.text();
     wireTotals.tx += body.length;
     wireTotals.rx += txt.length;

@@ -5,12 +5,24 @@ import { installRedisWire } from "./rediswire";
 if (typeof window === "undefined") installFetchGuard();
 
 let _r: Redis | null = null;
+let _rLocal = false;
+// v0.1.64: the worker answers the client from Railway's Redis in-process (lib/redisrest.ts). The base URL is never
+// fetched over the network: the wire layer hands those calls to the local handler
+const LOCAL_BASE = "http://rn-local-redis";
+/** Which Redis this process talks to: "railway" (self-hosted, no per-byte bill) or "upstash". */
+export function redisHost(): "railway" | "upstash" {
+  if ((globalThis as any).__rnLocalRedis) return "railway";
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
+  return /upstash\.io/i.test(url) ? "upstash" : "railway";
+}
 export function redis(): Redis {
   const injected = (globalThis as any).__rnRedis; // test hook
   if (injected) return injected;
-  if (_r) return _r;
-  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  const local = !!(globalThis as any).__rnLocalRedis;
+  if (_r && _rLocal === local) return _r;
+  _rLocal = local;
+  const url = local ? LOCAL_BASE : process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const token = local ? "local" : process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (!url || !token) throw new Error("Redis is not configured");
   // one retry, not Upstash's default five: during an outage five retries per command multiplied the load
   // responseEncoding false (v0.1.40): Upstash sends answers base64-encoded by default, a third more bytes on every

@@ -150,9 +150,36 @@ export async function arenaPublish(now = Date.now()) {
   const sig = JSON.stringify(v.variants.map((x) => [x.id, x.n, x.open.length, x.pnl])) + (v.recent[0]?.closedAt ?? "");
   // v0.1.60: also every 5 minutes when nothing changed. It used to expire after an hour without a new trip and was not
   // written again until the next one, so ARENA on /desk showed zeros while the books had ~50 trips
+  await arenaPassAlert(v.variants).catch(() => null);
   if (sig === lastPub && now - lastPubAt < 5 * 60_000) return false;
   lastPub = sig;
   lastPubAt = now;
   await redis().set(ARENA_VIEW, { ...v, recent: v.recent.slice(0, 12) }, { ex: 2 * 86400 });
   return true;
+}
+
+// v0.1.64: the roadmap's live gate is "a variant passes the exam on fresh trades". When an ARENA book passes (30 trips,
+// 40%+ won, +10%+, profit factor 1.2+ without its best trade, drawdown 30% or less), the desk log and Telegram say so,
+// once per variant, so going live small is a decision on a passed record instead of waiting for the desk's own 30.
+const PASSED_KEY = "rn:arena:passed";
+const PASSED_SEEN = new Set<string>();
+export async function arenaPassAlert(vs: { id: string; label: string; passed: boolean; n: number; winRate: number; pnlPct: number; pfLessBest: number; dd: number }[]) {
+  const now = vs.filter((x) => x.passed && !PASSED_SEEN.has(x.id));
+  if (!now.length) return [];
+  const r = redis();
+  const out: string[] = [];
+  for (const x of now) {
+    PASSED_SEEN.add(x.id);
+    const fresh = await r.hsetnx(PASSED_KEY, x.id, { at: Date.now(), n: x.n, winRate: x.winRate, pnlPct: x.pnlPct }).catch(() => 0);
+    if (!fresh) continue; // told before (another process or an earlier start)
+    const text = `ARENA: "${x.label}" passed the exam: ${x.n} trips, ${Math.round(x.winRate)}% won, ${x.pnlPct >= 0 ? "+" : ""}${x.pnlPct.toFixed(1)}%, profit factor without the best ${x.pfLessBest >= 99 ? "no losses" : x.pfLessBest.toFixed(2)}, drawdown ${Math.round(x.dd)}%. Ready for live, small`;
+    out.push(text);
+    await r.lpush("rn:desk:ev", { agent: "LEDGER", at: Date.now(), text, tone: "win" }).catch(() => null);
+    try {
+      const { esc, ideasChat, tgSend } = await import("./tgbot");
+      const chat = process.env.TELEGRAM_TRADES_CHAT_ID || ideasChat();
+      if (chat && process.env.TELEGRAM_BOT_TOKEN) await tgSend(chat, `🏁 <b>${esc(text)}</b>`).catch(() => false);
+    } catch {}
+  }
+  return out;
 }

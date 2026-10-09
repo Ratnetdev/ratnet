@@ -68,6 +68,9 @@ export async function bwTick() {
   const perDay = mb((day.tx + day.rx) / days);
   const { redis } = await import("./redis");
   await redis().set("rn:bw", { at: now, hourMB: mb(total), perDayMB: perDay, top, gov: bwView(now) }, { ex: 7 * 86400 }).catch(() => null);
+  // v0.1.64: on Railway's own Redis bytes cost nothing: no alerts, no reports
+  const { bwLimited } = await import("./bwgov");
+  if (!bwLimited()) return;
   const alert = mb(total) > ALERT_MB_HOUR;
   if (!alert && now - lastReport < REPORT_EVERY_MS) return;
   lastReport = now;
