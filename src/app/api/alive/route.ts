@@ -24,7 +24,8 @@ export async function GET() {
 
 async function bwView() {
   const bw = await redis().get<any>("rn:bw").catch(() => null);
-  return bw ? { at: bw.at, hourMB: bw.hourMB, gov: bw.gov ?? null } : null;
+  // v0.1.61: the keys that used the most in the worker's last full hour (admin only, like the rest of these figures)
+  return bw ? { at: bw.at, hourMB: bw.hourMB, gov: bw.gov ?? null, top: Array.isArray(bw.top) ? bw.top.slice(0, 8) : [] } : null;
 }
 
 async function build() {

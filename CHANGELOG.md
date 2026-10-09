@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.61 · The desk takes ARENA's entry rules; less Redis
+- Once, on deploy: King calls no longer need nano to agree, and MOMO buys at the signal instead of waiting for a pullback. ARENA overnight: King without nano 10 trips, 60% won, +8.6% a trade (26 such calls were blocked on the desk today); MOMO now +2.7% a trade vs -14.5% for the desk's pullback entries. Small samples: ARENA keeps testing the alternatives, and both settings can be switched back in Admin (the "desk" panel, Save desk). A later change in Admin is never overwritten. The desk stays on paper.
+- ARENA writes less: an unchanged position at most once a minute (it was every few seconds), and the minute's summary reads the trips from memory instead of the whole list from Redis.
+- Admin /status Redis bandwidth tile: the keys that used the most in the worker's last full hour (admin only, like the other bandwidth figures).
+- New test suite v061test. All suites, tsc and next build pass.
+
 ## v0.1.60 · ARENA board and REPLAY coverage
 - Fix: ARENA on /desk showed zeros. The worker's summary expired after an hour without a new trip and was only written again on the next one; it now refreshes every 5 minutes as well (the books themselves were fine: ~50 trips overnight, all in the archive).
 - REPLAY reads the calls that have a price path in the archive (it read the first 5,000 calls, most of them from before paths were kept: 182 of 5,000 covered).

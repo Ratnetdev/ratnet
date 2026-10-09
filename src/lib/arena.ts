@@ -65,9 +65,14 @@ export async function arenaBooks() {
 }
 /** Re-read from Redis next time (another process took over the desk). */
 export const arenaForget = () => (BOOKS = null);
-export async function arenaSave(p: ArenaPos) {
+const SAVED_AT = new Map<string, number>();
+/** Write a position (v0.1.61: at most every 60 seconds unless forced; the copy in memory is always current). */
+export async function arenaSave(p: ArenaPos, force = true) {
   const b = await arenaBooks();
   (b[p.arena] ||= {})[p.mint] = p;
+  const k = `${p.arena}|${p.mint}`;
+  if (!force && Date.now() - (SAVED_AT.get(k) || 0) < 60_000) return;
+  SAVED_AT.set(k, Date.now());
   const { series: _s, ...lean } = p as any; // the price series stays in memory only (it was the bulk of every write)
   await redis().hset(POS_KEY(p.arena), { [p.mint]: lean }).catch(() => null);
 }
@@ -76,8 +81,15 @@ export async function arenaDrop(p: ArenaPos) {
   delete b[p.arena]?.[p.mint];
   await redis().hdel(POS_KEY(p.arena), p.mint).catch(() => null);
 }
+// v0.1.61: the trips in memory too, so the minute's summary does not read the whole list back from Redis
+let TRIPS: ArenaTrip[] | null = null;
+async function arenaTrips() {
+  if (!TRIPS) TRIPS = ((await redis().lrange<ArenaTrip>(ARENA_TRIPS, 0, 599).catch(() => [])) || []) as ArenaTrip[];
+  return TRIPS;
+}
 export async function arenaTrip(t: ArenaTrip) {
   const r = redis();
+  if (TRIPS) TRIPS = [t, ...TRIPS].slice(0, 600);
   await r.lpush(ARENA_TRIPS, t).catch(() => null);
   await r.ltrim(ARENA_TRIPS, 0, 599).catch(() => null); // ~100 per book: the exam needs the last 30
 }
@@ -118,7 +130,7 @@ export function arenaScore(trips: ArenaTrip[]) {
 
 /** The public view: variants, open positions per book, scores. */
 export async function arenaView() {
-  const [books, trips] = await Promise.all([arenaBooks().catch(() => ({} as Record<string, Record<string, ArenaPos>>)), redis().lrange<ArenaTrip>(ARENA_TRIPS, 0, 599).catch(() => [] as ArenaTrip[])]);
+  const [books, trips] = await Promise.all([arenaBooks().catch(() => ({} as Record<string, Record<string, ArenaPos>>)), arenaTrips()]);
   const score = arenaScore((trips || []) as ArenaTrip[]);
   return {
     at: Date.now(),

@@ -522,6 +522,19 @@ export async function fixOnce048() {
   return true;
 }
 
+/** v0.1.61, once: the desk takes the rules ARENA backed overnight on 8 to 9 Oct. King calls no longer need nano to agree
+ *  (King without nano: 10 trips, 60% won, +8.6% a trade, while 26 such calls were blocked on the desk), and MOMO buys at
+ *  the signal instead of waiting for a pullback (MOMO now: +2.7% a trade vs -14.5% for the desk's pullback entries).
+ *  Small samples: ARENA keeps testing the alternatives, and both can be switched back in Admin's desk settings. */
+export async function fixOnce061() {
+  const r = redis();
+  if (!(await r.set("rn:fix:0.1.61", Date.now(), { nx: true }))) return false;
+  const cur = await getSettings();
+  await saveSettings({ desk: { ...cur.desk, needNano: false, momoPullback: 0 } as any });
+  await r.lpush(K.deskEv, { agent: "LEDGER", at: Date.now(), text: "v0.1.61: King calls no longer need nano to agree, MOMO buys at the signal (both backed by ARENA overnight; small samples, ARENA keeps testing)", tone: "info" });
+  return true;
+}
+
 /**
  * The desk wallet's key lives on the worker (Railway) only. On Vercel it is ignored unless DESK_ON_VERCEL=1: a web
  * function never needs to sign, and a key there is one more place it can leak from (v0.1.33).
@@ -1289,6 +1302,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await resetOnceForFinal().catch(() => false);
     await resetOnceForNano().catch(() => false);
     await fixOnce048().catch(() => false);
+    await fixOnce061().catch(() => false);
     await dropWicksOnce().catch(() => null);
     await slimTradesOnce().catch(() => null);
     const s = await getSettings();
@@ -1706,7 +1720,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
               p.msHi = d.lv;
             }
           }
-          if (p.tokens > 0 && (d.sellFrac > 0 || loops % 15 === 0)) await arenaSave(p);
+          if (p.tokens > 0) await arenaSave(p, d.sellFrac > 0);
         } catch (e) {
           log(b, "RISK", `arena $${p.symbol}: exit check failed (${safeErr(e)})`, "bad");
         }
