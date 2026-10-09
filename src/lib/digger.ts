@@ -4,7 +4,7 @@ import { radarTop } from "./lcache";
 import { launchesCached } from "./lcache";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, RPS } from "./solana";
+import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, dayRoom, RPS } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
@@ -973,24 +973,31 @@ let DUE_FAIL_AT = 0;
 let OLD_AT = 0;
 const OLD_EVERY_MS = 5_000;
 const MAX_OLD_PER_RUN = 60;
+// v0.1.52: the King's minute-5 calls and the minute-1 reads are the trade signal, so they no longer wait on the rats'
+// share of the day. With the rats paused (most of 8 Oct and the night after) calls came at minute 13 (p50 792s) and
+// 208 of 232 signals failed "curve outside the buy window" because the coin had already moved. While the rats' share is
+// used up, fresh t1/t5 checks still run, on the desk's lane (never paused, counted in the day like every read), up to
+// the whole day's budget. Everything else (1h/1d outcome checks, backfill, hot curves, migrations) waits as before.
 export async function processDue(model: NanoModel) {
-  if (!laneOpen(1)) return { checked: 0, due: "waiting: daily chain budget" };
+  const prio = !laneOpen(1);
+  if (prio && !dayRoom()) return { checked: 0, due: "waiting: the whole day's chain budget is used" };
   if (Date.now() - DUE_FAIL_AT < 30_000) return { checked: 0, due: "backing off after an error" };
   try {
-    return await processDue0(model);
+    return prio ? { ...(await lane.run(0, () => processDue0(model, true))), due: "calls only (rats' budget share used)" } : await processDue0(model, false);
   } catch (e) {
     DUE_FAIL_AT = Date.now();
     throw e;
   }
 }
-async function processDue0(model: NanoModel) {
+async function processDue0(model: NanoModel, callsOnly: boolean) {
   const r = redis();
   const now = Date.now();
   await pruneIndex();
   // Fresh checkpoints first (the minute-1 reads and minute-5 calls are only worth anything on time), then the backlog.
   // Oldest-first alone let a backlog push every call past its 15-minute window.
-  const fresh = ((await r.zrange<string[]>(K.due, now - FRESH_MS, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN })) || []) as string[];
-  const wantOld = fresh.length < MAX_DUE_PER_RUN && now - OLD_AT >= OLD_EVERY_MS && laneOpen(3);
+  const fresh0 = ((await r.zrange<string[]>(K.due, now - FRESH_MS, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN })) || []) as string[];
+  const fresh = callsOnly ? fresh0.filter((m) => /\|t[15]$/.test(m)) : fresh0;
+  const wantOld = !callsOnly && fresh.length < MAX_DUE_PER_RUN && now - OLD_AT >= OLD_EVERY_MS && laneOpen(3);
   const old = wantOld ? (((await r.zrange<string[]>(K.due, 0, now - FRESH_MS - 1, { byScore: true, offset: 0, count: Math.min(MAX_OLD_PER_RUN, MAX_DUE_PER_RUN - fresh.length) })) || []) as string[]) : [];
   if (wantOld) OLD_AT = now;
   const members = [...fresh, ...old];

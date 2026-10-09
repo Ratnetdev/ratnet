@@ -60,8 +60,9 @@ export function waitingOn(now: DeskNowData | null | undefined, pm: Sleeve[]) {
   const out: string[] = [];
   const b = now?.budget;
   // the budget is paced: 300K chain reads a day are handed out evenly (about 3.5 a second), not all at midnight
-  if (b?.ratsPaused) out.push("King calls wait a moment: chain reads are running ahead of the day's pace (the plan's reads are spread evenly over 24 hours). The rats dig again within minutes as the allowance catches up. The desk keeps pricing and exiting its positions.");
-  else if (b?.agentsPaused) out.push("CATCH and the other agents wait a moment: chain reads are running ahead of the day's pace (spread evenly over 24 hours). King calls and MOMO still come in.");
+  // v0.1.52: King calls and minute-1 reads keep running on priority when the rats' share is used; only learning waits
+  if (b && b.used >= b.budget && b.budget) out.push("Today's chain reads are used up (they reset at 00:00 UTC). King calls wait until then. The desk keeps pricing and exiting its positions.");
+  else if (b?.ratsPaused || b?.agentsPaused) out.push("CATCH and the background learning (outcome checks, backfill) wait a moment: chain reads are ahead of the day's pace. King calls, minute-1 reads and MOMO keep coming in.");
   const paused = pm.filter((x) => x.paused && x.paused > Date.now());
   for (const x of paused) out.push(`The ${x.sleeve} strategy is paused until ${hhmm(x.paused!)} after a bad run. Its signals go to the ghost desk meanwhile (not counted, learned from).`);
   return out;

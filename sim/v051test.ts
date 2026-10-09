@@ -51,7 +51,7 @@ const ok = (c: boolean, m: string) => {
   sol.seedDayUsed(new Date().toISOString().slice(0, 10), 10_000_000);
   ok(!sol.laneOpen(1), "budget closed");
   const r3: any = await dg.processDue(model);
-  ok(n === 0 && /chain budget/.test(r3.due), "with the budget closed the pass waits without touching Redis");
+  ok(n === 0 && /chain budget/.test(r3.due), "with the whole day used the pass waits without touching Redis");
 
   console.log(fail ? `\n${fail} FAILED` : "\nall v0.1.51 checks passed");
   process.exit(fail ? 1 : 0);

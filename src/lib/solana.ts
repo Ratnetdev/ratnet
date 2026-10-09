@@ -139,6 +139,8 @@ function budgetBlocks(l: number) {
   const lim = [Infinity, b.pace * 1.05, b.pace * 0.95, b.pace * 0.75][Math.max(0, Math.min(3, l))];
   return b.used >= lim;
 }
+/** v0.1.52: whether the whole day's budget still has room (the hard ceiling for the King's priority reads). */
+export const dayRoom = () => !DAY_BUDGET || budgetState().used < DAY_BUDGET;
 /** Whether a lane may still read the chain today (loops check before a pass instead of failing call by call). */
 export const laneOpen = (l: number) => !budgetBlocks(l);
 const slot = (l: number, cost: number) =>

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.52 · King calls never wait on the rats' share of the chain budget
+- Why: with the rats' share of the day's chain reads used up (most of 8 Oct and the night after; the rats spend about twice their share), the minute-5 King calls waited with everything else. Calls came at minute 13 (p50 792s against a 300s target) and 208 of 232 signals failed "curve outside the buy window" because the coin had already moved. Few calls, late calls, few trades.
+- The minute-5 calls and minute-1 reads now keep running when the rats' share is used, on the desk's lane (never paused, still counted in the day). The whole day's budget (300K) stays the hard ceiling. The 1h and 1d outcome checks, the backfill, hot-curve re-reads and migration checks wait as before.
+- RIGHT NOW's "Why no new buys" no longer says King calls wait while only the background learning does.
+- New test suite v052test. All suites, tsc and next build pass.
+
 ## v0.1.51 · Redis leak: the due pass looped while the chain budget was closed
 - Bug: the rats' due pass (minute-1 reads, minute-5 calls and the 1h and 1d outcome checks) runs every second. While the daily chain budget had the rats paused, its curve read failed before it took the coins off the queue, so it re-read the same 300 coins and their launch records from Redis every second for as long as the pause lasted. On the night of 8 to 9 Oct that was ~260MB an hour (zrange rn:due, zmscore rn:peak, mget rn:launch), saving mode 3 within 3 minutes of midnight UTC.
 - The due pass now waits without touching Redis while the budget is closed, and backs off 30 seconds after any error.
