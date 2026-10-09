@@ -5,9 +5,9 @@ import { usePoll } from "./usePoll";
 
 type P = { name: string; age: number | null; ok: boolean; stalled: boolean; note: string };
 const LABEL: Record<string, string> = { desk: "desk", rats_fast: "rats (fast)", rats_slow: "rats (slow)", stream: "live stream", flash: "FLASH", historian: "historian", catch: "CATCH", momo: "MOMO", hound: "HOUND", mind: "MIND", lens: "LENS", overseer: "OVERSEER", wire: "WIRE", j7: "J7 feed", receipts: "receipts", telegram: "telegram", archive: "archive" };
-// the 25 agents, by the loop that runs them (feeds and receipts are plumbing, not agents)
+// the 26 agents, by the loop that runs them (feeds and receipts are plumbing, not agents)
 export const RUNS: Record<string, string[]> = {
-  desk: ["VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "PM", "PULSE", "SHIELD"],
+  desk: ["VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "PM", "REGIME", "PULSE", "SHIELD"],
   rats_fast: ["SCOUT", "KING", "TAPE", "GRAPH"],
   flash: ["FLASH"],
   historian: ["HISTORIAN"],

@@ -855,6 +855,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
     rec.pNow = 100;
     if (rec.creator) p.hincrby(K.devB, rec.creator, 1);
     hrInc(c, rec.createdAt, "b");
+    hrInc(c, at, "g"); // v0.1.63: graduations by the hour they happened (REGIME reads migrations per hour)
     const call0 = rec.call;
     const lead = call0 ? Math.max(0, Math.round((c.now - call0.at) / 1000)) : null;
     if (call0?.counted) {

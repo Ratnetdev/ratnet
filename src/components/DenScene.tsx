@@ -5,7 +5,7 @@ import { useEffect, useRef } from "react";
 // and a speech bubble shows what it did. A coin token walks the pipeline when the desk buys.
 
 type Ev = { agent: string; at: number; symbol?: string; text: string; tone: string };
-const ORDER = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "WIRE", "PM", "PULSE", "LENS", "MIND", "HOUND", "OVERSEER", "MOMO", "CATCH", "SHIELD", "FLASH"];
+const ORDER = ["HISTORIAN", "SCOUT", "KING", "TAPE", "GRAPH", "VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "WIRE", "PM", "PULSE", "LENS", "MIND", "HOUND", "OVERSEER", "MOMO", "CATCH", "SHIELD", "FLASH", "REGIME"];
 export const AGENT_COLOR: Record<string, string> = {
   SCOUT: "#8cff5a",
   KING: "#ffb547",
@@ -32,6 +32,7 @@ export const AGENT_COLOR: Record<string, string> = {
   CATCH: "#ffe066",
   SHIELD: "#ff6b6b",
   FLASH: "#9ef0ff",
+  REGIME: "#b8f27a",
 };
 const TONE: Record<string, string> = { ok: "#8cff5a", bad: "#ff5c5c", info: "#c8d3cc", win: "#ffb547", loss: "#ff5c5c" };
 const RAT = [

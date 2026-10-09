@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.63 · REGIME: the market switches strategies on and off
+- Roadmap step 8. Every 5 minutes the worker reads the market and switches the desk's King, minute-1 and MOMO strategies on, to half size, or off.
+- The market: launches per hour (last 3 hours vs the day), the share of launches that graduate (hours 2 to 4 ago vs the day, so late bonds are counted), SOL over 6 and 24 hours. States: hot, normal, cold, dead.
+- Each strategy's hit rate right now: its last 12 coins in ARENA (8 hours, one result per coin across the books). ARENA keeps trading every signal, so it shows first when a strategy stops working.
+- Off: a cold streak in ARENA (8+ coins, under 25% won, average under -10%) or a dead market. Half size: a weak run or a cold market. A strategy still winning in ARENA stays on in a bad market. MOMO (migrated coins) only reacts to SOL, not to the launch market.
+- No flapping: worse applies at once, better after 2 readings in a row and 30 minutes since the last switch. No fresh reading (30 minutes): nothing is blocked.
+- Every signal it blocks goes to the ghost desk, so "what the switch saved" is a measured number on the board.
+- ARENA, WIRE, MIND and CATCH are never switched. Graduations are now also counted by the hour they happen (migrations per hour on the board).
+- REGIME on /desk: market state, inputs, each strategy's level and why, what the switch saved, latest switches. REGIME added to the agents (26).
+- REGIME_MODE (Railway worker, optional): on (default), shadow (shown, not applied) or off.
+- New test suite v063test. All suites, tsc and next build pass.
+
 ## v0.1.62 · Redis: the real costs from the hourly breakdown
 - Measured on 9 Oct (worker, last full hour: 180MB against a 117MB hourly allowance). Fixed:
   - hmget rn:pools (28MB/h): the launch-curve feed (v0.1.53) looked up pool vaults for its ~800 followed coins every 5 seconds; curve coins have no pool. It no longer does.

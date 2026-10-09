@@ -9,6 +9,7 @@ import DeskNow, { type DeskNowData } from "./DeskNow";
 import TrackRecord from "./TrackRecord";
 import BuildBoard from "./BuildBoard";
 import ArenaBoard from "./ArenaBoard";
+import RegimeBoard from "./RegimeBoard";
 import ReplayBoard from "./ReplayBoard";
 import AgentPanel from "./AgentPanel";
 import { useState } from "react";
@@ -106,6 +107,7 @@ const ROLES: [string, string][] = [
   ["FILM", "reviews every decision later"],
   ["WIRE", "X posts that spawn coins"],
   ["PM", "splits capital across strategies"],
+  ["REGIME", "switches strategies with the market"],
   ["PULSE", "what X is talking about now"],
   ["LENS", "opens the site, X and TG by hand"],
   ["MIND", "judges coins like a trader"],
@@ -196,6 +198,7 @@ export default function DeskBoard() {
         </div>
       ) : null}
       <TrackRecord />
+      <RegimeBoard />
       <ArenaBoard />
       <ReplayBoard />
       <BuildBoard />

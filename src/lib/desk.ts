@@ -36,6 +36,7 @@ import { NANO_MIN, type NanoModel } from "./nano";
 import { agentLog, type AgentEv } from "./agents";
 import { coachStats, coachStep, follow, followsFor, tripId, type Check } from "./coach";
 import { filmStats, filmStep, logSkip } from "./film";
+import { gateFor, regimeSaved } from "./regimegate";
 import { exitProfiles, noteExit, onClose as pmClose, onGhost as pmGhost, pmClearPauses, pmDropWicks, pmView, sleeveOf, sleeveWeight, type ExitProfile } from "./pm";
 import { accountOf, notePnl, wireViewPublic } from "./wire";
 import { getHistory } from "./historian";
@@ -49,7 +50,7 @@ import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
 import { acceptKing, acceptMomo, arenaBooks, arenaDrop, arenaSave, arenaTrip, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck } from "./arena";
 
-export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE";
+export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE" | "REGIME";
 export const AGENTS: { id: Agent; role: string }[] = [
   { id: "HISTORIAN", role: "replays past launches to train the models" },
   { id: "SCOUT", role: "digs every launch, early read at minute 1" },
@@ -2333,6 +2334,14 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
     await ghostEnter(b, rec, px, real, how, `${sl} sleeve paused by PM`, cfg, true);
     return;
   }
+  // REGIME (v0.1.63): the market state and the strategy's live ARENA hit rate switch it on, to half size, or off.
+  // A blocked signal goes to the ghost desk, so what the switch saved is measured
+  const rgw = await gateFor(sl).catch(() => ({ w: 1, level: "on" as const, why: "" }));
+  if (rgw.w <= 0) {
+    log(b, "REGIME", `$${rec.symbol}: ${sl} is switched off (${rgw.why}). ghost desk takes it`, "info", coin);
+    await ghostEnter(b, rec, px, real, how, `REGIME off: ${rgw.why}`, cfg, true);
+    return;
+  }
   // RISK: tracked wallets in the coin move the size, by how copying their class has actually done (bounded 0.7x to 1.4x)
   const buyers = (await buyersOf(rec.mint).catch(() => [])).filter((x: any) => Date.now() - x.at < 2 * 3600_000);
   let wmul = 1;
@@ -2344,7 +2353,8 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
       if (wmul !== 1) log(b, "RISK", `$${rec.symbol}: ${buyers.length} tracked wallet${buyers.length > 1 ? "s" : ""} in (${buyers.slice(0, 3).map((x: any) => x.name).join(", ")}); their classes averaged ${Math.round(avg)}% at 6h when copied: size ${wmul.toFixed(2)}x`, "info", coin);
     }
   }
-  const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct * pmw.w * wmul) / 100);
+  const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct * pmw.w * wmul * rgw.w) / 100);
+  if (rgw.w < 1) log(b, "REGIME", `$${rec.symbol}: ${sl} at half size (${rgw.why})`, "info", coin);
   if (pmw.w !== 1) log(b, "PM", `$${rec.symbol}: ${sl} sleeve at ${pmw.w}x size`, "info", coin);
   const size = Math.min(cfg.maxSol, want, liqCap, avail * 0.95);
   if (want > liqCap && liqCap < cfg.maxSol) log(b, "SIZE", `$${rec.symbol}: liquidity caps the buy at ${liqCap.toFixed(2)} SOL (max ${cfg.maxImpact ?? 6}% price impact on a ${vSol.toFixed(0)} SOL curve)`, "info", coin);
@@ -2941,6 +2951,7 @@ async function ghostSell(b: Batch, p: Pos, frac: number, px: number, reason: str
   await follow({ id: `g:${tripId(p.mint, p.openedAt)}`, mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: now, entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
   await noteExit(`${sleeveOf(p.how, p.wire?.vamp)}:${p.tier || "micro"}`, Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
   const note = await pmGhost(sleeveOf(p.how, p.wire?.vamp), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
+  if (String(p.ghost || "").startsWith("REGIME")) await regimeSaved(p.soldSol - p.costSol).catch(() => {});
   if (note) log(b, "PM", note, "win");
   const total = p.soldSol - p.costSol;
   log(b, "LEDGER", `ghost desk closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))}). not counted`, "info", coin);

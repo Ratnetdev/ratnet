@@ -15,7 +15,8 @@ import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
 import { reviveAllowed } from "../src/lib/revive";
-import { arenaPublish } from "../src/lib/arena";
+import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
+import { regimeTick } from "../src/lib/regimegate";
 import { archiveBoard, archiveFlush, archiveInit, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
@@ -697,6 +698,13 @@ async function main() {
   setInterval(() => pruneCurves(), 5_000);
   // v0.1.58: ARENA's summary for the site, once a minute (only when it changed)
   setInterval(() => arenaPublish().catch(() => null), 60_000);
+  // v0.1.63: REGIME, every 5 minutes (first reading 90s after start): market + ARENA hit rates switch the desk's strategies
+  const regime = async () => {
+    const t = await regimeTick(await arenaRecentTrips()).catch((e) => (console.log("regime error", e?.message || e), null));
+    if (t?.switches.length) console.log(`regime: ${t.switches.map((x) => `${x.sleeve} ${x.from}->${x.to}`).join(", ")} (market ${t.market.state})`);
+  };
+  setTimeout(() => regime().catch(() => null), 90_000);
+  setInterval(() => regime().catch(() => null), 5 * 60_000);
   // v0.1.55: the archive (Railway Postgres). Without DATABASE_URL all of this does nothing
   // v0.1.56: a failed first connect (the database still starting, a network blip) is retried every minute
   const startArchive = async () => {

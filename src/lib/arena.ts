@@ -87,6 +87,8 @@ async function arenaTrips() {
   if (!TRIPS) TRIPS = ((await redis().lrange<ArenaTrip>(ARENA_TRIPS, 0, 599).catch(() => [])) || []) as ArenaTrip[];
   return TRIPS;
 }
+/** v0.1.63: the trips for REGIME (memory, read from Redis once). */
+export const arenaRecentTrips = () => arenaTrips();
 export async function arenaTrip(t: ArenaTrip) {
   const r = redis();
   if (TRIPS) TRIPS = [t, ...TRIPS].slice(0, 600);
