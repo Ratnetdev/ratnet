@@ -7,7 +7,7 @@
 // its canonical PumpSwap pool once it migrated. Each update is a few hundred bytes (billed at 2 credits per 0.1 MB).
 // The desk prices positions from it between its 10-second chain checks. Launch tapes come from the chain again, for
 // the coins that pass the curve minimum (see processDue).
-import { bondingCurvePda, noteStreamBytes, parseCurve, viewCurve } from "./solana";
+import { bondingCurvePda, noteStreamBytes, parseCurve, viewCurve, type CurveView } from "./solana";
 import { redis } from "./redis";
 import { POOLS_KEY } from "./pool";
 
@@ -16,7 +16,8 @@ type Sub = { mint: string; kind: "curve" | "base" | "quote"; addr: string };
 
 const amountOf = (b: Buffer) => (b.length >= 72 ? Number(b.readBigUInt64LE(64)) : null);
 
-export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q: FeedQuote) => void; log?: (s: string) => void }) {
+// v0.1.53: onCurve gets every curve update (migrations included), max caps the followed coins, label names the feed
+export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q: FeedQuote) => void; onCurve?: (mint: string, v: CurveView) => void; max?: number; label?: string; log?: (s: string) => void }) {
   const WS: any = (globalThis as any).WebSocket;
   const http = process.env.HELIUS_RPC_URL || "";
   const url = process.env.HELIUS_WS_URL || (http.startsWith("http") ? http.replace(/^http/, "ws") : "");
@@ -41,7 +42,7 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q
   };
   const resync = async () => {
     if (!state.up) return;
-    const mints = Array.from(await opts.want().catch(() => new Set<string>())).slice(0, 200);
+    const mints = Array.from(await opts.want().catch(() => new Set<string>())).slice(0, opts.max ?? 200);
     const r = redis();
     const vaults = mints.length ? (((await r.hmget<Record<string, { bv: string; qv: string; vq?: number } | null>>(POOLS_KEY, ...mints).catch(() => null)) || {}) as Record<string, { bv: string; qv: string; vq?: number } | null>) : {};
     const next = new Map<string, Sub>();
@@ -85,7 +86,7 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q
       subOf.clear();
       addrOfSub.clear();
       resync().catch(() => null);
-      opts.log?.("helius feed: live prices of open positions");
+      opts.log?.(`helius feed: ${opts.label || "live prices of open positions"}`);
     };
     ws.onmessage = (ev: any) => {
       const data = String(ev?.data || "");
@@ -124,6 +125,7 @@ export function heliusFeed(opts: { want: () => Promise<Set<string>>; onQuote: (q
         const c = parseCurve(buf);
         if (!c) return;
         const v = viewCurve(c);
+        opts.onCurve?.(s.mint, v);
         if (v.complete || !(v.priceSol > 0)) return; // migrated: the pool vaults take over
         state.quotes++;
         opts.onQuote({ mint: s.mint, px: v.priceSol, real: v.realSol, mcSol: v.mcapSol, curve: true });

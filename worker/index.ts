@@ -8,7 +8,7 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { budgetState, lane, laneOpen, parsedTx, rpcView } from "../src/lib/solana";
+import { budgetState, curveFeed, lane, laneOpen, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
 import { logCreate, logTrade, markFeedLive, pruneStream, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
@@ -226,7 +226,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", ppKey: PP_KEY ? 1 : 0, lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", curves: CURVES ? `${CURVES.view().up ? "up" : "down"} ${CURVES.view().addrs} coins ${Math.round(CURVES.view().perDay / 1000)}K/day hit ${curveFeed.hits + curveFeed.misses ? Math.round((curveFeed.hits / (curveFeed.hits + curveFeed.misses)) * 100) : 0}%${CURVES.view().error ? ` err ${CURVES.view().error.slice(0, 30)}` : ""}` : "off", ppKey: PP_KEY ? 1 : 0, lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
   }
   // v0.1.41: no copy of the tape in Redis any more (rn:rt). CATCH and SHIELD read it from this process's memory
   // (__rnRt); the copy was only for readers outside the worker, which only run when the worker is down.
@@ -315,6 +315,10 @@ const PP_KEY = process.env.PUMPPORTAL_API_KEY || "";
 // every trade, from PumpPortal (with a key) or the Helius feed, goes through here
 let TRADE_IN: (msg: any) => void = () => {};
 let FEED: ReturnType<typeof heliusFeed> | null = null;
+// v0.1.53: the live curve stream for every launch in its first 7 minutes (the minute-1 read and the minute-5 call).
+// Its own socket, so the positions' feed never waits behind 400+ launch subscriptions.
+let CURVES: ReturnType<typeof heliusFeed> | null = null;
+const CURVE_MAX = Math.max(50, Number(process.env.CURVE_FEED_MAX || 800));
 const SHAPES = new Map<string, number>();
 let shapesAt = 0;
 function noteShape(msg: any) {
@@ -427,6 +431,7 @@ function pumpportal() {
         FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
         if (up && PP_KEY) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
         FEED?.nudge();
+        CURVES?.nudge();
         watched.add(mint);
         if (++createN % LAG_EVERY === 0 && msg.signature) sampleLag(String(msg.signature), now);
       }
@@ -600,9 +605,16 @@ async function main() {
   // trades for every followed coin from Helius (no PumpPortal key needed): the same handler as PumpPortal's trades
   // live prices of open positions from Helius account updates (with a PumpPortal key, its trades price them instead)
   if (!PP_KEY) {
-    FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), log: (x) => console.log(x) });
+    FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), onCurve: noteCurve, log: (x) => console.log(x) });
     setInterval(() => FEED && markFeedLive(FEED.live()), 1_000);
   }
+  CURVES = heliusFeed({ want: async () => new Set(youngMints().slice(-CURVE_MAX)), onQuote: () => {}, onCurve: noteCurve, max: CURVE_MAX, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
+  setCurveLive(() => {
+    const a = CURVES?.live() || new Set<string>();
+    for (const m of FEED?.live() || []) a.add(m);
+    return a;
+  });
+  setInterval(() => pruneCurves(), 5_000);
   // live prices for the site's pages (/api/px reads them): what viewers asked for, every 4s, on the agents' lane
   let pxBusy = false;
   let pxAt = 0;

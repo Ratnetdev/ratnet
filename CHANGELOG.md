@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.53 · Live curve stream for every launch
+- Roadmap step 1. Every new coin's bonding curve is subscribed on the Helius websocket the moment it launches, for its first 7 minutes (the minute-1 read and the minute-5 call), on its own socket next to the positions' feed. Every trade pushes the new curve (price, curve %, market cap, migrated or not).
+- The rats' curve reads answer from the stream for followed coins and read the chain only for the rest. Before this they re-read the same curves every second (~9,500 getMultipleAccounts an hour), which used up their share of the day's chain budget and made King calls late. Updates are a few hundred bytes each, billed by data volume (1 credit per 50KB) on the current Helius plan.
+- Never a stale value: a coin counts as followed only while its subscription is confirmed and the socket is up; otherwise it is read from the chain as before. Unfollowed coins are dropped from memory every 5 seconds.
+- /status Live stream tile: launches followed, the stream's credits per day and the share of curve reads answered from it. CURVE_FEED_MAX (optional, default 800) caps the followed launches.
+- New test suite v053test. All suites, tsc and next build pass.
+
 ## v0.1.52 · King calls never wait on the rats' share of the chain budget
 - Why: with the rats' share of the day's chain reads used up (most of 8 Oct and the night after; the rats spend about twice their share), the minute-5 King calls waited with everything else. Calls came at minute 13 (p50 792s against a 300s target) and 208 of 232 signals failed "curve outside the buy window" because the coin had already moved. Few calls, late calls, few trades.
 - The minute-5 calls and minute-1 reads now keep running when the rats' share is used, on the desk's lane (never paused, still counted in the day). The whole day's budget (300K) stays the hard ceiling. The 1h and 1d outcome checks, the backfill, hot-curve re-reads and migration checks wait as before.

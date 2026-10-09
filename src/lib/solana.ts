@@ -414,7 +414,48 @@ export function round2(n: number) {
 }
 
 /** Fetch curves for many mints (100 per RPC call). Missing account => null. */
+// v0.1.53: the live curve stream. The worker subscribes every new coin's bonding curve on the Helius websocket for its
+// first 7 minutes (and every open position). Each trade pushes the new curve here, so getCurves answers from memory
+// for those coins and only reads the chain for the rest. A subscribed coin with no update simply has not traded since.
+// Before this the rats re-read the same curves every second (~9,500 getMultipleAccounts an hour), which used up their
+// share of the day and made King calls late.
+const LIVE_CURVES = new Map<string, { v: CurveView; at: number }>();
+let liveSet: () => Set<string> = () => new Set();
+export const curveFeed = { hits: 0, misses: 0 };
+/** The worker hands over which coins are confirmed subscribed right now (an empty set while the socket is down). */
+export function setCurveLive(fn: () => Set<string>) {
+  liveSet = fn;
+}
+/** A curve update from the stream. */
+export function noteCurve(mint: string, v: CurveView) {
+  LIVE_CURVES.set(mint, { v, at: Date.now() });
+}
+/** Forget coins that are no longer followed. */
+export function pruneCurves() {
+  const live = liveSet();
+  for (const m of LIVE_CURVES.keys()) if (!live.has(m)) LIVE_CURVES.delete(m);
+  return LIVE_CURVES.size;
+}
 export async function getCurves(mints: string[]): Promise<Record<string, CurveView | null>> {
+  const out: Record<string, CurveView | null> = {};
+  const live = liveSet();
+  const need: string[] = [];
+  for (const m of mints) {
+    const c = live.has(m) ? LIVE_CURVES.get(m) : undefined;
+    if (c) out[m] = c.v;
+    else need.push(m);
+  }
+  curveFeed.hits += mints.length - need.length;
+  curveFeed.misses += need.length;
+  const fetched = await getCurvesRpc(need);
+  for (const m of need) {
+    out[m] = fetched[m];
+    // a followed coin read once from the chain stays valid until its next update (no update = no trade)
+    if (fetched[m] && live.has(m) && !LIVE_CURVES.has(m)) LIVE_CURVES.set(m, { v: fetched[m]!, at: Date.now() });
+  }
+  return out;
+}
+async function getCurvesRpc(mints: string[]): Promise<Record<string, CurveView | null>> {
   const out: Record<string, CurveView | null> = {};
   for (let i = 0; i < mints.length; i += 100) {
     const chunk = mints.slice(i, i + 100);

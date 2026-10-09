@@ -66,12 +66,14 @@ export default function StatusBoard() {
           const tr = m ? (m[1] === "never" ? null : Number(m[1])) : undefined;
           const tradesOk = tr != null && tr <= 60;
           const fd = /feed:([^,]+)/.exec((st as any)?.note || "")?.[1];
+          // v0.1.53: the live curve stream (every launch's first 7 minutes) and how often the rats answer from it
+          const cv = /curves:([^,]+)/.exec((st as any)?.note || "")?.[1];
           const keyed = /ppKey:1/.test((st as any)?.note || "");
           // without a PumpPortal key no trade stream is expected (v0.1.34): the Helius feed prices open positions,
           // tapes come from the chain and FLASH waits. That is the plan, not a fault
           const tradeLine = keyed ? (tr === undefined ? "" : tradesOk ? ` · last trade ${tr}s ago` : " · NO TRADES arriving on the keyed stream") : " · trade stream off (needs a PumpPortal key): tapes from the chain, FLASH paused";
-          const feedLine = fd ? ` · Helius price feed ${fd.replace(/ accts /, " accounts (open positions), ").replace(/ px /, " prices, ")}` : "";
-          return { k: "Live stream", v: st?.age != null ? `${st.age}s` : nil(aliveIn), s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : keyed && !tradesOk && tr !== undefined ? "warn" : fd && /^down/.test(fd) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
+          const feedLine = `${fd ? ` · Helius price feed ${fd.replace(/ accts /, " accounts (open positions), ").replace(/ px /, " prices, ")}` : ""}${cv && cv !== "off" ? ` · live curves ${cv.replace(/ coins /, " launches followed, ").replace(/ hit (\d+)%/, ", $1% of curve reads from the stream")}` : ""}`;
+          return { k: "Live stream", v: st?.age != null ? `${st.age}s` : nil(aliveIn), s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : keyed && !tradesOk && tr !== undefined ? "warn" : (fd && /^down/.test(fd)) || (cv && /^down/.test(cv)) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
         })(),
       ],
     },
