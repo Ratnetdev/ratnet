@@ -71,9 +71,13 @@ export default function StatusBoard() {
           const keyed = /ppKey:1/.test((st as any)?.note || "");
           // without a PumpPortal key no trade stream is expected (v0.1.34): the Helius feed prices open positions,
           // tapes come from the chain and FLASH waits. That is the plan, not a fault
-          const tradeLine = keyed ? (tr === undefined ? "" : tradesOk ? ` · last trade ${tr}s ago` : " · NO TRADES arriving on the keyed stream") : " · trade stream off (needs a PumpPortal key): tapes from the chain, FLASH paused";
-          const feedLine = `${fd ? ` · Helius price feed ${fd.replace(/ accts /, " accounts (open positions), ").replace(/ px /, " prices, ")}` : ""}${cv && cv !== "off" ? ` · live curves ${cv.replace(/ coins /, " launches followed, ").replace(/ hit (\d+)%/, ", $1% of curve reads from the stream")}` : ""}`;
-          return { k: "Live stream", v: st?.age != null ? `${st.age}s` : nil(aliveIn), s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : keyed && !tradesOk && tr !== undefined ? "warn" : (fd && /^down/.test(fd)) || (cv && /^down/.test(cv)) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
+          // v0.1.54: with a key, the trade stream follows a shortlist under a daily cap
+          const pp = /pp:([^,]+)/.exec((st as any)?.note || "")?.[1];
+          const ppCoins = Number(/^(\d+) coins/.exec(pp || "")?.[1] || 0);
+          const ppStuck = keyed && ppCoins > 0 && (tr === null || (tr ?? 0) > 120);
+          const tradeLine = keyed ? ` · trade stream (shortlist): ${pp || "starting"}${tr != null ? `, last trade ${tr}s ago` : ""}${ppStuck ? " · NO TRADES arriving" : ""}` : " · trade stream off (needs a PumpPortal key): tapes from the chain, FLASH paused";
+          const feedLine = `${fd ? ` · Helius price feed ${fd.replace(/ accts /, " accounts (open positions), ").replace(/ px /, " prices, ")}` : ""}${cv && cv !== "off" ? ` · live curves ${cv.replace(/ coins /, " launches followed, ").replace(/ hit (\d+)%/, ", $1% of reads on followed coins answered from the stream")}` : ""}`;
+          return { k: "Live stream", v: st?.age != null ? `${st.age}s` : nil(aliveIn), s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : ppStuck || (pp && / REACHED/.test(pp)) ? "warn" : (fd && /^down/.test(fd)) || (cv && /^down/.test(cv)) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
         })(),
       ],
     },

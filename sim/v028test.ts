@@ -27,7 +27,7 @@ const ok = (c: boolean, m: string) => {
   const { Keypair } = await import("@solana/web3.js");
   const mint = Keypair.generate().publicKey.toBase58();
   const t0 = Date.now() - 60_000;
-  logCreate(mint, "DEV", t0, 1, 30_000_000);
+  logCreate(mint, "DEV", t0, 1, 30_000_000, true); // streamed from birth
   for (let i = 0; i < 60; i++) logTrade({ mint, w: `W${i % 25}`, buy: i % 4 !== 3, sol: 0.3 + (i % 5) * 0.1, tok: 1_000_000, vSol: 31 + i * 0.2, mcSol: 30 + i * 0.3 });
   const tape: any = await readTape(mint, "DEV", t0);
   ok(!!tape && tape.src === "stream", `tape built from the stream (src=${tape?.src})`);

@@ -5,7 +5,7 @@
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
 import { bondingCurvePda, conn, parsedTxsAny, pmap } from "./solana";
-import { streamLog, tradesFlowing } from "./streamlog";
+import { seedLog, streamLog, tradesFlowing } from "./streamlog";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
 const JITO = new Set([
@@ -186,6 +186,8 @@ export async function readTape(mint: string, creator: string, createdAt: number,
     const pick = Array.from(new Set([...oldest.slice(0, sample.early).map((s) => s.signature), ...ok.slice(0, sample.recent).map((s) => s.signature)]));
     const txs = await parsedMany(pick);
     const trades = txs.map((tx) => parseTrade(tx, curve, mint)).filter((x): x is Trade => !!x && Math.abs(x.sol) > 1e-6);
+    // v0.1.54: hand the early trades to the stream log; from now on PumpPortal streams this coin's trades (worker only)
+    seedLog(mint, createdAt, creator, trades.map((x) => ({ t: x.t || Date.now(), w: x.w, sol: x.sol, tok: x.tok, buy: x.sol > 0 })), ok.length);
     return buildTape(trades, ok.length, createSlot, creator, createdAt, Date.now(), sample);
   } catch {
     return null;

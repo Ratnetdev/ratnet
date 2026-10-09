@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.54 · PumpPortal trade stream for the shortlist, with a daily cap
+- Roadmap step 2. With a PumpPortal key (PUMPPORTAL_API_KEY on Railway) the worker streams the trades of a shortlist only: coins whose minute-1 tape was read (they passed the curve minimum), until their minute-5 call is made, plus open positions. Before, a key would have subscribed every launch, the radar, migrations and CATCH's whole watch list (~1 SOL a day or more).
+- The minute-1 chain read seeds the coin's log with its early trades; every trade after that streams in. The minute-5 tape is built from both, with no second chain read (getSignaturesForAddress plus a batch of getTransaction per coin before).
+- Daily cap: PP_DAILY_SOL (default 0.03 SOL, about 30,000 trades at 0.01 SOL per 10,000). When it is reached every coin is unsubscribed until 00:00 UTC and tapes come from the chain again. The count is kept in Redis, so a restart does not reset it.
+- A launch the stream never followed never gets a stream tape (only the dev's buy, which would read as dead). FLASH stays paused: it needs every launch's trades from birth.
+- The positions' Helius feed always runs now (with a key it used to be switched off).
+- Without a key the trade list is no longer rebuilt from Redis every 15 seconds (positions, radar, migrations and CATCH's watch list, about 10MB an hour, for nothing).
+- /status Live stream tile: shortlist size, trades today, SOL spent against the cap. The live-curves share now counts followed coins only.
+- New test suite v054test. All suites, tsc and next build pass.
+
 ## v0.1.53 · Live curve stream for every launch
 - Roadmap step 1. Every new coin's bonding curve is subscribed on the Helius websocket the moment it launches, for its first 7 minutes (the minute-1 read and the minute-5 call), on its own socket next to the positions' feed. Every trade pushes the new curve (price, curve %, market cap, migrated or not).
 - The rats' curve reads answer from the stream for followed coins and read the chain only for the rest. Before this they re-read the same curves every second (~9,500 getMultipleAccounts an hour), which used up their share of the day's chain budget and made King calls late. Updates are a few hundred bytes each, billed by data volume (1 credit per 50KB) on the current Helius plan.

@@ -32,7 +32,7 @@ const ok = (c: boolean, m: string) => {
   await sol.getCurves([A]);
   ok(rpcAsked.length === 1, "socket down: back to the chain (never a stale curve)");
   ok(sol.pruneCurves() === 0, "unfollowed coins are forgotten");
-  ok(sol.curveFeed.hits === 2 && sol.curveFeed.misses === 2, `hit counter (${sol.curveFeed.hits} hits, ${sol.curveFeed.misses} misses)`);
+  ok(sol.curveFeed.hits === 2 && sol.curveFeed.misses === 0, `hit counter (followed coins only) (${sol.curveFeed.hits} hits, ${sol.curveFeed.misses} misses)`);
 
   // heliusFeed passes curve updates on, migrated ones included
   const { heliusFeed } = await import("../src/lib/heliusfeed");

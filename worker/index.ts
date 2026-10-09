@@ -10,7 +10,7 @@ import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type Fl
 import { K, redis } from "../src/lib/redis";
 import { budgetState, curveFeed, lane, laneOpen, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
-import { logCreate, logTrade, markFeedLive, pruneStream, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
+import { LOG_MS, logCreate, logTrade, markFeedLive, pruneStream, setFollowHook, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
@@ -226,7 +226,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", curves: CURVES ? `${CURVES.view().up ? "up" : "down"} ${CURVES.view().addrs} coins ${Math.round(CURVES.view().perDay / 1000)}K/day hit ${curveFeed.hits + curveFeed.misses ? Math.round((curveFeed.hits / (curveFeed.hits + curveFeed.misses)) * 100) : 0}%${CURVES.view().error ? ` err ${CURVES.view().error.slice(0, 30)}` : ""}` : "off", ppKey: PP_KEY ? 1 : 0, lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", curves: CURVES ? `${CURVES.view().up ? "up" : "down"} ${CURVES.view().addrs} coins ${Math.round(CURVES.view().perDay / 1000)}K/day hit ${curveFeed.hits + curveFeed.misses ? Math.round((curveFeed.hits / (curveFeed.hits + curveFeed.misses)) * 100) : 0}%${CURVES.view().error ? ` err ${CURVES.view().error.slice(0, 30)}` : ""}` : "off", ppKey: PP_KEY ? 1 : 0, ...(PP_KEY ? { pp: `${watched.size} coins · ${ppCount()} trades today ~${((ppCount() / 10_000) * 0.01).toFixed(3)} SOL of ${PP_DAILY_SOL} SOL cap${ppCapped() ? " REACHED" : ""}` } : {}), lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
   }
   // v0.1.41: no copy of the tape in Redis any more (rn:rt). CATCH and SHIELD read it from this process's memory
   // (__rnRt); the copy was only for readers outside the worker, which only run when the worker is down.
@@ -235,23 +235,53 @@ async function flushTape() {
 /** Which coins to stream trades for: open positions, the 100 hottest curves, every migration of the last 2 hours
  *  (their pool stage too: PumpPortal streams PumpSwap trades), and whatever CATCH is watching. */
 async function wantList() {
-  const r = redis();
   const now = Date.now();
-  const [pos, ghosts, radar, mig, cw] = await Promise.all([
-    r.hkeys(K.deskPos).catch(() => []),
-    r.hkeys("rn:ghost:pos").catch(() => []),
-    radarTop(100).catch(() => [] as string[]),
-    r.zrange<string[]>("rn:ct:mig", now - 2 * 3600_000, now, { byScore: true }).catch(() => []),
-    r.hkeys("rn:ct:watch").catch(() => []),
-  ]);
-  // positions (real and ghost) first: the desk prices them from these trades between its chain checks
-  const want = new Set([...(pos || []), ...(ghosts || []), ...(radar || []), ...(mig || [])].map(String).filter(Boolean));
-  for (const m of cw || []) if (want.size < 400) want.add(String(m));
-  for (const m of FLW.keys()) want.add(m); // launches in their first ~100 seconds (FLASH)
-  // every launch for its first ~7 minutes: the minute-1 and minute-5 tapes are built from these trades (no chain reads)
-  for (const m of youngMints(now)) want.add(m);
+  // v0.1.54: without a PumpPortal key nothing is subscribed, so nothing is read (this list used to read the positions,
+  // the radar, migrations and CATCH's whole watch list from Redis every 15 seconds for nothing: ~10MB an hour)
+  if (!PP_KEY) {
+    pruneStream(new Set(), now);
+    return new Set<string>();
+  }
+  const want = new Set<string>();
+  if (!ppCapped(now)) {
+    // the shortlist: coins whose minute-1 tape was read (they passed the curve minimum), until their minute-5 call is
+    // made, plus open positions (real and ghost)
+    for (const [m, at] of PP_FOLLOW) {
+      if (now - at > LOG_MS) PP_FOLLOW.delete(m);
+      else want.add(m);
+    }
+    const r = redis();
+    const [pos, ghosts] = await Promise.all([r.hkeys(K.deskPos).catch(() => [] as string[]), r.hkeys("rn:ghost:pos").catch(() => [] as string[])]);
+    for (const m of [...(pos || []), ...(ghosts || [])]) if (m) want.add(String(m));
+  } else PP_FOLLOW.clear();
   pruneStream(want, now);
   return want;
+}
+
+// v0.1.54: the PumpPortal trade stream is paid per trade (0.01 SOL per 10,000). It follows the shortlist only, and a
+// daily cap (PP_DAILY_SOL, default 0.03 SOL, about 30,000 trades) stops it for the rest of the UTC day.
+const PP_FOLLOW = new Map<string, number>();
+let PP_NUDGE: () => void = () => {};
+const PP_DAILY_SOL = Math.max(0, Number(process.env.PP_DAILY_SOL ?? 0.03));
+const PP_CAP_TRADES = Math.floor((PP_DAILY_SOL / 0.01) * 10_000);
+const ppDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
+const PP_COUNT = { day: ppDay(), n: 0, flushed: 0 };
+function ppCount(now = Date.now()) {
+  if (PP_COUNT.day !== ppDay(now)) Object.assign(PP_COUNT, { day: ppDay(now), n: 0, flushed: 0 });
+  return PP_COUNT.n;
+}
+const ppCapped = (now = Date.now()) => ppCount(now) >= PP_CAP_TRADES;
+async function ppFlush() {
+  ppCount();
+  const add = PP_COUNT.n - PP_COUNT.flushed;
+  if (add <= 0) return;
+  PP_COUNT.flushed = PP_COUNT.n;
+  await redis().incrby(`rn:pp:trades:${PP_COUNT.day}`, add).catch(() => null);
+  await redis().expire(`rn:pp:trades:${PP_COUNT.day}`, 3 * 86400).catch(() => null);
+}
+async function ppSeed() {
+  const n = Number((await redis().get(`rn:pp:trades:${ppDay()}`).catch(() => 0)) || 0);
+  if (n > PP_COUNT.n) Object.assign(PP_COUNT, { day: ppDay(), n, flushed: n });
 }
 
 /**
@@ -271,15 +301,18 @@ const FLW = new Map<string, FlCoin>();
 let INTAKE: any[] = [];
 
 let flashPausedAt = 0;
+const FLASH_ALL = false; // v0.1.54: on only if every launch's trades are streamed from birth
 function flashTick() {
   const now = Date.now();
   // FLASH reads the first seconds from trade messages alone. Without a PumpPortal key there are none (v0.1.34: the
   // Helius feed follows positions only), and a launch with no trades would read as dead and be learned as dead.
-  if (!tradesFlowing(now)) {
+  // v0.1.54: FLASH needs every launch's trades from birth. The trade stream follows a shortlist only (paid per trade),
+  // so FLASH stays paused: a launch without its trades would read as dead and be learned as dead
+  if (!tradesFlowing(now) || !FLASH_ALL) {
     FLW.clear();
     if (now - flashPausedAt > 30_000) {
       flashPausedAt = now;
-      markAlive("flash", { paused: "no stream trades (PumpPortal trades need a key)" }).catch(() => {});
+      markAlive("flash", { paused: PP_KEY ? "trades are streamed for the shortlist only, not every launch from birth" : "no stream trades (PumpPortal trades need a key)" }).catch(() => {});
     }
     return;
   }
@@ -344,6 +377,8 @@ function pumpportal() {
     lane.run(2, () => catchPass(true)).catch(() => null);
   };
   TRADE_IN = (msg: any) => {
+    ppCount();
+    PP_COUNT.n++;
     const tx = String(msg.txType || "").toLowerCase();
     const fc = FLW.get(String(msg.mint));
     if (fc) {
@@ -366,6 +401,10 @@ function pumpportal() {
       drop.forEach((k) => (TAPE.delete(k), LAST.delete(k), SEEN.delete(k)));
     }
     watched = want;
+  };
+  let nudgeT: ReturnType<typeof setTimeout> | null = null;
+  PP_NUDGE = () => {
+    if (!nudgeT) nudgeT = setTimeout(() => ((nudgeT = null), resync().catch(() => null)), 250);
   };
   // v0.1.42: one live socket at a time. Each open() gets a generation number; an older socket's events are ignored and
   // a pending reconnect is cleared when the watchdog opens a fresh socket (the two used to race into two sockets,
@@ -429,10 +468,8 @@ function pumpportal() {
         INTAKE.push({ mint, sig: String(msg.signature || msg.sig || msg.txSignature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
         logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
         FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
-        if (up && PP_KEY) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
         FEED?.nudge();
         CURVES?.nudge();
-        watched.add(mint);
         if (++createN % LAG_EVERY === 0 && msg.signature) sampleLag(String(msg.signature), now);
       }
     };
@@ -604,9 +641,19 @@ async function main() {
   pumpportal();
   // trades for every followed coin from Helius (no PumpPortal key needed): the same handler as PumpPortal's trades
   // live prices of open positions from Helius account updates (with a PumpPortal key, its trades price them instead)
-  if (!PP_KEY) {
-    FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), onCurve: noteCurve, log: (x) => console.log(x) });
-    setInterval(() => FEED && markFeedLive(FEED.live()), 1_000);
+  // v0.1.54: the positions' Helius feed always runs (with a PumpPortal key it used to be switched off and positions
+  // waited for PumpPortal trades); the trade stream now only adds who traded
+  FEED = heliusFeed({ want: feedWant, onQuote: (q) => setQuote(q), onCurve: noteCurve, log: (x) => console.log(x) });
+  setInterval(() => FEED && markFeedLive(FEED.live()), 1_000);
+  if (PP_KEY) {
+    await ppSeed().catch(() => null);
+    setFollowHook((m) => {
+      if (ppCapped()) return false;
+      PP_FOLLOW.set(m, Date.now());
+      PP_NUDGE();
+      return true;
+    });
+    setInterval(() => ppFlush().catch(() => null), 60_000);
   }
   CURVES = heliusFeed({ want: async () => new Set(youngMints().slice(-CURVE_MAX)), onQuote: () => {}, onCurve: noteCurve, max: CURVE_MAX, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
   setCurveLive(() => {

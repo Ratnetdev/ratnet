@@ -94,7 +94,7 @@ const ok = (c: boolean, m: string) => {
   // 8. a stream that sends launches but no trades: stream tapes are refused (the chain is read instead)
   const sl = await import("../src/lib/streamlog");
   const tp = await import("../src/lib/tape");
-  sl.logCreate("MINTX", "DEV", now, 1, 1000);
+  sl.logCreate("MINTX", "DEV", now, 1, 1000, true); // streamed from birth
   ok(tp.tapeFromStream("MINTX", "DEV", now) === null, "no trade messages in the last minute: no stream tape (it would hold only the dev's buy)");
   sl.logTrade({ mint: "MINTX", w: "W1", buy: true, sol: 0.5, tok: 100 });
   ok(tp.tapeFromStream("MINTX", "DEV", now) !== null, "trades flowing again: stream tapes are back");

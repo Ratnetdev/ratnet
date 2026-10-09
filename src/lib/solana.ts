@@ -445,8 +445,9 @@ export async function getCurves(mints: string[]): Promise<Record<string, CurveVi
     if (c) out[m] = c.v;
     else need.push(m);
   }
+  // v0.1.54: counted on followed coins only (old coins the stream never follows made the share look like 1 to 2%)
   curveFeed.hits += mints.length - need.length;
-  curveFeed.misses += need.length;
+  curveFeed.misses += need.filter((m) => live.has(m)).length;
   const fetched = await getCurvesRpc(need);
   for (const m of need) {
     out[m] = fetched[m];

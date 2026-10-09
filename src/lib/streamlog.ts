@@ -4,7 +4,9 @@
 //  - the last quote of every streamed coin: the desk prices open positions from it between chain checks
 // Only the worker process has a stream; anywhere else these are empty and callers read the chain as before.
 export type StreamTrade = { t: number; w: string; sol: number; tok: number; buy: boolean };
-type Log = { t0: number; creator: string; trades: StreamTrade[]; n: number };
+// full (v0.1.54): the log is complete enough for a tape: its early trades came from the chain read at minute 1 and every
+// trade since streamed from PumpPortal. Only full logs give stream tapes (a launch we never subscribed has just its dev buy)
+type Log = { t0: number; creator: string; trades: StreamTrade[]; n: number; full?: boolean };
 type Quote = { at: number; px: number; real: number | null; mcSol: number; curve: boolean; feed?: boolean };
 
 const LOGS = new Map<string, Log>();
@@ -13,9 +15,11 @@ export const LOG_MS = 7 * 60_000; // launches are followed this long (the minute
 const MAX_TRADES = 3000;
 
 /** A launch was created (the stream's create message, the dev's first buy included). */
-export function logCreate(mint: string, creator: string, t0: number, devSol: number, devTok: number) {
+export function logCreate(mint: string, creator: string, t0: number, devSol: number, devTok: number, fromBirth = false) {
   const trades: StreamTrade[] = devSol > 0 ? [{ t: t0, w: creator, sol: devSol, tok: devTok, buy: true }] : [];
-  LOGS.set(mint, { t0, creator, trades, n: trades.length });
+  // fromBirth: this launch's trades are streamed from its first second, so its log is complete (v0.1.54: not the case
+  // for the shortlist, which joins at minute 1)
+  LOGS.set(mint, { t0, creator, trades, n: trades.length, full: fromBirth });
 }
 
 let LAST_TRADE_AT = 0;
@@ -45,8 +49,23 @@ export function logTrade(m: { mint: string; w: string; buy: boolean; sol: number
 /** The launch's log, if the stream saw it from birth (within 5s of the create time the rats recorded). */
 export function streamLog(mint: string, createdAt: number) {
   const l = LOGS.get(mint);
-  if (!l || Math.abs(l.t0 - createdAt) > 5_000) return null;
+  if (!l || !l.full || Math.abs(l.t0 - createdAt) > 5_000) return null;
   return l;
+}
+
+// v0.1.54: the PumpPortal trade stream follows a shortlist, not every launch. A coin joins it when its minute-1 tape is
+// read from the chain: that read seeds the log with its early trades, the worker subscribes its trades from then on, and
+// the minute-5 tape is built from both without a second chain read.
+let FOLLOW: ((mint: string) => boolean) | null = null;
+/** The worker registers who subscribes a coin's trades (returns false when the day's cap is reached). */
+export function setFollowHook(fn: ((mint: string) => boolean) | null) {
+  FOLLOW = fn;
+}
+export function seedLog(mint: string, createdAt: number, creator: string, trades: StreamTrade[], n: number, now = Date.now()) {
+  if (!FOLLOW || now - createdAt > LOG_MS - 60_000) return false;
+  if (!FOLLOW(mint)) return false;
+  LOGS.set(mint, { t0: createdAt, creator, trades: trades.slice().sort((a, b) => a.t - b.t).slice(0, MAX_TRADES), n: Math.max(n, trades.length), full: true });
+  return true;
 }
 
 /** Mints still inside their first ~7 minutes (the worker keeps their trades subscribed). */
