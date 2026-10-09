@@ -499,6 +499,12 @@ async function main() {
   for (const c of realBonds) { const call = R.kv.get(`rn:call:${c.mint}`) as any; if (!call) continue; rbCalled++; if (call.farm) rbFlag++; }
   console.log(`bot coins: ${washCoins.length} launched, ${wCalled} called, ${wFlag} flagged FARM, ${wBond} still called BOND, ${wTaped} read and not flagged · desk bought bot coins: ${(d.trades as any[]).filter((t) => t.side === "buy" && byMint.get(t.mint)?.wash).length} · real bonds wrongly flagged: ${rbFlag} of ${rbCalled}`);
   for (const t of (d.trades as any[]).filter((t) => t.side === "buy" && (byMint.get(t.mint)?.farm || byMint.get(t.mint)?.wash))) { const L = R.kv.get(`rn:launch:${t.mint}`) as any; console.log("BOUGHT BAD", t.symbol, t.reason, "early tape farm", L?.tape?.farm?.farm, "call farm", (R.kv.get(`rn:call:${t.mint}`) as any)?.farm, "ctx checks", JSON.stringify(t.ctx?.checks?.find((c: any) => c.rule === "not_a_farm"))); }
+  // v0.1.58: ARENA books
+  {
+    const { arenaView } = await import("../src/lib/arena");
+    const av: any = await arenaView();
+    console.log("ARENA", av.variants.map((v: any) => `${v.id}: ${v.n} trips (${v.open.length} open) win ${Math.round(v.winRate)}% avg ${v.avgPct}% exam ${v.checks.filter((c: any) => c.ok).length}/${v.checks.length}`).join(" | "));
+  }
   const gt = ((R.kv.get("rn:ghost:trades") as any[]) || []);
   const gpos = R.kv.get("rn:ghost:pos") as any;
   console.log(`ghost desk: ${gt.filter((t) => t.side === "buy").length} buys, ${gt.filter((t) => t.side === "sell").length} sells, ${gpos ? Object.keys(gpos).length : 0} open · exam drawdown check: ${JSON.stringify((await (await import("../src/lib/desk")).getDesk() as any).exam?.checks?.find((c: any) => /drawdown/.test(c.label)))}`);

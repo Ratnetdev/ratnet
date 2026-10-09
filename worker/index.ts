@@ -8,13 +8,14 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { budgetState, curveFeed, lane, laneOpen, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
+import { budgetState, curveFeed, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
 import { LOG_MS, logCreate, logTrade, markFeedLive, pruneStream, setFollowHook, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
 import { reviveAllowed } from "../src/lib/revive";
+import { arenaPublish } from "../src/lib/arena";
 import { archiveBoard, archiveFlush, archiveInit, archivePrune, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
@@ -674,8 +675,12 @@ async function main() {
   setInterval(() => FEED && markFeedLive(FEED.live()), 1_000);
   if (PP_KEY) {
     await ppSeed().catch(() => null);
+    // v0.1.58: only coins already moving fast at minute 1 (curve PP_MIN_CURVE%+, default 15). With every coin past the
+    // 5% tape floor the shortlist held ~37 coins and used the day's 0.03 SOL in about 2 hours
+    const PP_MIN_CURVE = Number(process.env.PP_MIN_CURVE ?? 15);
     setFollowHook((m) => {
       if (ppCapped()) return false;
+      if ((liveCurveOf(m)?.progress ?? 0) < PP_MIN_CURVE) return false;
       PP_FOLLOW.set(m, Date.now());
       PP_NUDGE();
       return true;
@@ -689,6 +694,8 @@ async function main() {
     return a;
   });
   setInterval(() => pruneCurves(), 5_000);
+  // v0.1.58: ARENA's summary for the site, once a minute (only when it changed)
+  setInterval(() => arenaPublish().catch(() => null), 60_000);
   // v0.1.55: the archive (Railway Postgres). Without DATABASE_URL all of this does nothing
   // v0.1.56: a failed first connect (the database still starting, a network blip) is retried every minute
   const startArchive = async () => {

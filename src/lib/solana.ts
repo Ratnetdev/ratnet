@@ -430,6 +430,8 @@ export function setCurveLive(fn: () => Set<string>) {
 export function noteCurve(mint: string, v: CurveView) {
   LIVE_CURVES.set(mint, { v, at: Date.now() });
 }
+/** The last streamed curve of a followed coin (v0.1.58), or null. */
+export const liveCurveOf = (mint: string) => (liveSet().has(mint) ? LIVE_CURVES.get(mint)?.v ?? null : null);
 /** Forget coins that are no longer followed. */
 export function pruneCurves() {
   const live = liveSet();

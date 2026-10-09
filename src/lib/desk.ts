@@ -47,6 +47,7 @@ import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
+import { acceptKing, acceptMomo, arenaBooks, arenaDrop, arenaSave, arenaTrip, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck } from "./arena";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE";
 export const AGENTS: { id: Agent; role: string }[] = [
@@ -1434,7 +1435,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       // re-entry watches: every 5s. Learning reviews (shadows, after-exit checks, dev cases): every 30s. Before, all of
       // them were read every 2s, about 1.4 chain reads a second for the desk alone (40% of the plan's daily share)
       const hot = Array.from(new Set([...positions.map((p) => p.mint), ...ghosts.map((p) => p.mint), ...queued.map((x) => x.replace(/^[wmrcf]:/, ""))]));
-      const watchList = Array.from(new Set([...Object.keys(stalks), ...Object.keys(reents)])).filter((m) => !hot.includes(m));
+      // v0.1.58: ARENA's books, priced with the pullback watches (every 5s)
+      const arenaPos = Object.values(await arenaBooks().catch(() => ({} as Record<string, Record<string, ArenaPos>>))).flatMap((x) => Object.values(x));
+      const watchList = Array.from(new Set([...Object.keys(stalks), ...Object.keys(reents), ...arenaPos.map((p) => p.mint)])).filter((m) => !hot.includes(m));
       const cold = Array.from(new Set([...Object.values(shadows).map((x) => x.mint), ...Object.values(afters).map((x) => x.mint), ...Object.values(cases).map((x) => x.mint)])).filter((m) => !hot.includes(m) && !watchList.includes(m));
       const tiered = async () => {
         const [a, w, c] = await Promise.all([priceOf(hot), watchList.length ? priceOf(watchList, false, 5_000).catch(() => ({})) : {}, cold.length ? priceOf(cold, false, 30_000).catch(() => ({})) : {}]);
@@ -1686,6 +1689,29 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
       }
 
+      // --- ARENA exits (v0.1.58): the same rules again, in each variant's book
+      for (const p of arenaPos) {
+        try {
+          const q = px[p.mint];
+          if (!q) {
+            p.noPxSince ||= now;
+            if (now - p.noPxSince > 30 * 60_000) await arenaSell(p, 1, 0, "no price for 30 minutes: written off");
+            continue;
+          }
+          const d = decide(p, q, " (arena)");
+          if (d.sellFrac > 0 && !d.reason.startsWith("manual")) {
+            await arenaSell(p, d.sellFrac, q.px, d.reason);
+            if (p.tokens > 0 && !p.tp1Done && d.sellFrac < 1) {
+              p.tp1Done = true;
+              p.msHi = d.lv;
+            }
+          }
+          if (p.tokens > 0 && (d.sellFrac > 0 || loops % 15 === 0)) await arenaSave(p);
+        } catch (e) {
+          log(b, "RISK", `arena $${p.symbol}: exit check failed (${safeErr(e)})`, "bad");
+        }
+      }
+
       if (caseAdds.length) await r.hset(CASES, Object.fromEntries(caseAdds.map((c) => [`${c.kind}:${c.mint}:${c.at}`, c]))).catch(() => {});
 
       // --- entries (VET -> FLOW -> BUZZ -> SIZE -> EXEC); signals that pass VET are also shadowed for learning
@@ -1810,6 +1836,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           ];
           const fail = checks.find((c) => !c.ok);
           const fails = checks.filter((c) => !c.ok);
+          // v0.1.58: ARENA's King-path variants decide on the same checks (each in its own book)
+          for (const v of VARIANTS) if (acceptKing(v, checks as ArenaCheck[], rec, early, !!wireSig)) await arenaEnter(b, v.id, rec, q.px, q.real, early ? "early" : "direct", false).catch(() => null);
           if (fails.length === 1 && PRIOR_RULES[fails[0].rule] && ((await r.hlen(K.deskShadow)) || 0) < 60) {
             // a prior skipped it: follow it anyway so COACH can tell whether the prior helps
             const tag = PRIOR_RULES[fails[0].rule];
@@ -2459,6 +2487,8 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
   const dk = DAY_KEY(now);
   await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
   await r.hincrby(dk, "seen", 1);
+  // v0.1.58: ARENA's MOMO variants decide on the same checks
+  for (const v of VARIANTS) if (acceptMomo(v, checks as ArenaCheck[], h, top10)) await arenaEnter(b, v.id, rec, q.px, q.real, "momo", !!q.grad).catch(() => null);
   const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule)) && !posMap[m];
   if (fail && !deskBlock) {
     log(b, "VET", `skipped MOMO's $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
@@ -2753,6 +2783,43 @@ export function avgExitPx(p: Pick<Pos, "soldPxTok" | "tokens0">, lastPx: number)
   return p.soldPxTok && p.tokens0 > 0 ? p.soldPxTok / p.tokens0 : lastPx;
 }
 const sellCount = (p: Pos) => p.sells || 1;
+
+// ---------------------------------------------------------------- ARENA (v0.1.58)
+
+/** Open a position in one ARENA book: the ghost desk's fill model (same costs as paper), a fixed 0.1 SOL. */
+async function arenaEnter(b: Batch, id: string, rec: Launch, px: number, real: number, how: Pos["how"], grad: boolean) {
+  if (!px || !(px > 0)) return;
+  const books = await arenaBooks();
+  const book = (books[id] ||= {});
+  if (book[rec.mint] || Object.keys(book).length >= ARENA_MAX_OPEN) return;
+  const sol = ARENA_SOL;
+  const rl = grad && !real ? 85 : real;
+  const fixed = txCost(sol, COST) + ATA_RENT;
+  const fillPx = px * (1 + slipOf(sol, grad, rl));
+  const tokens = (sol * (1 - venueFee(grad, px * SUPPLY))) / fillPx;
+  const now = Date.now();
+  const p: ArenaPos = { arena: id, build: BUILD, cfg: cfgTag(ALERT_CFG), mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, creator: rec.creator, mkt: { grad, real: rl }, wire: null, ...(grad ? { gradSeen: true } : {}) } as ArenaPos;
+  await arenaSave(p);
+  log(b, "EXEC", `arena ${id}: bought $${rec.symbol} (${how}). not counted, compared`, "info", { mint: rec.mint, symbol: rec.symbol });
+}
+
+/** Sell in an ARENA book; a full close records the trip (Redis list for the board, and the archive). */
+async function arenaSell(p: ArenaPos, frac: number, px: number, reason: string) {
+  const amt = frac >= 1 ? p.tokens : p.tokens * frac;
+  const proceeds = px > 0 ? sellProceeds(amt, px, p.mkt?.grad ?? !!p.gradSeen, p.mkt?.real ?? 0, COST, frac >= 1 || amt >= p.tokens - 1e-9) : 0;
+  p.tokens -= amt;
+  p.soldSol += proceeds;
+  p.soldPxTok = (p.soldPxTok || 0) + px * amt;
+  p.sells = (p.sells || 0) + 1;
+  if (p.tokens > 1e-9) return false;
+  p.tokens = 0;
+  const now = Date.now();
+  const pnl = p.soldSol - p.costSol;
+  await arenaTrip({ v: p.arena, mint: p.mint, symbol: p.symbol, how: p.how, openedAt: p.openedAt, closedAt: now, cost: r4(p.costSol), back: r4(p.soldSol), pnl: r4(pnl), pnlPct: Math.round(pct(p.soldSol, p.costSol) * 10) / 10, reason, peakX: Math.round((Math.max(p.peakPx || 0, px) / p.entryPx) * 100) / 100 });
+  archiveTrip({ book: `arena:${p.arena}` as any, mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, costSol: p.costSol, backSol: p.soldSol, how: p.how, king: p.king, nano: p.nano, peakX: Math.max(p.peakPx || 0, px) / p.entryPx, reason, build: p.build, cfg: p.cfg });
+  await arenaDrop(p);
+  return true;
+}
 
 // ---------------------------------------------------------------- ghost desk
 

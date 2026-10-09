@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.58 · ARENA: six paper strategies side by side
+- Roadmap step 7. Six paper books trade on the same live signals as the desk, each with its own entry rules, 3 slots and 0.1 SOL a trade. Fills, fees, slippage and every exit rule are the desk's own, so the books differ only in what they buy:
+  - King, no nano rule (yesterday's winners were King calls nano scored low)
+  - King, no nano, late curves allowed
+  - King strict (King 70+ and nano 60+)
+  - Minute-1 entries (the early BOND read bought at once)
+  - MOMO now (no pullback wait)
+  - MOMO strict (twice the volume and buyers, tighter holder spread)
+- Each book has its own exam (30 round trips, win rate 40%+, profit +10% on a virtual 1.25 SOL, profit factor without the best 1.2+, drawdown 30% or less). ARENA on /desk: trips, win rate, average, P&L and exam progress per strategy, and the latest trips. Arena trips go to the archive too (book "arena:<strategy>").
+- Not counted in the desk's exam; nothing about the desk's own trading changes. Simplifications vs the desk: no FLOW wait, no falling-knife check, no pullback stalks.
+- Cost: arena positions are priced with the pullback watches (every 5 seconds) and mostly from the live curve stream; the site reads a summary the worker publishes once a minute.
+- PumpPortal shortlist: only coins already at 15%+ curve at minute 1 (PP_MIN_CURVE). With every coin past the 5% tape floor it held ~37 coins and would have used the day's 0.03 SOL in about 2 hours.
+- New test suite v058test; the desk simulator prints the ARENA books. All suites, tsc and next build pass.
+
 ## v0.1.57 · A hung background loop restarts on its own, not the whole worker
 - Roadmap step 5, done inside the worker instead of splitting it into three Railway services. The desk, the rats and the streams share live memory (curve stream, trade logs, quotes, the chain budget counter); three services would each need their own copy, cost more and could spend the chain budget three times.
 - When the agents loop, the rats' slow lane or the historian hangs, a fresh copy of that loop starts and the hung pass is left behind. The desk, the PumpPortal stream, the live curves and every subscription keep running (on 8 Oct the agents loop restarted the whole worker 3 times). A third hang of the same loop within 30 minutes still restarts the worker. The desk and the rats' fast lane still restart the worker: they hold money and the King calls.
