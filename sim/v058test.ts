@@ -28,6 +28,9 @@ const ok = (c: boolean, m: string) => {
   const sc = a.arenaScore(trips);
   ok(sc.momo_now.n === 30 && Math.round(sc.momo_now.winRate) === 60 && Math.abs(sc.momo_now.pnlPct - 19.2) < 0.01, `score: 60% win, +19.2% (${sc.momo_now.pnlPct.toFixed(1)}%)`);
   ok(sc.momo_now.passed && !sc.nonano.passed, "a book that meets every check passes its exam; an empty one does not");
+  // v0.1.60: the board summary is written on a change and at least every 5 minutes (it expired and stayed gone)
+  const t1 = Date.now();
+  ok((await a.arenaPublish(t1)) && !(await a.arenaPublish(t1 + 60_000)) && (await a.arenaPublish(t1 + 6 * 60_000)), "the ARENA summary refreshes every 5 minutes even without a new trip");
   console.log(fail ? `\n${fail} FAILED` : "\nall v0.1.58 checks passed");
   process.exit(fail ? 1 : 0);
 })().catch((e) => {

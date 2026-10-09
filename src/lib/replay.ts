@@ -131,7 +131,8 @@ export function runReplay(calls: CallRow[]) {
 /** Read the calls and their paths from the archive (worker). */
 export async function loadCalls(pool: any, days = 14): Promise<CallRow[]> {
   const ls = await pool.query(
-    `select mint, symbol, data from launches where call_score is not null and created_at > now() - ($1 || ' days')::interval and created_at < now() - interval '70 minutes' and data is not null limit 5000`,
+    // v0.1.60: only calls that have a price path (it read the first 5,000 calls, most of them from before paths were kept)
+    `select mint, symbol, data from launches where call_score is not null and created_at > now() - ($1 || ' days')::interval and created_at < now() - interval '70 minutes' and data is not null and mint in (select distinct mint from ticks where at > now() - ($1 || ' days')::interval) limit 5000`,
     [String(days)],
   );
   const calls: CallRow[] = [];

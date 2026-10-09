@@ -130,11 +130,15 @@ export async function arenaView() {
 // The site reads a summary the worker publishes once a minute (the trip list is never read by page views)
 export const ARENA_VIEW = "rn:arena:view";
 let lastPub = "";
-export async function arenaPublish() {
+let lastPubAt = 0;
+export async function arenaPublish(now = Date.now()) {
   const v = await arenaView();
   const sig = JSON.stringify(v.variants.map((x) => [x.id, x.n, x.open.length, x.pnl])) + (v.recent[0]?.closedAt ?? "");
-  if (sig === lastPub) return false;
+  // v0.1.60: also every 5 minutes when nothing changed. It used to expire after an hour without a new trip and was not
+  // written again until the next one, so ARENA on /desk showed zeros while the books had ~50 trips
+  if (sig === lastPub && now - lastPubAt < 5 * 60_000) return false;
   lastPub = sig;
-  await redis().set(ARENA_VIEW, { ...v, recent: v.recent.slice(0, 12) }, { ex: 3600 });
+  lastPubAt = now;
+  await redis().set(ARENA_VIEW, { ...v, recent: v.recent.slice(0, 12) }, { ex: 2 * 86400 });
   return true;
 }
