@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.57 · A hung background loop restarts on its own, not the whole worker
+- Roadmap step 5, done inside the worker instead of splitting it into three Railway services. The desk, the rats and the streams share live memory (curve stream, trade logs, quotes, the chain budget counter); three services would each need their own copy, cost more and could spend the chain budget three times.
+- When the agents loop, the rats' slow lane or the historian hangs, a fresh copy of that loop starts and the hung pass is left behind. The desk, the PumpPortal stream, the live curves and every subscription keep running (on 8 Oct the agents loop restarted the whole worker 3 times). A third hang of the same loop within 30 minutes still restarts the worker. The desk and the rats' fast lane still restart the worker: they hold money and the King calls.
+- /status Worker tile: how often each loop restarted on its own.
+- New test suite v057test. All suites, tsc and next build pass.
+
 ## v0.1.56 · Archive fix, PumpPortal shortlist without positions
 - Fix: the archive did not connect on the worker ("Pool is not a constructor"): the Postgres client is CommonJS and the worker's ESM loader puts it on .default. The test injected its own client and missed it; v056test now loads the real client.
 - A failed first connection to the database is retried every minute (it gave up after one try).

@@ -14,6 +14,7 @@ import { LOG_MS, logCreate, logTrade, markFeedLive, pruneStream, setFollowHook, 
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
+import { reviveAllowed } from "../src/lib/revive";
 import { archiveBoard, archiveFlush, archiveInit, archivePrune, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
@@ -124,6 +125,25 @@ async function siteTick() {
 }
 // v0.1.42: the side checks of the heartbeat (alerts, critical checks) run one at a time; with Redis slow they used to
 // start again every 20 seconds while the last ones still waited
+// v0.1.57 (roadmap step 5): a hung background loop (agents, rats' slow lane, historian) no longer restarts the whole
+// worker. A fresh copy of that loop starts and the hung pass is left behind (it is ignored if it ever finishes), so the
+// desk, the stream, the live curves and every subscription keep running. A third hang of the same loop within 30
+// minutes still restarts the process (something is wrong that a fresh loop does not fix). The desk and the rats' fast
+// lane still restart the process: they hold money and the King calls.
+const LOOP_GEN = { agents: 0, slow: 0, hist: 0 };
+const REVIVED: Record<string, number[]> = {};
+function revive(name: keyof typeof LOOP_GEN, why: string, now = Date.now()) {
+  const ra = reviveAllowed(REVIVED[name] || [], now);
+  REVIVED[name] = ra.recent;
+  if (!ra.ok) return false;
+  LOOP_GEN[name]++;
+  console.log(`watchdog: ${why}; restarting only that loop (the desk and the stream keep running)`);
+  redis().hincrby("rn:worker:revives", name, 1).catch(() => 0);
+  if (name === "agents") (sessionAt = now), agentLoop(LOOP_GEN.agents).catch(() => null);
+  else if (name === "slow") (slowAt = now), digSlowLoop(LOOP_GEN.slow).catch(() => null);
+  else (histAt = now), historianLoop(LOOP_GEN.hist).catch(() => null);
+  return true;
+}
 let beatSide = false;
 async function beat() {
   if (!beatSide) {
@@ -148,10 +168,10 @@ async function beat() {
       .catch(() => {});
   }
   if (Date.now() - fastAt > 150_000) return restart("the rats' fast lane is stuck");
-  if (Date.now() - slowAt > 300_000) return restart("the rats' slow lane is stuck");
-  if (Date.now() - histAt > 900_000) return restart("the historian is stuck");
+  if (Date.now() - slowAt > 300_000 && !revive("slow", "the rats' slow lane is stuck")) return restart("the rats' slow lane is stuck again");
+  if (Date.now() - histAt > 900_000 && !revive("hist", "the historian is stuck")) return restart("the historian is stuck again");
   if (deskStuck > DESK_MS + 180_000) return restart(`the desk loop is stuck (${Math.round(deskStuck / 1000)}s)`);
-  if (stuck > SESSION_MS * 5) return restart(`the agents loop is stuck (${Math.round(stuck / 1000)}s)`);
+  if (stuck > SESSION_MS * 5 && !revive("agents", `the agents loop is stuck (${Math.round(stuck / 1000)}s)`)) return restart(`the agents loop is stuck again (${Math.round(stuck / 1000)}s)`);
   restartWanted = 0;
 }
 
@@ -557,9 +577,10 @@ async function digFastLoop() {
     await new Promise((res) => setTimeout(res, Math.max(150, 1000 - (Date.now() - t0))));
   }
 }
-async function digSlowLoop() {
+async function digSlowLoop(my = LOOP_GEN.slow) {
   let n = 0;
   for (;;) {
+    if (my !== LOOP_GEN.slow) return;
     const t0 = Date.now();
     slowAt = t0;
     const r: any = await waitFor("rats_slow", digSlow().catch((e) => ({ error: e?.message || e })), 30_000);
@@ -573,9 +594,10 @@ async function digSlowLoop() {
 
 // The historian replays the past around the clock in its own loop (it used to get 45 seconds of each agents'
 // session and nothing in between). Its RPC lane only takes what the desk and the rats leave free.
-async function historianLoop() {
+async function historianLoop(my = LOOP_GEN.hist) {
   let n = 0;
   for (;;) {
+    if (my !== LOOP_GEN.hist) return;
     const t0 = Date.now();
     histAt = t0;
     // waited for, never raced: a session left running in the background used to overlap the next one once its lock
@@ -595,8 +617,9 @@ async function historianLoop() {
   }
 }
 
-async function agentLoop() {
+async function agentLoop(my = LOOP_GEN.agents) {
   for (;;) {
+    if (my !== LOOP_GEN.agents) return; // a newer copy of this loop took over (see revive)
     const t0 = Date.now();
     sessionAt = t0;
     try {
