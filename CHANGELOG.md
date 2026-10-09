@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.59 · REPLAY: rules tested on the archived history
+- Roadmap step 6. Every King call in the archive is traded again under 6 entry rules (desk rules, King without nano, King on any curve, strict, nano-led, King 60+) and 16 exit settings (initials 1.4x or 2x, trail 25% or 40%, stop 25% or 40%, time stop 15 or 45 minutes), with the desk's costs at 0.1 SOL a trade.
+- No fooling ourselves: the best exit per entry rule is picked on the older 70% of calls and reported on the newest 30%, which it never saw. REPLAY on /desk shows both, with win rate, average and profit factor without the best trade.
+- Runs on the worker 3 minutes after start and every 3 hours, from Postgres (no Redis reads); the site reads the last result.
+- The paths: coins with a King call (curve 8%+, not a farm) now stay on the live curve stream for 60 minutes after the call, so the archive holds the whole hour a trade would take (it only kept a launch's first 7 minutes).
+- Limits: curve coins only (a migration sells at the migration price); entry checks limited to what the call records.
+- New test suite v059test. All suites, tsc and next build pass.
+
 ## v0.1.58 · ARENA: six paper strategies side by side
 - Roadmap step 7. Six paper books trade on the same live signals as the desk, each with its own entry rules, 3 slots and 0.1 SOL a trade. Fills, fees, slippage and every exit rule are the desk's own, so the books differ only in what they buy:
   - King, no nano rule (yesterday's winners were King calls nano scored low)

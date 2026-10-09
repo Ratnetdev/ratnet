@@ -4,7 +4,7 @@ import { radarTop } from "./lcache";
 import { launchesCached } from "./lcache";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, dayRoom, RPS } from "./solana";
+import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, dayRoom, followLonger, RPS } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
@@ -1311,6 +1311,8 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
       : null,
   };
   c.p.set(K.call(rec.mint), rec.call, { ex: CALL_TTL });
+  // v0.1.59: a called coin that is alive stays on the live curve stream for the hour after its call (REPLAY's paths)
+  if (counted && !farm && curveNow >= 8) followLonger(rec.mint, 60 * 60_000);
   c.p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
   if (rec.tape) enroll(c.p, runOf(rec, null));
   indexCall(c, rec.call);

@@ -430,6 +430,21 @@ export function setCurveLive(fn: () => Set<string>) {
 export function noteCurve(mint: string, v: CurveView) {
   LIVE_CURVES.set(mint, { v, at: Date.now() });
 }
+// v0.1.59: coins with a King call stay on the live curve stream for 60 minutes after the call (not just their first 7
+// minutes), so the archive holds the whole path a trade would have taken and REPLAY can test entries and exits on it
+const FOLLOW_UNTIL = new Map<string, number>();
+export function followLonger(mint: string, ms: number, now = Date.now()) {
+  if (FOLLOW_UNTIL.size > 5_000) for (const [m, t] of FOLLOW_UNTIL) if (t < now) FOLLOW_UNTIL.delete(m);
+  FOLLOW_UNTIL.set(mint, Math.max(FOLLOW_UNTIL.get(mint) || 0, now + ms));
+}
+export function followedLonger(now = Date.now()) {
+  const out: string[] = [];
+  for (const [m, t] of FOLLOW_UNTIL) {
+    if (t < now) FOLLOW_UNTIL.delete(m);
+    else out.push(m);
+  }
+  return out;
+}
 /** The last streamed curve of a followed coin (v0.1.58), or null. */
 export const liveCurveOf = (mint: string) => (liveSet().has(mint) ? LIVE_CURVES.get(mint)?.v ?? null : null);
 /** Forget coins that are no longer followed. */

@@ -213,3 +213,10 @@ export async function archivePrune() {
 export function archiveView() {
   return { on: on(), ready, error: initErr || archiveStats.lastError, queued: Q.launches.size + Q.ticks.length + Q.trades.length + Q.trips.length, ...archiveStats };
 }
+
+/** REPLAY over the archive (v0.1.59): every King call with its curve path, every entry rule x exit setting. */
+export async function archiveReplay(days = 14) {
+  if (!ready) return null;
+  const { loadCalls, runReplay } = await import("./replay");
+  return runReplay(await loadCalls(pool, days));
+}

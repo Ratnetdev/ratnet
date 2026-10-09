@@ -8,7 +8,7 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { budgetState, curveFeed, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
+import { budgetState, curveFeed, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
 import { LOG_MS, logCreate, logTrade, markFeedLive, pruneStream, setFollowHook, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
@@ -16,7 +16,7 @@ import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
 import { reviveAllowed } from "../src/lib/revive";
 import { arenaPublish } from "../src/lib/arena";
-import { archiveBoard, archiveFlush, archiveInit, archivePrune, archiveTick, archiveView } from "../src/lib/archive";
+import { archiveBoard, archiveFlush, archiveInit, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
@@ -687,7 +687,8 @@ async function main() {
     });
     setInterval(() => ppFlush().catch(() => null), 60_000);
   }
-  CURVES = heliusFeed({ want: async () => new Set(youngMints().slice(-CURVE_MAX)), onQuote: () => {}, onCurve: onCurveUpd, max: CURVE_MAX, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
+  // young launches first (the calls depend on them), then called coins in the hour after their call (v0.1.59)
+  CURVES = heliusFeed({ want: async () => new Set([...youngMints().slice(-CURVE_MAX), ...followedLonger()].slice(0, CURVE_MAX)), onQuote: () => {}, onCurve: onCurveUpd, max: CURVE_MAX, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
   setCurveLive(() => {
     const a = CURVES?.live() || new Set<string>();
     for (const m of FEED?.live() || []) a.add(m);
@@ -715,6 +716,26 @@ async function main() {
     setTimeout(board, 20_000);
     setInterval(board, 5 * 60_000);
     setInterval(() => archivePrune().catch(() => null), 6 * 3600_000);
+    // v0.1.59: REPLAY over the archive, 3 minutes after start and then every 3 hours (one run at a time)
+    let replaying = false;
+    const replay = async () => {
+      if (replaying) return;
+      replaying = true;
+      const t0 = Date.now();
+      try {
+        const res = await archiveReplay();
+        if (res) {
+          await redis().set("rn:replay:view", { ...res, ms: Date.now() - t0 }, { ex: 2 * 86400 }).catch(() => null);
+          console.log(`replay: ${res.usable} calls (${res.covered} with a path) in ${Math.round((Date.now() - t0) / 1000)}s`);
+        }
+      } catch (e: any) {
+        console.log("replay error", e?.message || e);
+      } finally {
+        replaying = false;
+      }
+    };
+    setTimeout(() => replay().catch(() => null), 3 * 60_000);
+    setInterval(() => replay().catch(() => null), 3 * 3600_000);
   };
   await startArchive().catch(() => null);
   setInterval(() => {

@@ -9,6 +9,7 @@ import DeskNow, { type DeskNowData } from "./DeskNow";
 import TrackRecord from "./TrackRecord";
 import BuildBoard from "./BuildBoard";
 import ArenaBoard from "./ArenaBoard";
+import ReplayBoard from "./ReplayBoard";
 import AgentPanel from "./AgentPanel";
 import { useState } from "react";
 import LensCam from "./LensCam";
@@ -196,6 +197,7 @@ export default function DeskBoard() {
       ) : null}
       <TrackRecord />
       <ArenaBoard />
+      <ReplayBoard />
       <BuildBoard />
 
       <section className="desk-top mt" id="balance">
