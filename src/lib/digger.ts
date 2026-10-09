@@ -4,7 +4,7 @@ import { radarTop } from "./lcache";
 import { launchesCached } from "./lcache";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, RPS } from "./solana";
+import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, RPS } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
@@ -535,8 +535,10 @@ export async function digSlow(): Promise<Record<string, unknown>> {
     try {
       const model = await digPrep(true); // v0.1.40: models from memory (15s), both lanes only score with them
       const tl = await tweetLinks().catch((e) => ({ tlinkError: safeErr(e) }));
-      const hot = await hotWatch(model);
-      const mig = await migrations(model).catch((e) => ({ migError: safeErr(e) }));
+      // v0.1.51: both read the chain; with the rats' budget closed they only re-read Redis and fail, every 4 seconds
+      const chainOk = laneOpen(1);
+      const hot = chainOk ? await hotWatch(model) : { hot: "waiting: daily chain budget" };
+      const mig = chainOk ? await migrations(model).catch((e) => ({ migError: safeErr(e) })) : {};
       const les = await lessons(model);
       // the runner pass takes the events gathered since its last run (from both lanes), then starts a fresh list
       const ev = RUN_EV;
@@ -962,14 +964,35 @@ async function pruneIndex() {
   for (const m of old) IDXM?.delete(m);
 }
 
+// v0.1.51: the due pass ran every second and, while the daily chain budget had the rats paused, failed on its curve
+// read before it took the coins off the queue, so it re-read the same 300 coins and their launch records from Redis
+// every second for hours (8-9 Oct: ~260MB an hour, saving mode 3). Now it waits while the budget is closed, backs off
+// 30s after an error, and drains the backlog (checks older than 10 minutes) slowly and only under 75% of the pace, so
+// fresh minute-1 reads and minute-5 calls keep the room.
+let DUE_FAIL_AT = 0;
+let OLD_AT = 0;
+const OLD_EVERY_MS = 5_000;
+const MAX_OLD_PER_RUN = 60;
 export async function processDue(model: NanoModel) {
+  if (!laneOpen(1)) return { checked: 0, due: "waiting: daily chain budget" };
+  if (Date.now() - DUE_FAIL_AT < 30_000) return { checked: 0, due: "backing off after an error" };
+  try {
+    return await processDue0(model);
+  } catch (e) {
+    DUE_FAIL_AT = Date.now();
+    throw e;
+  }
+}
+async function processDue0(model: NanoModel) {
   const r = redis();
   const now = Date.now();
   await pruneIndex();
   // Fresh checkpoints first (the minute-1 reads and minute-5 calls are only worth anything on time), then the backlog.
   // Oldest-first alone let a backlog push every call past its 15-minute window.
   const fresh = ((await r.zrange<string[]>(K.due, now - FRESH_MS, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN })) || []) as string[];
-  const old = fresh.length < MAX_DUE_PER_RUN ? (((await r.zrange<string[]>(K.due, 0, now - FRESH_MS - 1, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN - fresh.length })) || []) as string[]) : [];
+  const wantOld = fresh.length < MAX_DUE_PER_RUN && now - OLD_AT >= OLD_EVERY_MS && laneOpen(3);
+  const old = wantOld ? (((await r.zrange<string[]>(K.due, 0, now - FRESH_MS - 1, { byScore: true, offset: 0, count: Math.min(MAX_OLD_PER_RUN, MAX_DUE_PER_RUN - fresh.length) })) || []) as string[]) : [];
+  if (wantOld) OLD_AT = now;
   const members = [...fresh, ...old];
   if (!members.length) return { checked: 0 };
 

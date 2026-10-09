@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.51 · Redis leak: the due pass looped while the chain budget was closed
+- Bug: the rats' due pass (minute-1 reads, minute-5 calls and the 1h and 1d outcome checks) runs every second. While the daily chain budget had the rats paused, its curve read failed before it took the coins off the queue, so it re-read the same 300 coins and their launch records from Redis every second for as long as the pause lasted. On the night of 8 to 9 Oct that was ~260MB an hour (zrange rn:due, zmscore rn:peak, mget rn:launch), saving mode 3 within 3 minutes of midnight UTC.
+- The due pass now waits without touching Redis while the budget is closed, and backs off 30 seconds after any error.
+- The backlog (checks older than 10 minutes, mostly 1h and 1d outcomes piled up during a pause) drains at most 60 checks every 5 seconds, and only while the day is under 75% of the chain pace (like the historian). Fresh minute-1 reads and minute-5 calls always go first and keep their room, so King calls are no longer starved by the catch-up at the start of a day.
+- The slow lane skips the hot-curve re-reads and migration checks while the budget is closed (same loop, every 4 seconds).
+- New test suite v051test. All suites, tsc and next build pass.
+
 ## v0.1.50 · PM pause brake: a win never pauses a strategy
 - Bug: PM paused MOMO on 8 Oct 22:14 UTC right after a winning trade ($ERARI, +4.4%). The brake looks at a strategy's last 6 trades, and MOMO's still held the losses of the v0.1.48 bug (coins sold the moment they were bought), kept on purpose when the paper desk was reset. MOMO signals then went to the ghost desk instead of paper.
 - The brake now only trips on a losing trade, and counts trades from v0.1.50 on (its own window). On deploy every strategy's current pause is lifted once. What PM learned for sizing (returns, trade counts, wins) is kept.
