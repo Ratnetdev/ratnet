@@ -246,14 +246,12 @@ async function wantList() {
   const want = new Set<string>();
   if (!ppCapped(now)) {
     // the shortlist: coins whose minute-1 tape was read (they passed the curve minimum), until their minute-5 call is
-    // made, plus open positions (real and ghost)
+    // made. v0.1.56: open positions are no longer on it. A migrated MOMO coin trades thousands of times an hour (4,894
+    // trades in 15 minutes on 9 Oct, the day's cap in ~1.5 hours), and the Helius feed already prices every position
     for (const [m, at] of PP_FOLLOW) {
       if (now - at > LOG_MS) PP_FOLLOW.delete(m);
       else want.add(m);
     }
-    const r = redis();
-    const [pos, ghosts] = await Promise.all([r.hkeys(K.deskPos).catch(() => [] as string[]), r.hkeys("rn:ghost:pos").catch(() => [] as string[])]);
-    for (const m of [...(pos || []), ...(ghosts || [])]) if (m) want.add(String(m));
   } else PP_FOLLOW.clear();
   pruneStream(want, now);
   return want;
@@ -669,7 +667,15 @@ async function main() {
   });
   setInterval(() => pruneCurves(), 5_000);
   // v0.1.55: the archive (Railway Postgres). Without DATABASE_URL all of this does nothing
-  if (await archiveInit()) {
+  // v0.1.56: a failed first connect (the database still starting, a network blip) is retried every minute
+  const startArchive = async () => {
+    if (!(await archiveInit())) {
+      if (process.env.DATABASE_URL) {
+        console.log("archive: not connected, retrying in 60s:", archiveView().error);
+        setTimeout(() => startArchive().catch(() => null), 60_000);
+      }
+      return;
+    }
     console.log("archive: connected, tables ready");
     setInterval(() => archiveFlush().catch(() => null), 5_000);
     const board = async () => {
@@ -679,7 +685,8 @@ async function main() {
     setTimeout(board, 20_000);
     setInterval(board, 5 * 60_000);
     setInterval(() => archivePrune().catch(() => null), 6 * 3600_000);
-  } else if (process.env.DATABASE_URL) console.log("archive: not connected:", archiveView().error);
+  };
+  await startArchive().catch(() => null);
   setInterval(() => {
     const v = archiveView();
     markAlive("archive", !v.on ? { off: "DATABASE_URL not set" } : !v.ready ? { error: v.error || "not connected" } : { launches: v.written.launches, ticks: v.written.ticks, trades: v.written.trades, trips: v.written.trips, queued: v.queued, fails: v.fails, ...(v.lastError ? { last: v.lastError.slice(0, 60).replace(/,/g, ";") } : {}) }).catch(() => {});

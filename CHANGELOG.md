@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.56 · Archive fix, PumpPortal shortlist without positions
+- Fix: the archive did not connect on the worker ("Pool is not a constructor"): the Postgres client is CommonJS and the worker's ESM loader puts it on .default. The test injected its own client and missed it; v056test now loads the real client.
+- A failed first connection to the database is retried every minute (it gave up after one try).
+- The PumpPortal shortlist no longer includes open positions: a migrated MOMO coin trades thousands of times an hour (4,894 trades in 15 minutes, which would have used the day's cap in about 1.5 hours). The Helius feed already prices every position. The shortlist is minute-1 to minute-5 coins only.
+- New test suite v056test. All suites, tsc and next build pass.
+
 ## v0.1.55 · The archive (Postgres) and a build tag on every trade
 - Roadmap step 3. With DATABASE_URL on the worker (Railway Postgres, private network), everything worth learning from is kept for good, next to Redis (which stays the desk's short-term memory):
   - launches: every launch with its outcome, King and nano call, minute-1 read and tape (one row, re-written only when something that matters changed; dead launches keep the columns without the heavy detail)

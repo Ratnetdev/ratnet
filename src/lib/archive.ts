@@ -47,9 +47,12 @@ create index if not exists trips_build on trips (build);
 
 /** Connect and create the tables (worker boot). Safe to call when DATABASE_URL is missing: it does nothing. */
 export async function archiveInit() {
-  if (!on() || pool) return ready;
+  if (!on() || ready) return ready;
+  initErr = "";
   try {
-    const { Pool } = (globalThis as any).__rnPg || (await import("pg")); // test hook: an in-memory Postgres
+    // pg is CommonJS: under the worker's ESM loader the import puts it on .default (v0.1.56: "Pool is not a constructor")
+    const mod: any = (globalThis as any).__rnPg || (await import("pg")); // test hook: an in-memory Postgres
+    const Pool = mod.Pool || mod.default?.Pool;
     pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 3, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 10_000 });
     pool.on("error", (e: any) => (archiveStats.lastError = String(e?.message || e).slice(0, 120)));
     await pool.query(SCHEMA);
@@ -57,6 +60,7 @@ export async function archiveInit() {
   } catch (e: any) {
     initErr = String(e?.message || e).replace(/postgres(ql)?:\/\/\S+/g, "[db]").slice(0, 120);
     archiveStats.lastError = initErr;
+    await pool?.end?.().catch?.(() => null);
     pool = null;
   }
   return ready;
