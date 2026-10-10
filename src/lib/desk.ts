@@ -48,7 +48,7 @@ import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
-import { acceptKing, acceptMomo, arenaBooks, arenaDrop, arenaSave, arenaTrip, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck } from "./arena";
+import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE" | "REGIME";
 export const AGENTS: { id: Agent; role: string }[] = [
@@ -105,6 +105,8 @@ export type Pos = {
   msHi?: number; // highest milestone the ladder has acted on
   pn?: number; // P(next milestone) at the last check
   noPxSince?: number; // first beat with no price (curve complete, not migrated yet)
+  xo?: Exo; // v0.1.66: exit settings of the variant this position follows (ARENA books and promoted desk trades)
+  pv?: string; // v0.1.66: the promoted ARENA variant the desk followed into this trade
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
   watch?: Watch[]; // insider token accounts and their balance at entry
@@ -1556,12 +1558,14 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         const ca = sl === "catch"; // CATCH: senders get room to run, but a fake start is cut fast
         const fl = sl === "flash"; // FLASH: in at seconds old, wide stop (the first minutes swing hard), short clock
         const c2: any = cfg;
-        const initialsAt = lb?.initials ?? pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 100 : fl ? c2.flashInitials ?? 100 : cfg.initialsAt);
-        const timeStop = lb?.time ?? pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : fl ? c2.flashTimeStop ?? 12 : cfg.timeStop);
-        const stopAt0 = lb?.stop ?? (mo ? c2.momoSl ?? -25 : ca ? c2.catchSl ?? -18 : fl ? c2.flashSl ?? -30 : cfg.sl);
+        // v0.1.66: a variant's own exits (ARENA books, and desk trades that follow a promoted variant) come first
+        const xo = p.xo;
+        const initialsAt = xo?.initials ?? lb?.initials ?? pf?.initials ?? (mo ? c2.momoInitials ?? 40 : ca ? c2.catchInitials ?? 100 : fl ? c2.flashInitials ?? 100 : cfg.initialsAt);
+        const timeStop = xo?.time ?? lb?.time ?? pf?.timeStop ?? (mo ? c2.momoTimeStop ?? 40 : ca ? c2.catchTimeStop ?? 30 : fl ? c2.flashTimeStop ?? 12 : cfg.timeStop);
+        const stopAt0 = xo?.stop ?? lb?.stop ?? (mo ? c2.momoSl ?? -25 : ca ? c2.catchSl ?? -18 : fl ? c2.flashSl ?? -30 : cfg.sl);
         // one owner of the trail: the exit lab once it has learned this bucket, COACH's per-strategy scale before that
         // (until v0.1.31 both scaled it at once, so each corrected for the other)
-        const trailK = lb ? lb.trailK : learnS.trailBy?.[sl] ?? (mo ? 0.6 : ca ? 0.8 : learnS.trailK);
+        const trailK = xo?.trailK ?? (lb ? lb.trailK : learnS.trailBy?.[sl] ?? (mo ? 0.6 : ca ? 0.8 : learnS.trailK));
         rs.push([now, q.px, q.real]);
         while (rs.length && now - rs[0][0] > 60_000) rs.shift();
         // MOMO coins are young migrated coins that swing 20-30% in seconds: in the first 10 minutes the stop sits
@@ -1886,7 +1890,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const fail = checks.find((c) => !c.ok);
           const fails = checks.filter((c) => !c.ok);
           // v0.1.58: ARENA's King-path variants decide on the same checks (each in its own book)
-          for (const v of VARIANTS) if (acceptKing(v, checks as ArenaCheck[], rec, early, !!wireSig)) await arenaEnter(b, v.id, rec, q.px, q.real, early ? "early" : "direct", false).catch(() => null);
+          {
+            const took = VARIANTS.filter((v) => acceptKing(v, checks as ArenaCheck[], rec as any, early, !!wireSig, curve));
+            noteAccepted(m, took.map((v) => v.id)); // v0.1.66: the desk follows its promoted variant (gateFor)
+            for (const v of took) await arenaEnter(b, v.id, rec, q.px, q.real, wireSig ? "wire" : early ? "early" : "direct", false).catch(() => null);
+          }
           if (fails.length === 1 && PRIOR_RULES[fails[0].rule] && ((await r.hlen(K.deskShadow)) || 0) < 60) {
             // a prior skipped it: follow it anyway so COACH can tell whether the prior helps
             const tag = PRIOR_RULES[fails[0].rule];
@@ -2338,10 +2346,18 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   }
   // REGIME (v0.1.63): the market state and the strategy's live ARENA hit rate switch it on, to half size, or off.
   // A blocked signal goes to the ghost desk, so what the switch saved is measured
-  const rgw = await gateFor(sl).catch(() => ({ w: 1, level: "on" as const, why: "" }));
+  const rgw: { w: number; level: string; why: string; variant?: string | null } = await gateFor(sl).catch(() => ({ w: 1, level: "on", why: "" }));
   if (rgw.w <= 0) {
-    log(b, "REGIME", `$${rec.symbol}: ${sl} is switched off (${rgw.why}). ghost desk takes it`, "info", coin);
+    log(b, "REGIME", `$${rec.symbol}: ${sl} is ${/^proving/.test(rgw.why) ? "benched" : "switched off"} (${rgw.why}). ghost desk takes it`, "info", coin);
     await ghostEnter(b, rec, px, real, how, `REGIME off: ${rgw.why}`, cfg, true);
+    return;
+  }
+  // v0.1.66 PROMOTE: the desk trades this strategy only through its promoted ARENA variant: that variant must have
+  // taken this same signal, and its exits run the position
+  const pvar = rgw.variant ? variantOf(rgw.variant) : null;
+  if (rgw.variant && !acceptedBy(rec.mint).includes(rgw.variant)) {
+    log(b, "REGIME", `$${rec.symbol}: the promoted ${sl} variant "${pvar?.label || rgw.variant}" did not take this signal. ghost desk takes it`, "info", coin);
+    await ghostEnter(b, rec, px, real, how, `REGIME off: not the promoted variant's pick (${pvar?.label || rgw.variant})`, cfg, true);
     return;
   }
   // RISK: tracked wallets in the coin move the size, by how copying their class has actually done (bounded 0.7x to 1.4x)
@@ -2417,6 +2433,11 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
     log(b, "RISK", `watching ${pos.watch.length} insider bags on $${rec.symbol}${pos.watch.some((w) => w.role === "dev") ? " incl. the dev" : ""}${held ? `, ${held} bundle/sniper/top wallets` : ""}`, "info", coin);
   }
   pos.xm = xm;
+  if (pvar) {
+    pos.pv = pvar.id;
+    if (pvar.xo) pos.xo = pvar.xo;
+    log(b, "REGIME", `$${rec.symbol}: following the promoted variant "${pvar.label}"${pvar.xo ? " and its exits" : ""}`, "info", coin);
+  }
   if (REENTRY_NEXT.delete(rec.mint)) pos.reentry = true;
   await savePos(K.deskPos, pos, true);
 }
@@ -2546,7 +2567,11 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
   await r.hincrby(dk, fail ? `f:${fail.rule}` : "passed", 1);
   await r.hincrby(dk, "seen", 1);
   // v0.1.58: ARENA's MOMO variants decide on the same checks
-  for (const v of VARIANTS) if (acceptMomo(v, checks as ArenaCheck[], h, top10)) await arenaEnter(b, v.id, rec, q.px, q.real, "momo", !!q.grad).catch(() => null);
+  {
+    const took = VARIANTS.filter((v) => acceptMomo(v, checks as ArenaCheck[], h, top10));
+    noteAccepted(m, took.map((v) => v.id));
+    for (const v of took) await arenaEnter(b, v.id, rec, q.px, q.real, "momo", !!q.grad).catch(() => null);
+  }
   const deskBlock = !!fail && fails.every((x) => DESK_RULES.has(x.rule)) && !posMap[m];
   if (fail && !deskBlock) {
     log(b, "VET", `skipped MOMO's $${rec.symbol}: ${fail.rule.replace(/_/g, " ")} (${fail.v})`, "info", coin);
@@ -2856,7 +2881,7 @@ async function arenaEnter(b: Batch, id: string, rec: Launch, px: number, real: n
   const fillPx = px * (1 + slipOf(sol, grad, rl));
   const tokens = (sol * (1 - venueFee(grad, px * SUPPLY))) / fillPx;
   const now = Date.now();
-  const p: ArenaPos = { arena: id, build: BUILD, cfg: cfgTag(ALERT_CFG), mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, creator: rec.creator, mkt: { grad, real: rl }, wire: null, ...(grad ? { gradSeen: true } : {}) } as ArenaPos;
+  const p: ArenaPos = { arena: id, build: BUILD, cfg: cfgTag(ALERT_CFG), mint: rec.mint, symbol: rec.symbol, name: rec.name, openedAt: now, entryPx: fillPx, costSol: sol + fixed, tokens, tokens0: tokens, soldSol: 0, tp1Done: false, lastPx: px, peakPx: px, king: rec.call?.score ?? rec.early?.score ?? 0, nano: rec.call?.nano?.score ?? null, live: false, series: [[now, px, real]], kind: kindOf(rec), how, msHi: -1, creator: rec.creator, mkt: { grad, real: rl }, wire: null, ...(grad ? { gradSeen: true } : {}), ...(variantOf(id)?.xo ? { xo: variantOf(id)!.xo } : {}) } as ArenaPos;
   await arenaSave(p);
   log(b, "EXEC", `arena ${id}: bought $${rec.symbol} (${how}). not counted, compared`, "info", { mint: rec.mint, symbol: rec.symbol });
 }

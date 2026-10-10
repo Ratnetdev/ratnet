@@ -11,16 +11,43 @@ import { redis } from "./redis";
 import type { Pos } from "./desk";
 
 export type Check = { rule: string; ok: boolean; v?: string };
-export type Variant = { id: string; label: string; path: "king" | "momo"; why: string };
+// v0.1.66: exit settings a variant overrides (initials in % gain, stop in %, time stop in minutes, trail scale)
+export type Exo = { initials?: number; stop?: number; time?: number; trailK?: number };
+export type Path = "king" | "early" | "momo" | "wire";
+export type Variant = { id: string; label: string; path: Path; why: string; xo?: Exo };
 
+const SCALP: Exo = { initials: 30, stop: -15, time: 10 };
+const RUNNER: Exo = { initials: 100, stop: -30, time: 45, trailK: 1.5 };
+const MOMO_SCALP: Exo = { initials: 20, stop: -12, time: 15 };
+// v0.1.66: 6 books became 21. Each strategy (King calls, minute-1, MOMO, WIRE) has several entry and exit variants
+// side by side; PROMOTE (lib/promote.ts) puts the desk on a variant only once its own record proves it
 export const VARIANTS: Variant[] = [
-  { id: "nonano", label: "King, no nano rule", path: "king", why: "King BOND calls without nano having to agree (yesterday's winners were King calls nano scored low)" },
+  { id: "nonano", label: "King, no nano rule", path: "king", why: "King BOND calls, every check except nano agreeing" },
   { id: "nonano_late", label: "King, no nano, late curves", path: "king", why: "as above, and calls on curves past the late-curve limit" },
   { id: "strict", label: "King strict", path: "king", why: "King 70+ and nano 60+, every check passed" },
-  { id: "early1", label: "Minute-1 entries", path: "king", why: "buys the minute-1 BOND read right away instead of waiting for the minute-5 call" },
+  { id: "k_v0_50", label: "King rules 50+", path: "king", why: "the King's rule score 50+ whatever the verdict, every other check passed" },
+  { id: "k_lowcurve", label: "King, early curve", path: "king", why: "King BOND calls with the curve at 30% or less at the call" },
+  { id: "k_hicurve", label: "King, mid curve", path: "king", why: "King BOND calls with the curve between 30% and the late limit" },
+  { id: "k_scalp", label: "King, quick scalp", path: "king", why: "King BOND calls, out fast: initials at +30%, stop -15%, 10 minutes" },
+  { id: "k_runner", label: "King, let it run", path: "king", why: "King BOND calls, room to run: initials at +100%, stop -30%, wide trail, 45 minutes" },
+  { id: "early1", label: "Minute-1 entries", path: "early", why: "buys the minute-1 BOND read right away instead of waiting for the minute-5 call" },
+  { id: "early_70", label: "Minute-1, strong reads", path: "early", why: "minute-1 BOND reads scoring 70+" },
+  { id: "early_scalp", label: "Minute-1, quick scalp", path: "early", why: "minute-1 BOND reads, out fast: +30% initials, -15% stop, 10 minutes" },
   { id: "momo_now", label: "MOMO now", path: "momo", why: "MOMO signals bought at once, no pullback wait" },
   { id: "momo_strict", label: "MOMO strict", path: "momo", why: "MOMO with twice the volume and buyers, and a stricter holder spread" },
+  { id: "momo_bs2", label: "MOMO, buyers 2x sellers", path: "momo", why: "MOMO signals with at least twice as many buyers as sellers in 5 minutes" },
+  { id: "momo_big", label: "MOMO, $100K+ in 5m", path: "momo", why: "MOMO signals with $100K+ volume in 5 minutes" },
+  { id: "momo_holders", label: "MOMO, spread holders", path: "momo", why: "MOMO signals where the top 10 hold 20% or less" },
+  { id: "momo_scalp", label: "MOMO, quick scalp", path: "momo", why: "MOMO signals, out fast: +20% initials, -12% stop, 15 minutes", xo: MOMO_SCALP },
+  { id: "wire_any", label: "WIRE, every pick", path: "wire", why: "coins born from tracked X posts, every WIRE check passed" },
+  { id: "wire_strong", label: "WIRE, linked or CA posted", path: "wire", why: "only coins that link the post or whose CA the author posted" },
+  { id: "wire_scalp", label: "WIRE, quick scalp", path: "wire", why: "WIRE picks, out fast: +30% initials, -15% stop, 10 minutes", xo: SCALP },
 ];
+for (const v of VARIANTS) {
+  if (v.id === "k_scalp" || v.id === "early_scalp") v.xo = SCALP;
+  if (v.id === "k_runner") v.xo = RUNNER;
+}
+export const variantOf = (id: string | null | undefined) => VARIANTS.find((v) => v.id === id) || null;
 export const ARENA_SOL = 0.1;
 export const ARENA_MAX_OPEN = 3;
 export const ARENA_BASE = 1.25; // virtual balance for the exam (same size-to-balance ratio as the paper desk)
@@ -28,14 +55,27 @@ const DESK_ONLY = new Set(["open_slots", "daily_loss_ok"]); // the desk's own li
 
 const okExcept = (checks: Check[], waive: string[] = []) => checks.every((c) => c.ok || DESK_ONLY.has(c.rule) || waive.includes(c.rule));
 
-/** Does a King-path variant take this signal? (King or minute-1 call, with the desk's checks already computed) */
-export function acceptKing(v: Variant, checks: Check[], rec: { call?: { score: number; verdict: string; nano?: { score: number; verdict: string } | null } | null; early?: { score: number; verdict: string } | null }, early: boolean, wire: boolean) {
-  if (v.path !== "king" || wire) return false;
-  if (v.id === "early1") return early && okExcept(checks);
-  if (early) return false;
-  if (v.id === "nonano") return okExcept(checks, ["nano_agrees"]);
+type KingRec = { call?: { score: number; verdict: string; v0?: { score: number; verdict: string } | null; nano?: { score: number; verdict: string } | null } | null; early?: { score: number; verdict: string } | null; wire?: { how?: string } | null };
+/** Does a King, minute-1 or WIRE variant take this signal? (the desk's checks already computed) */
+export function acceptKing(v: Variant, checks: Check[], rec: KingRec, early: boolean, wire: boolean, curve = 0) {
+  if (v.path === "wire") {
+    if (!wire) return false;
+    if (v.id === "wire_strong") return okExcept(checks) && /^(posted the CA|links the post)$/.test(String(rec.wire?.how || ""));
+    return okExcept(checks);
+  }
+  if (wire) return false;
+  if (v.path === "early") {
+    if (!early) return false;
+    if (v.id === "early_70") return okExcept(checks) && (rec.early?.score ?? 0) >= 70;
+    return okExcept(checks);
+  }
+  if (v.path !== "king" || early) return false;
+  if (v.id === "nonano" || v.id === "k_scalp" || v.id === "k_runner") return okExcept(checks, ["nano_agrees"]);
   if (v.id === "nonano_late") return okExcept(checks, ["nano_agrees", "curve_not_late"]);
   if (v.id === "strict") return okExcept(checks) && (rec.call?.score ?? 0) >= 70 && (rec.call?.nano?.score ?? 0) >= 60 && rec.call?.nano?.verdict === "BOND";
+  if (v.id === "k_v0_50") return okExcept(checks, ["nano_agrees", "king_or_nano_bond"]) && (rec.call?.v0?.score ?? 0) >= 50;
+  if (v.id === "k_lowcurve") return okExcept(checks, ["nano_agrees"]) && curve <= 30;
+  if (v.id === "k_hicurve") return okExcept(checks, ["nano_agrees"]) && curve > 30;
   return false;
 }
 
@@ -43,9 +83,24 @@ export function acceptKing(v: Variant, checks: Check[], rec: { call?: { score: n
 export function acceptMomo(v: Variant, checks: Check[], h: { v5: number; buyers5: number; sellers5: number }, top10: number | null) {
   if (v.path !== "momo") return false;
   if (!okExcept(checks)) return false;
-  if (v.id === "momo_now") return true;
+  if (v.id === "momo_now" || v.id === "momo_scalp") return true;
   if (v.id === "momo_strict") return h.v5 >= 50_000 && h.buyers5 >= 80 && h.buyers5 >= h.sellers5 * 1.2 && (top10 == null || top10 <= 25);
+  if (v.id === "momo_bs2") return h.buyers5 >= h.sellers5 * 2;
+  if (v.id === "momo_big") return h.v5 >= 100_000;
+  if (v.id === "momo_holders") return top10 != null && top10 <= 20;
   return false;
+}
+
+// v0.1.66: which variants took each signal (the desk follows its promoted variant: lib/promote.ts)
+const ACCEPTED = new Map<string, { at: number; ids: string[] }>();
+export function noteAccepted(mint: string, ids: string[]) {
+  const now = Date.now();
+  ACCEPTED.set(mint, { at: now, ids });
+  if (ACCEPTED.size > 2000) for (const [k, x] of ACCEPTED) if (now - x.at > 45 * 60_000) ACCEPTED.delete(k);
+}
+export function acceptedBy(mint: string) {
+  const x = ACCEPTED.get(mint);
+  return x && Date.now() - x.at < 45 * 60_000 ? x.ids : [];
 }
 
 // ---- the books: positions in memory (worker), written to Redis on every change; trips in one capped list
@@ -84,16 +139,16 @@ export async function arenaDrop(p: ArenaPos) {
 // v0.1.61: the trips in memory too, so the minute's summary does not read the whole list back from Redis
 let TRIPS: ArenaTrip[] | null = null;
 async function arenaTrips() {
-  if (!TRIPS) TRIPS = ((await redis().lrange<ArenaTrip>(ARENA_TRIPS, 0, 599).catch(() => [])) || []) as ArenaTrip[];
+  if (!TRIPS) TRIPS = ((await redis().lrange<ArenaTrip>(ARENA_TRIPS, 0, 1499).catch(() => [])) || []) as ArenaTrip[];
   return TRIPS;
 }
 /** v0.1.63: the trips for REGIME (memory, read from Redis once). */
 export const arenaRecentTrips = () => arenaTrips();
 export async function arenaTrip(t: ArenaTrip) {
   const r = redis();
-  if (TRIPS) TRIPS = [t, ...TRIPS].slice(0, 600);
+  if (TRIPS) TRIPS = [t, ...TRIPS].slice(0, 1500);
   await r.lpush(ARENA_TRIPS, t).catch(() => null);
-  await r.ltrim(ARENA_TRIPS, 0, 599).catch(() => null); // ~100 per book: the exam needs the last 30
+  await r.ltrim(ARENA_TRIPS, 0, 1499).catch(() => null); // ~75 per book (20 books): the exam needs the last 30
 }
 
 // ---- scoring: the desk's exam on each book

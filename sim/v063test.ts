@@ -1,5 +1,6 @@
 // v0.1.63: REGIME switches the desk's strategies with the market. Run: npx tsx sim/v063test.ts
 import { MockRedis } from "./mockredis";
+process.env.PROVING_MODE = "off"; // v0.1.66: this suite tests REGIME's market gate alone
 const R = new MockRedis();
 (globalThis as any).__rnRedis = R;
 let fail = 0;
@@ -113,7 +114,7 @@ const ok = (c: boolean, m: string) => {
   // ---- wiring
   const fs = await import("fs");
   const desk = fs.readFileSync(new URL("../src/lib/desk.ts", import.meta.url), "utf8");
-  ok(/const rgw = await gateFor\(sl\)/.test(desk) && /REGIME off: \$\{rgw\.why\}/.test(desk), "the desk asks REGIME before every buy and sends a blocked signal to the ghost desk");
+  ok(/const rgw: [^=]*= await gateFor\(sl\)/.test(desk) && /REGIME off: \$\{rgw\.why\}/.test(desk), "the desk asks REGIME before every buy and sends a blocked signal to the ghost desk");
   ok(/pmw\.w \* wmul \* rgw\.w/.test(desk), "half size applies to the buy size");
   ok(/startsWith\("REGIME"\)\) await regimeSaved/.test(desk), "a blocked ghost trade's result is counted when it closes");
   const w = fs.readFileSync(new URL("../worker/index.ts", import.meta.url), "utf8");

@@ -1332,7 +1332,10 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   };
   c.p.set(K.call(rec.mint), rec.call, { ex: CALL_TTL });
   // v0.1.59: a called coin that is alive stays on the live curve stream for the hour after its call (REPLAY's paths)
-  if (counted && !farm && curveNow >= 8) followLonger(rec.mint, 60 * 60_000);
+  // v0.1.66: REPLAY needs the hour after every call worth testing a rule on (it had paths for 355 of 4,493 calls):
+  // any curve from 4%, or a BOND/WATCH from either King version
+  const worth = curveNow >= 4 || sc.verdict !== "DUST" || (nano?.verdict && nano.verdict !== "DUST") || (v1c && v1c !== "DUST");
+  if (counted && !farm && worth) followLonger(rec.mint, 60 * 60_000);
   c.p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
   if (rec.tape) enroll(c.p, runOf(rec, null));
   indexCall(c, rec.call);

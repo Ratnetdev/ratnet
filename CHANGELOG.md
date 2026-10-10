@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.66 · PROMOTE: the desk trades only what has proven itself
+- Found on 10 Oct: after the reset the desk's 5 trades (all losses, -11%) were 3 WIRE tweet coins and 2 MOMO buys, no King call. ARENA's records over the same days: MOMO -9.5% a trade over 43 trips, minute-1 -23% over 12, King without nano -2.4% over 18. The desk was trading every strategy, proven or not, and each small sample swung the result.
+- ARENA grows from 6 to 20 books: King calls (8 variants: curve bands, rule score, scalp and runner exits), minute-1 (3), MOMO (6: buyer ratio, volume, holder spread, scalp exits) and WIRE (3: every pick, linked or CA posted only, scalp). Variants can carry their own exits.
+- PROMOTE (every 5 minutes, in REGIME): each variant's record over the last 3 days (last 30 trips). A strategy trades on the desk only through its promoted variant: 15+ trips, 35%+ won, average +2% or better after every cost, profit factor 1.1+ without its best trip. The promoted variant keeps its place while it holds (average 0%+, profit factor 1.0+); a challenger needs to be proven and 3 points better. No proven variant: the strategy is benched on the desk, and the ghost desk and ARENA keep trading it.
+- The desk enters a signal only if its promoted variant took the same signal, and runs that variant's exits.
+- REGIME's market rules still set the size of a promoted strategy (on, half, off); WIRE joins King, minute-1 and MOMO.
+- REPLAY gets paths for every call worth testing (curve 4%+ or a BOND/WATCH from either King version), not only calls at 8%+.
+- /desk: REGIME shows what each strategy trades (or why it is benched); ARENA is grouped by strategy and marks the variant the desk follows.
+- PROVING_MODE (Railway worker, optional): on (default) or off.
+- New test suite v066test. All suites, tsc and next build pass.
+
 ## v0.1.65 · The King's caller is picked on its record
 - Found on 10 Oct: since v1.1 (nano) took over the King's calls on its own calibration, its BOND calls bonded 1.4% of the time (8 of 570 graded at 2 hours), below the 2.2% base rate. The v0.3 rules it replaced had 10.7% (22 of 206). This is why the King hit rate fell and why the desk (which takes King BOND calls since v0.1.61) stopped printing.
 - The leader is now picked on the honest record: v1 makes the calls only once it has 150+ graded BOND calls and a bond rate at least as good as v0's. Until then v0.3's rules call, as on 8 Oct.

@@ -12,10 +12,12 @@ type R = {
   market?: { launchesNow: number | null; launchesBase: number | null; gradNow: number | null; gradBase: number | null; migrationsHour: number | null; sol6: number | null; sol24: number | null; state: "hot" | "normal" | "cold" | "dead" };
   hits?: Record<string, { n: number; winRate: number; avgPct: number }>;
   gates?: Record<string, { level: Level; why: string; since: number }>;
+  proving?: boolean;
+  promo?: { picks: Record<string, string | null>; why: Record<string, string>; rules?: { minN: number; minWin: number; minAvg: number; minPf: number } };
   history?: { at: number; sleeve: string; from: Level; to: Level; why: string }[];
   saved?: { n: number; wins: number; pnl: number };
 };
-const NAME: Record<string, string> = { king: "King calls", early: "Minute-1 entries", momo: "MOMO" };
+const NAME: Record<string, string> = { king: "King calls", early: "Minute-1 entries", momo: "MOMO", wire: "WIRE (X posts)" };
 const STATE_COL: Record<string, string> = { hot: "var(--rat)", normal: "var(--watch)", cold: "var(--bond)", dead: "var(--dust)" };
 const LEVEL_COL: Record<Level, string> = { on: "var(--rat)", half: "var(--bond)", off: "var(--dust)" };
 const pctS = (x: number | null | undefined) => (x == null ? "–" : `${x >= 0 ? "+" : ""}${x.toFixed(1)}%`);
@@ -29,7 +31,7 @@ export default function RegimeBoard() {
     <section className="panel mt" id="regime">
       <div className="ph">
         <span>
-          <b>regime</b> · the market switches strategies on, to half size, or off
+          <b>regime</b> · only proven strategies trade, the market sets their size
           {m ? (
             <>
               {" "}· market <span className="tag" style={{ color: STATE_COL[m.state] }}>{m.state.toUpperCase()}</span>
@@ -55,14 +57,18 @@ export default function RegimeBoard() {
             <tbody>
               {Object.entries(d.gates).map(([s, g]) => {
                 const h = d.hits?.[s];
+                const pick = d.promo?.picks?.[s];
+                const benched = d.proving !== false && d.promo && !pick;
+                const lvl: Level = benched ? "off" : g.level;
                 return (
                   <tr key={s}>
                     <td>
                       <b>{NAME[s] || s}</b>
+                      {d.promo ? <div className="tiny" style={{ whiteSpace: "normal", maxWidth: 420, color: pick ? "var(--rat)" : "var(--dim)" }}>{d.promo.why?.[s]}</div> : null}
                       <div className="tiny mute2" style={{ whiteSpace: "normal", maxWidth: 420 }}>{g.why}</div>
                     </td>
                     <td>
-                      <span className="tag" style={{ color: LEVEL_COL[g.level] }}>{g.level === "half" ? "HALF SIZE" : g.level.toUpperCase()}</span>
+                      <span className="tag" style={{ color: LEVEL_COL[lvl] }}>{benched ? "BENCHED" : lvl === "half" ? "HALF SIZE" : lvl.toUpperCase()}</span>
                       <div className="tiny mute2">for {ago(g.since)}</div>
                     </td>
                     <td>{h?.n ?? 0}</td>

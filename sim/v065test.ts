@@ -26,7 +26,7 @@ const ok = (c: boolean, m: string) => {
   ok(/rule: "king_or_nano_bond", ok: rec\.call!\.verdict === "BOND",/.test(dk), "the desk takes the King's verdict only (no nano-only BOND)");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  ok(BUILD === pkg.version && BUILD === "0.1.65", `build tag ${BUILD}`);
+  ok(BUILD === pkg.version, `build tag ${BUILD}`);
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

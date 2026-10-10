@@ -9,12 +9,14 @@
 // the measurement. Signals the switch blocks go to the ghost desk, so "what the switch saved" is a real number.
 // Hysteresis: worse applies at once; better needs two readings in a row and 30 minutes since the last switch.
 // REGIME_MODE: on (default) | shadow (shown, the desk ignores it) | off.
+// v0.1.66 PROMOTE: the desk only trades a strategy through a variant whose own ARENA record proves it (see promote()).
 import { K, hourKey, redis } from "./redis";
 import { memo } from "./memo";
+import { VARIANTS } from "./arena";
 
-export type GSleeve = "king" | "early" | "momo";
-export const GATED: GSleeve[] = ["king", "early", "momo"];
-const GROUP: Record<string, GSleeve> = { nonano: "king", nonano_late: "king", strict: "king", early1: "early", momo_now: "momo", momo_strict: "momo" };
+export type GSleeve = "king" | "early" | "momo" | "wire";
+export const GATED: GSleeve[] = ["king", "early", "momo", "wire"];
+const GROUP: Record<string, GSleeve> = Object.fromEntries(VARIANTS.map((v) => [v.id, v.path]));
 export const REGIME_VIEW = "rn:regime:view";
 const SAVED = "rn:regime:saved";
 const WINDOW_MS = 8 * 3600_000;
@@ -100,14 +102,15 @@ export function decide(m: Market, hits: Record<GSleeve, Hit>, prev: Partial<Gate
   const gates = {} as Gates;
   const switches: Switch[] = [];
   for (const s of GATED) {
-    const h = hits[s];
+    const h = hits[s] || { n: 0, wins: 0, winRate: 0, avgPct: 0 };
     const rec = `last ${h.n} coins won ${h.winRate}%, avg ${h.avgPct >= 0 ? "+" : ""}${h.avgPct}%`;
     const streak = h.n >= 8 && h.winRate < 25 && h.avgPct < -10;
     const hot = h.n >= 6 && h.winRate >= 45 && h.avgPct > 0;
     const weak = h.n >= 6 && h.avgPct < 0 && h.winRate < 35;
     // MOMO trades migrated coins: the launch market matters less, SOL's fall still does
-    const dead = s === "momo" ? m.sol24 != null && m.sol24 <= -10 : m.state === "dead";
-    const cold = s === "momo" ? (m.sol24 != null && m.sol24 <= -5) || (m.sol6 != null && m.sol6 <= -4) : m.state === "cold";
+    const solOnly = s === "momo" || s === "wire"; // migrated coins and tweet coins: the launch market matters less
+    const dead = solOnly ? m.sol24 != null && m.sol24 <= -10 : m.state === "dead";
+    const cold = solOnly ? (m.sol24 != null && m.sol24 <= -5) || (m.sol6 != null && m.sol6 <= -4) : m.state === "cold";
     let target: Level = "on";
     let why = h.n ? `ARENA ${rec}; market ${m.state}` : `market ${m.state}; no ARENA trips in 8h yet`;
     if (streak) (target = "off"), (why = `ARENA ${rec}: this strategy is not working right now`);
@@ -136,7 +139,6 @@ export function decide(m: Market, hits: Record<GSleeve, Hit>, prev: Partial<Gate
 }
 
 // ---- worker side
-let LOCAL: { at: number; gates: Gates } | null = null;
 
 async function marketNow(): Promise<Market> {
   const r = redis();
@@ -155,35 +157,106 @@ async function marketNow(): Promise<Market> {
   return classify(rows, ch(nowPx, px6), ch(nowPx, px24));
 }
 
-/** One reading (worker, every 5 minutes): market + ARENA hit rates → gates, published for the desk and the site. */
-export async function regimeTick(trips: { v: string; mint: string; closedAt: number; pnlPct: number }[], now = Date.now()) {
+// ---- PROMOTE (v0.1.66). Every variant's record from its ARENA trips (last 3 days, last 30 trips). A strategy trades on
+// the desk only through its promoted variant: proven = 15+ trips, 35%+ won, average +2% or better after every cost,
+// profit factor 1.1+ without its best trip. The promoted variant keeps its place while it holds (average 0% or better,
+// profit factor 1.0+); a challenger takes over only when it is proven and averages 3 points more. No proven variant:
+// the strategy sits out on the desk (the ghost desk and ARENA keep trading it).
+export type VRec = { n: number; wins: number; winRate: number; avgPct: number; pfLessBest: number; pnl: number };
+export const PROMO = { minN: 15, minWin: 35, minAvg: 2, minPf: 1.1, holdAvg: 0, holdPf: 1, margin: 3, windowMs: 3 * 86400_000, last: 30 };
+type Trip = { v: string; mint: string; closedAt: number; pnlPct: number; pnl?: number };
+export function recordsOf(trips: Trip[], now = Date.now()): Record<string, VRec> {
+  const out: Record<string, VRec> = {};
+  for (const v of VARIANTS) {
+    const mine = trips.filter((t) => t.v === v.id && now - t.closedAt <= PROMO.windowMs).sort((a, b) => b.closedAt - a.closedAt).slice(0, PROMO.last);
+    const n = mine.length;
+    const wins = mine.filter((t) => t.pnlPct > 0).length;
+    const pnls = mine.map((t) => (t.pnl != null ? t.pnl : t.pnlPct / 100));
+    const less = pnls.slice();
+    if (less.length) less.splice(less.indexOf(Math.max(...less)), 1);
+    const gw = less.filter((x) => x > 0).reduce((a, x) => a + x, 0);
+    const gl = -less.filter((x) => x < 0).reduce((a, x) => a + x, 0);
+    out[v.id] = { n, wins, winRate: n ? Math.round((wins / n) * 100) : 0, avgPct: n ? r1(mine.reduce((a, t) => a + t.pnlPct, 0) / n) : 0, pfLessBest: gl > 0 ? Math.round((gw / gl) * 100) / 100 : gw > 0 ? 99 : 0, pnl: Math.round(pnls.reduce((a, x) => a + x, 0) * 1e4) / 1e4 };
+  }
+  return out;
+}
+export const proven = (x: VRec | undefined) => !!x && x.n >= PROMO.minN && x.winRate >= PROMO.minWin && x.avgPct >= PROMO.minAvg && x.pfLessBest >= PROMO.minPf;
+const holds = (x: VRec | undefined) => !!x && x.n >= PROMO.minN && x.avgPct >= PROMO.holdAvg && x.pfLessBest >= PROMO.holdPf;
+export type Promo = { picks: Record<GSleeve, string | null>; why: Record<GSleeve, string>; changes: { sleeve: GSleeve; from: string | null; to: string | null; why: string }[] };
+const recTxt = (id: string, x: VRec) => `${VARIANTS.find((v) => v.id === id)?.label || id}: ${x.n} trips, ${x.winRate}% won, avg ${x.avgPct >= 0 ? "+" : ""}${x.avgPct}%`;
+export function promote(recs: Record<string, VRec>, prev: Partial<Record<GSleeve, string | null>> | null): Promo {
+  const picks = {} as Record<GSleeve, string | null>;
+  const why = {} as Record<GSleeve, string>;
+  const changes: Promo["changes"] = [];
+  for (const s of GATED) {
+    const ids = VARIANTS.filter((v) => v.path === s).map((v) => v.id);
+    const best = ids.filter((id) => proven(recs[id])).sort((a, b) => recs[b].avgPct - recs[a].avgPct || recs[b].pnl - recs[a].pnl)[0] || null;
+    const cur = prev?.[s] ?? null;
+    let pick: string | null;
+    if (cur && holds(recs[cur])) pick = best && best !== cur && recs[best].avgPct >= recs[cur].avgPct + PROMO.margin ? best : cur;
+    else pick = best;
+    picks[s] = pick;
+    const lead = ids.filter((id) => recs[id]?.n).sort((a, b) => recs[b].avgPct - recs[a].avgPct)[0];
+    why[s] = pick ? `trading ${recTxt(pick, recs[pick])}` : lead ? `proving: no variant proven yet (best so far ${recTxt(lead, recs[lead])}; needs ${PROMO.minN}+ trips, ${PROMO.minWin}%+ won, avg +${PROMO.minAvg}%+)` : "proving: no ARENA trips yet";
+    if (pick !== cur) changes.push({ sleeve: s, from: cur, to: pick, why: why[s] });
+  }
+  return { picks, why, changes };
+}
+export const provingMode = () => String(process.env.PROVING_MODE || "on").toLowerCase() !== "off";
+
+let LOCAL: { at: number; gates: Gates; picks: Record<GSleeve, string | null>; why: Record<GSleeve, string> } | null = null;
+
+/** One reading (worker, every 5 minutes): ARENA records promote a variant per strategy, then the market and the
+ *  promoted variant's own hit rate set its level. Published for the desk and the site. */
+export async function regimeTick(trips: Trip[], now = Date.now()) {
   const r = redis();
   const view = (await r.get<any>(REGIME_VIEW).catch(() => null)) || null;
   const prev: Partial<Gates> | null = LOCAL?.gates || view?.gates || null;
+  const recs = recordsOf(trips, now);
+  const promo = promote(recs, LOCAL?.picks || view?.promo?.picks || null);
   const market = await marketNow();
-  const hits = hitsOf(trips, now);
+  // hit rates of what the desk actually trades: the promoted variants (all of a strategy's books when none is)
+  const picked = new Set(Object.values(promo.picks).filter(Boolean) as string[]);
+  const hits = hitsOf(trips.filter((t) => picked.has(t.v) || !promo.picks[GROUP[t.v] as GSleeve]), now);
   const { gates, switches } = decide(market, hits, prev, now);
-  LOCAL = { at: now, gates };
+  LOCAL = { at: now, gates, picks: promo.picks, why: promo.why };
   const saved = ((await r.hgetall<Record<string, number>>(SAVED).catch(() => null)) || {}) as Record<string, number>;
   const history: Switch[] = [...switches.slice().reverse(), ...((view?.history as Switch[]) || [])].slice(0, 30);
+  const promos = [...promo.changes.map((c) => ({ at: now, ...c })).reverse(), ...((view?.promo?.history as any[]) || [])].slice(0, 30);
   const mode = regimeMode();
-  await r.set(REGIME_VIEW, { at: now, mode, market, hits, gates, history, saved: { n: Number(saved.n || 0), wins: Number(saved.w || 0), pnl: Number(saved.p || 0) / 1e4 } }, { ex: 86400 });
-  if (switches.length && mode !== "off") {
-    const ev = switches.map((s) => ({ agent: "REGIME", at: now, text: `${mode === "shadow" ? "(shadow) " : ""}${s.sleeve} ${s.from} → ${s.to}: ${s.why}`, tone: s.to === "on" ? "win" : "info" }));
-    await r.lpush(K.deskEv, ...ev).catch(() => null);
+  await r.set(REGIME_VIEW, { at: now, mode, proving: provingMode(), market, hits, gates, history, promo: { picks: promo.picks, why: promo.why, recs, history: promos, rules: PROMO }, saved: { n: Number(saved.n || 0), wins: Number(saved.w || 0), pnl: Number(saved.p || 0) / 1e4 } }, { ex: 86400 });
+  if (mode !== "off") {
+    const ev = [
+      ...switches.map((s) => ({ agent: "REGIME", at: now, text: `${mode === "shadow" ? "(shadow) " : ""}${s.sleeve} ${s.from} → ${s.to}: ${s.why}`, tone: s.to === "on" ? "win" : "info" })),
+      ...promo.changes.map((c) => ({ agent: "REGIME", at: now, text: c.to ? `PROMOTE: the desk's ${c.sleeve} trades now follow "${VARIANTS.find((v) => v.id === c.to)?.label}" (${c.why.replace(/^trading /, "")})` : `PROMOTE: ${c.sleeve} benched on the desk, no variant proven (${c.why.replace(/^proving: /, "")})`, tone: c.to ? "win" : "info" })),
+    ];
+    if (ev.length) await r.lpush(K.deskEv, ...ev).catch(() => null);
   }
-  return { market, hits, gates, switches };
+  return { market, hits, gates, switches, promo, recs };
 }
 
-/** The desk asks before a buy: size multiplier for this strategy right now (1 = untouched). */
-export async function gateFor(sleeve: string): Promise<{ w: number; level: Level; why: string }> {
+/** The desk asks before a buy: size multiplier for this strategy right now (1 = untouched), and the promoted variant
+ *  whose rules (entry and exits) the desk must follow for it. */
+export async function gateFor(sleeve: string): Promise<{ w: number; level: Level; why: string; variant?: string | null }> {
   const none = { w: 1, level: "on" as Level, why: "" };
-  if (!GATED.includes(sleeve as GSleeve) || regimeMode() !== "on") return none;
+  const s = (sleeve === "vamp" ? "wire" : sleeve) as GSleeve;
+  if (!GATED.includes(s) || regimeMode() !== "on") return none;
   const now = Date.now();
-  let g: { at: number; gates: Gates } | null = LOCAL && now - LOCAL.at < 15 * 60_000 ? LOCAL : null;
-  if (!g) g = (await memo("regime:gates", 60_000, async () => (await redis().get<any>(REGIME_VIEW).catch(() => null)) || null)) as any;
-  if (!g?.gates || now - g.at > 30 * 60_000) return none; // no fresh reading: never block on stale data
-  const x = g.gates[sleeve as GSleeve];
+  let g: { at: number; gates: Gates; picks?: Record<GSleeve, string | null>; why?: Record<GSleeve, string>; promo?: any } | null = LOCAL && now - LOCAL.at < 15 * 60_000 ? LOCAL : null;
+  if (!g) {
+    const v = (await memo("regime:gates", 60_000, async () => (await redis().get<any>(REGIME_VIEW).catch(() => null)) || null)) as any;
+    g = v ? { at: v.at, gates: v.gates, picks: v.promo?.picks, why: v.promo?.why } : null;
+  }
+  const fresh = !!g?.gates && now - g.at <= 30 * 60_000;
+  if (provingMode()) {
+    if (!fresh) return { w: 0, level: "off", why: "proving: waiting for the first reading", variant: null };
+    const pick = g!.picks?.[s] ?? null;
+    if (!pick) return { w: 0, level: "off", why: g!.why?.[s] || "proving: no variant proven yet", variant: null };
+    const x = g!.gates[s];
+    return { w: x?.w ?? 1, level: x?.level ?? "on", why: x?.why || "", variant: pick };
+  }
+  if (!fresh) return none; // no fresh reading: never block on stale data
+  const x = g!.gates[s];
   return x ? { w: x.w, level: x.level, why: x.why } : none;
 }
 
