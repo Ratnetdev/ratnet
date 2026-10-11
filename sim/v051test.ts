@@ -23,7 +23,7 @@ const ok = (c: boolean, m: string) => {
   };
   const model: any = {};
   await dg.processDue(model);
-  const oldCall = calls.find((a) => a[0] === K.due && a[1] === 0);
+  const oldCall = calls.find((a) => a[0] === K.due && a[1] === 0 && a[3]?.count != null); // v0.1.67: the one-time late-call cleanup reads without a count
   ok(!!oldCall && oldCall[3]?.count <= 60, `the backlog drains at most 60 checks per pass (asked for ${oldCall?.[3]?.count})`);
   calls.length = 0;
   await dg.processDue(model);

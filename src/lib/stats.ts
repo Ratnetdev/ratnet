@@ -21,7 +21,7 @@ export async function getStats() {
   const [st, today, dueCount, since, lead] = await Promise.all([
     r.hgetall<Record<string, number>>(K.stat),
     r.hgetall<Record<string, number>>(K.day(dayKey())),
-    r.zcard(K.due),
+    r.zcard(K.due).then(async (n) => Number(n || 0) + Number((await r.zcard(K.dueCall).catch(() => 0)) || 0)),
     r.get<number>("rn:epoch:at"),
     r.get<{ leader: "v0" | "v1"; why: string; v0: { n: number; hit: number; prec: number | null }; v1: { n: number; hit: number; prec: number | null } }>("rn:king:leader").catch(() => null),
   ]);

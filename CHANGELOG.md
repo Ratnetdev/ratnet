@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.68 · Archive survives bad rows and a full disk; Hall of Fame fixed (includes v0.1.67)
+- Found on 11 Oct: the archive had 79K rows stuck and 17K failed writes. A row with half an emoji or a NUL character in a coin name or post ("invalid input syntax for type json") failed its whole batch, the batch was retried forever, and the failing table stopped the others. Strings are now cleaned before they are stored; a batch refused for its content is retried row by row and only the bad rows are dropped (counted on /status); each table is written on its own.
+- The Postgres disk filled up ("could not extend file"): curve ticks are kept 10 days (was 30), and the archive prunes once at start too.
+- Redis alerts no longer say "Upstash": they point to the Redis service on Railway (MISCONF = the disk is full).
+- Hall of Fame: it took the top 80 runners of any verdict and then kept the BOND calls, so most BOND calls fell off before the filter; it now picks from the top 400. Calls priced under $1,500 at the call (broken price reads like "$5 at the call") are left out.
+- New test suite v068test. All suites, tsc and next build pass.
+
+## v0.1.67 · King calls on time again
+- On 10 Oct the King's calls came 12 minutes after launch (p50 721s) when they are due at 5. The minute-1 and minute-5 checkpoints shared one queue with the 1-hour and 1-day checks of every launch (~8,000 an hour), and with a backlog (78K) each pass served the oldest first, so calls waited behind checks that are not urgent. Late calls miss the buy window and see a coin that already moved.
+- Minute-1 reads and minute-5 calls now have their own queue (rn:due:call), served first on every pass (up to 60); the 1-hour and 1-day checks fill the rest.
+- Once per start, minute-1/minute-5 checkpoints left in the old queue and already more than 15 minutes late are dropped, so the backlog drain only carries the checks still worth doing.
+- New test suite v067test. All suites, tsc and next build pass.
+
 ## v0.1.66 · PROMOTE: the desk trades only what has proven itself
 - Found on 10 Oct: after the reset the desk's 5 trades (all losses, -11%) were 3 WIRE tweet coins and 2 MOMO buys, no King call. ARENA's records over the same days: MOMO -9.5% a trade over 43 trips, minute-1 -23% over 12, King without nano -2.4% over 18. The desk was trading every strategy, proven or not, and each small sample swung the result.
 - ARENA grows from 6 to 20 books: King calls (8 variants: curve bands, rule score, scalp and runner exits), minute-1 (3), MOMO (6: buyer ratio, volume, holder spread, scalp exits) and WIRE (3: every pick, linked or CA posted only, scalp). Variants can carry their own exits.

@@ -750,6 +750,7 @@ async function main() {
     };
     setTimeout(board, 20_000);
     setInterval(board, 5 * 60_000);
+    setTimeout(() => archivePrune().catch(() => null), 60_000); // v0.1.68: also once at start (frees disk after a full day)
     setInterval(() => archivePrune().catch(() => null), 6 * 3600_000);
     // v0.1.59: REPLAY over the archive, 3 minutes after start and then every 3 hours (one run at a time)
     let replaying = false;
@@ -775,7 +776,7 @@ async function main() {
   await startArchive().catch(() => null);
   setInterval(() => {
     const v = archiveView();
-    markAlive("archive", !v.on ? { off: "DATABASE_URL not set" } : !v.ready ? { error: v.error || "not connected" } : { launches: v.written.launches, ticks: v.written.ticks, trades: v.written.trades, trips: v.written.trips, queued: v.queued, fails: v.fails, ...(v.lastError ? { last: v.lastError.slice(0, 60).replace(/,/g, ";") } : {}) }).catch(() => {});
+    markAlive("archive", !v.on ? { off: "DATABASE_URL not set" } : !v.ready ? { error: v.error || "not connected" } : { launches: v.written.launches, ticks: v.written.ticks, trades: v.written.trades, trips: v.written.trips, queued: v.queued, fails: v.fails, dropped: (v as any).dropped ?? 0, ...(v.lastError ? { last: v.lastError.slice(0, 60).replace(/,/g, ";") } : {}) }).catch(() => {});
   }, 30_000);
   // live prices for the site's pages (/api/px reads them): what viewers asked for, every 4s, on the agents' lane
   let pxBusy = false;

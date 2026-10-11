@@ -226,6 +226,7 @@ const MAX_TX_PER_RUN = 60;
 export const BOND_CALLS = "rn:bondcalls"; // newest counted BOND calls (mints)
 const MAX_DUE_PER_RUN = 150; // v0.1.62: was 300, read every second (8.5MB of Redis an hour); a pass rarely needs more
 const FRESH_MS = 10 * 60_000;
+const MAX_CALLS_PER_RUN = 60; // v0.1.67: minute-1/minute-5 checkpoints per pass (about 1 a second arrive)
 const EARLY_MAX_AGE_MS = 3 * 60_000; // a minute-1 read later than 3 minutes is skipped, not made late
 const MAX_HOT_PER_RUN = 300;
 const HOT_MIN = 2; // curve % that puts a launch on the hot watch
@@ -789,7 +790,12 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
       radarAdds.push({ score: rec.p0, member: l.mint });
     }
   });
-  if (dueAdds.length) p.zadd(K.due, dueAdds[0], ...dueAdds.slice(1));
+  // v0.1.67: the minute-1 and minute-5 checkpoints get their own queue. In one queue with the 1-hour and 1-day checks,
+  // a backlog (78K on 10 Oct) pushed King calls to 12 minutes after launch (p50 721s) when they are due at 5
+  const callAdds = dueAdds.filter((x) => /\|t[15]$/.test(x.member));
+  const restAdds = dueAdds.filter((x) => !/\|t[15]$/.test(x.member));
+  if (callAdds.length) p.zadd(K.dueCall, callAdds[0], ...callAdds.slice(1));
+  if (restAdds.length) p.zadd(K.due, restAdds[0], ...restAdds.slice(1));
   if (hotAdds.length) {
     p.zadd(K.hot, hotAdds[0], ...hotAdds.slice(1));
     p.zadd(K.radar, radarAdds[0], ...radarAdds.slice(1));
@@ -951,6 +957,7 @@ function resolve(c: Ctx, rec: Launch, outcome: Outcome, at = c.now) {
   p.zrem(K.radar, rec.mint);
   p.zrem(K.peak, rec.mint);
   p.zrem(K.due, ...(Object.keys(CHECKPOINTS) as Stage[]).map((st) => `${rec.mint}|${st}`));
+  p.zrem(K.dueCall, `${rec.mint}|t1`, `${rec.mint}|t5`);
 }
 
 function tally(c: Ctx, prefix: string, verdict: Verdict, outcome: Outcome) {
@@ -1006,14 +1013,30 @@ export async function processDue(model: NanoModel) {
     throw e;
   }
 }
+// v0.1.67, once per process: minute-1/minute-5 checkpoints left in the shared queue from before the split and already
+// too late to be used (older than 15 minutes) are dropped, so the backlog drain only carries the 1-hour and 1-day checks
+let CALLS_CLEANED = false;
+async function cleanLateCalls(now: number) {
+  if (CALLS_CLEANED) return;
+  CALLS_CLEANED = true;
+  const r = redis();
+  const late = ((await r.zrange<string[]>(K.due, 0, now - 15 * 60_000, { byScore: true }).catch(() => [])) || []) as string[];
+  const drop = late.filter((m) => /\|t[15]$/.test(m));
+  for (let i = 0; i < drop.length; i += 1000) await r.zrem(K.due, ...drop.slice(i, i + 1000)).catch(() => null);
+  if (drop.length) console.log(`due: dropped ${drop.length} minute-1/minute-5 checkpoints too late to use (of ${late.length} late)`);
+}
 async function processDue0(model: NanoModel, callsOnly: boolean) {
   const r = redis();
   const now = Date.now();
+  await cleanLateCalls(now).catch(() => null);
   await pruneIndex();
   // Fresh checkpoints first (the minute-1 reads and minute-5 calls are only worth anything on time), then the backlog.
   // Oldest-first alone let a backlog push every call past its 15-minute window.
-  const fresh0 = ((await r.zrange<string[]>(K.due, now - FRESH_MS, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN })) || []) as string[];
-  const fresh = callsOnly ? fresh0.filter((m) => /\|t[15]$/.test(m)) : fresh0;
+  // v0.1.67: every due minute-1 read and minute-5 call first, from their own queue (a late one is still handled: it
+  // is counted as missed and dropped, never left to clog the queue), then the other checkpoints
+  const calls = ((await r.zrange<string[]>(K.dueCall, 0, now, { byScore: true, offset: 0, count: MAX_CALLS_PER_RUN })) || []) as string[];
+  const fresh0 = calls.length >= MAX_DUE_PER_RUN ? [] : (((await r.zrange<string[]>(K.due, now - FRESH_MS, now, { byScore: true, offset: 0, count: MAX_DUE_PER_RUN - calls.length })) || []) as string[]);
+  const fresh = [...calls, ...(callsOnly ? fresh0.filter((m) => /\|t[15]$/.test(m)) : fresh0)];
   const wantOld = !callsOnly && fresh.length < MAX_DUE_PER_RUN && now - OLD_AT >= OLD_EVERY_MS && laneOpen(3);
   const old = wantOld ? (((await r.zrange<string[]>(K.due, 0, now - FRESH_MS - 1, { byScore: true, offset: 0, count: Math.min(MAX_OLD_PER_RUN, MAX_DUE_PER_RUN - fresh.length) })) || []) as string[]) : [];
   if (wantOld) OLD_AT = now;
@@ -1076,6 +1099,7 @@ async function processDue0(model: NanoModel, callsOnly: boolean) {
   const order: Record<Stage, number> = { t1: -1, t5: 0, h1: 1, d1: 2 };
   items.sort((a, b) => order[a.stage] - order[b.stage]);
   p.zrem(K.due, ...members);
+  p.zrem(K.dueCall, ...members);
 
   // one call per coin, whatever runs at the same time (v0.1.38). The King called $FLY twice within 4 seconds on
   // 7 Oct: two passes read the launch before either had saved its call. Each call now claims the coin first in Redis

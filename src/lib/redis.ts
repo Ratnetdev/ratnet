@@ -52,6 +52,7 @@ export const K = {
   launch: (m: string) => `rn:launch:${m}`,
   feed: "rn:feed",
   due: "rn:due",
+  dueCall: "rn:due:call", // v0.1.67: minute-1 reads and minute-5 calls in their own queue, always served first
   stat: "rn:stat",
   day: (d: string) => `rn:day:${d}`,
   resolvedHour: (h: string) => `rn:res:${h}`,

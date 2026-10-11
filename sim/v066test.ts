@@ -76,7 +76,7 @@ const ok = (c: boolean, m: string) => {
   ok(/const worth = curveNow >= 4/.test(dg), "REPLAY paths for every call worth testing (curve 4%+ or a BOND/WATCH)");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  ok(BUILD === pkg.version && BUILD === "0.1.66", `build tag ${BUILD}`);
+  ok(BUILD === pkg.version, `build tag ${BUILD}`);
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

@@ -8,9 +8,9 @@ import { rpcStats } from "./solana";
 
 type Incident = { since: number; lastSent: number; fails: number; detail: string };
 const open = new Map<string, Incident>();
-const NAMES: Record<string, string> = { redis: "Redis (Upstash)", rpc: "Chain RPC (Helius)", site: "Public site API" };
+const NAMES: Record<string, string> = { redis: "Redis", rpc: "Chain RPC (Helius)", site: "Public site API" };
 const FIX: Record<string, string> = {
-  redis: "Upstash Console: check the plan limits and usage (bandwidth, storage, commands). Every loop and page is down until Redis answers.",
+  redis: "Railway: open the Redis service, check Metrics (memory, disk) and its volume. A MISCONF error means the disk is full. Every loop and page is down until Redis answers.",
   rpc: "Helius dashboard: check credits and the plan's rate limit. The desk cannot price or exit positions without it.",
   site: "Vercel: check the latest deployment and its function logs.",
 };

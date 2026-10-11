@@ -18,7 +18,7 @@ let ready = false;
 let initErr = "";
 const Q = { launches: new Map<string, Row>(), ticks: [] as Row[], trades: [] as Row[], trips: [] as Row[] };
 const CAP = { ticks: 60_000, trades: 20_000, trips: 5_000, launches: 20_000 };
-export const archiveStats = { written: { launches: 0, ticks: 0, trades: 0, trips: 0 }, fails: 0, lastError: "", lastAt: 0 };
+export const archiveStats = { written: { launches: 0, ticks: 0, trades: 0, trips: 0 }, fails: 0, dropped: 0, lastError: "", lastAt: 0 };
 
 const SCHEMA = `
 create table if not exists launches (
@@ -74,6 +74,12 @@ export function cfgTag(cfg: unknown) {
 }
 export { BUILD };
 
+// v0.1.68: Postgres rejects JSON with a \u0000 or a lone surrogate (half an emoji cut by a .slice in a coin name or
+// a post): "invalid input syntax for type json". One such row failed its whole batch, the batch was retried forever,
+// and on 11 Oct 79K rows were stuck behind it with 17K failed writes. Strings are cleaned before they are stored.
+const BAD_CHARS = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+export const cleanStr = (s: string) => s.replace(BAD_CHARS, "");
+export const safeJson = (x: unknown) => JSON.stringify(x, (_k, v) => (typeof v === "string" ? cleanStr(v) : v));
 const ts = (ms: number | null | undefined) => (ms && Number.isFinite(ms) ? new Date(ms).toISOString() : null);
 const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null);
 const push = (q: Row[], row: Row, cap: number) => {
@@ -98,7 +104,7 @@ export function archiveLaunch(rec: any) {
     call_score: num(rec.call?.score), call_verdict: rec.call?.verdict ?? null, nano_score: num(rec.call?.nano?.score), nano_verdict: rec.call?.nano?.verdict ?? null,
     early_score: num(rec.early?.score), early_verdict: rec.early?.verdict ?? null,
     // the full picture only for coins with something to learn from (a read, a call, a tape or a bond); dead launches keep the columns
-    data: heavy ? JSON.stringify({ cp: rec.cp, call: rec.call, early: rec.early, tape: rec.tape, g: rec.g, meta: rec.meta, wire: rec.wire, pulse: rec.pulse, devN: rec.devN, devB: rec.devB, socials: { x: !!rec.twitter, tg: !!rec.telegram, web: !!rec.website } }) : null,
+    data: heavy ? safeJson({ cp: rec.cp, call: rec.call, early: rec.early, tape: rec.tape, g: rec.g, meta: rec.meta, wire: rec.wire, pulse: rec.pulse, devN: rec.devN, devB: rec.devB, socials: { x: !!rec.twitter, tg: !!rec.telegram, web: !!rec.website } }) : null,
   });
 }
 
@@ -130,7 +136,7 @@ export function archiveTrip(t: { book: "paper" | "live" | "ghost"; mint: string;
   push(Q.trips, {
     book: t.book, mint: t.mint, symbol: String(t.symbol || "").slice(0, 32), opened_at: ts(t.openedAt), closed_at: ts(t.closedAt), cost_sol: t.costSol, back_sol: t.backSol,
     pnl_sol: pnl, pnl_pct: t.costSol > 0 ? (pnl / t.costSol) * 100 : null, how: t.how || "direct", king: num(t.king), nano: num(t.nano), peak_x: num(t.peakX),
-    exit_reason: String(t.reason || "").slice(0, 300), build: t.build || "before 0.1.55", cfg: t.cfg || null, data: t.data ? JSON.stringify(t.data) : null,
+    exit_reason: String(t.reason || "").slice(0, 300), build: t.build || "before 0.1.55", cfg: t.cfg || null, data: t.data ? safeJson(t.data) : null,
   }, CAP.trips);
 }
 
@@ -139,7 +145,8 @@ async function insert(table: string, cols: string[], rows: Row[], conflict: stri
   if (!rows.length) return;
   const vals: unknown[] = [];
   const tuples = rows.map((r, i) => `(${cols.map((c, j) => {
-    vals.push(r[c] ?? null);
+    const v = r[c] ?? null;
+    vals.push(typeof v === "string" ? cleanStr(v) : v);
     return `$${i * cols.length + j + 1}`;
   }).join(",")})`);
   await pool.query(`insert into ${table} (${cols.join(",")}) values ${tuples.join(",")} ${conflict}`, vals);
@@ -150,21 +157,50 @@ const TRADE_COLS = ["id", "book", "mint", "symbol", "side", "at", "sol", "cost",
 const TRIP_COLS = ["book", "mint", "symbol", "opened_at", "closed_at", "cost_sol", "back_sol", "pnl_sol", "pnl_pct", "how", "king", "nano", "peak_x", "exit_reason", "build", "cfg", "data"];
 
 let flushing = false;
+// v0.1.68: a row Postgres refuses for its content (not the connection, not a full disk) is dropped and counted, never
+// retried forever; each table is written on its own, so one table's problem no longer stops the others
+const isDataError = (e: any) => /invalid input|syntax|unicode|out of range|violates|value too long/i.test(String(e?.message || e));
+async function insertSafe(table: string, cols: string[], rows: Row[], conflict: string) {
+  try {
+    await insert(table, cols, rows, conflict);
+    return { ok: rows.length, dropped: 0 };
+  } catch (e) {
+    if (!isDataError(e)) throw e;
+    let ok = 0, dropped = 0;
+    for (const r of rows) {
+      try {
+        await insert(table, cols, [r], conflict);
+        ok++;
+      } catch (e2) {
+        if (!isDataError(e2)) throw e2;
+        dropped++;
+      }
+    }
+    return { ok, dropped };
+  }
+}
 /** Send what is queued (worker, every 5 seconds). Batches of at most 500 rows (Postgres allows 65,535 parameters). */
 export async function archiveFlush() {
   if (!ready || flushing) return;
   flushing = true;
   const take = <T,>(q: T[], n: number) => q.splice(0, n);
+  let failed = false;
+  const fail = (e: any) => {
+    failed = true;
+    archiveStats.fails++;
+    archiveStats.lastError = String(e?.message || e).replace(/postgres(ql)?:\/\/\S+/g, "[db]").slice(0, 120);
+  };
   try {
     if (Q.launches.size) {
       const rows = Array.from(Q.launches.values()).slice(0, 500);
       for (const r of rows) Q.launches.delete(String(r.mint));
       try {
-        await insert("launches", LAUNCH_COLS, rows, `on conflict (mint) do update set ${LAUNCH_COLS.filter((c) => c !== "mint" && c !== "created_at").map((c) => `${c} = coalesce(excluded.${c}, launches.${c})`).join(", ")}, updated_at = now()`);
-        archiveStats.written.launches += rows.length;
+        const res = await insertSafe("launches", LAUNCH_COLS, rows, `on conflict (mint) do update set ${LAUNCH_COLS.filter((c) => c !== "mint" && c !== "created_at").map((c) => `${c} = coalesce(excluded.${c}, launches.${c})`).join(", ")}, updated_at = now()`);
+        archiveStats.written.launches += res.ok;
+        archiveStats.dropped = (archiveStats.dropped || 0) + res.dropped;
       } catch (e) {
         for (const r of rows) if (!Q.launches.has(String(r.mint))) Q.launches.set(String(r.mint), r);
-        throw e;
+        fail(e);
       }
     }
     for (const [name, q, cols, conflict] of [
@@ -173,18 +209,17 @@ export async function archiveFlush() {
       ["ticks", Q.ticks, TICK_COLS, ""],
     ] as [keyof typeof archiveStats.written, Row[], string[], string][]) {
       const rows = take(q, 500);
+      if (!rows.length) continue;
       try {
-        await insert(name, cols, rows, conflict);
-        archiveStats.written[name] += rows.length;
+        const res = await insertSafe(name, cols, rows, conflict);
+        archiveStats.written[name] += res.ok;
+        archiveStats.dropped = (archiveStats.dropped || 0) + res.dropped;
       } catch (e) {
         q.unshift(...rows);
-        throw e;
+        fail(e);
       }
     }
-    archiveStats.lastAt = Date.now();
-  } catch (e: any) {
-    archiveStats.fails++;
-    archiveStats.lastError = String(e?.message || e).replace(/postgres(ql)?:\/\/\S+/g, "[db]").slice(0, 120);
+    if (!failed) archiveStats.lastAt = Date.now();
   } finally {
     flushing = false;
   }
@@ -204,10 +239,10 @@ export async function archiveBoard() {
   return { at: Date.now(), rows, sizes: sizes.rows[0] };
 }
 
-/** Ticks are the bulk: keep 30 days of them (everything else is kept). */
+/** Ticks are the bulk: keep 10 days of them (v0.1.68, was 30: the disk filled on 11 Oct). Everything else is kept. */
 export async function archivePrune() {
   if (!ready) return;
-  await pool.query(`delete from ticks where at < now() - interval '30 days'`).catch(() => null);
+  await pool.query(`delete from ticks where at < now() - interval '10 days'`).catch(() => null);
 }
 
 export function archiveView() {
