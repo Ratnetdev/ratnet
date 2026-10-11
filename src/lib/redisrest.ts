@@ -86,6 +86,37 @@ export async function connectRedis(url: string, timeoutMs = 10_000): Promise<IOR
   }
 }
 
+/**
+ * v0.1.69: connect, and keep trying until Redis answers (backoff 5s, 10s ... 30s). Never gives up: with REDIS_URL set the
+ * worker must not run anywhere else. One alert after `alertAfterMs`, one "back" note if it alerted.
+ */
+export async function connectRedisWait(
+  url: string,
+  o: { log?: (s: string) => void; onAlert?: (mins: number) => unknown; onBack?: (mins: number) => unknown; alertAfterMs?: number; stepMs?: number; maxMs?: number; timeoutMs?: number } = {},
+): Promise<IORedis> {
+  const t0 = Date.now();
+  const step = o.stepMs ?? 5_000;
+  const max = o.maxMs ?? 30_000;
+  const alertAfter = o.alertAfterMs ?? 120_000;
+  const mins = () => Math.max(1, Math.round((Date.now() - t0) / 60_000));
+  let tries = 0;
+  let alerted = false;
+  let r = await connectRedis(url, o.timeoutMs);
+  while (!r) {
+    tries++;
+    const wait = Math.min(max, step * tries);
+    o.log?.(`redis: Railway's Redis is not reachable (try ${tries}, ${Math.round((Date.now() - t0) / 1000)}s): waiting for it, retry in ${Math.round(wait / 1000)}s (never Upstash)`);
+    if (!alerted && Date.now() - t0 >= alertAfter) {
+      alerted = true;
+      await Promise.resolve(o.onAlert?.(mins())).catch(() => null);
+    }
+    await new Promise((res) => setTimeout(res, wait));
+    r = await connectRedis(url, o.timeoutMs);
+  }
+  if (alerted) await Promise.resolve(o.onBack?.(mins())).catch(() => null);
+  return r;
+}
+
 export const LOCAL_BASE = "http://rn-local-redis";
 
 /** Worker: answer the Upstash client in this process, straight from Redis (the wire layer hands the calls over). */

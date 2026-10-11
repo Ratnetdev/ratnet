@@ -657,14 +657,22 @@ process.on("uncaughtException", (e: any) => {
 });
 
 // v0.1.64: Railway's own Redis (REDIS_URL, private network) instead of Upstash. On the first start the worker copies
-// every key from Upstash before any loop runs (lib/redismove.ts). If Railway's Redis cannot be reached or the copy
-// fails, the worker stays on Upstash and logs why (the next restart tries again).
+// every key from Upstash before any loop runs (lib/redismove.ts). If the first copy fails, the worker stays on Upstash
+// and logs why (the next restart tries again).
+// v0.1.69: with REDIS_URL set the worker NEVER falls back to Upstash when Railway's Redis does not answer. On 11 Oct
+// Redis restarted (volume resize) while the worker redeployed: the worker started on Upstash, ran every loop there, and
+// the site (reading Railway's Redis) saw every loop silent for 50+ minutes. Now it waits for Redis, retrying with
+// backoff, and sends one Telegram alert after 2 minutes.
 async function setupRedis() {
   const url = process.env.REDIS_URL;
   if (!url) return console.log("redis: Upstash (REDIS_URL not set)");
-  const { connectRedis, installLocal } = await import("../src/lib/redisrest");
-  const r = await connectRedis(url);
-  if (!r) return console.log("redis: REDIS_URL is set but Railway's Redis is not reachable: staying on Upstash");
+  const { connectRedisWait, installLocal } = await import("../src/lib/redisrest");
+  const { criticalSend } = await import("../src/lib/critical");
+  const r = await connectRedisWait(url, {
+    log: (s) => console.log(s),
+    onAlert: (mins) => criticalSend(`🚨 <b>Worker waiting for Redis</b>\nRailway's Redis has not answered for ${mins} minutes. Every loop waits until it does.\n\nRailway: open the Redis service. Online? Check Metrics and the volume (a full disk stops writes).`),
+    onBack: (mins) => criticalSend(`✅ <b>Redis is back</b> after ${mins} minutes. The worker is starting its loops.`),
+  });
   const upUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
   const upTok = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "";
   if (/upstash\.io/i.test(upUrl) && upTok) {

@@ -16,6 +16,9 @@ const FIX: Record<string, string> = {
 };
 const clean = (s: string) => s.replace(/https?:\/\/\S+/g, "[url]").replace(/api-key=\S+/gi, "").replace(/[<>&]/g, " ").slice(0, 220);
 
+/** Telegram without Redis (the worker uses it before Redis is reachable). */
+export const criticalSend = (text: string) => send(text);
+
 async function send(text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chat = process.env.TELEGRAM_IDEAS_CHAT_ID;
