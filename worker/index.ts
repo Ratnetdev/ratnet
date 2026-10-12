@@ -5,7 +5,7 @@
 import { runSession } from "../src/lib/session";
 import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
-import { digFast, digSlow, ingestStream, migrateNano, streamComplete } from "../src/lib/digger";
+import { digFast, digSlow, ingestStream, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
 import { budgetState, curveFeed, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
@@ -17,11 +17,13 @@ import { heliusFeed } from "../src/lib/heliusfeed";
 import { reviveAllowed } from "../src/lib/revive";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
-import { archiveBoard, archiveFlush, archiveInit, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
+import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
-import { criticalChecks, redisDown } from "../src/lib/critical";
+import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
+import { gridHistory, gridMessage, liveCandidates, withSeen, type GHist, type GridView } from "../src/lib/grid";
+import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveSetBooks, gridLiveSweep } from "../src/lib/gridlive";
 import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 import { bwTick, installBwMeter } from "../src/lib/bwmeter";
@@ -376,6 +378,7 @@ let CURVES: ReturnType<typeof heliusFeed> | null = null;
 const onCurveUpd = (mint: string, v: Parameters<typeof noteCurve>[1]) => {
   noteCurve(mint, v);
   archiveTick(mint, v);
+  gridLiveCurve(mint, v as any); // v0.1.71: GRID LIVE books (entries and exits on every update)
 };
 const CURVE_MAX = Math.max(50, Number(process.env.CURVE_FEED_MAX || 800));
 const SHAPES = new Map<string, number>();
@@ -695,6 +698,16 @@ async function setupRedis() {
   console.log("redis: Railway's Redis (private network)");
 }
 
+// v0.1.71: Telegram when GRID finds a candidate that held up on the unseen test calls (once per candidate)
+async function gridAlert(res: GridView) {
+  const msg = gridMessage(res);
+  if (!msg) return;
+  const key = res.rows.filter((r) => r.pass).map((r) => `${r.filter}:${r.mode}`).sort().join(",");
+  if ((await redis().get("rn:grid:alerted").catch(() => null)) === key) return;
+  await redis().set("rn:grid:alerted", key, { ex: 7 * 86400 }).catch(() => null);
+  await criticalSend(msg);
+}
+
 async function main() {
   await setupRedis();
   await redis().incr("rn:worker:boots").catch(() => 0);
@@ -736,6 +749,17 @@ async function main() {
     return a;
   });
   setInterval(() => pruneCurves(), 5_000);
+  // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
+  await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
+  setCallHook((call) => gridLiveCall(call));
+  setInterval(() => {
+    try {
+      gridLiveSweep();
+    } catch (e: any) {
+      console.log("grid live sweep error", e?.message || e);
+    }
+  }, 10_000);
+  setInterval(() => gridLivePublish((t) => criticalSend(t)).catch(() => null), 60_000);
   // v0.1.58: ARENA's summary for the site, once a minute (only when it changed)
   setInterval(() => arenaPublish().catch(() => null), 60_000);
   // v0.1.63: REGIME, every 5 minutes (first reading 90s after start): market + ARENA hit rates switch the desk's strategies
@@ -785,6 +809,33 @@ async function main() {
     };
     setTimeout(() => replay().catch(() => null), 3 * 60_000);
     setInterval(() => replay().catch(() => null), 3 * 3600_000);
+    // v0.1.71: GRID, the big strategy search, 8 minutes after start and then every 3 hours (never next to REPLAY)
+    let gridding = false;
+    const grid = async () => {
+      if (gridding || replaying) return;
+      gridding = true;
+      try {
+        const res = await archiveGrid();
+        if (res) {
+          // learning across runs: each strategy's record over earlier runs, then the best go live in GRID LIVE
+          const hist = gridHistory(((await redis().get("rn:grid:hist").catch(() => null)) as GHist | null) || null, res);
+          withSeen(res, hist);
+          await redis().set("rn:grid:hist", hist).catch(() => null);
+          const books = await gridLiveSetBooks(liveCandidates(res));
+          console.log(`grid live: ${books.length} strategies trading on live coins`);
+          await redis().set("rn:grid:view", res, { ex: 3 * 86400 }).catch(() => null);
+          console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed the test (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
+          await gridAlert(res).catch(() => null);
+        }
+      } catch (e: any) {
+        console.log("grid error", e?.message || e);
+        await redis().set("rn:grid:view", { at: null, error: String(e?.message || e).slice(0, 200), failedAt: Date.now() }, { ex: 86400 }).catch(() => null);
+      } finally {
+        gridding = false;
+      }
+    };
+    setTimeout(() => grid().catch(() => null), 8 * 60_000);
+    setInterval(() => grid().catch(() => null), 3 * 3600_000);
   };
   await startArchive().catch(() => null);
   setInterval(() => {

@@ -49,7 +49,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   ok(/redisGuard\(r\)/.test(wk), "the worker checks at boot (a Redis restart resets the setting)");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  ok(BUILD === pkg.version && BUILD === "0.1.70", `build tag ${BUILD}`);
+  ok(BUILD === pkg.version, `build tag ${BUILD}`);
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

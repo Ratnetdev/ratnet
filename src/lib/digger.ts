@@ -232,6 +232,9 @@ const MAX_HOT_PER_RUN = 300;
 const HOT_MIN = 2; // curve % that puts a launch on the hot watch
 const HOT_TOP = 200; // highest curves checked every run
 const HOT_ROT = 200; // plus a rotating slice of the rest of the hot set
+// v0.1.71: called with every on-time call (the worker sets it: GRID LIVE)
+let CALL_HOOK: ((call: any) => void) | null = null;
+export const setCallHook = (f: ((call: any) => void) | null) => (CALL_HOOK = f);
 export const EARLY_DEATH = { curve: 1, peak: 3 }; // at the 1h check: under 1% now and never above 3% = DIED
 
 type Pipe = ReturnType<ReturnType<typeof redis>["pipeline"]>;
@@ -1360,6 +1363,12 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   // any curve from 4%, or a BOND/WATCH from either King version
   const worth = curveNow >= 4 || sc.verdict !== "DUST" || (nano?.verdict && nano.verdict !== "DUST") || (v1c && v1c !== "DUST");
   if (counted && !farm && worth) followLonger(rec.mint, 60 * 60_000);
+  // v0.1.71: GRID LIVE books start watching the call for their entry (worker only; lib/gridlive.ts)
+  if (counted && !farm) {
+    try {
+      CALL_HOOK?.(rec.call);
+    } catch {}
+  }
   c.p.zadd(K.lessons, { score: rec.createdAt + LABEL_MS, member: rec.mint });
   if (rec.tape) enroll(c.p, runOf(rec, null));
   indexCall(c, rec.call);

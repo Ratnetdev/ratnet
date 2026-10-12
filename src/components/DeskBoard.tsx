@@ -11,6 +11,8 @@ import BuildBoard from "./BuildBoard";
 import ArenaBoard from "./ArenaBoard";
 import RegimeBoard from "./RegimeBoard";
 import ReplayBoard from "./ReplayBoard";
+import GridBoard from "./GridBoard";
+import GridLiveBoard from "./GridLiveBoard";
 import AgentPanel from "./AgentPanel";
 import { useState } from "react";
 import LensCam from "./LensCam";
@@ -200,6 +202,8 @@ export default function DeskBoard() {
       <TrackRecord />
       <RegimeBoard />
       <ArenaBoard />
+      <GridLiveBoard />
+      <GridBoard />
       <ReplayBoard />
       <BuildBoard />
 

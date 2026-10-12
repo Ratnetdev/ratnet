@@ -250,6 +250,16 @@ export function archiveView() {
 }
 
 /** REPLAY over the archive (v0.1.59): every King call with its curve path, every entry rule x exit setting. */
+/** v0.1.71: GRID, the big strategy search (lib/grid.ts). */
+export async function archiveGrid(days = 14) {
+  if (!ready) return null;
+  const { loadGrid, runGrid } = await import("./grid");
+  const t0 = Date.now();
+  const coins = await loadGrid(pool, days);
+  const loadMs = Date.now() - t0;
+  return { ...(await runGrid(coins)), loadMs };
+}
+
 export async function archiveReplay(days = 14) {
   if (!ready) return null;
   const { loadCalls, runReplay } = await import("./replay");
