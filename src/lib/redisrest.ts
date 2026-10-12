@@ -117,6 +117,49 @@ export async function connectRedisWait(
   return r;
 }
 
+export type RedisHealth = { saveOk: boolean; lastOkSave: number | null; saveErr: string | null; usedMb: number | null; peakMb: number | null; aof: boolean; healed: boolean; stopWrites: string | null };
+
+const infoField = (txt: string, k: string) => (txt.match(new RegExp(`^${k}:(.*)$`, "m"))?.[1] ?? "").trim();
+
+/**
+ * v0.1.70: a failed disk snapshot must never stop the desk. Redis's default (stop-writes-on-bgsave-error yes) refuses
+ * every write once one snapshot fails (MISCONF): on 11 and 12 Oct a full volume took every loop down. The worker turns
+ * it off (again after each Redis restart, which resets it) and reports the snapshot state, so a failing disk is an alert,
+ * not an outage.
+ */
+export async function redisGuard(r: IORedis): Promise<RedisHealth> {
+  let healed = false;
+  let stopWrites: string | null = null;
+  try {
+    const cfg = (await r.call("CONFIG", "GET", "stop-writes-on-bgsave-error")) as string[];
+    stopWrites = cfg?.[1] ?? null;
+    if (stopWrites === "yes") {
+      await r.call("CONFIG", "SET", "stop-writes-on-bgsave-error", "no");
+      healed = true;
+    }
+  } catch {
+    // CONFIG disabled on this Redis: the snapshot state below still tells why writes fail
+  }
+  const pers = String(await r.call("INFO", "persistence").catch(() => ""));
+  const mem = String(await r.call("INFO", "memory").catch(() => ""));
+  const st = infoField(pers, "rdb_last_bgsave_status");
+  const lastSave = Number(infoField(pers, "rdb_last_save_time")) || 0;
+  const mb = (k: string) => {
+    const v = Number(infoField(mem, k));
+    return v ? Math.round(v / 1048576) : null;
+  };
+  return {
+    saveOk: st !== "err",
+    lastOkSave: lastSave ? lastSave * 1000 : null,
+    saveErr: st === "err" ? "the last snapshot to disk failed (full volume, or not enough memory to fork)" : null,
+    usedMb: mb("used_memory"),
+    peakMb: mb("used_memory_peak"),
+    aof: infoField(pers, "aof_enabled") === "1",
+    healed,
+    stopWrites,
+  };
+}
+
 export const LOCAL_BASE = "http://rn-local-redis";
 
 /** Worker: answer the Upstash client in this process, straight from Redis (the wire layer hands the calls over). */

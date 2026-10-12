@@ -673,6 +673,11 @@ async function setupRedis() {
     onAlert: (mins) => criticalSend(`🚨 <b>Worker waiting for Redis</b>\nRailway's Redis has not answered for ${mins} minutes. Every loop waits until it does.\n\nRailway: open the Redis service. Online? Check Metrics and the volume (a full disk stops writes).`),
     onBack: (mins) => criticalSend(`✅ <b>Redis is back</b> after ${mins} minutes. The worker is starting its loops.`),
   });
+  // v0.1.70: a failed disk snapshot must not block writes (a Redis restart resets this setting, so it is checked here
+  // and every minute in the critical checks)
+  const { redisGuard } = await import("../src/lib/redisrest");
+  const h = await redisGuard(r).catch(() => null);
+  console.log("redis guard:", JSON.stringify(h));
   const upUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
   const upTok = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "";
   if (/upstash\.io/i.test(upUrl) && upTok) {

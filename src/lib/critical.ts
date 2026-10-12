@@ -8,8 +8,9 @@ import { rpcStats } from "./solana";
 
 type Incident = { since: number; lastSent: number; fails: number; detail: string };
 const open = new Map<string, Incident>();
-const NAMES: Record<string, string> = { redis: "Redis", rpc: "Chain RPC (Helius)", site: "Public site API" };
+const NAMES: Record<string, string> = { redis: "Redis", redisdisk: "Redis disk snapshots", rpc: "Chain RPC (Helius)", site: "Public site API" };
 const FIX: Record<string, string> = {
+  redisdisk: "Railway: Redis service, Volumes tab: make the volume bigger (at least 3x the data in memory). Then in the Redis service Console run the commands from the RATNET runbook (df, temp file cleanup, BGSAVE).",
   redis: "Railway: open the Redis service, check Metrics (memory, disk) and its volume. A MISCONF error means the disk is full. Every loop and page is down until Redis answers.",
   rpc: "Helius dashboard: check credits and the plan's rate limit. The desk cannot price or exit positions without it.",
   site: "Vercel: check the latest deployment and its function logs.",
@@ -54,16 +55,52 @@ export async function noteCheck(name: string, ok: boolean, detail = "") {
 /** True while Redis is failing (the worker then skips restarts: a restart cannot fix the database, it only re-alerts). */
 export const redisDown = () => (open.get("redis")?.fails ?? 0) >= 2;
 
+let lastGuard = 0;
+let lastHealth: any = null;
+/** The last Redis disk reading (worker only). */
+export const redisHealth = () => lastHealth;
+
+async function checkRedisDisk(client: any) {
+  try {
+    const { redisGuard } = await import("./redisrest");
+    const h = await redisGuard(client);
+    lastHealth = { ...h, at: Date.now() };
+    if (h.healed) console.log(`redis guard: stop-writes-on-bgsave-error was yes (a Redis restart resets it): set to no. Snapshot ${h.saveOk ? "ok" : "FAILING"}, ${h.usedMb ?? "?"}MB in memory`);
+    const lastOk = h.lastOkSave ? `${Math.round((Date.now() - h.lastOkSave) / 60_000)} minutes ago` : "unknown";
+    await noteCheck(
+      "redisdisk",
+      h.saveOk,
+      `Redis cannot save to disk. Writes keep working (the worker switched the block off), but a Redis restart now loses everything since the last good save (${lastOk}). Data in memory: ${h.usedMb ?? "?"}MB (peak ${h.peakMb ?? "?"}MB)${h.aof ? ", AOF on" : ""}.`,
+    );
+  } catch (e: any) {
+    console.log("redis guard error", e?.message || e);
+  }
+}
+
 let lastRpc = { calls: 0, fails: 0 };
 let lastSite = 0;
 /** One round of checks (the worker calls this every 20s). */
 export async function criticalChecks() {
+  // v0.1.70: Railway's Redis: keep a failed disk snapshot from blocking writes, and alert on the disk itself
+  const local = (globalThis as any).__rnLocalClient;
+  if (local && Date.now() - lastGuard >= 60_000) {
+    lastGuard = Date.now();
+    await checkRedisDisk(local);
+  }
   // Redis: one tiny write, the same thing every loop depends on
   try {
     await redis().set("rn:crit:ping", Date.now(), { ex: 120 });
     await noteCheck("redis", true);
   } catch (e: any) {
-    await noteCheck("redis", false, String(e?.message || e));
+    const msg = String(e?.message || e);
+    // MISCONF: unblock at once and try again (the disk alert below names the cause)
+    if (local && /MISCONF/i.test(msg)) {
+      lastGuard = Date.now();
+      await checkRedisDisk(local);
+      const again = await redis().set("rn:crit:ping", Date.now(), { ex: 120 }).then(() => true, () => false);
+      if (again) return void (await noteCheck("redis", true));
+    }
+    await noteCheck("redis", false, msg);
   }
   // RPC: share of failed calls since the last round (a dead key or exhausted credits fails everything)
   const calls = rpcStats.calls - lastRpc.calls;

@@ -37,7 +37,7 @@ const ok = (c: boolean, m: string) => {
   ok(/async function main\(\) \{\n  await setupRedis\(\);/.test(wk), "Redis is set up before anything else runs");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  ok(BUILD === pkg.version && BUILD === "0.1.69", `build tag ${BUILD}`);
+  ok(BUILD === pkg.version, `build tag ${BUILD}`);
   (srv as any)?.kill();
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
