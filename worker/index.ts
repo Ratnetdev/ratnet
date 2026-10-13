@@ -17,13 +17,15 @@ import { heliusFeed } from "../src/lib/heliusfeed";
 import { reviveAllowed } from "../src/lib/revive";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
-import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
+import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
 import { gridHistory, gridMessage, liveCandidates, withSeen, type GHist, type GridView } from "../src/lib/grid";
-import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveSetBooks, gridLiveSweep } from "../src/lib/gridlive";
+import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep } from "../src/lib/gridlive";
+import { readPools } from "../src/lib/pool";
+import { afterLoad, afterNoteMigration, afterResolve, afterStats, afterWant, migratedAt } from "../src/lib/after";
 import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
 import { bwTick, installBwMeter } from "../src/lib/bwmeter";
@@ -379,7 +381,10 @@ const onCurveUpd = (mint: string, v: Parameters<typeof noteCurve>[1]) => {
   noteCurve(mint, v);
   archiveTick(mint, v);
   gridLiveCurve(mint, v as any); // v0.1.71: GRID LIVE books (entries and exits on every update)
+  if ((v as any)?.complete) afterNoteMigration(mint); // v0.1.72: AFTER follows its pool for 6 hours
 };
+// v0.1.72: AFTER, the pool prices of every migrated coin for 6 hours (archive + GRID LIVE)
+let AFTER: ReturnType<typeof heliusFeed> | null = null;
 const CURVE_MAX = Math.max(50, Number(process.env.CURVE_FEED_MAX || 800));
 const SHAPES = new Map<string, number>();
 let shapesAt = 0;
@@ -743,6 +748,28 @@ async function main() {
   }
   // young launches first (the calls depend on them), then called coins in the hour after their call (v0.1.59)
   CURVES = heliusFeed({ want: async () => new Set([...youngMints().slice(-CURVE_MAX), ...followedLonger()].slice(0, CURVE_MAX)), onQuote: () => {}, onCurve: onCurveUpd, max: CURVE_MAX, pools: false, label: "live curves of every launch (first 7 minutes)", log: (x) => console.log(x) });
+  // v0.1.72: AFTER: migrated coins' pool vaults, streamed for 6 hours after the migration
+  await afterLoad().catch(() => null);
+  AFTER = heliusFeed({
+    want: async () => afterWant(),
+    onQuote: (q) => {
+      if (q.curve) return;
+      afterStats.quotes++;
+      archivePoolTick(q.mint, { mcSol: q.mcSol, real: q.real }, migratedAt(q.mint) ?? Date.now());
+      gridLiveQuote(q.mint, { mcSol: q.mcSol, real: q.real });
+    },
+    max: 400,
+    label: "pool prices of migrated coins (6 hours after the migration)",
+    log: (x) => console.log(x),
+  });
+  setInterval(() => {
+    afterResolve((ms) => readPools(ms) as any)
+      .then((found) => found.length && AFTER?.nudge())
+      .catch(() => null);
+  }, 20_000);
+  setInterval(() => {
+    redis().set("rn:after:view", { at: Date.now(), ...afterStats, following: afterWant().size, feed: AFTER?.view() ?? null }, { ex: 3600 }).catch(() => null);
+  }, 60_000);
   setCurveLive(() => {
     const a = CURVES?.live() || new Set<string>();
     for (const m of FEED?.live() || []) a.add(m);

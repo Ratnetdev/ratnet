@@ -26,6 +26,7 @@ type V = {
   base?: Row[];
   bestTrain?: Row | null;
   senders?: Senders;
+  pooled?: number;
   rules?: { pass: { minN: number; minWin: number; minAvg: number; minPf: number } };
 };
 
@@ -133,6 +134,7 @@ export default function GridBoard() {
         )}
         <div className="tiny mute2" style={{ marginTop: 4 }}>
           Ranked on {d.trainN?.toLocaleString()} calls from {day(d.from)} to {day(d.split)}, judged on the {d.testN?.toLocaleString()} after.
+          {` ${d.pooled ?? 0} of them have pool prices after their migration (holding through the migration is tested on those).`}
           {p ? ` Passing = ${p.minN}+ test trips, ${p.minWin}%+ won, avg +${p.minAvg}%+, PF ${p.minPf}+ without the best trade.` : ""}
         </div>
       </div>

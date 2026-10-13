@@ -31,6 +31,7 @@ create index if not exists launches_created on launches (created_at);
 create table if not exists ticks (mint text not null, at timestamptz not null, progress real, mc_sol real, real_sol real, complete boolean);
 create index if not exists ticks_mint_at on ticks (mint, at);
 create index if not exists ticks_at on ticks (at);
+alter table ticks add column if not exists pool boolean;
 create table if not exists trades (
   id text primary key, book text, mint text, symbol text, side text, at timestamptz, sol real, cost real, tokens double precision,
   px double precision, mc real, reason text, pnl_sol real, pnl_pct real, sig text, build text, cfg text
@@ -116,7 +117,20 @@ export function archiveTick(mint: string, v: { progress: number; mcapSol: number
   if (now - last < 10_000 && !v.complete) return;
   if (TICK_AT.size > 20_000) TICK_AT.clear();
   TICK_AT.set(mint, now);
-  push(Q.ticks, { mint, at: ts(now), progress: num(v.progress), mc_sol: num(v.mcapSol), real_sol: num(v.realSol), complete: !!v.complete }, CAP.ticks);
+  push(Q.ticks, { mint, at: ts(now), progress: num(v.progress), mc_sol: num(v.mcapSol), real_sol: num(v.realSol), complete: !!v.complete, pool: false }, CAP.ticks);
+}
+
+// v0.1.72: prices in the canonical PumpSwap pool for 6 hours after a migration (lib/after.ts). The senders do their
+// millions in volume here, after the curve; GRID needs these paths to test holding through the migration.
+// One every 15 seconds in the first 30 minutes, then one a minute.
+const POOL_AT = new Map<string, number>();
+export function archivePoolTick(mint: string, v: { mcSol: number; real: number }, migratedAt: number, now = Date.now()) {
+  if (!on() || !(v.mcSol > 0)) return;
+  const gap = now - migratedAt < 30 * 60_000 ? 15_000 : 60_000;
+  if (now - (POOL_AT.get(mint) || 0) < gap) return;
+  if (POOL_AT.size > 5_000) POOL_AT.clear();
+  POOL_AT.set(mint, now);
+  push(Q.ticks, { mint, at: ts(now), progress: 100, mc_sol: num(v.mcSol), real_sol: num(v.real), complete: true, pool: true }, CAP.ticks);
 }
 
 // ---- trades and trips
@@ -152,7 +166,7 @@ async function insert(table: string, cols: string[], rows: Row[], conflict: stri
   await pool.query(`insert into ${table} (${cols.join(",")}) values ${tuples.join(",")} ${conflict}`, vals);
 }
 const LAUNCH_COLS = ["mint", "symbol", "name", "creator", "created_at", "dev_buy_sol", "outcome", "resolved_at", "bond_secs", "peak", "call_score", "call_verdict", "nano_score", "nano_verdict", "early_score", "early_verdict", "data"];
-const TICK_COLS = ["mint", "at", "progress", "mc_sol", "real_sol", "complete"];
+const TICK_COLS = ["mint", "at", "progress", "mc_sol", "real_sol", "complete", "pool"];
 const TRADE_COLS = ["id", "book", "mint", "symbol", "side", "at", "sol", "cost", "tokens", "px", "mc", "reason", "pnl_sol", "pnl_pct", "sig", "build", "cfg"];
 const TRIP_COLS = ["book", "mint", "symbol", "opened_at", "closed_at", "cost_sol", "back_sol", "pnl_sol", "pnl_pct", "how", "king", "nano", "peak_x", "exit_reason", "build", "cfg", "data"];
 

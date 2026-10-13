@@ -20,7 +20,8 @@ const D = (SITE as any).desk || {};
 export const GRID_SOL = Number(D.minSol ?? 0.05); // the desk's trade size (5% of a 1 SOL paper desk)
 const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, paperPrioritySol: D.paperPrioritySol };
 const FILL_DELAY = 2_000;
-const PATH_MS = 62 * 60_000;
+const PATH_MS = 62 * 60_000; // the curve: the hour after the call
+export const HOLD_MS = 6 * 3600_000; // v0.1.72: through the migration, up to 6 hours (lib/after.ts)
 
 export type GCoin = {
   mint: string;
@@ -58,6 +59,7 @@ export const PREDS: Pred[] = [
   { id: "p4", label: "curve 4-15%", ok: (c) => c.progress >= 4 && c.progress < 15 },
   { id: "p15", label: "curve 15-35%", ok: (c) => c.progress >= 15 && c.progress < 35 },
   { id: "p35", label: "curve 35-70%", ok: (c) => c.progress >= 35 && c.progress <= 70 },
+  { id: "p70", label: "curve 70%+ (near migration)", ok: (c) => c.progress > 70 },
   { id: "r5", label: "curve +5 pts in the minute before", ok: (c) => c.rise60 >= 5 },
   { id: "r15", label: "curve +15 pts in the minute before", ok: (c) => c.rise60 >= 15 },
   { id: "u20", label: "20+ unique buyers", ok: (c) => (c.uniq ?? 0) >= 20 },
@@ -71,7 +73,7 @@ export const PREDS: Pred[] = [
   { id: "young", label: "called within 2 min of launch", ok: (c) => c.at - c.createdAt <= 120_000 },
 ];
 
-export type Mode = { id: string; label: string; kind: "now" | "climb" | "dip" | "hold"; a: number; win: number };
+export type Mode = { id: string; label: string; kind: "now" | "climb" | "dip" | "hold" | "mig"; a: number; win: number };
 export const MODES: Mode[] = [
   { id: "now", label: "at the call", kind: "now", a: 0, win: 0 },
   { id: "c5", label: "once the curve gains 5 more points (within 3 min)", kind: "climb", a: 5, win: 3 },
@@ -80,18 +82,34 @@ export const MODES: Mode[] = [
   { id: "d15", label: "on a 15% dip (within 10 min)", kind: "dip", a: 0.15, win: 10 },
   { id: "d30", label: "on a 30% dip (within 10 min)", kind: "dip", a: 0.3, win: 10 },
   { id: "h2", label: "2 min after the call, if still above the call price", kind: "hold", a: 0, win: 2 },
+  // v0.1.72: the senders were at ~80% curve when called and migrated ~8 minutes later: buy the migration itself
+  { id: "mig", label: "when it migrates (within 30 min of the call)", kind: "mig", a: 0, win: 30 },
 ];
 
-export type GExit = { initials: number; trail: number; stop: number; timeMin: number };
+// v0.1.72: mig = what happens at the migration: "sell" (as before) or "hold" through it into the pool (up to 6 hours,
+// the same initials, trail and stop on the pool price, at pool fees)
+export type GExit = { initials: number; trail: number; stop: number; timeMin: number; mig: "sell" | "hold" };
 export const GEXITS: GExit[] = [];
-for (const initials of [1.5, 2, 3]) for (const trail of [0.25, 0.4]) for (const stop of [0.25, 0.45]) for (const timeMin of [15, 60]) GEXITS.push({ initials, trail, stop, timeMin });
-export const exitText = (x: GExit) => `half at ${x.initials}x, trail ${Math.round(x.trail * 100)}%, stop -${Math.round(x.stop * 100)}%, out after ${x.timeMin}m without initials`;
+for (const mig of ["sell", "hold"] as const) for (const initials of [1.5, 2, 3]) for (const trail of [0.25, 0.4]) for (const stop of [0.25, 0.45]) for (const timeMin of [15, 60]) GEXITS.push({ initials, trail, stop, timeMin, mig });
+export const exitText = (x: GExit) => `half at ${x.initials}x, trail ${Math.round(x.trail * 100)}%, stop -${Math.round(x.stop * 100)}%, out after ${x.timeMin}m without initials, ${x.mig === "hold" ? "holds through the migration (up to 6h)" : "sells at the migration"}`;
 
-/** The tick the desk would fill at for a mode, or -1 (no entry). */
+/** The tick the desk would fill at for a mode, or -1 (no entry). done: 0 curve, 1 the migration, 2 pool prices after it. */
 export function entryIndex(c: GCoin, m: Mode): number {
   const n = c.t.length;
   if (!n) return -1;
   let trig = -1;
+  if (m.kind === "mig") {
+    for (let i = 0; i < n && c.t[i] <= m.win * 60_000; i++) {
+      if (c.done[i] === 2) {
+        trig = i;
+        break;
+      }
+    }
+    if (trig < 0) return -1;
+    const want = c.t[trig] + FILL_DELAY;
+    for (let j = trig; j < n; j++) if (c.t[j] >= want && c.done[j] === 2) return j;
+    return -1;
+  }
   if (m.kind === "now") {
     trig = 0;
     // the call needs a price close to it
@@ -129,25 +147,32 @@ export function entryIndex(c: GCoin, m: Mode): number {
 export function tradeFrom(c: GCoin, j: number, x: GExit, sol = GRID_SOL): number | null {
   const n = c.t.length;
   const px0 = c.mc[j] / 1e9;
-  if (!(px0 > 0) || c.done[j]) return null;
-  const fillPx = px0 * (1 + slipOf(sol, false, c.real[j]));
-  let tokens = (sol * (1 - venueFee(false, c.mc[j]))) / fillPx;
+  if (!(px0 > 0) || c.done[j] === 1) return null;
+  const inPool = c.done[j] === 2; // bought after the migration (mode "mig")
+  if (inPool && x.mig === "sell") return null;
+  const fillPx = px0 * (1 + slipOf(sol, inPool, c.real[j]));
+  let tokens = (sol * (1 - venueFee(inPool, c.mc[j]))) / fillPx;
   const cost = sol + txCost(sol, COST) + ATA_RENT;
   let back = 0;
   let peak = px0;
   let initials = false;
   const sell = (frac: number, k: number) => {
     const amt = frac >= 1 ? tokens : tokens * frac;
-    back += sellProceeds(amt, c.mc[k] / 1e9, false, c.real[k], COST, frac >= 1);
+    back += sellProceeds(amt, c.mc[k] / 1e9, c.done[k] === 2, c.real[k], COST, frac >= 1);
     tokens -= amt;
   };
   const tEnd = c.t[j] + x.timeMin * 60_000;
+  const hardEnd = x.mig === "hold" ? c.t[j] + HOLD_MS : Infinity;
   let k = j;
   for (let i = j + 1; i < n; i++) {
+    const d = c.done[i];
+    // the migration: sell there (as before), or ride on into the pool
+    if (d && x.mig === "sell") return (sell(1, d === 1 ? i : k), back - cost);
+    if (d === 1) continue; // the curve's last price; the pool prices follow
+    if (c.t[i] > hardEnd) break;
     k = i;
     const px = c.mc[i] / 1e9;
     if (!(px > 0)) continue;
-    if (c.done[i]) return (sell(1, i), back - cost);
     if (px > peak) peak = px;
     const xr = px / fillPx;
     if (!initials && xr >= x.initials) {
@@ -159,7 +184,7 @@ export function tradeFrom(c: GCoin, j: number, x: GExit, sol = GRID_SOL): number
     if (initials && px <= peak * (1 - x.trail)) return (sell(1, i), back - cost);
     if (c.t[i] >= tEnd && (!initials || xr < 1.1)) return (sell(1, i), back - cost);
   }
-  // the path ended (the coin stopped trading, or the hour ran out): sold at the last price
+  // the path ended (the coin stopped trading, or the time ran out): sold at the last price
   if (tokens > 1e-12) sell(1, k);
   return back - cost;
 }
@@ -203,7 +228,7 @@ export type GRow = {
   senders: number; // migrated coins among its trades
   seen?: { runs: number; ranked: number; passed: number }; // across earlier runs (gridHistory)
 };
-export const keyOf = (filter: string, mode: string, x: GExit) => `${filter}|${mode}|${x.initials}/${x.trail}/${x.stop}/${x.timeMin}`;
+export const keyOf = (filter: string, mode: string, x: GExit) => `${filter}|${mode}|${x.initials}/${x.trail}/${x.stop}/${x.timeMin}/${x.mig}`;
 
 /**
  * What the senders looked like at their call: of every migrated coin in the sample, how many the King called and how,
@@ -268,6 +293,10 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     for (let x = 0; x < X; x++) {
       if (x % 6 === 0) await breathe();
       const a = new Float32Array(N).fill(NaN);
+      if (MODES[m].kind === "mig" && GEXITS[x].mig === "sell") {
+        out.push(a); // buying the migration only makes sense holding into the pool
+        continue;
+      }
       for (let i = 0; i < N; i++) {
         if (js[i] < 0) continue;
         const p = tradeFrom(cs[i], js[i], GEXITS[x], sol);
@@ -366,6 +395,7 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     split: cs[cut]?.at ?? null,
     to: cs[N - 1]?.at ?? null,
     entered: MODES.map((m, i) => ({ mode: m.id, label: m.label, n: entered[i] })),
+    pooled: cs.filter((c) => c.done.includes(2)).length, // v0.1.72: coins with pool prices after their migration
     tried,
     rankable: ranked.length,
     bestTrain: best ? toRow(best) : null,
@@ -391,7 +421,7 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
      order by created_at desc limit $2`,
     [new Date(from).toISOString(), max],
   );
-  const coins = new Map<string, GCoin & { pre: { t: number; p: number }[]; tk: { t: number; mc: number; r: number; p: number; d: boolean }[] }>();
+  const coins = new Map<string, GCoin & { pre: { t: number; p: number }[]; tk: { t: number; mc: number; r: number; p: number; d: number }[] }>();
   for (const r of ls.rows) {
     const c = typeof r.call === "string" ? JSON.parse(r.call) : r.call;
     if (!c?.at || c.farm) continue;
@@ -431,14 +461,15 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
   const mints = [...coins.keys()];
   for (let i = 0; i < mints.length; i += 1000) {
     const part = mints.slice(i, i + 1000);
-    const ts = await pool.query(`select mint, at, progress, mc_sol, real_sol, complete from ticks where mint = any($1) order by mint, at`, [part]);
+    const ts = await pool.query(`select mint, at, progress, mc_sol, real_sol, complete, pool from ticks where mint = any($1) order by mint, at`, [part]);
     for (const t of ts.rows) {
       const c = coins.get(t.mint);
       if (!c) continue;
       const at = new Date(t.at).getTime();
       const p = Number(t.progress) || 0;
       if (at < c.at - 2_000) c.pre.push({ t: at, p });
-      else if (at <= c.at + PATH_MS) c.tk.push({ t: at - c.at, mc: Number(t.mc_sol) || 0, r: Number(t.real_sol) || 0, p, d: !!t.complete });
+      // the curve for the hour after the call; pool prices (after the migration) for up to 6 hours
+      else if (at <= c.at + (t.pool ? HOLD_MS + 30 * 60_000 : PATH_MS)) c.tk.push({ t: at - c.at, mc: Number(t.mc_sol) || 0, r: Number(t.real_sol) || 0, p, d: t.pool ? 2 : t.complete ? 1 : 0 });
     }
   }
   const res: GCoin[] = [];
@@ -454,7 +485,7 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
       g.mc[k] = x.mc;
       g.real[k] = x.r;
       g.prog[k] = x.p;
-      g.done[k] = x.d ? 1 : 0;
+      g.done[k] = x.d;
     });
     delete (g as any).pre;
     delete (g as any).tk;

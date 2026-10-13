@@ -11,7 +11,7 @@
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
-import { GRID_SOL, MODES, PREDS, exitText, type GCoin, type GExit, type GRow } from "./grid";
+import { GRID_SOL, HOLD_MS, MODES, PREDS, exitText, type GCoin, type GExit, type GRow } from "./grid";
 
 const D = (SITE as any).desk || {};
 const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, paperPrioritySol: D.paperPrioritySol };
@@ -26,13 +26,13 @@ const PASSED_KEY = "rn:gridlive:passed";
 
 export type LBook = { key: string; label: string; filter: string; mode: string; exit: GExit; since: number; grid: { testN: number; testAvg: number; pass: boolean } };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
-export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; sender?: boolean };
+export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean };
 export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string };
 
 let BOOKS: LBook[] = [];
 const PEND = new Map<string, Pend>(); // key|mint
 const POS = new Map<string, LPos>(); // key|mint
-const LAST = new Map<string, { at: number; px: number; real: number; p: number; done: boolean }>();
+const LAST = new Map<string, { at: number; px: number; real: number; p: number; done: boolean; pool?: boolean }>();
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 let loaded = false;
@@ -110,6 +110,7 @@ export function gridLiveCall(call: any, now = Date.now()) {
 export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: number; realSol?: number; complete?: boolean }, now = Date.now()) {
   const px = Number(v.mcapSol) || 0;
   const p = Number(v.progress) || 0;
+  if (LAST.get(mint)?.pool) return; // migrated: the pool prices (gridLiveQuote) lead from here
   LAST.set(mint, { at: now, px, real: Number(v.realSol) || 0, p, done: !!v.complete });
   const h = HIST.get(mint) || [];
   h.push({ t: now, p });
@@ -127,8 +128,18 @@ export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: nu
 
 function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const last = LAST.get(pe.mint)!;
-  if (last.done) return void PEND.delete(k);
   const m = MODES.find((x) => x.id === b.mode)!;
+  if (m.kind === "mig") {
+    // waits for the first pool price after the migration (the curve's own completion is not a price to buy at)
+    if (!last.pool) {
+      if (now > pe.until) PEND.delete(k);
+      return;
+    }
+    if (pe.fillAfter == null) {
+      pe.fillAfter = now + 2_000;
+      return;
+    }
+  } else if (last.done) return void PEND.delete(k);
   if (pe.fillAfter == null) {
     if (now > pe.until && m.kind !== "hold") return void PEND.delete(k);
     if (m.kind === "climb" && last.p >= pe.p0 + m.a) pe.fillAfter = now + 2_000;
@@ -142,15 +153,16 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const px0 = last.px / 1e9;
   if (!(px0 > 0)) return;
   const sol = GRID_SOL;
-  const fillPx = px0 * (1 + slipOf(sol, false, last.real));
-  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(false, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real };
+  const inPool = !!last.pool;
+  const fillPx = px0 * (1 + slipOf(sol, inPool, last.real));
+  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool };
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
 }
 
 function sell(pos: LPos, frac: number, px: number, real: number) {
   const amt = frac >= 1 ? pos.tokens : pos.tokens * frac;
-  pos.back += sellProceeds(amt, px, false, real, COST, frac >= 1);
+  pos.back += sellProceeds(amt, px, !!pos.pool, real, COST, frac >= 1);
   pos.tokens -= amt;
 }
 function close(k: string, pos: LPos, now: number, why: string) {
@@ -166,14 +178,23 @@ function close(k: string, pos: LPos, now: number, why: string) {
 
 function stepPos(k: string, pos: LPos, now: number) {
   const last = LAST.get(pos.mint)!;
+  const b = BOOKS.find((x) => x.key === pos.key);
+  const x = b?.exit ?? exitOfKey(pos.key);
+  if (!x) return close(k, pos, now, "strategy gone");
+  if (last.done && !last.pool) {
+    // the migration: sell at the curve's last price, or hold on into the pool (its prices come from AFTER)
+    if (x.mig !== "hold") return close(k, pos, now, "migrated");
+    pos.pool = true;
+    return;
+  }
+  if (last.pool && !pos.pool) {
+    if (x.mig !== "hold") return close(k, pos, now, "migrated");
+    pos.pool = true;
+  }
   const px = last.px / 1e9;
   if (!(px > 0)) return;
   pos.lastPx = px;
   pos.lastReal = last.real;
-  const b = BOOKS.find((x) => x.key === pos.key);
-  const x = b?.exit ?? exitOfKey(pos.key);
-  if (!x) return close(k, pos, now, "strategy gone");
-  if (last.done) return close(k, pos, now, "migrated");
   if (px > pos.peak) pos.peak = px;
   const xr = px / pos.fillPx;
   if (!pos.initials && xr >= x.initials) {
@@ -186,10 +207,27 @@ function stepPos(k: string, pos: LPos, now: number) {
   if (pos.initials && px <= pos.peak * (1 - x.trail)) return close(k, pos, now, "trail");
   if (now >= pos.tEnd && (!pos.initials || xr < 1.1)) return close(k, pos, now, "time");
 }
+
+/** A pool price after the migration (the AFTER feed). */
+export function gridLiveQuote(mint: string, q: { mcSol: number; real: number }, now = Date.now()) {
+  if (!(q.mcSol > 0)) return;
+  LAST.set(mint, { at: now, px: q.mcSol, real: q.real, p: 100, done: true, pool: true });
+  if (!BOOKS.length && !POS.size) return;
+  for (const b of BOOKS) {
+    const k = id(b.key, mint);
+    const pe = PEND.get(k);
+    if (pe) stepPend(b, pe, k, now);
+  }
+  for (const [k, pos] of POS) if (pos.mint === mint) stepPos(k, pos, now);
+}
+
 // a position whose book was dropped keeps its exit (it is in the key)
 function exitOfKey(key: string): GExit | null {
-  const m = key.split("|")[2]?.split("/").map(Number);
-  return m && m.length === 4 && m.every(Number.isFinite) ? { initials: m[0], trail: m[1], stop: m[2], timeMin: m[3] } : null;
+  const m = key.split("|")[2]?.split("/");
+  if (!m || m.length < 4) return null;
+  const v = m.slice(0, 4).map(Number);
+  if (!v.every(Number.isFinite)) return null;
+  return { initials: v[0], trail: v[1], stop: v[2], timeMin: v[3], mig: m[4] === "hold" ? "hold" : "sell" };
 }
 
 /** Every 10 seconds: the 2-minute entries, time exits on coins that stopped trading, the end of the hour. */
@@ -214,7 +252,7 @@ export function gridLiveSweep(now = Date.now()) {
   for (const [k, pos] of POS) {
     const x = BOOKS.find((b) => b.key === pos.key)?.exit ?? exitOfKey(pos.key);
     const xr = pos.lastPx / pos.fillPx;
-    if (now - pos.openedAt >= PATH_MS) close(k, pos, now, "hour over");
+    if (now - pos.openedAt >= (x?.mig === "hold" ? HOLD_MS : PATH_MS)) close(k, pos, now, x?.mig === "hold" ? "6 hours over" : "hour over");
     else if (x && now >= pos.tEnd && (!pos.initials || xr < 1.1)) close(k, pos, now, "time");
   }
 }
