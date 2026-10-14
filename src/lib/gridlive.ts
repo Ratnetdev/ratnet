@@ -24,7 +24,7 @@ export const LIVE_TRIPS = "rn:gridlive:trips";
 export const LIVE_VIEW = "rn:gridlive:view";
 const PASSED_KEY = "rn:gridlive:passed";
 
-export type LBook = { key: string; label: string; filter: string; mode: string; exit: GExit; since: number; grid: { testN: number; testAvg: number; pass: boolean } };
+export type LBook = { key: string; label: string; filter: string; mode: string; exit: GExit; since: number; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean } };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
 export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean };
 export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string };
@@ -55,13 +55,13 @@ export const gridLiveBooks = () => BOOKS;
  * fill the free slots, best first.
  */
 export function dropReason(l: LStat): string | null {
-  if (l.passed) return null;
+  if (l.passed || l.pending) return null;
   if (l.n >= 30) return "30 trips without passing the exam";
   if (l.n >= 10 && l.avgPct <= -10) return `losing live: avg ${l.avgPct}% after ${l.n} trips`;
   if (l.n >= 20 && l.pfLessBest < 0.8) return `losing live: PF ${l.pfLessBest} after ${l.n} trips`;
   return null;
 }
-const statOf = (key: string) => liveStat(TRIPS.filter((t) => t.k === key));
+const statOf = (key: string) => bookStat(BOOKS.find((b) => b.key === key) ?? { grid: { testN: 0, testAvg: 0, pass: false } }, TRIPS.filter((t) => t.k === key));
 
 export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
   const keep = BOOKS.filter((b) => !dropReason(statOf(b.key)));
@@ -78,12 +78,12 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
       mode: r.mode,
       exit: r.exit,
       since: now,
-      grid: { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass },
+      grid: { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass, explore: !!r.explore },
     }));
   // a kept strategy that GRID ranked again gets its newest GRID numbers
   for (const b of keep) {
     const r = rows.find((x) => x.key === b.key);
-    if (r) b.grid = { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass };
+    if (r) b.grid = { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass, explore: !!r.explore };
   }
   BOOKS = [...keep, ...fresh];
   for (const k of [...PEND.keys()]) if (!BOOKS.some((b) => k.startsWith(`${b.key}#`))) PEND.delete(k);
@@ -283,7 +283,7 @@ export function gridLiveSweep(now = Date.now()) {
   }
 }
 
-export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean };
+export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean };
 /** The desk's exam on a strategy's last 30 live trips (a 1 SOL desk at 0.05 SOL a trade: +10% = +0.1 SOL). */
 export function liveStat(trips: LTrip[]): LStat {
   const last = trips.slice(0, 30);
@@ -300,12 +300,25 @@ export function liveStat(trips: LTrip[]): LStat {
   return { n, wins, winRate: Math.round(winRate), avgPct: n ? Math.round((last.reduce((a, t) => a + t.pnlPct, 0) / n) * 10) / 10 : 0, pnl: Math.round(sum * 1e4) / 1e4, pfLessBest: Math.round(pf * 100) / 100, passed: n >= 30 && winRate >= 40 && sum >= 0.1 && pf >= 1.2 };
 }
 
+/**
+ * v0.1.74: an exploring book (not proven by GRID's train/test split) must also hold up over more trips: 45+ in total
+ * and positive over all of them, on top of the exam on its last 30. With 16 books searching, one lucky 30-trip run is
+ * the risk this guards against.
+ */
+export function bookStat(b: Pick<LBook, "grid">, trips: LTrip[]): LStat {
+  const l = liveStat(trips);
+  if (!b.grid?.explore || !l.passed) return l;
+  const total = trips.reduce((a, t) => a + t.pnl, 0);
+  const ok = trips.length >= 45 && total > 0;
+  return { ...l, passed: ok, pending: !ok }; // pending: the exam holds, the extra trips are still coming
+}
+
 /** The site's summary (once a minute) and the Telegram note when a strategy passes the exam live. */
 export async function gridLivePublish(send?: (text: string) => Promise<unknown>) {
   const now = Date.now();
   const byKey = new Map<string, LTrip[]>();
   for (const t of TRIPS) (byKey.get(t.k) || byKey.set(t.k, []).get(t.k)!).push(t);
-  const books = BOOKS.map((b) => ({ ...b, exitLabel: exitText(b.exit), open: [...POS.values()].filter((p) => p.key === b.key).map((p) => ({ mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, pnlPct: Math.round((p.lastPx / p.fillPx - 1) * 1000) / 10 })), watching: [...PEND.values()].filter((p) => p.key === b.key).length, live: liveStat(byKey.get(b.key) || []) }));
+  const books = BOOKS.map((b) => ({ ...b, exitLabel: exitText(b.exit), open: [...POS.values()].filter((p) => p.key === b.key).map((p) => ({ mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, pnlPct: Math.round((p.lastPx / p.fillPx - 1) * 1000) / 10 })), watching: [...PEND.values()].filter((p) => p.key === b.key).length, live: bookStat(b, byKey.get(b.key) || []) }));
   // strategies no longer in the books but with a record worth keeping on screen
   const past = [...byKey.entries()].filter(([k]) => !BOOKS.some((b) => b.key === k)).map(([k, ts]) => ({ key: k, live: liveStat(ts) })).filter((x) => x.live.n >= 5).sort((a, b) => b.live.avgPct - a.live.avgPct).slice(0, 6);
   for (const b of books) {

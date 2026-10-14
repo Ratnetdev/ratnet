@@ -5,7 +5,7 @@ import { ago } from "./fmt";
 import { col, sgn } from "./TripDetail";
 
 type L = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean };
-type Book = { key: string; label: string; exitLabel: string; since: number; grid: { testN: number; testAvg: number; pass: boolean }; open: { mint: string; symbol: string; pnlPct: number }[]; watching: number; live: L };
+type Book = { key: string; label: string; exitLabel: string; since: number; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean }; open: { mint: string; symbol: string; pnlPct: number }[]; watching: number; live: L };
 type Trip = { k: string; mint: string; symbol: string; closedAt: number; pnlPct: number; why: string };
 type V = { at: number | null; books?: Book[]; recent?: Trip[]; trips?: number };
 
@@ -34,6 +34,7 @@ export default function GridLiveBoard() {
                 <tr key={b.key}>
                   <td style={{ whiteSpace: "normal", maxWidth: 420 }}>
                     {b.live.passed ? <span className="tag" style={{ color: "var(--rat)", marginRight: 6 }}>PASSED</span> : null}
+                    {!b.live.passed && b.grid.explore ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>EXPLORING</span> : null}
                     <b>{b.label}</b>
                     <div className="tiny mute2">{b.exitLabel} · live since {ago(b.since)} ago{b.watching ? ` · watching ${b.watching}` : ""}</div>
                   </td>
@@ -42,7 +43,7 @@ export default function GridLiveBoard() {
                   <td style={{ color: col(b.live.avgPct) }}>{b.live.n ? `${sgn(b.live.avgPct)}%` : "–"}</td>
                   <td>{b.live.n ? pf(b.live.pfLessBest) : "–"}</td>
                   <td>{b.open.length ? b.open.map((o) => <div key={o.mint} className="tiny" style={{ color: col(o.pnlPct) }}>{o.symbol} {sgn(o.pnlPct)}%</div>) : "–"}</td>
-                  <td className="tiny">{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : ""}</td>
+                  <td className="tiny">{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : b.grid.explore ? " · exploring" : ""}</td>
                 </tr>
               ))}
             </tbody>

@@ -226,6 +226,7 @@ export type GRow = {
   test: GStat;
   pass: boolean;
   senders: number; // migrated coins among its trades
+  explore?: boolean; // v0.1.74: best on all calls, not ranked on train/test (only GRID LIVE judges it)
   seen?: { runs: number; ranked: number; passed: number }; // across earlier runs (gridHistory)
 };
 export const keyOf = (filter: string, mode: string, x: GExit) => `${filter}|${mode}|${x.initials}/${x.trail}/${x.stop}/${x.timeMin}/${x.mig}`;
@@ -351,6 +352,21 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     }
   }
   ranked.sort((a, b) => b.tr.t - a.tr.t);
+  // v0.1.74: EXPLORE. When nothing ranks (13-14 Oct: 0 of 56,448), GRID LIVE sat empty and no live evidence was
+  // gathered at all. Explore rows are the best strategies on ALL calls (20+ trades, positive, PF 1+ without the best):
+  // not proven by the train/test split, so they never count as passed here; GRID LIVE trades them in free slots and
+  // its own 30-trip exam is the judge. Idle paper books gather nothing; an exploring book gathers evidence.
+  const explorePool: Cand[] = [];
+  for (let f = 0; f < filters.length; f++) {
+    if (f % 20 === 0) await breathe();
+    for (let m = 0; m < M; m++) {
+      for (let x = 0; x < X; x++) {
+        const al = stat(out[m * X + x], filters[f].idx, 0, N);
+        if (al.n >= 20 && al.avgPct > 0 && al.pfLessBest >= 1) explorePool.push({ f, m, x, tr: al });
+      }
+    }
+  }
+  explorePool.sort((a, b) => b.tr.t - a.tr.t);
   // one row per filter + timing (its best exit), so the list is not 24 copies of one idea
   const seen = new Set<string>();
   const rows: GRow[] = [];
@@ -373,6 +389,19 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     seen.add(same);
     rows.push(toRow(c));
     if (rows.length >= (opts.top ?? 25)) break;
+  }
+  const explore: GRow[] = [];
+  const seenX = new Set<string>(rows.map((r) => `${r.filter}:${r.mode}`));
+  for (const c of explorePool) {
+    const k = `${filters[c.f].id}:${MODES[c.m].id}`;
+    const same = `x${c.m}:${c.tr.n}:${c.tr.pnl}:${c.tr.wins}`;
+    if (seenX.has(k) || seenX.has(same)) continue;
+    seenX.add(k);
+    seenX.add(same);
+    const tr = stat(out[c.m * X + c.x], filters[c.f].idx, 0, cut);
+    const r = toRow({ ...c, tr });
+    explore.push({ ...r, pass: false, explore: true });
+    if (explore.length >= 16) break;
   }
   // the honest baseline: every call, each timing, its best exit on train
   const base = MODES.map((_, m) => {
@@ -400,6 +429,7 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     rankable: ranked.length,
     bestTrain: best ? toRow(best) : null,
     rows,
+    explore,
     base,
     passed: passed.length,
     senders: sendersStudy(cs, hit),
@@ -540,5 +570,7 @@ export function liveCandidates(v: GridView, max = 8): GRow[] {
   // free slots: the best on the older calls that the newest calls could not judge yet (under 10 test trades). Paper
   // costs nothing, and a live record is the fastest way to judge them
   const unjudged = v.rows.filter((r) => !r.pass && r.test.n < 10 && r.test.avgPct >= 0);
-  return [...passed, ...hopeful, ...unjudged].slice(0, max);
+  // v0.1.74: then exploring strategies (best on all calls), so no slot sits idle
+  const ex = (v.explore || []).filter((r) => !v.rows.some((x) => x.key === r.key));
+  return [...passed, ...hopeful, ...unjudged, ...ex].slice(0, max);
 }
