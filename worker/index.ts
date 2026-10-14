@@ -861,8 +861,17 @@ async function main() {
         gridding = false;
       }
     };
-    setTimeout(() => grid().catch(() => null), 8 * 60_000);
-    setInterval(() => grid().catch(() => null), 3 * 3600_000);
+    // v0.1.73: GRID's 3-hour timer fired in the same millisecond as REPLAY's (both set at start, both 3 hours), found
+    // REPLAY running and skipped, every time: after its first run GRID never ran again (13-14 Oct: 17 hours). Now a
+    // check every 5 minutes runs it once 3 hours have passed since the last run, waiting while REPLAY runs.
+    let gridAt = 0;
+    const gridDue = async () => {
+      if (gridding || replaying || Date.now() - gridAt < 3 * 3600_000) return;
+      gridAt = Date.now();
+      await grid();
+    };
+    setTimeout(() => gridDue().catch(() => null), 8 * 60_000);
+    setInterval(() => gridDue().catch(() => null), 5 * 60_000);
   };
   await startArchive().catch(() => null);
   setInterval(() => {

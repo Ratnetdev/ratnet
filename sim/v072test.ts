@@ -116,7 +116,7 @@ function coin(curve: [number, number][], pool: number[], f: Partial<GCoin> = {})
   ok(/complete, pool from ticks/.test(gr) && /HOLD_MS \+ 30 \* 60_000/.test(gr), "GRID reads 6 hours of pool prices after a call");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  ok(BUILD === pkg.version && BUILD === "0.1.72", `build tag ${BUILD}`);
+  ok(BUILD === pkg.version, `build tag ${BUILD}`);
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();
