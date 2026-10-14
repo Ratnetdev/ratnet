@@ -573,6 +573,18 @@ export async function fixOnce061() {
   return true;
 }
 
+/** v0.1.76: once, the desk mode goes to "auto" (Stan, 14 Oct: go live on the exam pass with no human step). A later
+ *  change in Admin is never overwritten (the flag is set once). */
+export async function autoOnce076() {
+  const r = redis();
+  if (!(await r.set("rn:fix:0.1.76", Date.now(), { nx: true }))) return false;
+  const cur = await getSettings();
+  if (cur.desk.mode !== "paper") return false;
+  await saveSettings({ desk: { ...cur.desk, mode: "auto" } as any });
+  await r.lpush(K.deskEv, { agent: "LEDGER", at: Date.now(), text: "v0.1.76: desk mode set to auto: the desk goes live by itself the moment the exam passes (its own 30 trips, or a GRID LIVE strategy it follows) and the wallet holds 0.5+ SOL", tone: "info" });
+  return true;
+}
+
 /**
  * The desk wallet's key lives on the worker (Railway) only. On Vercel it is ignored unless DESK_ON_VERCEL=1: a web
  * function never needs to sign, and a key there is one more place it can leak from (v0.1.33).
@@ -798,6 +810,10 @@ async function liveReconcile(b: Batch, state: DeskState, kp: Keypair, bal: numbe
   if (stalePend.length) await r.hdel(PENDING, ...stalePend.map((x) => x.mint)).catch(() => 0);
 }
 
+let PROMO_WAIT = false; // v0.1.76: exam passed in mode auto, waiting for the paper book to empty
+let PROMO_LOG = 0;
+/** Tests only. */
+export const _promoWait = (v: boolean) => (PROMO_WAIT = v);
 let DESK_LOCK: Lock | null = null;
 let DESK_LOST = false;
 /** Throws unless this process holds the desk lock right now (checked with Redis before every real-money swap). */
@@ -1348,6 +1364,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await resetOnceForNano().catch(() => false);
     await fixOnce048().catch(() => false);
     await fixOnce061().catch(() => false);
+    await autoOnce076().catch(() => false);
     await dropWicksOnce().catch(() => null);
     await slimTradesOnce().catch(() => null);
     const s = await getSettings();
@@ -1469,6 +1486,20 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
       }
       const walletSol = kp ? walletSolC : null;
+      // v0.1.76: going live needs an empty paper book (a paper position cannot be sold with a real swap). With FOLLOW
+      // the desk could hold paper positions around the clock and never get there, so once the exam has passed (mode
+      // auto) the desk stops opening paper positions, lets the open ones run to their exits, and goes live on empty
+      PROMO_WAIT = false;
+      if (!state.live && cfg.mode === "auto" && kp && positions.length) {
+        const exw = await memo("desk:exam", 30_000, () => exam(state, walletSol));
+        if (exw.passed) {
+          PROMO_WAIT = true;
+          if (now - PROMO_LOG > 10 * 60_000) {
+            PROMO_LOG = now;
+            log(b, "LEDGER", `exam passed. no new paper buys: going live as soon as the ${positions.length} open paper position${positions.length > 1 ? "s close" : " closes"}`, "win");
+          }
+        }
+      }
       if (!state.live && (cfg.mode === "live" || cfg.mode === "auto") && kp && !positions.length) {
         const ex = cfg.mode === "live" ? { passed: walletSol != null && walletSol >= EXAM.minWallet } : await memo("desk:exam", 30_000, () => exam(state, walletSol));
         if (ex.passed) {
@@ -1481,6 +1512,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           state.peakEq = walletSol || 0;
           state.dayStart = walletSol || 0; // v0.1.45: the daily loss limit measures live money from the promotion on
           log(b, "LEDGER", `exam passed. going live with ${walletSol?.toFixed(3)} SOL`, "win");
+          // v0.1.76: no human in the loop, so a message the moment it happens
+          import("./critical").then((m) => m.criticalSend(`🟢 <b>RATNET desk is LIVE</b>\nThe exam passed. Trading real money from ${walletSol?.toFixed(3)} SOL.\nBack to paper by itself if the wallet falls 40% from here.`)).catch(() => null);
         }
       }
 
@@ -1796,6 +1829,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         state.dayStart = eq.value;
       }
       let tried = 0;
+      // v0.1.76: going live is waiting for the paper book to empty: no new paper positions until then
+      if (PROMO_WAIT) {
+        GRID_ORDERS.length = 0;
+        queued.length = 0;
+      }
       // v0.1.75: GRID LIVE's leader first (its entries are time-critical: the strategy was tested with a 2-second fill)
       while (GRID_ORDERS.length) {
         const o = GRID_ORDERS.shift()!;
@@ -2189,6 +2227,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         state.dayStart = state.start;
         memoDrop("desk:exam");
         log(b, "LEDGER", `live drawdown hit ${EXAM.liveMaxDD}%. back to paper to re-take the exam`, "loss");
+        import("./critical").then((m) => m.criticalSend(`🔴 <b>RATNET desk is back on paper</b>\nThe live wallet fell ${EXAM.liveMaxDD}% from where live trading started. It re-takes the exam before trading real money again.`)).catch(() => null);
       }
       if (now - state.lastEqAt >= 60_000) {
         state.lastEqAt = now;
@@ -2331,6 +2370,7 @@ let ALERT_CFG: unknown = null; // v0.1.46: the session's desk settings, for the 
 /** v0.1.45: is there room for one more buy in this strategy's lane? null = yes, otherwise the reason. Stalk fills and
  *  re-entries skipped VET, so they used to buy past full slots and past the daily loss limit. */
 export async function roomFor(how: Pos["how"] | string, state: DeskState, eqValue: number, cfg: Cfg): Promise<string | null> {
+  if (PROMO_WAIT && !state.live) return "the exam passed: no new paper buys until the desk goes live";
   if (pct(eqValue, state.dayStart) <= -cfg.dailyLoss) return "the daily loss limit is hit";
   const c: any = cfg;
   const pos = Object.values(await loadPositions(K.deskPos)).filter((p) => takesSlot(p));
@@ -2340,6 +2380,7 @@ export async function roomFor(how: Pos["how"] | string, state: DeskState, eqValu
 }
 async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null, r: ReturnType<typeof redis>, coin: { mint: string; symbol: string }) {
   enqueueLens(r, rec.mint, "buy");
+  if (PROMO_WAIT && !state.live) return log(b, "LEDGER", `$${rec.symbol}: the exam passed, going live once the paper book is empty. no new paper buy`, "info", coin);
   if (state.live && !kp) {
     log(b, "EXEC", `$${rec.symbol}: the desk is live and this process has no wallet key. no buy here`, "info", coin);
     return;
