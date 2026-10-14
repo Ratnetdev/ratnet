@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePoll } from "./usePoll";
 import Info from "./Info";
 import { ago, usd } from "./fmt";
@@ -11,6 +11,7 @@ import CoinImg from "./CoinImg";
 import LiveMc from "./LiveMc";
 import RecordCharts, { RecKey } from "./RecordCharts";
 import Boundary from "./Boundary";
+import GridLiveBoard, { GridLiveView } from "./GridLiveBoard";
 
 type Rec = {
   live: boolean;
@@ -115,17 +116,28 @@ function SortTh({ k, sort, set, children }: { k: SortKey; sort: { k: SortKey; di
 
 /** The desk's public track record. `compact` for the homepage, full table on /desk. Click any trade for every detail. */
 export default function TrackRecord({ compact = false }: { compact?: boolean }) {
-  const [tab, setTab] = useState<"all" | "open" | "closed" | "ghost">("all");
+  // v0.1.77: two separate menus. Which desk (paper, ghost, GRID LIVE) and which trades (all, open, closed); each keeps its choice.
+  const [book, setBook] = useState<"desk" | "ghost" | "grid">("desk");
+  const [show, setShow] = useState<"all" | "open" | "closed">("all");
   const [chart, setChart] = useState<RecKey | null>(null);
   const [sort, setSort] = useState<{ k: SortKey; dir: 1 | -1 }>({ k: "opened", dir: -1 });
   const [limit, setLimit] = useState(PAGE);
   // each number opens its chart (full track record only)
   const st = (k: RecKey) => (compact ? {} : { className: `rec-stat-btn ${chart === k ? "on" : ""}`, role: "button" as const, tabIndex: 0, onClick: () => setChart(chart === k ? null : k), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter") setChart(chart === k ? null : k); } });
   const admin = useAdmin();
-  const d = usePoll<Rec>(fullUrl(`/api/desk/record${tab === "ghost" ? "?book=ghost" : ""}`, admin && !compact), compact ? 10000 : 5000).data;
-  const isGhost = tab === "ghost";
-  const s = d?.summary;
-  const trips = (d?.trips || []).filter((t) => (tab === "all" || tab === "ghost" ? true : tab === "open" ? t.open : !t.open));
+  const isGhost = !compact && book === "ghost";
+  const isGrid = !compact && book === "grid";
+  const d = usePoll<Rec>(isGrid ? null : fullUrl(`/api/desk/record${isGhost ? "?book=ghost" : ""}`, admin && !compact), compact ? 10000 : 5000).data;
+  const g = usePoll<GridLiveView>(isGrid ? "/api/desk/gridlive" : null, 30_000).data;
+  const [mainLive, setMainLive] = useState(false);
+  const deskLive = book === "desk" && d ? d.live : null;
+  useEffect(() => { if (deskLive != null) setMainLive(deskLive); }, [deskLive]);
+  const s = isGrid ? undefined : d?.summary;
+  const trips = (isGrid ? [] : d?.trips || []).filter((t) => (show === "all" ? true : show === "open" ? t.open : !t.open));
+  const gOpen = (g?.books || []).reduce((n, b) => n + b.open.length, 0);
+  const gClosed = g?.recent?.length ?? 0;
+  const nOpen = isGrid ? (g?.at ? gOpen : null) : s ? s.open : null;
+  const nClosed = isGrid ? (g?.at ? gClosed : null) : s ? s.closed : null;
   // sorted by the chosen column (newest first by default); trades without a value for it go last either way
   const sorted = compact
     ? trips
@@ -143,15 +155,29 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
   return (
     <section className="panel mt record" id="record">
       <div className="ph">
-        <span><Info k={isGhost ? "ghostdesk" : "record"}><b>{isGhost ? "ghost desk" : "track record"}</b></Info> · {isGhost ? "not counted, learned from" : d?.live ? "live wallet" : "paper desk"}{s?.since ? `, since ${ago(s.since)} ago` : ""}</span>
+        <span>
+          {isGrid ? (
+            <><b>grid live</b> · GRID&apos;s best strategies trading live coins on paper, exactly as tested</>
+          ) : (
+            <><Info k={isGhost ? "ghostdesk" : "record"}><b>{isGhost ? "ghost desk" : "track record"}</b></Info> · {isGhost ? "not counted, learned from" : d?.live ? "live wallet" : "paper desk"}{s?.since ? `, since ${ago(s.since)} ago` : ""}</>
+          )}
+        </span>
         {compact ? <Link href="/desk#record">every trade →</Link> : (
-          <span className="rec-tabs">
-            {(["all", "open", "closed", "ghost"] as const).map((k) => (
-              <button key={k} className={tab === k ? "on" : ""} onClick={() => (setTab(k), setLimit(PAGE))}>{k}{k === "open" && s ? ` ${s.open}` : k === "closed" && s ? ` ${s.closed}` : ""}</button>
-            ))}
+          <span className="rec-menus">
+            <span className="rec-tabs" role="tablist" aria-label="desk">
+              {([["desk", mainLive ? "live desk" : "paper desk"], ["ghost", "ghost desk"], ["grid", "grid live"]] as const).map(([k, label]) => (
+                <button key={k} role="tab" aria-selected={book === k} className={book === k ? "on" : ""} onClick={() => (setBook(k), setLimit(PAGE))}>{label}</button>
+              ))}
+            </span>
+            <span className="rec-tabs" role="tablist" aria-label="trades">
+              {(["all", "open", "closed"] as const).map((k) => (
+                <button key={k} role="tab" aria-selected={show === k} className={show === k ? "on" : ""} onClick={() => (setShow(k), setLimit(PAGE))}>{k}{k === "open" && nOpen != null ? ` ${nOpen}` : k === "closed" && nClosed != null ? ` ${nClosed}` : ""}</button>
+              ))}
+            </span>
           </span>
         )}
       </div>
+      {isGrid ? <GridLiveBoard embedded show={show} /> : <>
       <div className="rec-stats">
         <div {...st("return")}><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
         <div {...st("trades")}><span className="k">Trades closed</span><b>{s?.closed ?? 0}</b><em>{s ? `${s.open} open now` : ""}</em></div>
@@ -215,6 +241,7 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
       {more > 0 && <button type="button" className="rec-more" onClick={() => setLimit(limit + PAGE)}>show {Math.min(PAGE, more)} more of {more}</button>}
       {!compact && isGhost && <div className="pb tiny muted">Trades the real desk was blocked from taking (daily loss limit, full slots, a paused strategy, no paper balance), taken anyway at a fixed size with the same entries and exits. They never touch the balance, the exam or the track record; COACH, FILM, PM and the priors learn from them.</div>}
       {!compact && !isGhost && <div className="pb tiny muted">Click or tap a trade for the full picture: coin age and market cap at the buy, the call behind it, every VET check, what the rats saw, the price chart and every fill. Paper fills use the real price at that moment, with fees and slippage. Live fills link to Solscan.</div>}
+      </>}
     </section>
   );
 }

@@ -12,7 +12,6 @@ import ArenaBoard from "./ArenaBoard";
 import RegimeBoard from "./RegimeBoard";
 import ReplayBoard from "./ReplayBoard";
 import GridBoard from "./GridBoard";
-import GridLiveBoard from "./GridLiveBoard";
 import AgentPanel from "./AgentPanel";
 import { useState } from "react";
 import LensCam from "./LensCam";
@@ -198,13 +197,12 @@ export default function DeskBoard() {
 
       {d && today <= -d.cfg.dailyLoss ? (
         <div className="panel mt ghost-note">
-          <b>Daily loss limit hit ({sign(today)}% today).</b> The desk opens no new trades until 00:00 UTC. The ghost desk keeps taking every clean signal (not counted, learned from): {d.ghost?.open ?? 0} open now. See the ghost tab below.
+          <b>Daily loss limit hit ({sign(today)}% today).</b> The desk opens no new trades until 00:00 UTC. The ghost desk keeps taking every clean signal (not counted, learned from): {d.ghost?.open ?? 0} open now. See the ghost desk in the records below.
         </div>
       ) : null}
       <TrackRecord />
       <RegimeBoard />
       <ArenaBoard />
-      <GridLiveBoard />
       <GridBoard />
       <ReplayBoard />
       <BuildBoard />
