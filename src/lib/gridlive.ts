@@ -1,7 +1,7 @@
 // v0.1.71: GRID LIVE. GRID finds strategies on the archive; these books trade its best ones on live coins at once, in
 // paper, so a strategy that looked good on history gets a live record within hours instead of waiting for a build.
 //
-// After every GRID run (every 3 hours) the books are refilled with up to 8 strategies: the ones that passed on the
+// After every GRID run (every hour since v0.1.73) free slots are filled, up to 16 strategies: the ones that passed on the
 // newest calls first (most passes across runs first), then the ones positive on the newest calls. Each book trades its
 // strategy exactly as GRID tested it: the same call filter, the same entry timing (at the call, on a climb, on a dip,
 // 2 minutes later), the same exit (half at the target, trail, stop, time), the desk's size and costs, filled at the
@@ -15,7 +15,7 @@ import { GRID_SOL, HOLD_MS, MODES, PREDS, exitText, type GCoin, type GExit, type
 
 const D = (SITE as any).desk || {};
 const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, paperPrioritySol: D.paperPrioritySol };
-export const LIVE_MAX_BOOKS = 8;
+export const LIVE_MAX_BOOKS = 16; // v0.1.73: 8 to 16 (paper costs nothing; more books in parallel = records sooner)
 const MAX_OPEN = 10; // per book
 const PATH_MS = 62 * 60_000;
 const BOOKS_KEY = "rn:gridlive:books";
@@ -48,21 +48,47 @@ export async function gridLiveLoad() {
 }
 export const gridLiveBooks = () => BOOKS;
 
-/** New strategies from a GRID run (open positions of a dropped strategy run on to their exit). */
+/**
+ * v0.1.73: a strategy keeps its book until its live record decides it. Before, every GRID run replaced all books, so a
+ * strategy halfway to its 30 trips was dropped and its record stopped growing. Now a book stays while it is collecting
+ * and is dropped only when its live record rules it out (dropReason); passed books stay for good. New GRID candidates
+ * fill the free slots, best first.
+ */
+export function dropReason(l: LStat): string | null {
+  if (l.passed) return null;
+  if (l.n >= 30) return "30 trips without passing the exam";
+  if (l.n >= 10 && l.avgPct <= -10) return `losing live: avg ${l.avgPct}% after ${l.n} trips`;
+  if (l.n >= 20 && l.pfLessBest < 0.8) return `losing live: PF ${l.pfLessBest} after ${l.n} trips`;
+  return null;
+}
+const statOf = (key: string) => liveStat(TRIPS.filter((t) => t.k === key));
+
 export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
-  const old = new Map(BOOKS.map((b) => [b.key, b]));
-  BOOKS = rows.slice(0, LIVE_MAX_BOOKS).map((r) => ({
-    key: r.key,
-    label: `${r.filterLabel}, buy ${r.modeLabel}`,
-    filter: r.filter,
-    mode: r.mode,
-    exit: r.exit,
-    since: old.get(r.key)?.since ?? now,
-    grid: { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass },
-  }));
+  const keep = BOOKS.filter((b) => !dropReason(statOf(b.key)));
+  const dropped = BOOKS.filter((b) => !keep.includes(b)).map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) }));
+  const fresh = rows
+    .filter((r) => !keep.some((b) => b.key === r.key))
+    // never bring back a strategy its own live record already ruled out
+    .filter((r) => !dropReason(statOf(r.key)))
+    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.length))
+    .map((r) => ({
+      key: r.key,
+      label: `${r.filterLabel}, buy ${r.modeLabel}`,
+      filter: r.filter,
+      mode: r.mode,
+      exit: r.exit,
+      since: now,
+      grid: { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass },
+    }));
+  // a kept strategy that GRID ranked again gets its newest GRID numbers
+  for (const b of keep) {
+    const r = rows.find((x) => x.key === b.key);
+    if (r) b.grid = { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass };
+  }
+  BOOKS = [...keep, ...fresh];
   for (const k of [...PEND.keys()]) if (!BOOKS.some((b) => k.startsWith(`${b.key}#`))) PEND.delete(k);
   await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
-  return BOOKS;
+  return Object.assign(BOOKS, { kept: keep.length, added: fresh.length, dropped });
 }
 
 const filterOk = (filter: string, c: GCoin) => filter === "all" || filter.split("+").every((id) => PREDS.find((p) => p.id === id)?.ok(c) ?? false);

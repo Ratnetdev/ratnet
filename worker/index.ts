@@ -848,8 +848,8 @@ async function main() {
           const hist = gridHistory(((await redis().get("rn:grid:hist").catch(() => null)) as GHist | null) || null, res);
           withSeen(res, hist);
           await redis().set("rn:grid:hist", hist).catch(() => null);
-          const books = await gridLiveSetBooks(liveCandidates(res));
-          console.log(`grid live: ${books.length} strategies trading on live coins`);
+          const books = await gridLiveSetBooks(liveCandidates(res, 16));
+          console.log(`grid live: ${books.length} strategies trading on live coins (${(books as any).kept} kept, ${(books as any).added} new, ${(books as any).dropped?.length ?? 0} dropped)`);
           await redis().set("rn:grid:view", res, { ex: 3 * 86400 }).catch(() => null);
           console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed the test (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
           await gridAlert(res).catch(() => null);
@@ -863,10 +863,11 @@ async function main() {
     };
     // v0.1.73: GRID's 3-hour timer fired in the same millisecond as REPLAY's (both set at start, both 3 hours), found
     // REPLAY running and skipped, every time: after its first run GRID never ran again (13-14 Oct: 17 hours). Now a
-    // check every 5 minutes runs it once 3 hours have passed since the last run, waiting while REPLAY runs.
+    // check every 5 minutes runs it once an hour has passed since the last run (a run takes ~1-2 s), waiting while
+    // REPLAY runs. Hourly is safe since books are kept until their live record decides them (gridLiveSetBooks).
     let gridAt = 0;
     const gridDue = async () => {
-      if (gridding || replaying || Date.now() - gridAt < 3 * 3600_000) return;
+      if (gridding || replaying || Date.now() - gridAt < 3600_000) return;
       gridAt = Date.now();
       await grid();
     };

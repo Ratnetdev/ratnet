@@ -22,7 +22,7 @@ export default function GridLiveBoard() {
         <span className="tiny muted">{ago(d.at)} ago</span>
       </div>
       {!books.length ? (
-        <div className="pb muted small">No strategies yet. The books fill after each GRID run (every 3 hours) with the ones that held up on the newest calls.</div>
+        <div className="pb muted small">No strategies yet. The books fill after each GRID run (every hour) with the ones that held up on the newest calls; a strategy stays until its live record decides it.</div>
       ) : (
         <div className="scroll">
           <table className="tbl rec-tbl">

@@ -107,7 +107,7 @@ export default function GridBoard() {
     return (
       <section className="panel mt" id="grid">
         <div className="ph"><span><b>grid</b> · the big strategy search</span></div>
-        <div className="pb muted small">{d.error ? `Last run failed: ${d.error}` : "First run about 8 minutes after the worker starts, then every 3 hours."}</div>
+        <div className="pb muted small">{d.error ? `Last run failed: ${d.error}` : "First run about 8 minutes after the worker starts, then every hour."}</div>
       </section>
     );
   }
