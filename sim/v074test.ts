@@ -57,7 +57,7 @@ const pump = () => [...Array.from({ length: 12 }, () => 0.06 + rnd() * 0.04), ..
   ok(/EXPLORING/.test(lb), "exploring books are labelled on /desk");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  ok(BUILD === pkg.version && BUILD === "0.1.74", `build tag ${BUILD}`);
+  ok(BUILD === pkg.version, `build tag ${BUILD}`);
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

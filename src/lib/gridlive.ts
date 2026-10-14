@@ -35,6 +35,17 @@ const POS = new Map<string, LPos>(); // key|mint
 const LAST = new Map<string, { at: number; px: number; real: number; p: number; done: boolean; pool?: boolean }>();
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
+// v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean };
+let FOLLOW: ((o: FollowOrder) => void) | null = null;
+export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
+let LEADER: string | null = null;
+export const gridLeaderKey = () => LEADER;
+/** The strategy the desk follows: passed live (bookStat), best live P&L first. */
+export function gridLeader(): LBook | null {
+  const passed = BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) })).filter((x) => x.s.passed).sort((a, z) => z.s.pnl - a.s.pnl);
+  return passed[0]?.b ?? null;
+}
 let loaded = false;
 
 export async function gridLiveLoad() {
@@ -184,6 +195,11 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool };
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
+  if (FOLLOW && LEADER === b.key) {
+    try {
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool });
+    } catch {}
+  }
 }
 
 function sell(pos: LPos, frac: number, px: number, real: number) {
@@ -326,7 +342,14 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
     const fresh = await redis().hsetnx(PASSED_KEY, b.key, { at: now, ...b.live }).catch(() => 0);
     if (fresh) await send(`🏁 <b>GRID LIVE: a strategy passed the exam on live coins</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.n} trips, ${b.live.winRate}% won, ${b.live.pnl >= 0 ? "+" : ""}${b.live.pnl} SOL on 0.05 SOL trades, PF ${b.live.pfLessBest} without the best.\n\nNext: the desk trades it.`).catch(() => null);
   }
-  const view = { at: now, books, past, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
+  const lead = gridLeader();
+  const leadChanged = (lead?.key ?? null) !== LEADER;
+  LEADER = lead?.key ?? null;
+  const follow = lead ? { key: lead.key, label: lead.label, exit: lead.exit, exitLabel: exitText(lead.exit), live: bookStat(lead, byKey.get(lead.key) || []), at: now } : null;
+  if (follow) await redis().set("rn:grid:follow", follow, { ex: 3600 }).catch(() => null);
+  else await redis().del("rn:grid:follow").catch(() => null);
+  if (leadChanged && send) await send(lead ? `🧭 <b>The desk now follows GRID LIVE's "${lead.label.replace(/[<>&]/g, " ")}"</b>\n${exitText(lead.exit)}\nIts entries go to the desk the moment they fill. Desk mode decides paper or live money.` : "🧭 The desk stopped following GRID LIVE (no passed strategy right now).").catch(() => null);
+  const view = { at: now, books, past, follow, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
   await redis().set(LIVE_VIEW, view, { ex: 2 * 86400 }).catch(() => null);
   return view;
 }

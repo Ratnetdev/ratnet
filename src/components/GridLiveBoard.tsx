@@ -7,7 +7,7 @@ import { col, sgn } from "./TripDetail";
 type L = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean };
 type Book = { key: string; label: string; exitLabel: string; since: number; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean }; open: { mint: string; symbol: string; pnlPct: number }[]; watching: number; live: L };
 type Trip = { k: string; mint: string; symbol: string; closedAt: number; pnlPct: number; why: string };
-type V = { at: number | null; books?: Book[]; recent?: Trip[]; trips?: number };
+type V = { at: number | null; books?: Book[]; recent?: Trip[]; trips?: number; follow?: { key: string; label: string; exitLabel: string } | null };
 
 const pf = (x: number) => (x >= 99 ? "no losses" : x.toFixed(2));
 
@@ -20,6 +20,13 @@ export default function GridLiveBoard() {
       <div className="ph">
         <span><b>grid live</b> · GRID&apos;s best strategies trading live coins on paper, exactly as tested</span>
         <span className="tiny muted">{ago(d.at)} ago</span>
+      </div>
+      <div className="pb small" style={{ paddingBottom: 0 }}>
+        {d.follow ? (
+          <span style={{ color: "var(--rat)" }}><b>The desk follows</b> {d.follow.label} · {d.follow.exitLabel}</span>
+        ) : (
+          <span className="muted">The desk follows the first strategy that passes the exam here (its entries go straight to the desk).</span>
+        )}
       </div>
       {!books.length ? (
         <div className="pb muted small">No strategies yet. The books fill after each GRID run (every hour) with the ones that held up on the newest calls; a strategy stays until its live record decides it.</div>

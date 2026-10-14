@@ -48,6 +48,7 @@ import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
+import { HOLD_MS, type GExit } from "./grid";
 import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE" | "REGIME";
@@ -107,6 +108,8 @@ export type Pos = {
   noPxSince?: number; // first beat with no price (curve complete, not migrated yet)
   xo?: Exo; // v0.1.66: exit settings of the variant this position follows (ARENA books and promoted desk trades)
   pv?: string; // v0.1.66: the promoted ARENA variant the desk followed into this trade
+  gk?: string; // v0.1.75: the GRID LIVE strategy (key) the desk followed into this trade
+  gx?: GExit; // v0.1.75: that strategy's exits (exactly as GRID tested them; lib/grid.ts)
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
   watch?: Watch[]; // insider token accounts and their balance at entry
@@ -975,7 +978,14 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
     { label: `worst drawdown (last ${EXAM.trades})`, need: `≤ ${EXAM.maxDD}%`, now: last.length ? `${dd30.toFixed(0)}%` : "no trades yet", ok: last.length > 0 && dd30 <= EXAM.maxDD },
     { label: "funded wallet", need: `≥ ${EXAM.minWallet} SOL`, now: walletSol == null ? "none" : `${walletSol.toFixed(2)} SOL`, ok: walletSol != null && walletSol >= EXAM.minWallet },
   ];
-  return { trades: rounds.length, winRate, pnlPct, maxDD: Math.round(dd30 * 10) / 10, walletSol, checks, passed: checks.every((c) => c.ok) };
+  // v0.1.75: or a GRID LIVE strategy passed the same exam on live coins (paper, at the desk's size and costs) and the
+  // desk follows it: its record IS the paper record of what the desk will trade, so the desk does not need 30 more
+  const fol = (await redis().get<{ key: string; label: string; live: { n: number; winRate: number; pnl: number; pfLessBest: number; passed: boolean } }>("rn:grid:follow").catch(() => null)) || null;
+  const gridOk = !!fol?.live?.passed;
+  const walletOk = walletSol != null && walletSol >= EXAM.minWallet;
+  checks.push({ label: "or: GRID LIVE strategy passed on live coins (the desk follows it)", need: "passed", now: fol ? `${fol.label}: ${fol.live.n} trips, ${fol.live.winRate}% won, ${fol.live.pnl >= 0 ? "+" : ""}${fol.live.pnl} SOL` : "none yet", ok: gridOk });
+  const own = checks.filter((c) => !c.label.startsWith("or:")).every((c) => c.ok);
+  return { trades: rounds.length, winRate, pnlPct, maxDD: Math.round(dd30 * 10) / 10, walletSol, checks, passed: own || (gridOk && walletOk) };
 }
 
 // ---------------------------------------------------------------- prices
@@ -1540,6 +1550,20 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const caseAdds: Case[] = [];
       // the exit rules (RISK), shared by the real desk and the ghost desk so both trade exactly alike
       const decide = (p: Pos, q: Px, gt = "") => {
+        // v0.1.75: a trade following a GRID LIVE strategy runs that strategy's exits, exactly as GRID tested them
+        if (p.gx && !closeAll) {
+          p.noPxSince = undefined;
+          p.lastPx = q.px;
+          if (q.src !== "dex") p.mkt = { grad: q.grad, real: q.real };
+          if (q.px > p.peakPx) p.peakAt = now;
+          p.peakPx = Math.max(p.peakPx, q.px);
+          const lastS = p.series[p.series.length - 1];
+          if (!lastS || now - lastS[0] >= 10_000) p.series.push([now, q.px, q.real]);
+          if (p.series.length > 360) p.series = p.series.slice(-360);
+          const g = gridExit(p, { px: q.px, grad: !!q.grad && q.src !== "dex" }, now);
+          if (g.frac > 0 && q.grad) p.gradSeen = true;
+          return { sellFrac: g.frac, reason: g.why, tunable: false, lv: p.msHi ?? -1 };
+        }
         p.noPxSince = undefined;
         p.lastPx = q.px;
         if (q.src !== "dex") p.mkt = { grad: q.grad, real: q.real };
@@ -1772,6 +1796,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         state.dayStart = eq.value;
       }
       let tried = 0;
+      // v0.1.75: GRID LIVE's leader first (its entries are time-critical: the strategy was tested with a 2-second fill)
+      while (GRID_ORDERS.length) {
+        const o = GRID_ORDERS.shift()!;
+        await gridEntry(b, state, o, cfg, eq.value, walletSol, kp).catch((e) => log(b, "REGIME", `GRID order $${o.symbol}: ${safeErr(e)}`, "bad"));
+      }
       for (const q0 of queued) {
         // v0.1.45: entries never hold the exits back for long. Each entry can take seconds (VET, FLOW, the falling-knife
         // reads); after the first one, once 4 seconds have gone the rest of the queue waits for the next beat, so open
@@ -2525,6 +2554,70 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     // check ("migrated before initials", held 0 minutes, -6% of pure cost), which also paused MOMO in PM
     ...(grad || rec.outcome === "BONDED" ? { gradSeen: true } : {}),
   };
+}
+
+/**
+ * v0.1.75: GRID's exits on a desk position (lib/grid.ts tradeFrom, the same rules): half at the target, then a trail
+ * off the peak; a stop; out after the time limit without initials; at the migration either out ("sell") or on into the
+ * pool ("hold", up to 6 hours). Pure: { frac, why } (frac 0 = hold).
+ */
+export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | "openedAt" | "gradSeen">, q: { px: number; grad: boolean }, now: number): { frac: number; why: string } {
+  const x = p.gx!;
+  const xr = q.px / p.entryPx;
+  if (q.grad && !p.gradSeen && x.mig !== "hold") return { frac: 1, why: `GRID: migrated, sold at the migration (${xr.toFixed(2)}x)` };
+  if (x.mig === "hold" ? now - p.openedAt >= HOLD_MS : now - p.openedAt >= 62 * 60_000) return { frac: 1, why: `GRID: ${x.mig === "hold" ? "6 hours" : "the hour"} over, out at ${xr.toFixed(2)}x` };
+  if (!p.tp1Done && xr >= x.initials) return { frac: 0.5, why: `GRID: half at ${xr.toFixed(2)}x (target ${x.initials}x)` };
+  if (xr <= 1 - x.stop) return { frac: 1, why: `GRID: stop ${((xr - 1) * 100).toFixed(0)}%` };
+  if (p.tp1Done && q.px <= p.peakPx * (1 - x.trail)) return { frac: 1, why: `GRID: trail ${Math.round(x.trail * 100)}% off the peak, out at ${xr.toFixed(2)}x` };
+  if (now - p.openedAt >= x.timeMin * 60_000 && (!p.tp1Done || xr < 1.1)) return { frac: 1, why: `GRID: ${x.timeMin} minutes without initials, out at ${xr.toFixed(2)}x` };
+  return { frac: 0, why: "" };
+}
+
+// v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
+// the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean };
+const GRID_ORDERS: GridOrder[] = [];
+export function queueGridOrder(o: GridOrder) {
+  GRID_ORDERS.push(o);
+  if (GRID_ORDERS.length > 50) GRID_ORDERS.shift();
+}
+export const gridOrders = () => GRID_ORDERS;
+
+async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null) {
+  const r = redis();
+  const coin = { mint: o.mint, symbol: o.symbol };
+  if (Date.now() - o.at > 30_000) return log(b, "REGIME", `$${o.symbol}: the GRID signal is ${Math.round((Date.now() - o.at) / 1000)}s old. not chasing`, "info", coin);
+  if (ENTERING.has(o.mint) || (await loadPositions(K.deskPos))[o.mint]) return;
+  if (state.live && !kp) return log(b, "EXEC", `$${o.symbol}: the desk is live and this process has no wallet key. no buy here`, "info", coin);
+  if (state.live && Number((await r.hlen(PENDING).catch(() => 0)) || 0) > 0) return log(b, "EXEC", `$${o.symbol}: a previous swap is still being checked against the wallet. no new buy until it is settled`, "info", coin);
+  const noRoom = await roomFor("direct", state, eqValue, cfg);
+  if (noRoom) return log(b, "REGIME", `$${o.symbol}: ${noRoom}. skipped`, "info", coin);
+  ENTERING.add(o.mint);
+  try {
+    const fresh = (await priceOf([o.mint], true).catch(() => ({} as Record<string, Px>)))[o.mint];
+    if (!fresh || fresh.src === "dex") return log(b, "EXEC", `$${o.symbol}: no fresh price right before the buy. skipped`, "info", coin);
+    const avail = state.live ? (walletSol == null ? 0 : liveCash(state)) - 0.02 : state.cash;
+    const vSol = 30 + Math.max(0, fresh.real);
+    const liqCap = fresh.grad ? cfg.maxSol : vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
+    const size = Math.min(cfg.maxSol, Math.max(cfg.minSol, (eqValue * cfg.sizePct) / 100), liqCap, avail * 0.95);
+    if (size < cfg.minSol * 0.99) return log(b, "SIZE", `no room for $${o.symbol}: ${avail.toFixed(3)} SOL free`, "info", coin);
+    // SHIELD, the scam guard, still runs before any money moves
+    const known = await getLaunch(o.mint).catch(() => null);
+    const sh = await shield({ mint: o.mint, symbol: o.symbol, grad: !!fresh.grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / fresh.px) * 1e6))), tape: known?.tape, ageMs: known ? Date.now() - known.createdAt : undefined }).catch(() => null);
+    if (sh && !sh.ok) {
+      const f = (sh.hardFail || sh.softFail)!;
+      return log(b, "VET", `SHIELD stopped $${o.symbol} (GRID): ${f.rule.replace(/_/g, " ")} (${f.v})`, "bad", coin);
+    }
+    const rec: Launch = known || ({ mint: o.mint, sig: "", createdAt: Date.now(), creator: "", name: o.symbol, symbol: o.symbol, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: Date.now(), dugBy: "GRID", p0: 0, mcap0: 0, cp: {}, outcome: fresh.grad ? "BONDED" : undefined } as Launch);
+    const pos = await buy(b, state, rec, size, fresh.px, cfg.slippageBps, kp, fresh.real, "direct", !!fresh.grad);
+    if (!pos) return;
+    pos.gk = o.key;
+    pos.gx = o.exit;
+    await savePos(K.deskPos, pos, true);
+    log(b, "REGIME", `$${o.symbol}: following GRID LIVE's "${o.label}" (${size.toFixed(3)} SOL), its exits run the position`, "ok", coin);
+  } finally {
+    ENTERING.delete(o.mint);
+  }
 }
 
 /** A MOMO signal: a pump.fun coin pulling real volume right now (usually after migration). Its own checks and slots. */

@@ -181,7 +181,9 @@ export default function DeskBoard() {
   const total = pct(eq, base);
   const today = st ? pct(eq, st.dayStart) : 0;
   const winRate = st?.closed ? (st.wins / st.closed) * 100 : null;
-  const passed = d?.exam?.checks.filter((c) => c.ok).length ?? 0;
+  // v0.1.75: the GRID LIVE row is an alternative path ("or:"), not one more check
+  const own = d?.exam?.checks.filter((c) => !c.label.startsWith("or:")) ?? [];
+  const passed = own.filter((c) => c.ok).length;
   const [agent, setAgent] = useState<string | null>(null);
 
   return (
@@ -227,7 +229,7 @@ export default function DeskBoard() {
         </div>
         <div className="panel exam">
           <div className="ph">
-            <span><b>{d?.live ? "live" : "live exam"}</b> · <Info k="exam">{d?.live ? "promoted by the desk itself" : `${passed}/${d?.exam?.checks.length ?? 6} passed`}</Info></span>
+            <span><b>{d?.live ? "live" : "live exam"}</b> · <Info k="exam">{d?.live ? "promoted by the desk itself" : `${passed}/${own.length || 6} passed${d?.exam?.checks.some((c) => c.label.startsWith("or:") && c.ok) ? " · GRID LIVE passed" : ""}`}</Info></span>
           </div>
           <div className="pb small">
             {d?.live ? (

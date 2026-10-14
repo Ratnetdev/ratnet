@@ -23,7 +23,7 @@ import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
 import { gridHistory, gridMessage, liveCandidates, withSeen, type GHist, type GridView } from "../src/lib/grid";
-import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep } from "../src/lib/gridlive";
+import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep, setGridFollow } from "../src/lib/gridlive";
 import { readPools } from "../src/lib/pool";
 import { afterLoad, afterNoteMigration, afterResolve, afterStats, afterWant, migratedAt } from "../src/lib/after";
 import { markAlive, markBusy } from "../src/lib/alive";
@@ -779,6 +779,11 @@ async function main() {
   // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
   setCallHook((call) => gridLiveCall(call));
+  // v0.1.75: FOLLOW: the desk buys every entry of GRID LIVE's leader (a strategy that passed the exam live)
+  {
+    const { queueGridOrder } = await import("../src/lib/desk");
+    setGridFollow((o) => queueGridOrder(o));
+  }
   setInterval(() => {
     try {
       gridLiveSweep();
