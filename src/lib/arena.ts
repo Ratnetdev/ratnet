@@ -51,7 +51,7 @@ export const variantOf = (id: string | null | undefined) => VARIANTS.find((v) =>
 export const ARENA_SOL = 0.1;
 export const ARENA_MAX_OPEN = 3;
 export const ARENA_BASE = 1.25; // virtual balance for the exam (same size-to-balance ratio as the paper desk)
-const DESK_ONLY = new Set(["open_slots", "daily_loss_ok"]); // the desk's own limits; each book has its own slots
+const DESK_ONLY = new Set(["open_slots", "daily_loss_ok", "chop_guard"]); // v0.1.80: the chop guard is the desk's rule; ARENA keeps taking those entries (evidence) // the desk's own limits; each book has its own slots
 
 const okExcept = (checks: Check[], waive: string[] = []) => checks.every((c) => c.ok || DESK_ONLY.has(c.rule) || waive.includes(c.rule));
 

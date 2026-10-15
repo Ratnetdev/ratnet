@@ -127,6 +127,8 @@ export type Pos = {
   drainPx?: number; // price when a confirmed sell-off would have fired while that exit is switched off (COACH scores it)
   mkt?: { grad: boolean; real: number }; // venue at the last price read (curve or pool, its SOL): sells are costed on it
   reentry?: boolean; // bought back after a stop-out (its results decide whether re-entries stay on)
+  /** v0.1.80: TREND HOLD. Still alive at the time stop: held on with a trail instead of sold (hi = high since then) */
+  trend?: { at: number; px0: number; gain0: number; hi: number; hiAt: number };
 };
 /** Everything known at the moment of the buy, kept for the public track record and for tuning by hand. */
 export type EntryCtx = {
@@ -220,6 +222,10 @@ export type Learn = {
   devExitOn: boolean;
   devStat: { n: number; saved: number; cost: number }; // trades where the dev sold while held: an exit then would have saved / cost
   drainBy?: Record<string, DevRec>; // the sell-off exit, learned per strategy: on while selling into a sell-off beats holding
+  /** v0.1.80: the time stop, learned per strategy: on (sell at the time stop) only while selling there clearly beats the trend hold */
+  timeBy?: Record<string, DevRec>;
+  /** v0.1.80: the chop guard, learned per strategy: on (skip) only while chop re-entries on one coin clearly lose */
+  chopBy?: Record<string, DevRec>;
   devBy?: Record<Kind, DevRec>; // the same, learned separately for tech coins and memes
   // PRIOR "holding floor": skip a coin that already dumped far from its high. A starting hint from the dev, not a law:
   // every coin it skips is followed in shadow, and COACH drops the rule if those coins do better than the ones bought.
@@ -244,6 +250,10 @@ export const LEARN_RULES = {
   devMin: 15, // dev-sell cases before the dev exit can switch itself on
   drainMin: 10, // sell-off cases per strategy before the sell-off exit can switch itself off (or back on)
   drainSaved: 0.5, // share of cases where selling into the sell-off beat holding
+  timeMin: 10, // v0.1.80: trend-hold cases (2 hours on) before the time stop can switch itself back on
+  timeSaved: 0.5, // share of cases where selling at the time stop beat the trend hold
+  chopMin: 10, // v0.1.80: chop re-entry cases (30 minutes on) before the chop guard can switch itself on (or off)
+  chopSaved: 0.6, // share of chop re-entries that lost before skipping them is the rule
   devSaved: 0.6, // share of cases where selling with the dev beat holding
   floorMax: 40, // % under the coin's high (since launch) where the floor prior skips it
   floorMin: 30, // skipped cases before COACH can overrule the floor prior
@@ -293,7 +303,7 @@ type After = { mint: string; symbol: string; at: number; exitPx: number; peakHel
 // A dev-sell or sell-off moment, scored the same way whether the desk sold or held: the price 30 minutes later against
 // the price at that moment. Before v0.1.31 a hold was scored on our later exit price and a sell on whether the coin ran
 // 30% within hours, so the two sides of one switch were measured differently.
-type Case = { kind: "dev" | "drain"; key: string; mint: string; symbol: string; at: number; px0: number; sold: boolean };
+type Case = { kind: "dev" | "drain" | "trend" | "chop"; key: string; mint: string; symbol: string; at: number; px0: number; sold: boolean };
 const CASES = "rn:desk:cases";
 // v0.1.43: `how` and `rec` for MOMO's pullback entries (a MOMO coin may never have been dug, so its record rides along)
 type Stalk = { mint: string; symbol: string; at: number; px0: number; depth: number; hi: number; lo: number; armed: boolean; early: boolean; how?: "momo"; rec?: Launch; desc?: string; mins?: number };
@@ -351,7 +361,7 @@ async function loadState(start: number): Promise<DeskState> {
 async function loadLearn(): Promise<Learn> {
   const l = await redis().get<Learn>(K.deskLearn);
   const e = emptyLearn();
-  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn, traction: { ...e.traction, ...(l.traction || {}) }, tractionOn: l.tractionOn ?? e.tractionOn, curveHi: { ...e.curveHi, ...(l.curveHi || {}) }, curveHiOn: l.curveHiOn ?? e.curveHiOn, trailBy: { ...(l.trailBy || {}) }, drainBy: { ...(l.drainBy || {}) }, devBy: { tech: { ...e.devBy!.tech, ...(l.devBy?.tech || {}) }, meme: { ...e.devBy!.meme, ...(l.devBy?.meme || {}), ...(l.devBy?.meme ? {} : { on: !!l.devExitOn }) } } } : e;
+  return l ? { ...e, ...l, arms: { ...e.arms, ...(l.arms || {}) }, earlyStat: { ...e.earlyStat, ...(l.earlyStat || {}) }, devStat: { ...e.devStat, ...(l.devStat || {}) }, floor: { ...e.floor, ...(l.floor || {}) }, floorOn: l.floorOn ?? e.floorOn, socials: { ...e.socials, ...(l.socials || {}) }, socialsOn: l.socialsOn ?? e.socialsOn, traction: { ...e.traction, ...(l.traction || {}) }, tractionOn: l.tractionOn ?? e.tractionOn, curveHi: { ...e.curveHi, ...(l.curveHi || {}) }, curveHiOn: l.curveHiOn ?? e.curveHiOn, trailBy: { ...(l.trailBy || {}) }, drainBy: { ...(l.drainBy || {}) }, timeBy: { ...(l.timeBy || {}) }, chopBy: { ...(l.chopBy || {}) }, devBy: { tech: { ...e.devBy!.tech, ...(l.devBy?.tech || {}) }, meme: { ...e.devBy!.meme, ...(l.devBy?.meme || {}), ...(l.devBy?.meme ? {} : { on: !!l.devExitOn }) } } } : e;
 }
 
 /** The paper desk mirrors the real desk wallet, so the start on the site is the real balance. */
@@ -1135,6 +1145,84 @@ function drainCase(l: Learn, sl: string, saved: boolean) {
   return was !== d.on;
 }
 
+/** v0.1.80: a trend-hold case scored. saved = selling at the time stop would have been better. On = the time stop sells. */
+function timeCase(l: Learn, sl: string, saved: boolean) {
+  l.timeBy ||= {};
+  const d = (l.timeBy[sl] ||= { n: 0, saved: 0, cost: 0, on: false });
+  d.n++;
+  if (saved) d.saved++;
+  else d.cost++;
+  const was = d.on;
+  d.on = propSwitch(d.on, d.saved, d.n, LEARN_RULES.timeMin, LEARN_RULES.timeSaved);
+  return was !== d.on;
+}
+/** v0.1.80: a chop re-entry case scored. saved = skipping it would have been better. On = the guard skips. */
+function chopCase(l: Learn, sl: string, saved: boolean) {
+  l.chopBy ||= {};
+  const d = (l.chopBy[sl] ||= { n: 0, saved: 0, cost: 0, on: false });
+  d.n++;
+  if (saved) d.saved++;
+  else d.cost++;
+  const was = d.on;
+  d.on = propSwitch(d.on, d.saved, d.n, LEARN_RULES.chopMin, LEARN_RULES.chopSaved);
+  return was !== d.on;
+}
+/** v0.1.80: the trend hold's exit on one price (updates its high). Returns the reason to sell, or null to hold. */
+export function trendExit(tr: NonNullable<Pos["trend"]>, px: number, mult: number, now: number, c: any): string | null {
+  if (px > tr.hi) (tr.hi = px), (tr.hiAt = now);
+  const tw = c.momoTrendTrail ?? 25;
+  const quietM = (now - tr.hiAt) / 60_000;
+  if (px <= tr.hi * (1 - tw / 100)) return `trend over: ${tw}% off its high since the hold began, out at ${mult.toFixed(2)}x`;
+  // faded = no new high for a while AND no real progress since the hold began (sideways in profit rides on the trail:
+  // $STREAM took 9 hours to go from $2M to $7M)
+  if (quietM >= (c.momoTrendQuietMin ?? 120) && px < tr.px0 * 1.1) return `trend faded: no new high in ${Math.round(quietM)}m and no progress since the hold began, out at ${mult.toFixed(2)}x`;
+  if (now - tr.at >= (c.momoTrendMaxH ?? 24) * 3600_000) return `trend hold ended after ${c.momoTrendMaxH ?? 24}h, out at ${mult.toFixed(2)}x`;
+  return null;
+}
+export const _cases = { timeCase: (l: Learn, sl: string, saved: boolean) => timeCase(l, sl, saved), chopCase: (l: Learn, sl: string, saved: boolean) => chopCase(l, sl, saved) };
+
+/** v0.1.80: the trend hold applies to MOMO (setting momoTrendHold: auto = COACH decides, on, off). */
+export function trendHoldOn(c: any, l: Learn | null | undefined, sl: string) {
+  if (sl !== "momo") return false;
+  const m = c.momoTrendHold ?? "auto";
+  if (m === "off") return false;
+  if (m === "on") return true;
+  return !(l?.timeBy?.[sl]?.on ?? false);
+}
+/** v0.1.80: the chop guard (setting momoChopGuard: auto = COACH decides, on, off). */
+export function chopGuardOn(c: any, l: Learn | null | undefined) {
+  const m = c.momoChopGuard ?? "auto";
+  if (m === "off") return false;
+  if (m === "on") return true;
+  return !!l?.chopBy?.momo?.on;
+}
+/**
+ * v0.1.80: a MOMO re-entry is "chop" when the desk already lost twice in a row on this coin and the price is not above
+ * the highest price the desk saw on it. A new high (breakout) is never chop: that is the kill switch that keeps a
+ * runner like $STREAM ($2M to $24M) buyable however many times the desk traded it before.
+ */
+export function isChop(led: CoinLed | null, px: number) {
+  return !!led && led.streak >= 2 && px <= led.hi;
+}
+export type CoinLed = { n: number; streak: number; hi: number; first: number; at: number; pnl: number };
+const COIN_LED = (m: string) => `rn:desk:coinled:${m}`;
+/** v0.1.80: the desk's own record on one coin (MOMO trades, 48 hours). */
+export async function noteCoinTrade(p: Pos, now = Date.now()) {
+  const r = redis();
+  const k = COIN_LED(p.mint);
+  const led = ((await r.get<CoinLed>(k).catch(() => null)) || { n: 0, streak: 0, hi: 0, first: p.entryPx, at: now, pnl: 0 }) as CoinLed;
+  const pnl = (p.soldSol || 0) - (p.costSol || 0);
+  led.n++;
+  led.streak = pnl < 0 ? led.streak + 1 : 0;
+  led.hi = Math.max(led.hi, p.peakPx || 0, p.entryPx || 0);
+  led.pnl = Math.round((led.pnl + pnl) * 1e6) / 1e6;
+  led.at = now;
+  await r.set(k, led, { ex: 48 * 3600 }).catch(() => null);
+  return led;
+}
+export const coinLed = async (m: string) => ((await redis().get<CoinLed>(COIN_LED(m)).catch(() => null)) || null) as CoinLed | null;
+let LEARN_NOW: Learn | null = null;
+
 /** The held part of a position's path for the EXIT LAB: [minutes since entry, price / entry], ~30s apart. */
 function heldPath(p: Pos, now: number, exitPx: number): Partial<After> {
   const pts: [number, number][] = [];
@@ -1412,6 +1500,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     const ws0 = kp0 ? (await conn().getBalance(kp0.publicKey).catch(() => null)) : null;
     state = await syncWallet(state, kp0, ws0 == null ? null : ws0 / 1e9, cfg.minSol, b);
     const learnS = await loadLearn();
+    LEARN_NOW = learnS;
     await earlyStats(learnS);
     await r.set(K.deskLearn, learnS); // saved right away so the page never shows stale gates
     let learnDirty = false;
@@ -1739,7 +1828,22 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           else if (q.grad && q.src !== "dex" && !p.gradSeen) {
             p.gradSeen = true;
             if (p.pn < cfg.gradKeepP) [sellFrac, reason] = [1, `migrated before initials, P(next) ${Math.round(p.pn * 100)}%: out`];
-          } else if (age >= timeStop) [sellFrac, reason] = [1, `time stop ${Math.round(age)}m at ${fmtPct(gain)}${pf?.medTtp && timeStop !== cfg.timeStop ? ` (${sl} coins peak within ${pf.medTtp}m)` : ""}`];
+          } else if (p.trend) {
+            // v0.1.80: TREND HOLD. The time stop found it alive: it rides on a trail from its high since then, and
+            // leaves when it fades (no new high for momoTrendQuietMin) or after momoTrendMaxH. The stop loss above still
+            // applies, and initials (above) hand it to the house-money trail like any winner.
+            const why = trendExit(p.trend, q.px, mult, now, c2);
+            if (why) [sellFrac, reason] = [1, why];
+          } else if (age >= timeStop) {
+            const trendN = positions.filter((x) => x.trend && x.mint !== p.mint).length;
+            if (trendHoldOn(c2, learnS, sl) && xo?.time == null && gain >= (c2.momoTrendMinGain ?? -5) && (gt || trendN < (c2.momoTrendMax ?? 4))) {
+              // v0.1.80: alive at the time stop (not stopped out, sellers not in control, within 5% of the entry or
+              // better): MOMO coins in this state kept rising after the desk sold them (127 trades, 15 Oct). Held on.
+              p.trend = { at: now, px0: q.px, gain0: Math.round(gain * 10) / 10, hi: q.px, hiAt: now };
+              log(b, "RISK", `$${p.symbol}${gt}: ${Math.round(age)}m in at ${fmtPct(gain)}, still alive: trend hold (out ${c2.momoTrendTrail ?? 25}% off its high, if it fades for ${c2.momoTrendQuietMin ?? 120}m without progress, or after ${c2.momoTrendMaxH ?? 24}h)`, "ok", p);
+              if (!gt) caseAdds.push({ kind: "trend", key: sl, mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: false });
+            } else [sellFrac, reason] = [1, `time stop ${Math.round(age)}m at ${fmtPct(gain)}${pf?.medTtp && timeStop !== cfg.timeStop ? ` (${sl} coins peak within ${pf.medTtp}m)` : ""}`];
+          }
         } else {
           // house money: trail + milestone ladder + migration check
           // CATCH runners get a wider trail until they reach the send target: senders shake out hard on the way up
@@ -1749,16 +1853,20 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const quiet = (now - (p.peakAt || p.openedAt)) / 60_000;
           const staleMin = (cfg as any).bagStaleMin ?? 120;
           const sendT = Math.max(c2.catchTargetUsd ?? 300_000, p.entryPx * SUPPLY * sol * 2);
-          if (sending && sol && usd >= sendT) {
+          // v0.1.80: a trend hold keeps its own rules after the initials too (its trail from the high since the hold
+          // began, fade, max hours): MOMO's tight house-money trail would shake a $STREAM-type run out on a 17% dip
+          const trendWhy = p.trend ? trendExit(p.trend, q.px, mult, now, c2) : null;
+          if (trendWhy) [sellFrac, reason, tunable] = [1, trendWhy, true];
+          else if (sending && sol && usd >= sendT) {
             // CATCH send ladder, step 2: at the target ($300K or 2x the entry cap), sell 30% of the original bag; the
             // last 30% trails like any house-money bag
             p.sendHit = true;
             const f = Math.min(1, ((c2.catchSendFrac ?? 0.3) * p.tokens0) / Math.max(1, p.tokens));
             [sellFrac, reason, tunable] = [f, `send ladder: ${usdS(sendT)} reached (${mult.toFixed(1)}x), runner third sold, the rest trails`, true];
-          } else if (quiet >= staleMin && mult < 3) {
+          } else if (!p.trend && quiet >= staleMin && mult < 3) {
             // a bag that has not made a new high in a long time is dead money: sell it and keep the record clean
             [sellFrac, reason, tunable] = [1, `bag went quiet: no new high in ${Math.round(quiet)}m, out at ${mult.toFixed(1)}x`, true];
-          } else if (q.px <= p.peakPx * (1 - width / 100)) {
+          } else if (!p.trend && q.px <= p.peakPx * (1 - width / 100)) {
             [sellFrac, reason, tunable] = [1, `trailing stop ${p.trail}% off the peak (${(p.peakPx / p.entryPx).toFixed(1)}x), out at ${mult.toFixed(1)}x`, true];
           } else if (lv > (p.msHi ?? -1) && lv >= 0 && !sending) {
             // only de-risk at a milestone when the runner model rates the next one as weak; strong coins keep running
@@ -1803,6 +1911,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             // the desk sold on a dev sell or a sell-off: scored like a hold, on the price 30 minutes later
             if (ok && /^dev sold/.test(reason)) caseAdds.push({ kind: "dev", key: p.kind || "meme", mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
             if (ok && /^sellers took over/.test(reason)) caseAdds.push({ kind: "drain", key: sleeveOf(p.how, p.wire?.vamp), mint: p.mint, symbol: p.symbol, at: now, px0: q.px, sold: true });
+            if (ok && p.tokens <= 0 && p.how === "momo") await noteCoinTrade(p, now).catch(() => null); // v0.1.80: the coin's own record
             if (ok && p.tokens <= 0) {
               // COACH follows the coin after we leave it
               await setAfter(r, `${p.mint}:${p.openedAt}`, { mint: p.mint, symbol: p.symbol, at: now, exitPx: q.px, peakHeld, reason, hi: q.px, lo: q.px, tunable, sl: sleeveOf(p.how, p.wire?.vamp), ...heldPath(p, now, q.px), ...(/^dev sold/.test(reason) ? { devExit: p.kind || "meme" } : {}), ...(/^sellers took over/.test(reason) ? { drainExit: sleeveOf(p.how, p.wire?.vamp) } : {}) } satisfies After);
@@ -2211,13 +2320,26 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
         // dev-sell and sell-off cases, 30 minutes on: would selling at that moment have beaten holding?
         for (const [ck, c] of Object.entries(cases)) {
-          if (now - c.at < 30 * 60_000) continue;
+          // v0.1.80: trend holds are judged 2 hours on (the time-stop exits the hold replaces kept rising for 1 to 2 hours)
+          const horizon = c.kind === "trend" ? 120 * 60_000 : 30 * 60_000;
+          if (now - c.at < horizon) continue;
           const q = px[c.mint];
           if (!q || q.src === "dex") {
-            if (now - c.at > 2 * 3600_000) wp.hdel(CASES, ck); // never read again: dropped, not scored
+            if (now - c.at > horizon + 90 * 60_000) wp.hdel(CASES, ck); // never read again: dropped, not scored
             continue;
           }
           const saved = q.px < c.px0;
+          if (c.kind === "trend" || c.kind === "chop") {
+            const flip2 = c.kind === "trend" ? timeCase(learnS, c.key, saved) : chopCase(learnS, c.key, saved);
+            const st2 = c.kind === "trend" ? learnS.timeBy![c.key] : learnS.chopBy![c.key];
+            const what2 = c.kind === "trend" ? "trend hold" : "chop re-entry";
+            const lesson = c.kind === "trend" ? (saved ? "selling at the time stop was better" : "holding was better") : saved ? "skipping it was better" : "buying it was better";
+            log(b, "COACH", `$${c.symbol} ${what2} (${c.key}): ${(q.px / c.px0).toFixed(2)}x ${c.kind === "trend" ? "2 hours" : "30 minutes"} later, ${lesson}. ${st2.saved}/${st2.n} cases favour ${c.kind === "trend" ? "the time stop" : "skipping"}`, "info", { mint: c.mint, symbol: c.symbol });
+            if (flip2) log(b, "COACH", c.kind === "trend" ? (st2.on ? `time stop back on for ${c.key}: selling there has clearly been better than the trend hold` : `trend hold back on for ${c.key}: holding has clearly been better`) : st2.on ? `chop guard on for ${c.key}: repeat buys on a coin that keeps losing have clearly lost` : `chop guard off for ${c.key}: those repeat buys have not clearly lost`, "win");
+            learnDirty = true;
+            wp.hdel(CASES, ck);
+            continue;
+          }
           const flip = c.kind === "dev" ? devCase(learnS, c.key as Kind, saved) : drainCase(learnS, c.key, saved);
           const st = c.kind === "dev" ? learnS.devBy![c.key as Kind] : learnS.drainBy![c.key];
           const what = c.kind === "dev" ? "dev sell" : "sell-off";
@@ -2736,6 +2858,11 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
     top10 = Math.round((rest.slice(0, 10).reduce((a, x) => a + x, 0) / 1e9) * 1000) / 10;
   } catch {}
   const wash = h.b5 + h.s5 > 0 && (h.buyers5 + h.sellers5) > 0 ? (h.b5 + h.s5) / (h.buyers5 + h.sellers5) : 0;
+  // v0.1.80: the desk's record on this coin. Two losses in a row and no new high = chop; a new high always passes
+  const led = await coinLed(m);
+  const chop = isChop(led, q.px);
+  const guard = chopGuardOn(c, LEARN_NOW);
+  if (chop) await r.hset(CASES, { [`chop:${m}:${now}`]: { kind: "chop", key: "momo", mint: m, symbol: rec.symbol, at: now, px0: q.px, sold: guard } satisfies Case }).catch(() => null);
   const checks = [
     { rule: "traction", ok: h.v5 >= (c.momoMinVol5m ?? 25_000) && h.buyers5 >= (c.momoMinBuyers5m ?? 40), v: `$${Math.round(h.v5 / 1000)}K in 5m, $${Math.round(h.v1h / 1000)}K in 1h, ${h.buyers5} buyers` },
     { rule: "buy_pressure", ok: h.buyers5 >= h.sellers5 * (c.momoMinBuyRatio ?? 1.05), v: `${h.buyers5} buyers vs ${h.sellers5} sellers` },
@@ -2745,6 +2872,11 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
     { rule: "fresh_signal", ok: now - h.at < 3 * 60_000, v: `${Math.round((now - h.at) / 1000)}s old` },
     { rule: "open_slots", ok: open < (c.momoMaxOpen ?? 3) && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${c.momoMaxOpen ?? 3} MOMO slots` },
     { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
+    {
+      rule: "chop_guard",
+      ok: !(chop && guard),
+      v: !led ? "first trade on this coin" : chop ? `${led.streak} losses in a row here, below its high${guard ? "" : " (guard off: COACH is still scoring these)"}` : led.streak >= 2 ? "new high: breakout, the guard steps aside" : `${led.n} trade${led.n > 1 ? "s" : ""} here, last ${led.streak ? "lost" : "won"}`,
+    },
   ];
   const fails = checks.filter((x) => !x.ok);
   const fail = fails[0];
@@ -3362,7 +3494,7 @@ export const deskTrades = () => listCached<Trade>(K.deskTrades, SEQ.trades, 2000
 const ghostTrades = () => listCached<Trade>(GHOST_TRADES, SEQ.gtrades, 2000, tradeId);
 const tripMetas = (ghost: boolean) => listCached<TripMeta>(ghost ? GHOST_TRIPS : TRIPS_KEY, ghost ? SEQ.gtrips : SEQ.trips, 1000, tripMetaId);
 const GHOST_MAX = 10;
-const DESK_RULES = new Set(["daily_loss_ok", "open_slots"]);
+const DESK_RULES = new Set(["daily_loss_ok", "open_slots", "chop_guard"]); // v0.1.80: chop guard blocks go to the ghost desk
 const GHOSTABLE = new Set([...DESK_RULES, "nano_agrees"]);
 // strategies with their own slot count (the King's lane never fills up with them, nor they with the King's)
 const OWN_LANE = new Set(["wire", "mind", "momo", "catch", "flash"]);
@@ -3371,7 +3503,8 @@ const OWN_LANE = new Set(["wire", "mind", "momo", "catch", "flash"]);
  * the trail and frees the slot, so a handful of moonbags can never freeze the desk (seen in the 12h sim: 7 bags held
  * every slot for 6 hours and the desk stopped trading).
  */
-const takesSlot = (p: Pos) => !p.tp1Done;
+// v0.1.80: a trend hold in profit (5%+) rides on house terms: it does not hold a MOMO slot, so new signals still get in
+const takesSlot = (p: Pos) => !p.tp1Done && !(p.trend && p.lastPx >= p.entryPx * 1.05);
 export const VET_KEY = (m: string) => `rn:vet:${m}`; // the last VET verdict on a coin (7 days)
 const ENTRY_KEY = (m: string) => `rn:entry:${m}`; // checks, flow and buzz of the signal that is about to be bought
 

@@ -127,6 +127,17 @@ export const DEFAULT_SETTINGS = {
     momoInitials: 40, // % up: sell the initials (until MOMO's own record sets it)
     momoSl: -25, // stop loss before initials (in the first 10 minutes it widens to the coin's own swing, up to -45%)
     momoTimeStop: 40, // minutes without initials: out
+    // v0.1.80 TREND HOLD: at the time stop a MOMO trade still within momoTrendMinGain % of its entry (or better) is held
+    // on a trail instead of sold. "auto" = COACH turns the time stop back on if selling there clearly beats holding
+    momoTrendHold: "auto" as "auto" | "on" | "off",
+    momoTrendMinGain: -5, // % vs entry at the time stop: at or above this, the trade is alive
+    momoTrendTrail: 25, // % off its high since the hold began: out
+    momoTrendQuietMin: 120, // minutes without a new high while no more than 10% above the hold's start: faded, out
+    momoTrendMaxH: 24, // hours at most in a trend hold (MOMO's own coin age window)
+    momoTrendMax: 4, // trend holds at once (desk)
+    // v0.1.80 CHOP GUARD: skip a MOMO re-entry after 2 losses in a row on the coin unless it makes a new high.
+    // "auto" = off until COACH sees chop re-entries clearly lose (ARENA and the ghost desk keep the evidence coming)
+    momoChopGuard: "auto" as "auto" | "on" | "off",
     // CATCH (the sender catcher): coins moving like the ones that ran to $300K+, fast migrators and slow ones.
     // auto/on = trade its signals (prior score until its model has 300 labels, then the model's own cutoff); off = never
     catchMode: "on" as "auto" | "on" | "off",
