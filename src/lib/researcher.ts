@@ -53,7 +53,44 @@ export function checkIdea(x: any): Idea | string {
 const SYSTEM = `You are RESEARCHER, the strategy researcher of a pump.fun trading desk that trades paper first and real money only after a strict exam.
 GRID searches thousands of rules on past King calls (a call = the desk's model flags a new pump.fun coin around minute 5). GRID LIVE trades the most promising rules on live coins, on paper, at real costs. A rule passes when its last 30 live trips have 40%+ won, +0.1 SOL on 0.05 SOL trades and a profit factor of 1.2+ without its best trade; your rules must also reach 45 trips and stay positive over all of them.
 Your job: propose new rules worth a live test, built only from the menu. Look for what the data says: rules close to passing, entry timings or exits that fix a rule's weak spot, combinations of the call conditions that the senders (coins that migrated) had, and what the live records show that GRID's history does not. Never propose a rule that is already trading or one listed as ruled out.
-Answer with JSON only: {"ideas":[{"filter":"<id or id+id or all>","mode":"<entry id>","exit":<exit number>,"why":"<one or two sentences, plain English, the evidence>"}]}`;
+Think before you answer if you need to, but end your answer with the JSON, nothing after it: {"ideas":[{"filter":"<id or id+id or all>","mode":"<entry id>","exit":<exit number>,"why":"<one or two sentences, plain English, the evidence>"}]}`;
+
+/**
+ * v0.1.83: the ideas object out of an answer, wherever it sits (the first live answer on 16 Oct did not parse: prose
+ * around it, or cut off). Finds {"ideas": ...} and reads to its matching brace, strings respected.
+ */
+export function extractIdeas(text: string | null): { ideas: any[] } | null {
+  if (!text) return null;
+  let from = 0;
+  for (;;) {
+    const k = text.indexOf('"ideas"', from);
+    if (k < 0) return null;
+    from = k + 7;
+    const a = text.lastIndexOf("{", k);
+    if (a < 0) continue;
+    let depth = 0;
+    let str = false;
+    let esc = false;
+    for (let i = a; i < text.length; i++) {
+      const ch = text[i];
+      if (str) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') str = false;
+        continue;
+      }
+      if (ch === '"') str = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}" && --depth === 0) {
+        try {
+          const j = JSON.parse(text.slice(a, i + 1));
+          if (Array.isArray(j?.ideas)) return j;
+        } catch {}
+        break;
+      }
+    }
+  }
+}
 
 /** The model's input: the menu and the evidence, compact. */
 export function brief(grid: any, live: any, seen: Record<string, any>, room: number) {
@@ -106,11 +143,13 @@ export async function researchPass(send?: (text: string) => Promise<unknown>, no
   const seen = (seen0 || {}) as Record<string, any>;
   researchStats.runs++;
   researchStats.lastAt = now;
-  const text = await ask(SYSTEM, [{ type: "text", text: brief(grid, live, seen, room) }], 1200, 90_000, model()).catch(() => null);
-  const j = json<{ ideas?: any[] }>(text);
-  if (!j?.ideas) {
+  // v0.1.83: room to think (4,000 tokens; 1,200 cut the first live answer short), the JSON found wherever it is
+  const text = await ask(SYSTEM, [{ type: "text", text: brief(grid, live, seen, room) }], 4000, 180_000, model()).catch(() => null);
+  const j = extractIdeas(text) ?? json<{ ideas?: any[] }>(text);
+  if (!Array.isArray(j?.ideas)) {
     researchStats.lastErr = text ? "answer was not the JSON asked for" : "no answer from the model";
-    await r.lpush(LOG, { at: now, model: model(), error: researchStats.lastErr }).catch(() => null);
+    // what came back, start and end, so the next fix is not a guess (Redis only, never on the site)
+    await r.lpush(LOG, { at: now, model: model(), error: researchStats.lastErr, head: text ? text.slice(0, 600) : null, tail: text ? text.slice(-600) : null, len: text?.length ?? 0 }).catch(() => null);
     await r.ltrim(LOG, 0, 99).catch(() => null);
     return { error: researchStats.lastErr };
   }
