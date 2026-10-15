@@ -40,6 +40,11 @@ export type GCoin = {
   sm: number;
   ds: boolean;
   soc: number;
+  // v0.1.81 (FIREHOSE): proven wallets that bought, unique buyers / SOL buy share / 2+ SOL buys in the last minute
+  pw?: number | null;
+  u60?: number | null;
+  bs60?: number | null;
+  wh?: number | null;
   bonded?: boolean; // migrated (the senders: every coin that did millions in volume is one of these)
   bondSecs?: number | null;
   // the path from the call on (ms after the call), mcSol, real SOL, migrated
@@ -71,6 +76,12 @@ export const PREDS: Pred[] = [
   { id: "nods", label: "dev has not sold", ok: (c) => !c.ds },
   { id: "soc", label: "has a social link", ok: (c) => c.soc >= 1 },
   { id: "young", label: "called within 2 min of launch", ok: (c) => c.at - c.createdAt <= 120_000 },
+  // v0.1.81 (FIREHOSE): WALLETS and TAPE ALL. Unknown (no firehose at the time) never passes
+  { id: "pw1", label: "a proven wallet bought", ok: (c) => (c.pw ?? 0) >= 1 },
+  { id: "pw2", label: "2+ proven wallets bought", ok: (c) => (c.pw ?? 0) >= 2 },
+  { id: "u25", label: "25+ buyers in the last minute", ok: (c) => (c.u60 ?? 0) >= 25 },
+  { id: "bs70", label: "70%+ of the last minute's SOL was buying", ok: (c) => c.bs60 != null && c.bs60 >= 0.7 },
+  { id: "wh", label: "a 2+ SOL buy in the last minute", ok: (c) => (c.wh ?? 0) >= 1 },
 ];
 
 export type Mode = { id: string; label: string; kind: "now" | "climb" | "dip" | "hold" | "mig"; a: number; win: number };
@@ -477,6 +488,10 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
       sm: Number(tp.sm) || 0,
       ds: !!tp.ds,
       soc: Number(c.soc) || 0,
+      pw: num(tp.pw),
+      u60: num(tp.u60),
+      bs60: num(tp.bs60),
+      wh: num(tp.wh),
       bonded: r.outcome === "BONDED",
       bondSecs: num(r.bond_secs),
       t: new Int32Array(0),

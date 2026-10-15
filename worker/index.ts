@@ -33,6 +33,12 @@ import { radarTop } from "../src/lib/lcache";
 import { bwFlush, bwLevel, bwMul, bwView } from "../src/lib/bwgov";
 import { drainXQueue, publishWireView } from "../src/lib/wire";
 import { publishSite } from "../src/lib/site";
+import { fireLive, fireStats, startFirehose } from "../src/lib/firehose";
+import { walletComplete, walletCreate, walletSweep, walletTrade, walletsLoad, walletsSave, walletsView } from "../src/lib/wallets";
+import { tapeCreate, tapeFeatures, tapeSize, tapeSweep, tapeTrade } from "../src/lib/tapeall";
+import { setTapeExtra } from "../src/lib/digger";
+import { archivePool } from "../src/lib/archive";
+import { setLiveFeatures } from "../src/lib/gridlive";
 installBwMeter(); // v0.1.40: counts every byte sent to and from Upstash (v0.1.40: through lib/rediswire.ts)
 
 process.env.RATNET_WORKER = "1";
@@ -380,7 +386,7 @@ let CURVES: ReturnType<typeof heliusFeed> | null = null;
 const onCurveUpd = (mint: string, v: Parameters<typeof noteCurve>[1]) => {
   noteCurve(mint, v);
   archiveTick(mint, v);
-  gridLiveCurve(mint, v as any); // v0.1.71: GRID LIVE books (entries and exits on every update)
+  if (!fireLive()) gridLiveCurve(mint, v as any); // v0.1.71: GRID LIVE books (v0.1.81: the FIREHOSE feeds them when it is up)
   if ((v as any)?.complete) afterNoteMigration(mint); // v0.1.72: AFTER follows its pool for 6 hours
 };
 // v0.1.72: AFTER, the pool prices of every migrated coin for 6 hours (archive + GRID LIVE)
@@ -757,7 +763,7 @@ async function main() {
       if (q.curve) return;
       afterStats.quotes++;
       archivePoolTick(q.mint, { mcSol: q.mcSol, real: q.real }, migratedAt(q.mint) ?? Date.now());
-      gridLiveQuote(q.mint, { mcSol: q.mcSol, real: q.real });
+      if (!fireLive()) gridLiveQuote(q.mint, { mcSol: q.mcSol, real: q.real }); // v0.1.81: the FIREHOSE feeds GRID LIVE when up
     },
     max: 400,
     label: "pool prices of migrated coins (6 hours after the migration)",
@@ -793,6 +799,39 @@ async function main() {
     }
   }, 10_000);
   setInterval(() => gridLivePublish((t) => criticalSend(t)).catch(() => null), 60_000);
+  // v0.1.81: the FIREHOSE (Shyft gRPC): every pump.fun and PumpSwap trade feeds GRID LIVE, WALLETS and TAPE ALL
+  {
+    const on = await startFirehose({
+      create: (c) => {
+        walletCreate(c.mint, c.creator, c.at);
+        tapeCreate(c.mint, c.creator);
+        gridLiveSymbol(c.mint, c.symbol);
+      },
+      trade: (t) => {
+        tapeTrade(t);
+        if (t.venue === "curve") walletTrade(t, t.prog ?? 0);
+      },
+      curve: (mint, v) => gridLiveCurve(mint, v as any),
+      pool: (mint, q) => gridLiveQuote(mint, { mcSol: q.mcSol, real: q.real }),
+      complete: (mint, at) => walletComplete(mint, at),
+    }).catch((e) => (console.log("firehose start error", e?.message || e), false));
+    console.log(on ? "firehose: starting (Shyft gRPC)" : "firehose: off (set SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN)");
+    const fx = (mint: string) => {
+      if (!fireLive()) return null;
+      const f = tapeFeatures(mint);
+      return { pw: f.pw, u60: f.u60, bs60: f.bs60, wh: f.wh };
+    };
+    setTapeExtra(fx);
+    setLiveFeatures(fx);
+    setInterval(() => tapeSweep(), 30_000);
+    setInterval(() => walletSweep(), 5 * 60_000);
+    setInterval(() => walletsSave(archivePool()).catch(() => 0), 10 * 60_000);
+    setInterval(() => {
+      if (!on) return void markAlive("firehose", { status: "off until SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN are set" }).catch(() => null);
+      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
+      redis().set("rn:wallets:view", { ...walletsView(), fire: { up: fireLive(), since: fireStats.since, trades: fireStats.trades, creates: fireStats.creates, completes: fireStats.completes, tape: tapeSize() } }, { ex: 3600 }).catch(() => null);
+    }, 60_000);
+  }
   // v0.1.78: every 5 minutes: drop ruled-out books, spawn the hot strategy's family (exit variants + every-launch twin)
   const tend = () =>
     gridLiveTend((t) => criticalSend(t))
@@ -820,6 +859,10 @@ async function main() {
       return;
     }
     console.log("archive: connected, tables ready");
+    // v0.1.81: WALLETS' scores live in the archive
+    walletsLoad(archivePool())
+      .then((n) => console.log(`wallets: ${n} scored wallets loaded`))
+      .catch(() => null);
     setInterval(() => archiveFlush().catch(() => null), 5_000);
     const board = async () => {
       const b = await archiveBoard().catch(() => null);

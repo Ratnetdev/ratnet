@@ -23,7 +23,10 @@ const SPAWNED_KEY = "rn:gridlive:spawned";
 const FILLS_KEY = "rn:gridlive:fills";
 const GAPBLOCK_KEY = "rn:gridlive:gapblock";
 // v0.1.78: filters a twin can run on every launch (they need only the curve, no King call)
-const CURVE_ONLY = new Set(["p4", "p15", "p35", "p70", "r5", "r15"]);
+const CURVE_ONLY = new Set(["p4", "p15", "p35", "p70", "r5", "r15", "pw1", "pw2", "u25", "bs70", "wh"]); // v0.1.81: + FIREHOSE features
+// v0.1.81: the FIREHOSE's live features for a coin (worker), so every-launch books can use WALLETS and TAPE ALL too
+let LIVE_FX: ((mint: string) => { pw: number; u60: number; bs60: number | null; wh: number } | null) | null = null;
+export const setLiveFeatures = (f: typeof LIVE_FX) => (LIVE_FX = f);
 const PATH_MS = 62 * 60_000;
 const BOOKS_KEY = "rn:gridlive:books";
 const POS_KEY = "rn:gridlive:pos";
@@ -172,6 +175,10 @@ export function gridLiveCall(call: any, now = Date.now()) {
     sm: Number(tp.sm) || 0,
     ds: !!tp.ds,
     soc: Number(call.soc) || 0,
+    pw: tp.pw ?? null,
+    u60: tp.u60 ?? null,
+    bs60: tp.bs60 ?? null,
+    wh: tp.wh ?? null,
   } as unknown as GCoin;
   for (const b of BOOKS) {
     if (b.any) continue; // twins trigger on the curve itself (gridLiveCurve)
@@ -213,7 +220,8 @@ export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: nu
 function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: number }[], now: number) {
   const old = h.filter((x) => x.t <= now - 60_000).pop();
   if (!old || !(px > 0)) return;
-  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: false, soc: 0 } as unknown as GCoin;
+  const fx = LIVE_FX ? LIVE_FX(mint) : null;
+  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: false, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null } as unknown as GCoin;
   for (const b of BOOKS) {
     if (!b.any) continue;
     const k = id(b.key, mint);

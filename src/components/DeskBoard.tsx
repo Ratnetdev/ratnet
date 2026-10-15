@@ -12,6 +12,7 @@ import ArenaBoard from "./ArenaBoard";
 import RegimeBoard from "./RegimeBoard";
 import ReplayBoard from "./ReplayBoard";
 import GridBoard from "./GridBoard";
+import WalletsBoard from "./WalletsBoard";
 import AgentPanel from "./AgentPanel";
 import { useState } from "react";
 import LensCam from "./LensCam";
@@ -204,6 +205,7 @@ export default function DeskBoard() {
       <RegimeBoard />
       <ArenaBoard />
       <GridBoard />
+      <WalletsBoard />
       <ReplayBoard />
       <BuildBoard />
 

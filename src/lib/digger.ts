@@ -235,6 +235,9 @@ const HOT_ROT = 200; // plus a rotating slice of the rest of the hot set
 // v0.1.71: called with every on-time call (the worker sets it: GRID LIVE)
 let CALL_HOOK: ((call: any) => void) | null = null;
 export const setCallHook = (f: ((call: any) => void) | null) => (CALL_HOOK = f);
+// v0.1.81: the worker hands the FIREHOSE's live features to every call (nothing on Vercel)
+let TAPE_EXTRA: ((mint: string) => Record<string, number | null> | null) | null = null;
+export const setTapeExtra = (f: typeof TAPE_EXTRA) => (TAPE_EXTRA = f);
 export const EARLY_DEATH = { curve: 1, peak: 3 }; // at the 1h check: under 1% now and never above 3% = DIED
 
 type Pipe = ReturnType<ReturnType<typeof redis>["pipeline"]>;
@@ -1353,9 +1356,13 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     px: ex.px || undefined,
     farm: farm?.why || undefined,
     why: whyOf({ ...rec, progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null }),
-    tp: rec.tape
-      ? { n: rec.tape.n, uniq: rec.tape.uniq, spb: rec.tape.solPerBuy, bs: rec.tape.bundleShare, sn: rec.tape.sniperN, sm: rec.g?.smartN ?? 0, cl: rec.g?.clRatio ?? 1, ds: rec.tape.devSold }
-      : null,
+    tp: (() => {
+      // v0.1.81: the FIREHOSE's live read at the call (proven wallets, last-minute buyers, buy share, whales): stored
+      // with the call, so GRID can test them on history from this build on
+      const fx = TAPE_EXTRA ? (() => { try { return TAPE_EXTRA(rec.mint); } catch { return null; } })() : null;
+      const base = rec.tape ? { n: rec.tape.n, uniq: rec.tape.uniq, spb: rec.tape.solPerBuy, bs: rec.tape.bundleShare, sn: rec.tape.sniperN, sm: rec.g?.smartN ?? 0, cl: rec.g?.clRatio ?? 1, ds: rec.tape.devSold } : null;
+      return (base || fx ? { ...(base || {}), ...(fx || {}) } : null) as any; // the call type lists the TAPE fields; FIREHOSE adds its own
+    })(),
   };
   c.p.set(K.call(rec.mint), rec.call, { ex: CALL_TTL });
   // v0.1.59: a called coin that is alive stays on the live curve stream for the hour after its call (REPLAY's paths)

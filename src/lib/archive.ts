@@ -32,6 +32,7 @@ create table if not exists ticks (mint text not null, at timestamptz not null, p
 create index if not exists ticks_mint_at on ticks (mint, at);
 create index if not exists ticks_at on ticks (at);
 alter table ticks add column if not exists pool boolean;
+create table if not exists wallet_scores (wallet text primary key, n integer not null, hits integer not null, sol real, updated_at timestamptz not null default now());
 create table if not exists trades (
   id text primary key, book text, mint text, symbol text, side text, at timestamptz, sol real, cost real, tokens double precision,
   px double precision, mc real, reason text, pnl_sol real, pnl_pct real, sig text, build text, cfg text
@@ -67,6 +68,8 @@ export async function archiveInit() {
   return ready;
 }
 export const archiveReady = () => ready;
+/** v0.1.81: the archive's connection pool (WALLETS keeps its scores here), or null. */
+export const archivePool = () => (ready ? pool : null);
 
 /** A short fingerprint of the desk settings a trade was made under (equal settings, equal fingerprint). */
 export function cfgTag(cfg: unknown) {
