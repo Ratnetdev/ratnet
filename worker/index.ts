@@ -23,7 +23,7 @@ import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
 import { gridHistory, gridMessage, liveCandidates, withSeen, type GHist, type GridView } from "../src/lib/grid";
-import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep, setGridFollow } from "../src/lib/gridlive";
+import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep, gridLiveSymbol, gridLiveTend, setGridFollow } from "../src/lib/gridlive";
 import { readPools } from "../src/lib/pool";
 import { afterLoad, afterNoteMigration, afterResolve, afterStats, afterWant, migratedAt } from "../src/lib/after";
 import { markAlive, markBusy } from "../src/lib/alive";
@@ -499,6 +499,7 @@ function pumpportal() {
       if ((tx === "create" || (!tx && msg.uri && msg.name)) && (!msg.pool || msg.pool === "pump")) {
         const now = Date.now();
         const mint = String(msg.mint);
+        gridLiveSymbol(mint, String(msg.symbol || "").slice(0, 16)); // v0.1.78: names for the every-launch twins
         INTAKE.push({ mint, sig: String(msg.signature || msg.sig || msg.txSignature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
         logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
         FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
@@ -792,6 +793,13 @@ async function main() {
     }
   }, 10_000);
   setInterval(() => gridLivePublish((t) => criticalSend(t)).catch(() => null), 60_000);
+  // v0.1.78: every 5 minutes: drop ruled-out books, spawn the hot strategy's family (exit variants + every-launch twin)
+  const tend = () =>
+    gridLiveTend((t) => criticalSend(t))
+      .then((r) => (r.dropped.length || r.added.length) && console.log(`grid live tend: dropped ${r.dropped.length}, added ${r.added.length}${r.hot ? `, hot ${r.hot}` : ""}`))
+      .catch((e) => console.log("grid live tend error", e?.message || e));
+  setTimeout(tend, 2 * 60_000);
+  setInterval(tend, 5 * 60_000);
   // v0.1.58: ARENA's summary for the site, once a minute (only when it changed)
   setInterval(() => arenaPublish().catch(() => null), 60_000);
   // v0.1.63: REGIME, every 5 minutes (first reading 90s after start): market + ARENA hit rates switch the desk's strategies

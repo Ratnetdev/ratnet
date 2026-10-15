@@ -11,12 +11,19 @@
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
-import { GRID_SOL, HOLD_MS, MODES, PREDS, exitText, type GCoin, type GExit, type GRow } from "./grid";
+import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, exitText, keyOf, type GCoin, type GExit, type GRow } from "./grid";
 
 const D = (SITE as any).desk || {};
 const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, paperPrioritySol: D.paperPrioritySol };
 export const LIVE_MAX_BOOKS = 16; // v0.1.73: 8 to 16 (paper costs nothing; more books in parallel = records sooner)
 const MAX_OPEN = 10; // per book
+const MAX_OPEN_ANY = 25; // v0.1.78: a twin on every launch sees many more entries (and holds up to 6h)
+export const SPAWN_MAX = 8; // v0.1.78: variants and twins of the hot strategy, on top of GRID's 16
+const SPAWNED_KEY = "rn:gridlive:spawned";
+const FILLS_KEY = "rn:gridlive:fills";
+const GAPBLOCK_KEY = "rn:gridlive:gapblock";
+// v0.1.78: filters a twin can run on every launch (they need only the curve, no King call)
+const CURVE_ONLY = new Set(["p4", "p15", "p35", "p70", "r5", "r15"]);
 const PATH_MS = 62 * 60_000;
 const BOOKS_KEY = "rn:gridlive:books";
 const POS_KEY = "rn:gridlive:pos";
@@ -24,7 +31,19 @@ export const LIVE_TRIPS = "rn:gridlive:trips";
 export const LIVE_VIEW = "rn:gridlive:view";
 const PASSED_KEY = "rn:gridlive:passed";
 
-export type LBook = { key: string; label: string; filter: string; mode: string; exit: GExit; since: number; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean } };
+export type LBook = {
+  key: string;
+  label: string;
+  filter: string;
+  mode: string;
+  exit: GExit;
+  since: number;
+  grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean };
+  /** v0.1.78: runs on every launch that meets the filter on the curve, not only on King calls */
+  any?: boolean;
+  /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
+  parent?: string;
+};
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
 export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean };
 export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string };
@@ -43,16 +62,32 @@ let LEADER: string | null = null;
 export const gridLeaderKey = () => LEADER;
 /** The strategy the desk follows: passed live (bookStat), best live P&L first. */
 export function gridLeader(): LBook | null {
-  const passed = BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) })).filter((x) => x.s.passed).sort((a, z) => z.s.pnl - a.s.pnl);
+  const passed = BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) }))
+    .filter((x) => x.s.passed && !gapBlock(x.b.key))
+    .sort((a, z) => z.s.pnl - a.s.pnl);
   return passed[0]?.b ?? null;
 }
 let loaded = false;
+// v0.1.78: real-fill check. Jupiter (the route live money takes, tawtis' point on Reels: not PumpSwap directly) quoted
+// at every paper fill of the strategies that matter, so the gap between paper and real is measured before money moves.
+type Fill = { bn: number; bg: number; sn: number; sg: number; nr: number };
+const FILLS = new Map<string, Fill>();
+const TRIG = new Set<string>(); // key#mint a twin already entered once
+let SPAWNED: string[] = []; // parents already spawned (once each)
 
 export async function gridLiveLoad() {
   if (loaded) return;
   loaded = true;
   const r = redis();
-  const [b, pos, trips] = await Promise.all([r.get<LBook[]>(BOOKS_KEY).catch(() => null), r.hgetall<Record<string, LPos>>(POS_KEY).catch(() => null), r.lrange<LTrip>(LIVE_TRIPS, 0, 2999).catch(() => [])]);
+  const [b, pos, trips, fills, sp] = await Promise.all([
+    r.get<LBook[]>(BOOKS_KEY).catch(() => null),
+    r.hgetall<Record<string, LPos>>(POS_KEY).catch(() => null),
+    r.lrange<LTrip>(LIVE_TRIPS, 0, 2999).catch(() => []),
+    r.hgetall<Record<string, Fill>>(FILLS_KEY).catch(() => null),
+    r.get<string[]>(SPAWNED_KEY).catch(() => null),
+  ]);
+  for (const [k, f] of Object.entries(fills || {})) if (f && typeof f === "object") FILLS.set(k, f as Fill);
+  SPAWNED = Array.isArray(sp) ? sp : [];
   BOOKS = Array.isArray(b) ? b : [];
   for (const [k, p] of Object.entries(pos || {})) if (p && typeof p === "object") POS.set(k, p as LPos);
   TRIPS = ((trips || []) as LTrip[]).filter(Boolean);
@@ -68,6 +103,9 @@ export const gridLiveBooks = () => BOOKS;
 export function dropReason(l: LStat): string | null {
   if (l.passed || l.pending) return null;
   if (l.n >= 30) return "30 trips without passing the exam";
+  // v0.1.78: free the slot sooner for strategies that are clearly not working
+  if (l.n >= 5 && l.wins === 0) return `no win in ${l.n} trips`;
+  if (l.n >= 8 && l.avgPct <= -15) return `losing live: avg ${l.avgPct}% after ${l.n} trips`;
   if (l.n >= 10 && l.avgPct <= -10) return `losing live: avg ${l.avgPct}% after ${l.n} trips`;
   if (l.n >= 20 && l.pfLessBest < 0.8) return `losing live: PF ${l.pfLessBest} after ${l.n} trips`;
   return null;
@@ -81,7 +119,8 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
     .filter((r) => !keep.some((b) => b.key === r.key))
     // never bring back a strategy its own live record already ruled out
     .filter((r) => !dropReason(statOf(r.key)))
-    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.length))
+    // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16
+    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent).length))
     .map((r) => ({
       key: r.key,
       label: `${r.filterLabel}, buy ${r.modeLabel}`,
@@ -102,6 +141,7 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
   return Object.assign(BOOKS, { kept: keep.length, added: fresh.length, dropped });
 }
 
+const curveOnly = (filter: string) => filter !== "all" && filter.split("+").every((x) => CURVE_ONLY.has(x));
 const filterOk = (filter: string, c: GCoin) => filter === "all" || filter.split("+").every((id) => PREDS.find((p) => p.id === id)?.ok(c) ?? false);
 const id = (key: string, mint: string) => `${key}#${mint}`;
 
@@ -134,6 +174,7 @@ export function gridLiveCall(call: any, now = Date.now()) {
     soc: Number(call.soc) || 0,
   } as unknown as GCoin;
   for (const b of BOOKS) {
+    if (b.any) continue; // twins trigger on the curve itself (gridLiveCurve)
     if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;
     if (!filterOk(b.filter, c)) continue;
     const m = MODES.find((x) => x.id === b.mode);
@@ -155,12 +196,42 @@ export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: nu
   HIST.set(mint, h);
   if (LAST.size > 6000) for (const [k, x] of LAST) if (now - x.at > 2 * 3600_000) (LAST.delete(k), HIST.delete(k));
   if (!BOOKS.length && !POS.size) return;
+  if (!v.complete) anyTrigger(mint, p, px, h, now);
   for (const b of BOOKS) {
     const k = id(b.key, mint);
     const pe = PEND.get(k);
     if (pe) stepPend(b, pe, k, now);
   }
   for (const [k, pos] of POS) if (pos.mint === mint) stepPos(k, pos, now);
+}
+
+/**
+ * v0.1.78: the every-launch twins. The moment a launch meets a twin's curve filter (for example 70%+ and +5 points in
+ * the last minute) it is treated like a King call for that book, once per coin. A coin seen for less than a minute has
+ * no climb to measure yet and waits for its next update.
+ */
+function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: number }[], now: number) {
+  const old = h.filter((x) => x.t <= now - 60_000).pop();
+  if (!old || !(px > 0)) return;
+  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: false, soc: 0 } as unknown as GCoin;
+  for (const b of BOOKS) {
+    if (!b.any) continue;
+    const k = id(b.key, mint);
+    if (TRIG.has(k) || PEND.has(k) || POS.has(k)) continue;
+    if (!filterOk(b.filter, c)) continue;
+    const m = MODES.find((x) => x.id === b.mode);
+    if (!m || m.kind === "mig") continue;
+    TRIG.add(k);
+    PEND.set(k, { key: b.key, mint, symbol: SYM.get(mint) || mint.slice(0, 4), callAt: now, p0: p, px0: px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
+  }
+  if (TRIG.size > 20_000) TRIG.clear();
+}
+const SYM = new Map<string, string>();
+/** v0.1.78: symbols for the twins' trades (the worker passes them with new launches). */
+export function gridLiveSymbol(mint: string, symbol: string) {
+  if (!mint || !symbol) return;
+  SYM.set(mint, symbol);
+  if (SYM.size > 8000) SYM.delete(SYM.keys().next().value as string);
 }
 
 function stepPend(b: LBook, pe: Pend, k: string, now: number) {
@@ -186,7 +257,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (now < pe.fillAfter) return;
   PEND.delete(k);
   const open = [...POS.values()].filter((p) => p.key === b.key).length;
-  if (open >= MAX_OPEN) return;
+  if (open >= (b.any ? MAX_OPEN_ANY : MAX_OPEN)) return;
   const px0 = last.px / 1e9;
   if (!(px0 > 0)) return;
   const sol = GRID_SOL;
@@ -195,6 +266,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool };
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
+  if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens });
   if (FOLLOW && LEADER === b.key) {
     try {
       FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool });
@@ -208,7 +280,11 @@ function sell(pos: LPos, frac: number, px: number, real: number) {
   pos.tokens -= amt;
 }
 function close(k: string, pos: LPos, now: number, why: string) {
-  if (pos.tokens > 1e-12) sell(pos, 1, pos.lastPx, pos.lastReal);
+  if (pos.tokens > 1e-12) {
+    // the market part of the paper sale (no tx costs), to set against Jupiter's quote for the same tokens
+    if (CHECK.has(pos.key)) queueCheck({ side: "sell", key: pos.key, mint: pos.mint, amount: BigInt(Math.floor(pos.tokens * 1e6)), paper: sellProceeds(pos.tokens, pos.lastPx, !!pos.pool, pos.lastReal, { fastExec: false, paperPrioritySol: 0 } as CostCfg) });
+    sell(pos, 1, pos.lastPx, pos.lastReal);
+  }
   POS.delete(k);
   const pnl = pos.back - pos.cost;
   const t: LTrip = { k: pos.key, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / pos.cost) * 1000) / 10, why };
@@ -334,7 +410,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   const now = Date.now();
   const byKey = new Map<string, LTrip[]>();
   for (const t of TRIPS) (byKey.get(t.k) || byKey.set(t.k, []).get(t.k)!).push(t);
-  const books = BOOKS.map((b) => ({ ...b, exitLabel: exitText(b.exit), open: [...POS.values()].filter((p) => p.key === b.key).map((p) => ({ mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, pnlPct: Math.round((p.lastPx / p.fillPx - 1) * 1000) / 10 })), watching: [...PEND.values()].filter((p) => p.key === b.key).length, live: bookStat(b, byKey.get(b.key) || []) }));
+  const books = BOOKS.map((b) => ({ ...b, exitLabel: exitText(b.exit), open: [...POS.values()].filter((p) => p.key === b.key).map((p) => ({ mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, pnlPct: Math.round((p.lastPx / p.fillPx - 1) * 1000) / 10 })), watching: [...PEND.values()].filter((p) => p.key === b.key).length, live: bookStat(b, byKey.get(b.key) || []), total: (byKey.get(b.key) || []).length, fills: fillView(b.key) }));
   // strategies no longer in the books but with a record worth keeping on screen
   const past = [...byKey.entries()].filter(([k]) => !BOOKS.some((b) => b.key === k)).map(([k, ts]) => ({ key: k, live: liveStat(ts) })).filter((x) => x.live.n >= 5).sort((a, b) => b.live.avgPct - a.live.avgPct).slice(0, 6);
   for (const b of books) {
@@ -342,6 +418,13 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
     const fresh = await redis().hsetnx(PASSED_KEY, b.key, { at: now, ...b.live }).catch(() => 0);
     if (fresh) await send(`🏁 <b>GRID LIVE: a strategy passed the exam on live coins</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.n} trips, ${b.live.winRate}% won, ${b.live.pnl >= 0 ? "+" : ""}${b.live.pnl} SOL on 0.05 SOL trades, PF ${b.live.pfLessBest} without the best.\n\nNext: the desk trades it.`).catch(() => null);
   }
+  // v0.1.78: a strategy that passed but whose real fills are too far from paper is not followed, and says so once
+  for (const b of books) {
+    if (!b.live.passed || !b.fills?.blocked || !send) continue;
+    const fresh = await redis().hsetnx(GAPBLOCK_KEY, b.key, { at: now, ...b.fills }).catch(() => 0);
+    if (fresh) await send(`⚠️ <b>GRID LIVE: passed on paper, but real fills are too far off</b>\n${b.label.replace(/[<>&]/g, " ")}\nJupiter vs paper: buy ${b.fills.buyGap}% (${b.fills.buyN}), sell ${b.fills.sellGap}% (${b.fills.sellN}).\nThe desk does not follow it.`).catch(() => null);
+  }
+  if (FILLS.size) await redis().hset(FILLS_KEY, Object.fromEntries(FILLS)).catch(() => null);
   const lead = gridLeader();
   const leadChanged = (lead?.key ?? null) !== LEADER;
   LEADER = lead?.key ?? null;
@@ -349,9 +432,141 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   if (follow) await redis().set("rn:grid:follow", follow, { ex: 3600 }).catch(() => null);
   else await redis().del("rn:grid:follow").catch(() => null);
   if (leadChanged && send) await send(lead ? `🧭 <b>The desk now follows GRID LIVE's "${lead.label.replace(/[<>&]/g, " ")}"</b>\n${exitText(lead.exit)}\nIts entries go to the desk the moment they fill. Desk mode decides paper or live money.` : "🧭 The desk stopped following GRID LIVE (no passed strategy right now).").catch(() => null);
-  const view = { at: now, books, past, follow, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
+  refreshCheck();
+  const hot = hotBook();
+  const view = { at: now, books, past, follow, hot: hot?.key ?? null, gapLimit: GAP_LIMIT * 100, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
   await redis().set(LIVE_VIEW, view, { ex: 2 * 86400 }).catch(() => null);
   return view;
+}
+
+// ---------------------------------------------------------------- v0.1.78: real-fill check (Jupiter)
+
+const WSOL = "So11111111111111111111111111111111111111112";
+const JUP = process.env.JUPITER_API_KEY ? "https://api.jup.ag/swap/v1" : "https://lite-api.jup.ag/swap/v1";
+const jupHeaders = (): Record<string, string> => (process.env.JUPITER_API_KEY ? { "x-api-key": process.env.JUPITER_API_KEY } : {});
+/** The books whose fills are checked: the leader, the hot strategy and its family, and any book in profit after 10+ trips. */
+const CHECK = new Set<string>();
+type Check = { side: "buy" | "sell"; key: string; mint: string; amount: bigint; paper: number };
+const QUEUE: Check[] = [];
+let checking = false;
+let QUOTE: (c: Check) => Promise<number | null> = async (c) => {
+  const [inM, outM] = c.side === "buy" ? [WSOL, c.mint] : [c.mint, WSOL];
+  const r = await fetch(`${JUP}/quote?inputMint=${inM}&outputMint=${outM}&amount=${c.amount}&slippageBps=2500&restrictIntermediateTokens=true`, { headers: jupHeaders(), cache: "no-store", signal: AbortSignal.timeout(3000) });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    if (/route|liquidity/i.test(txt)) return 0; // a real answer: no way in or out at this size
+    return null; // rate limit or outage: not evidence either way
+  }
+  const q: any = await r.json().catch(() => null);
+  if (q?.outAmount == null) return null;
+  // buy: tokens received (6 decimals); sell: SOL received
+  return c.side === "buy" ? Number(q.outAmount) / 1e6 : Number(q.outAmount) / 1e9;
+};
+/** Tests: replace the quote source. */
+export const _setQuote = (f: (c: Check) => Promise<number | null>) => (QUOTE = f);
+function queueCheck(c: Check) {
+  if (!(c.paper > 0) || c.amount <= 0n) return;
+  QUEUE.push(c);
+  if (QUEUE.length > 60) QUEUE.shift();
+  if (!checking) void drain();
+}
+async function drain() {
+  checking = true;
+  try {
+    while (QUEUE.length) {
+      const c = QUEUE.shift()!;
+      const got = await QUOTE(c).catch(() => null);
+      if (got != null) {
+        const f = FILLS.get(c.key) || { bn: 0, bg: 0, sn: 0, sg: 0, nr: 0 };
+        if (got === 0) f.nr++;
+        else {
+          const gap = got / c.paper - 1; // below 0: real money gets less than paper
+          if (c.side === "buy") (f.bg = (f.bg * f.bn + gap) / (f.bn + 1)), f.bn++;
+          else (f.sg = (f.sg * f.sn + gap) / (f.sn + 1)), f.sn++;
+        }
+        FILLS.set(c.key, f);
+      }
+      if (QUEUE.length) await new Promise((r) => setTimeout(r, 1_500)); // stay well inside Jupiter's free rate
+    }
+  } finally {
+    checking = false;
+  }
+}
+/** A strategy whose real fills run 10%+ worse than paper over a round trip (8+ checks each way) is not followed. */
+export const GAP_LIMIT = -0.1;
+export function gapBlock(key: string) {
+  const f = FILLS.get(key);
+  if (!f || f.bn < 8 || f.sn < 8) return false;
+  return f.bg + f.sg <= GAP_LIMIT;
+}
+const fillView = (key: string) => {
+  const f = FILLS.get(key);
+  if (!f) return null;
+  const r = (x: number) => Math.round(x * 1000) / 10;
+  return { buyN: f.bn, buyGap: r(f.bg), sellN: f.sn, sellGap: r(f.sg), noRoute: f.nr, blocked: gapBlock(key) };
+};
+
+// ---------------------------------------------------------------- v0.1.78: spawn (variants and every-launch twin)
+
+/** The hot strategy: the best live record that is clearly working but not yet through the exam. */
+export function hotBook(): LBook | null {
+  const c = BOOKS.filter((b) => !b.parent && !b.any)
+    .map((b) => ({ b, s: statOf(b.key) }))
+    .filter((x) => x.s.n >= 12 && x.s.pnl > 0 && x.s.pfLessBest >= 1.2 && x.s.avgPct >= 5)
+    .sort((a, z) => z.s.pnl - a.s.pnl);
+  return c[0]?.b ?? null;
+}
+/** The exits one step away from a strategy's exit (one setting changed). */
+export function neighborExits(x: GExit): GExit[] {
+  const same = (a: GExit, b: GExit) => a.initials === b.initials && a.trail === b.trail && a.stop === b.stop && a.timeMin === b.timeMin && a.mig === b.mig;
+  return GEXITS.filter((e) => !same(e, x) && [e.initials !== x.initials, e.trail !== x.trail, e.stop !== x.stop, e.timeMin !== x.timeMin, e.mig !== x.mig].filter(Boolean).length === 1);
+}
+function spawnOf(hot: LBook, now: number): LBook[] {
+  const grid = { ...hot.grid, explore: true };
+  const out: LBook[] = [];
+  // the twin first: same rule on every launch (only when the filter needs nothing but the curve)
+  if (curveOnly(hot.filter) && MODES.find((m) => m.id === hot.mode)?.kind !== "mig") {
+    out.push({ key: `any:${hot.key}`, label: `every launch: ${hot.label}`, filter: hot.filter, mode: hot.mode, exit: hot.exit, since: now, grid, any: true, parent: hot.key });
+  }
+  for (const e of neighborExits(hot.exit)) out.push({ key: keyOf(hot.filter, hot.mode, e), label: hot.label, filter: hot.filter, mode: hot.mode, exit: e, since: now, grid, parent: hot.key });
+  return out;
+}
+
+/**
+ * Every 5 minutes (worker): drop what its live record has ruled out, then give the hot strategy its family: the same
+ * rule on every launch, and its exit one setting changed each way. They race to the exam together; the desk follows
+ * whichever passes first with the best record. Spawned once per hot strategy, up to SPAWN_MAX books.
+ */
+export async function gridLiveTend(send?: (text: string) => Promise<unknown>, now = Date.now()) {
+  const before = BOOKS.length;
+  const dropped = BOOKS.filter((b) => dropReason(statOf(b.key)));
+  BOOKS = BOOKS.filter((b) => !dropped.includes(b));
+  const hot = hotBook();
+  let added: LBook[] = [];
+  if (hot && !SPAWNED.includes(hot.key)) {
+    const room = SPAWN_MAX - BOOKS.filter((b) => b.parent).length;
+    added = spawnOf(hot, now)
+      .filter((b) => !BOOKS.some((x) => x.key === b.key) && !dropReason(statOf(b.key)))
+      .slice(0, Math.max(0, room));
+    if (added.length) {
+      BOOKS = [...BOOKS, ...added];
+      SPAWNED = [...SPAWNED, hot.key].slice(-50);
+      await redis().set(SPAWNED_KEY, SPAWNED).catch(() => null);
+      const st = statOf(hot.key);
+      if (send) await send(`🧬 <b>GRID LIVE: the hot strategy got its family</b>\n${hot.label.replace(/[<>&]/g, " ")}\n${st.n} trips, ${st.winRate}% won, ${st.pnl >= 0 ? "+" : ""}${st.pnl} SOL, PF ${st.pfLessBest}\n\n${added.map((b) => `• ${b.any ? "same rule on every launch" : exitText(b.exit)}`).join("\n")}\n\nThey race to the exam; the desk follows the first that passes.`).catch(() => null);
+    }
+  }
+  refreshCheck();
+  if (dropped.length || added.length || BOOKS.length !== before) await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
+  return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), hot: hot?.key ?? null };
+}
+function refreshCheck() {
+  CHECK.clear();
+  const hot = hotBook();
+  for (const b of BOOKS) {
+    const st = statOf(b.key);
+    if (b.key === LEADER || b.key === hot?.key || b.parent || (st.n >= 10 && st.pnl > 0)) CHECK.add(b.key);
+  }
 }
 
 /** Tests: reset the memory. */
@@ -362,6 +577,15 @@ export function gridLiveReset() {
   LAST.clear();
   HIST.clear();
   TRIPS = [];
+  FILLS.clear();
+  TRIG.clear();
+  CHECK.clear();
+  QUEUE.length = 0;
+  SPAWNED = [];
+  LEADER = null;
   loaded = true;
 }
-export const gridLiveState = () => ({ pend: PEND, pos: POS, trips: TRIPS });
+export const gridLiveState = () => ({ pend: PEND, pos: POS, trips: TRIPS, fills: FILLS, check: CHECK, queue: QUEUE });
+/** Tests: set the books directly. */
+export const _setBooks = (b: LBook[]) => (BOOKS = b);
+export const _setTrips = (t: LTrip[]) => (TRIPS = t);

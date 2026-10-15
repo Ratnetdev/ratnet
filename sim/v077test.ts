@@ -17,6 +17,6 @@ ok(/<GridLiveBoard embedded show=\{show\} \/>/.test(tr), "GRID LIVE renders insi
 ok(/function Trades\(/.test(gl) && /show === "closed" \? \[\]/.test(gl) && /show === "open" \? \[\]/.test(gl), "GRID LIVE trades follow the open/closed menu");
 ok(!/<GridLiveBoard \/>/.test(db), "no separate GRID LIVE panel on the desk page");
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-ok(BUILD === pkg.version && BUILD === "0.1.77", `build tag ${BUILD}`);
+ok(BUILD === pkg.version, `build tag ${BUILD}`);
 console.log(fail ? `\n${fail} FAILED` : "\nall passed");
 process.exit(fail ? 1 : 0);

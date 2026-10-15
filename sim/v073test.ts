@@ -44,7 +44,7 @@ const ok = (c: boolean, m: string) => {
   b = await L.gridLiveSetBooks(["p70", "u50"].map(row) as any);
   const keys = b.map((x: any) => x.filter);
   ok(keys.includes("sm") && keys.includes("u20"), "books still collecting stay, even when GRID no longer ranks them");
-  ok(!keys.includes("bond") && b.dropped.some((d: any) => /losing live/.test(d.why)), "a book with a losing live record is dropped");
+  ok(!keys.includes("bond") && b.dropped.some((d: any) => /losing live|no win/.test(d.why)), "a book with a losing live record is dropped");
   ok(keys.includes("p70") && keys.includes("u50"), "new GRID candidates fill the free slots");
   b = await L.gridLiveSetBooks(["bond"].map(row) as any);
   ok(!b.some((x: any) => x.filter === "bond"), "a strategy its live record ruled out never comes back");
