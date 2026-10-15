@@ -3,7 +3,7 @@ import { K, dayKey, redis } from "./redis";
 import { postTo, stanceOf } from "./board";
 
 export type AgentEv = { agent: string; at: number; text: string; tone: string; mint?: string; symbol?: string; stance?: number };
-const EVK = (a: string) => `rn:ag:ev:${a}`; // newest first, last 200 per agent
+export const EVK = (a: string) => `rn:ag:ev:${a}`; // newest first, last 200 per agent
 const STATK = "rn:ag:stat"; // {agent}:n, {agent}:{tone}
 const DAYK = (d: string) => `rn:ag:day:${d}`; // {agent} -> actions today
 export const COINK = (m: string) => `rn:ag:coin:${m}`; // every agent line about one coin, newest first (7 days)

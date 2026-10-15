@@ -4,6 +4,7 @@
 import { createHash } from "crypto";
 import bs58 from "bs58";
 import { Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { deskKey, hiddenWallets, loadSwitch } from "./deskkey";
 import { hourKey, redis } from "./redis";
 import { conn } from "./solana";
 
@@ -33,9 +34,9 @@ const memoOf = (h: string, n: number, sha: string) => `RATNET calls ${h}:00Z n=$
 function signer(): Keypair | null {
   // v0.1.46: the desk wallet's key is used only in the worker (Railway). On Vercel only a receipt wallet of its own
   // (RECEIPT_WALLET_SECRET) can sign; the desk key is never loaded there
-  const onVercel = !!process.env.VERCEL && process.env.DESK_ON_VERCEL !== "1";
-  const sec = process.env.RECEIPT_WALLET_SECRET || (onVercel ? "" : process.env.DESK_WALLET_SECRET);
-  if (!sec) return null;
+  // v0.1.79: the desk's current key (lib/deskkey.ts): after the switch to the live wallet, the live wallet signs
+  const sec = process.env.RECEIPT_WALLET_SECRET;
+  if (!sec) return deskKey();
   try {
     return Keypair.fromSecretKey(sec.trim().startsWith("[") ? Uint8Array.from(JSON.parse(sec)) : bs58.decode(sec.trim()));
   } catch {
@@ -57,6 +58,7 @@ async function sendMemo(kp: Keypair, memo: string) {
 
 /** Seal every finished hour of the last 6 that is not sealed yet. Runs from the minute pinger; cheap when done. */
 export async function sealDue(now = Date.now()) {
+  await loadSwitch();
   const kp = signer();
   if (!kp) return { sealed: 0, note: "no wallet" };
   const r = redis();
@@ -92,18 +94,21 @@ export async function getSeals(limit = 72) {
   const hours = ((await r.zrange<string[]>(IDX, 0, limit - 1, { rev: true })) || []).map(String);
   if (!hours.length) return [];
   const seals = (await r.mget<(Seal | null)[]>(...hours.map(SEAL))) || [];
-  return seals.filter((x): x is Seal => !!x);
+  const hid = await hiddenWallets(); // v0.1.79: hours sealed by a retired wallet are not shown
+  return seals.filter((x): x is Seal => !!x && !(x.wallet && hid.has(x.wallet)));
 }
 
 export async function getHour(h: string) {
   const r = redis();
   const [lines, seal] = await Promise.all([r.lrange<string>(LINES(h), 0, -1), r.get<Seal>(SEAL(h))]);
-  return { hour: h, lines: (lines || []).map(String), seal: seal || null };
+  const hid = await hiddenWallets();
+  return { hour: h, lines: (lines || []).map(String), seal: seal && !(seal.wallet && hid.has(seal.wallet)) ? seal : null };
 }
 
 /** The seal that covers a call made at `at` (null while the hour is still open). */
 export async function sealFor(at: number) {
-  return (await redis().get<Seal>(SEAL(hourKey(at)))) || null;
+  const s = (await redis().get<Seal>(SEAL(hourKey(at)))) || null;
+  return s && !(s.wallet && (await hiddenWallets()).has(s.wallet)) ? s : null;
 }
 
 /** Read the memo back from the chain, so the check does not have to trust this server. */

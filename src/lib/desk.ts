@@ -24,6 +24,8 @@ import { streamQuote } from "./streamlog";
 import { Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { createCloseAccountInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import bs58 from "bs58";
+import { deskKey, hiddenWallets, loadSwitch, markSwitch, nextLiveKey, restoreSwitch, switchPending, switched } from "./deskkey";
+import { EVK } from "./agents";
 import { K, dayKey, redis } from "./redis";
 import { conn, getCurves, safeErr, CurveView, solUsd, RPS } from "./solana";
 import { getMarket } from "./market";
@@ -176,6 +178,8 @@ export type Trade = {
 };
 export type DeskState = {
   live: boolean;
+  /** v0.1.79: the live wallet the desk switched to when it went live (never the paper wallet again) */
+  liveWallet?: string;
   cash: number; // paper cash
   start: number;
   startedAt: number;
@@ -589,15 +593,36 @@ export async function autoOnce076() {
  * The desk wallet's key lives on the worker (Railway) only. On Vercel it is ignored unless DESK_ON_VERCEL=1: a web
  * function never needs to sign, and a key there is one more place it can leak from (v0.1.33).
  */
+// v0.1.79: the paper wallet until the switch, the live wallet after it (lib/deskkey.ts)
 function wallet(): Keypair | null {
-  const sec = process.env.DESK_WALLET_SECRET;
-  if (!sec) return null;
-  if (process.env.VERCEL && process.env.DESK_ON_VERCEL !== "1") return null;
-  try {
-    return Keypair.fromSecretKey(sec.trim().startsWith("[") ? Uint8Array.from(JSON.parse(sec)) : bs58.decode(sec.trim()));
-  } catch {
-    return null;
+  return deskKey();
+}
+// the separate live wallet's balance (read with the desk wallet's); the exam's wallet check uses it until the switch
+let NEXT_BAL: number | null = null;
+const examWallet = (walletSol: number | null) => (switchPending() ? NEXT_BAL : walletSol);
+
+/** v0.1.79: drop every log line that names a wallet (full address or its short form) from the site's lists. */
+export async function scrubWallet(addr: string) {
+  if (!addr) return 0;
+  const r = redis();
+  const shortA = `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+  const bad = (x: unknown) => {
+    const t = typeof x === "string" ? x : JSON.stringify(x);
+    return t.includes(addr) || t.includes(shortA);
+  };
+  let n = 0;
+  for (const key of [K.deskEv, EVK("LEDGER"), K.feed]) {
+    const all = ((await r.lrange<unknown>(key, 0, -1).catch(() => [])) || []) as unknown[];
+    const keep = all.filter((x) => !bad(x));
+    if (keep.length === all.length) continue;
+    n += all.length - keep.length;
+    await r.del(key);
+    if (keep.length) await r.rpush(key, ...keep);
   }
+  const last = await r.hget<unknown>(K.deskAgent, "LEDGER").catch(() => null);
+  if (last && bad(last)) (await r.hdel(K.deskAgent, "LEDGER").catch(() => 0), n++);
+  await r.del(EXAM_FULL, K.deskExam).catch(() => 0); // both carry the wallet; rewritten within 30s
+  return n;
 }
 export function deskWalletAddress() {
   return wallet()?.publicKey.toBase58() || null;
@@ -992,7 +1017,7 @@ export async function exam(state: DeskState, walletSol: number | null): Promise<
     { label: "profit factor without the best trade", need: `≥ ${EXAM.pfLessBest}`, now: pfLessBest >= 99 ? "no losses" : pfLessBest.toFixed(2), ok: last.length >= EXAM.trades && pfLessBest >= EXAM.pfLessBest },
     // v0.1.47: pending (not green) until there is a trade to measure
     { label: `worst drawdown (last ${EXAM.trades})`, need: `≤ ${EXAM.maxDD}%`, now: last.length ? `${dd30.toFixed(0)}%` : "no trades yet", ok: last.length > 0 && dd30 <= EXAM.maxDD },
-    { label: "funded wallet", need: `≥ ${EXAM.minWallet} SOL`, now: walletSol == null ? "none" : `${walletSol.toFixed(2)} SOL`, ok: walletSol != null && walletSol >= EXAM.minWallet },
+    { label: switchPending() ? "funded live wallet" : "funded wallet", need: `≥ ${EXAM.minWallet} SOL`, now: walletSol == null ? "none" : `${walletSol.toFixed(2)} SOL`, ok: walletSol != null && walletSol >= EXAM.minWallet },
   ];
   // v0.1.75: or a GRID LIVE strategy passed the same exam on live coins (paper, at the desk's size and costs) and the
   // desk follows it: its record IS the paper record of what the desk will trade, so the desk does not need 30 more
@@ -1372,6 +1397,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     if (cfg.mode === "off") return { off: true };
     ALERT_CFG = cfg;
     let state = await loadState(cfg.start);
+    await loadSwitch(true);
+    restoreSwitch(state.liveWallet);
     // v0.1.45: a live desk is run only by the process with the wallet key. A takeover on Vercel used to book live
     // equity from paper cash (the balance is never read there) into the equity line
     if (state.live && !wallet()) return { skipped: "live desk: only the worker (with the wallet key) runs it" };
@@ -1389,7 +1416,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await r.set(K.deskLearn, learnS); // saved right away so the page never shows stale gates
     let learnDirty = false;
     let learning: Promise<unknown> | null = null;
-    const kp = wallet();
+    let kp = wallet();
     EXEC_CFG = { fastExec: (cfg as any).fastExec !== false, maxPriorityLamports: (cfg as any).maxPriorityLamports, jitoTipMinSol: (cfg as any).jitoTipMinSol, jitoTipMaxSol: (cfg as any).jitoTipMaxSol };
     COST = { fastExec: (cfg as any).fastExec !== false, jitoTipMinSol: (cfg as any).jitoTipMinSol, jitoTipMaxSol: (cfg as any).jitoTipMaxSol, paperPrioritySol: (cfg as any).paperPrioritySol ?? 0.0005 };
     if (kp && state.live) await warm().catch(() => {});
@@ -1478,6 +1505,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         // a failed balance read keeps the last good one (it used to read as 0: the live drawdown check then saw a -100%
         // wallet and sent the desk back to paper)
         const bal = await conn().getBalance(kp.publicKey).then((x) => x / 1e9).catch(() => null);
+        // v0.1.79: the separate live wallet's balance too, for the exam's wallet check
+        if (switchPending()) NEXT_BAL = await conn().getBalance(nextLiveKey()!.publicKey).then((x) => x / 1e9).catch(() => NEXT_BAL);
         if (bal != null) {
           walletSolC = bal;
           LAST_BAL = { sol: bal, at: now };
@@ -1485,13 +1514,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           if (state.live) await liveReconcile(b, state, kp, bal).catch((e) => log(b, "LEDGER", `wallet check failed: ${safeErr(e)}`, "info"));
         }
       }
-      const walletSol = kp ? walletSolC : null;
+      let walletSol = kp ? walletSolC : null;
       // v0.1.76: going live needs an empty paper book (a paper position cannot be sold with a real swap). With FOLLOW
       // the desk could hold paper positions around the clock and never get there, so once the exam has passed (mode
       // auto) the desk stops opening paper positions, lets the open ones run to their exits, and goes live on empty
       PROMO_WAIT = false;
       if (!state.live && cfg.mode === "auto" && kp && positions.length) {
-        const exw = await memo("desk:exam", 30_000, () => exam(state, walletSol));
+        const exw = await memo("desk:exam", 30_000, () => exam(state, examWallet(walletSol)));
         if (exw.passed) {
           PROMO_WAIT = true;
           if (now - PROMO_LOG > 10 * 60_000) {
@@ -1501,8 +1530,32 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
       }
       if (!state.live && (cfg.mode === "live" || cfg.mode === "auto") && kp && !positions.length) {
-        const ex = cfg.mode === "live" ? { passed: walletSol != null && walletSol >= EXAM.minWallet } : await memo("desk:exam", 30_000, () => exam(state, walletSol));
-        if (ex.passed) {
+        const ex = cfg.mode === "live" ? { passed: examWallet(walletSol) != null && examWallet(walletSol)! >= EXAM.minWallet } : await memo("desk:exam", 30_000, () => exam(state, examWallet(walletSol)));
+        // v0.1.79: switch to the separate live wallet first (once, for good), then go live on it
+        let go = ex.passed;
+        if (go && switchPending()) {
+          const nk = nextLiveKey()!;
+          const to = nk.publicKey.toBase58();
+          const from = kp ? kp.publicKey.toBase58() : state.wallet || "";
+          const nb = await conn().getBalance(nk.publicKey).then((x) => x / 1e9).catch(() => null);
+          if (nb == null || nb < EXAM.minWallet) {
+            go = false;
+            if (now - PROMO_LOG > 10 * 60_000) (PROMO_LOG = now, log(b, "LEDGER", `exam passed, but the live wallet ${nb == null ? "could not be read" : `holds only ${nb.toFixed(3)} SOL`}. waiting for ${EXAM.minWallet}+ SOL there`, "info"));
+          } else {
+            await markSwitch(from, to);
+            await scrubWallet(from).catch(() => 0);
+            kp = nk;
+            walletSolC = nb;
+            walletSol = nb;
+            walletAt = now;
+            LAST_BAL = { sol: nb, at: now };
+            state.wallet = to;
+            state.liveWallet = to;
+            state.funded = nb;
+            log(b, "LEDGER", `switched to the live wallet (${nb.toFixed(3)} SOL). the paper wallet is retired`, "win");
+          }
+        }
+        if (go) {
           state.live = true;
           state.liveStart = walletSol;
           state.liveBal = walletSol;
@@ -1513,7 +1566,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           state.dayStart = walletSol || 0; // v0.1.45: the daily loss limit measures live money from the promotion on
           log(b, "LEDGER", `exam passed. going live with ${walletSol?.toFixed(3)} SOL`, "win");
           // v0.1.76: no human in the loop, so a message the moment it happens
-          import("./critical").then((m) => m.criticalSend(`🟢 <b>RATNET desk is LIVE</b>\nThe exam passed. Trading real money from ${walletSol?.toFixed(3)} SOL.\nBack to paper by itself if the wallet falls 40% from here.`)).catch(() => null);
+          import("./critical").then((m) => m.criticalSend(`🟢 <b>RATNET desk is LIVE</b>\nThe exam passed. Trading real money from ${walletSol?.toFixed(3)} SOL${switched() ? " on the live wallet (the paper wallet is retired and hidden on the site)" : ""}.\nBack to paper by itself if the wallet falls 40% from here.`)).catch(() => null);
         }
       }
 
@@ -2205,7 +2258,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       if (loops % 15 === 1) {
         // v0.1.40: the exam reads up to 2,000 trades (MBs); one read per 30s is shared with the promotion check above,
         // which used to run it on every beat while the desk waited flat for its exam
-        const ex = await memo("desk:exam", 30_000, () => exam(state, walletSol));
+        const ex = await memo("desk:exam", 30_000, () => exam(state, examWallet(walletSol)));
         await r.set(EXAM_FULL, { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
         await r.set(K.deskExam, { at: now, live: state.live, passed: ex.checks.filter((c) => c.ok).length, total: ex.checks.length, checks: ex.checks.map((c) => ({ l: c.label, ok: c.ok, now: c.now, need: c.need })), walletSol, wallet: kp ? kp.publicKey.toBase58() : null }, { ex: 600 });
       }
@@ -3192,13 +3245,18 @@ export async function getDesk() {
   const state: DeskState = st || (await loadState(s.desk.start));
   await withSeries(K.deskPos, pos, true);
   const learnS = await memo("desk:learn:view", 30_000, loadLearn);
-  const addr = deskWalletAddress() || state.wallet || process.env.DESK_WALLET_ADDRESS || null;
+  await loadSwitch();
+  restoreSwitch(state.liveWallet);
+  // v0.1.79: never a retired (hidden) wallet on the site
+  const hid = await hiddenWallets();
+  const addr0 = deskWalletAddress() || state.liveWallet || state.wallet || process.env.DESK_WALLET_ADDRESS || null;
+  const addr = addr0 && !hid.has(addr0) ? addr0 : null;
   const walletSol = addr ? await memo("desk:wsol:view", 20_000, () => cachedBalance(addr)) : null;
   // the exam reads up to 2,000 trades (with their entry context) and 3,000 equity points: once per 30s for every
   // visitor, not on every page poll
   const exC = await r.get<{ at: number; ex: Exam }>(EXAM_FULL).catch(() => null);
   const fresh = !!exC && Date.now() - Number(exC.at) < 30_000 && Array.isArray(exC.ex?.checks);
-  const ex = fresh ? exC!.ex : await exam(state, walletSol);
+  const ex = fresh ? exC!.ex : await exam(state, examWallet(walletSol));
   if (!fresh) await r.set(EXAM_FULL, { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
   // the page draws a small sparkline: 90 points of each path are plenty (positions carry up to 360)
   for (const k of Object.keys(pos || {})) {

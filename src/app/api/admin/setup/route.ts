@@ -20,6 +20,7 @@ const ENV: { k: string; need: Need; what: string; alt?: string[] }[] = [
   { k: "ADMIN_PASSWORD", need: "core", what: "this page" },
   { k: "NEXT_PUBLIC_SITE_URL", need: "core", what: "https://www.ratnet.network" },
   { k: "DESK_WALLET_SECRET", need: "trade", what: "the desk's own hot wallet: on Railway only (Vercel ignores it since v0.1.33; remove it there)" },
+  { k: "DESK_LIVE_WALLET_SECRET", need: "trade", what: "v0.1.79: the separate live wallet, Railway only. The desk switches to it by itself when the exam passes; the paper wallet is retired and hidden" },
   { k: "JUPITER_API_KEY", need: "trade", what: "faster Jupiter (paid api.jup.ag), optional" },
   { k: "ANTHROPIC_API_KEY", need: "agent", what: "MIND, OVERSEER, LENS judgement" },
   { k: "X_API_KEY", need: "agent", what: "twitterapi.io: WIRE, LENS, PULSE" },
