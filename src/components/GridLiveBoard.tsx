@@ -8,7 +8,7 @@ import CoinImg from "./CoinImg";
 
 type L = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean };
 type Fills = { buyN: number; buyGap: number; sellN: number; sellGap: number; noRoute: number; blocked: boolean };
-type Book = { key: string; label: string; exitLabel: string; since: number; total?: number; any?: boolean; parent?: string; fills?: Fills | null; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean }; open: { mint: string; symbol: string; openedAt?: number; pnlPct: number }[]; watching: number; live: L };
+type Book = { key: string; label: string; exitLabel: string; since: number; total?: number; any?: boolean; parent?: string; by?: string; why?: string; fills?: Fills | null; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean }; open: { mint: string; symbol: string; openedAt?: number; pnlPct: number }[]; watching: number; live: L };
 type Trip = { k: string; mint: string; symbol: string; openedAt?: number; closedAt: number; pnlPct: number; why: string };
 export type GridLiveView = { at: number | null; books?: Book[]; recent?: Trip[]; trips?: number; follow?: { key: string; label: string; exitLabel: string } | null; hot?: string | null };
 
@@ -88,8 +88,9 @@ export default function GridLiveBoard({ embedded = false, show = "all" }: { embe
                     {b.live.passed ? <span className="tag" style={{ color: "var(--rat)", marginRight: 6 }}>PASSED</span> : null}
                     {!b.live.passed && d.hot === b.key ? <span className="tag" style={{ color: "var(--gold, #ffb547)", marginRight: 6 }}>HOT</span> : null}
                     {b.any ? <span className="tag" style={{ color: "var(--rat)", marginRight: 6 }}>EVERY LAUNCH</span> : b.parent ? <span className="tag" style={{ marginRight: 6 }}>VARIANT</span> : null}
-                    {!b.live.passed && b.grid.explore && !b.parent && d.hot !== b.key ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>EXPLORING</span> : null}
+                    {b.by === "researcher" ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>RESEARCHER</span> : !b.live.passed && b.grid.explore && !b.parent && d.hot !== b.key ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>EXPLORING</span> : null}
                     <b>{b.label}</b>
+                    {b.why ? <div className="tiny mute2" style={{ fontStyle: "italic" }}>{b.why}</div> : null}
                     <div className="tiny mute2">{b.exitLabel} · live since {ago(b.since)} ago{b.watching ? ` · watching ${b.watching}` : ""}</div>
                     {b.fills && (b.fills.buyN || b.fills.sellN) ? (
                       <div className="tiny" style={{ color: b.fills.blocked ? "var(--dust)" : "var(--dim)" }}>
@@ -97,12 +98,12 @@ export default function GridLiveBoard({ embedded = false, show = "all" }: { embe
                       </div>
                     ) : null}
                   </td>
-                  <td>{b.total ?? b.live.n}/{b.grid.explore ? 45 : 30}</td>
+                  <td>{b.total ?? b.live.n}/{(b.total ?? b.live.n) >= (b.grid.explore ? 45 : 30) ? 60 : b.grid.explore ? 45 : 30}</td>
                   <td>{b.live.n ? `${b.live.winRate}%` : "–"}</td>
                   <td style={{ color: col(b.live.avgPct) }}>{b.live.n ? `${sgn(b.live.avgPct)}%` : "–"}</td>
                   <td>{b.live.n ? pf(b.live.pfLessBest) : "–"}</td>
                   <td>{b.open.length ? b.open.map((o) => <div key={o.mint} className="tiny" style={{ color: col(o.pnlPct) }}>{o.symbol} {sgn(o.pnlPct)}%</div>) : "–"}</td>
-                  <td className="tiny">{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : b.grid.explore ? " · exploring" : ""}</td>
+                  <td className="tiny">{b.by ? "proposed by RESEARCHER" : !b.grid.testN && !b.grid.pass ? "not in the latest GRID run" : <>{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : b.grid.explore ? " · exploring" : ""}</>}</td>
                 </tr>
               ))}
             </tbody>
@@ -118,7 +119,7 @@ export default function GridLiveBoard({ embedded = false, show = "all" }: { embe
           ))}
         </div>
       ) : null}
-      <div className="pb tiny mute2">*profit factor without the best trade, last 30 trips. Passing = the desk&apos;s exam: 30 trips, 40%+ won, +10% on a 1 SOL desk at 0.05 SOL a trade, PF 1.2+ (exploring strategies also need 45 trips, positive overall). A pass goes to Telegram, and the desk trades it next, unless its real fills (Jupiter quotes taken at every paper fill of the strategies that matter) run 10%+ worse than paper over a round trip. The hot strategy gets its family: the same rule on every launch, and its exit with one setting changed.{embedded ? ` Closed shows the latest ${d.recent?.length ?? 0} of ${d.trips ?? 0} trades. Updated ${ago(d.at)} ago.` : ""}</div>
+      <div className="pb tiny mute2">*profit factor without the best trade, last 30 trips. Passing = the desk&apos;s exam: 30 trips, 40%+ won, +10% on a 1 SOL desk at 0.05 SOL a trade, PF 1.2+ (exploring strategies also need 45 trips, positive overall). One close to it at 30 trips (40%+ won, in profit, PF 1.0+) keeps trading up to 60, and from then on must also be positive over all its trips. A pass goes to Telegram, and the desk trades it next, unless its real fills (Jupiter quotes taken at every paper fill of the strategies that matter) run 10%+ worse than paper over a round trip. The hot strategy gets its family: the same rule on every launch, and its exit with one setting changed.{embedded ? ` Closed shows the latest ${d.recent?.length ?? 0} of ${d.trips ?? 0} trades. Updated ${ago(d.at)} ago.` : ""}</div>
     </Wrap>
   );
 }

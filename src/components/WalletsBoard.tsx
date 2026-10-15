@@ -14,7 +14,8 @@ type V = {
   buys?: number;
   resolved?: number;
   top?: Top[];
-  fire?: { up: boolean; since: number; trades: number; creates: number; completes: number; tape: number };
+  fire?: { up: boolean; since: number; trades: number; creates: number; completes: number; tape: number; curveSaved?: number; poolSaved?: number };
+  dune?: { on: boolean; running: boolean; done: number; chunks: number; rows: number; error: string; stopped: string };
 };
 
 export default function WalletsBoard() {
@@ -37,6 +38,14 @@ export default function WalletsBoard() {
       <div className="pb small">
         <span style={{ color: f?.up ? "var(--rat)" : "var(--dust)" }}>{f?.up ? "firehose live" : "firehose down"}</span>
         {f ? ` · ${f.trades.toLocaleString()} trades, ${f.creates.toLocaleString()} launches, ${f.completes.toLocaleString()} migrations since ${ago(f.since)} ago` : ""}
+        {f?.up && f.curveSaved != null ? <div className="tiny mute2" style={{ marginTop: 4 }}>chain reads answered from the firehose: {f.curveSaved}% of curve reads, {f.poolSaved ?? 0}% of pool reads</div> : null}
+        {d.dune?.on ? (
+          <div className="tiny mute2" style={{ marginTop: 4 }}>
+            history (90 days before the firehose, same rules): {d.dune.done}/{d.dune.chunks || 18} parts loaded, {(d.dune.rows ?? 0).toLocaleString()} wallet records
+            {d.dune.running ? " · loading" : ""}
+            {d.dune.error ? ` · ${d.dune.error}` : d.dune.stopped ? " · paused" : ""}
+          </div>
+        ) : null}
         <div className="tiny mute2" style={{ marginTop: 4 }}>
           {(d.wallets ?? 0).toLocaleString()} wallets tracked, {(d.scored ?? 0).toLocaleString()} with 6+ scored early buys, <b style={{ color: "var(--rat)" }}>{d.proven ?? 0} proven</b> (hit rate clearly 3x the {d.base}% base rate or more). {(d.pending ?? 0).toLocaleString()} coins waiting for their outcome.
         </div>

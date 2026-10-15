@@ -107,13 +107,24 @@ export type SwapEv = {
   ts: number;
   base: bigint; // raw base tokens moved
   quote: bigint; // lamports moved (to/from the user, before the user's own fees)
-  poolBase: bigint; // pool reserves (as the event reports them)
+  poolBase: bigint; // pool reserves BEFORE the swap (checked against the vaults' balances on mainnet, 16 Oct)
   poolQuote: bigint;
+  /** v0.1.82: lamports the quote vault gained (buy: quote_amount_in_with_lp_fee) or lost (sell:
+   *  quote_amount_out_without_lp_fee). Matched the vault's balance change exactly on mainnet transactions. */
+  vaultQuote: bigint;
+  /** v0.1.82: virtual quote reserves (lamports): part of the price on boosted pools (17.5 SOL on the pools checked) */
+  vq?: bigint;
   pool: string;
   user: string;
   creator?: string;
   supply?: bigint;
 };
+/** v0.1.82: a pool's reserves AFTER the swap: base tokens (raw), real quote (lamports), virtual quote (lamports). */
+export function poolAfter(s: SwapEv) {
+  const base = s.isBuy ? s.poolBase - s.base : s.poolBase + s.base;
+  const quote = s.isBuy ? s.poolQuote + s.vaultQuote : s.poolQuote - s.vaultQuote;
+  return { base, quote, vq: s.vq && s.vq > 0n ? s.vq : 0n };
+}
 export type CreatePoolEv = { kind: "createPool"; ts: number; creator: string; baseMint: string; quoteMint: string; poolBase: bigint; poolQuote: bigint; pool: string };
 export type PumpEv = TradeEv | CreateEv | CompleteEv | SwapEv | CreatePoolEv;
 
@@ -176,11 +187,11 @@ export function decodeEvent(b: Uint8Array): PumpEv | null {
     r.u64(); // lp_fee
     r.u64(); // protocol_fee_basis_points
     r.u64(); // protocol_fee
-    r.u64(); // quote_amount_in_with_lp_fee / quote_amount_out_without_lp_fee
+    const vaultQuote = r.u64(); // quote_amount_in_with_lp_fee / quote_amount_out_without_lp_fee
     r.u64(); // user_quote_amount_in / user_quote_amount_out
     const pool = r.pk();
     const user = r.pk();
-    const ev: SwapEv = { kind: "swap", isBuy, ts, base, quote, poolBase, poolQuote, pool, user };
+    const ev: SwapEv = { kind: "swap", isBuy, ts, base, quote, poolBase, poolQuote, vaultQuote, pool, user };
     if (r.short) return pool && user ? ev : null;
     r.pk(); // user_base_token_account
     r.pk(); // user_quote_token_account
@@ -188,6 +199,29 @@ export function decodeEvent(b: Uint8Array): PumpEv | null {
     r.pk(); // protocol_fee_recipient_token_account
     const cc = r.pk();
     if (!r.short) ev.creator = cc;
+    // v0.1.82: on to virtual_quote_reserves (IDL order; the buy carries more fields before it than the sell)
+    r.u64(); // coin_creator_fee_basis_points
+    r.u64(); // coin_creator_fee
+    if (isBuy) {
+      r.bool(); // track_volume
+      r.u64(); // total_unclaimed_tokens
+      r.u64(); // total_claimed_tokens
+      r.u64(); // current_sol_volume
+      r.i64(); // last_update_timestamp
+      r.u64(); // min_base_amount_out
+      r.str(); // ix_name
+    }
+    r.u64(); // cashback_fee_basis_points
+    r.u64(); // cashback
+    r.u64(); // buyback_fee_basis_points
+    r.u64(); // buyback_fee
+    const vq = r.i128();
+    r.bool(); // can_boost
+    const sup = r.u64(); // base_supply
+    if (!r.short) {
+      ev.vq = vq;
+      ev.supply = sup;
+    }
     return ev;
   }
   if (same(b, 0, D.createPool)) {

@@ -5,9 +5,11 @@
 //   - pool prices for every migrated coin (not only 6 hours after the migration)
 //   - every buyer and seller (WALLETS, TAPE ALL)
 // One connection, reconnects by itself with backoff; nothing here can block the desk.
-import { PUMP_AMM_PROGRAM_ID, PUMP_PROGRAM_ID, WSOL_MINT, curveOf, eventsOf, isSolQuote, type PumpEv, type SwapEv, type TradeEv } from "./pumpevents";
+import { PUMP_AMM_PROGRAM_ID, PUMP_PROGRAM_ID, WSOL_MINT, curveOf, eventsOf, isSolQuote, poolAfter, type PumpEv, type SwapEv, type TradeEv } from "./pumpevents";
+import { canonicalPool } from "./pool";
+import { fcBeat, fcConnected, fcCurveTrade, fcDown, fcLive, fcPoolTrade } from "./firecache";
 
-export type FireTrade = { mint: string; user: string; isBuy: boolean; sol: number; tokens: number; at: number; venue: "curve" | "pool"; creator?: string; sig?: string; prog?: number };
+export type FireTrade = { mint: string; user: string; isBuy: boolean; sol: number; tokens: number; at: number; venue: "curve" | "pool"; creator?: string; sig?: string; prog?: number; mcSol?: number; real?: number };
 export type FireCurve = { progress: number; mcapSol: number; realSol: number; complete: boolean; priceSol: number; supply: number };
 export type FireHandlers = {
   trade?: (t: FireTrade) => void;
@@ -15,14 +17,36 @@ export type FireHandlers = {
   pool?: (mint: string, q: { mcSol: number; real: number; pool: string }) => void;
   create?: (c: { mint: string; symbol: string; name: string; creator: string; at: number }) => void;
   complete?: (mint: string, at: number) => void;
+  /** v0.1.82: a (re)connection: anything kept from before it may have missed trades in the gap */
+  connected?: () => void;
 };
 
 export const fireStats = { up: false, since: 0, msgs: 0, trades: 0, curveTrades: 0, poolTrades: 0, creates: 0, completes: 0, errors: 0, reconnects: 0, lastAt: 0, lastErr: "" };
 const POOL_MINT = new Map<string, string>(); // PumpSwap pool -> base mint
 export const poolMintOf = (pool: string) => POOL_MINT.get(pool) || null;
+// v0.1.82: only a coin's canonical pool (the one pump.fun's migration creates) prices it, as in lib/pool.ts. Anyone can
+// open other PumpSwap pools for a coin with a few dollars in them; their prices were reaching GRID LIVE in v0.1.81.
+const CANON = new Map<string, boolean>(); // pool|mint -> canonical
+function isCanonical(pool: string, mint: string) {
+  const k = `${pool}|${mint}`;
+  let v = CANON.get(k);
+  if (v == null) {
+    try {
+      v = canonicalPool(mint) === pool;
+    } catch {
+      v = false;
+    }
+    CANON.set(k, v);
+    if (CANON.size > 100_000) CANON.delete(CANON.keys().next().value as string);
+  }
+  return v;
+}
 
-/** One transaction's events, turned into what the handlers want. Pure apart from the pool map (tests use it directly). */
-export function handleTx(evs: PumpEv[], tokenMints: string[], h: FireHandlers, sig?: string, now = Date.now()) {
+/**
+ * One transaction's events, turned into what the handlers want (tests use it directly). `ord` orders transactions
+ * (slot and position in the slot): the state cache never lets an older transaction overwrite a newer one.
+ */
+export function handleTx(evs: PumpEv[], tokenMints: string[], h: FireHandlers, sig?: string, now = Date.now(), ord = 0) {
   // a PumpSwap trade names its pool, not its coin: the coin is the one non-SOL mint in the transaction's balances
   const others = [...new Set(tokenMints.filter((m) => m && m !== WSOL_MINT))];
   for (const ev of evs) {
@@ -46,7 +70,8 @@ export function handleTx(evs: PumpEv[], tokenMints: string[], h: FireHandlers, s
       fireStats.trades++;
       fireStats.curveTrades++;
       const cv = curveOf(t);
-      h.trade?.({ mint: t.mint, user: t.user, isBuy: t.isBuy, sol: Number(t.sol) / 1e9, tokens: Number(t.tokens) / 1e6, at: t.ts ? t.ts * 1000 : now, venue: "curve", creator: t.creator, sig, prog: cv.progress });
+      fcCurveTrade(t.mint, cv, ord, now);
+      h.trade?.({ mint: t.mint, user: t.user, isBuy: t.isBuy, sol: Number(t.sol) / 1e9, tokens: Number(t.tokens) / 1e6, at: t.ts ? t.ts * 1000 : now, venue: "curve", creator: t.creator, sig, prog: cv.progress, mcSol: cv.mcapSol, real: cv.realSol });
       h.curve?.(t.mint, cv);
       continue;
     }
@@ -61,10 +86,18 @@ export function handleTx(evs: PumpEv[], tokenMints: string[], h: FireHandlers, s
       if (!mint) continue;
       fireStats.trades++;
       fireStats.poolTrades++;
-      h.trade?.({ mint, user: s.user, isBuy: s.isBuy, sol: Number(s.quote) / 1e9, tokens: Number(s.base) / 1e6, at: s.ts ? s.ts * 1000 : now, venue: "pool", creator: s.creator, sig });
-      const base = Number(s.poolBase) / 1e6;
-      const quote = Number(s.poolQuote) / 1e9;
-      if (base > 0 && quote > 0) h.pool?.(mint, { mcSol: Math.round((quote / base) * 1e9 * 100) / 100, real: Math.round(quote * 100) / 100, pool: s.pool });
+      // v0.1.82: the price AFTER the swap (the event reports the reserves before it), virtual quote reserves included
+      // (boosted pools carry them; lib/pool.ts prices the same way), and only from the coin's canonical pool
+      const canon = isCanonical(s.pool, mint);
+      const a = poolAfter(s);
+      const tok = Number(a.base) / 1e6;
+      const sol = Number(a.quote) / 1e9;
+      const px = canon && tok > 0 && sol > 0 ? (sol + Number(a.vq) / 1e9) / tok : 0;
+      const mcSol = px > 0 ? Math.round(px * 1e9 * 100) / 100 : undefined;
+      h.trade?.({ mint, user: s.user, isBuy: s.isBuy, sol: Number(s.quote) / 1e9, tokens: Number(s.base) / 1e6, at: s.ts ? s.ts * 1000 : now, venue: "pool", creator: s.creator, sig, mcSol });
+      if (!(px > 0)) continue;
+      fcPoolTrade(mint, { pool: s.pool, sol, tok, px }, ord, now);
+      h.pool?.(mint, { mcSol: mcSol!, real: Math.round(sol * 100) / 100, pool: s.pool });
     }
   }
 }
@@ -98,6 +131,7 @@ export async function startFirehose(h: FireHandlers): Promise<boolean> {
         stream.on("data", (u: any) => {
           fireStats.msgs++;
           fireStats.lastAt = Date.now();
+          fcBeat(fireStats.lastAt);
           const tx = u?.transaction?.transaction;
           if (!tx?.meta || tx.meta.err) return;
           try {
@@ -105,7 +139,9 @@ export async function startFirehose(h: FireHandlers): Promise<boolean> {
             const evs = eventsOf(tx.meta.logMessages, inner);
             if (!evs.length) return;
             const mints = [...(tx.meta.postTokenBalances || []), ...(tx.meta.preTokenBalances || [])].map((b: any) => String(b.mint || ""));
-            handleTx(evs, mints, h, undefined);
+            // slot, then the transaction's position in it: the order the chain applied them in
+            const ord = Number(u.transaction.slot || 0) * 100_000 + (Number(tx.index) || 0);
+            handleTx(evs, mints, h, undefined, Date.now(), ord);
           } catch (e: any) {
             fireStats.errors++;
             fireStats.lastErr = String(e?.message || e).slice(0, 160);
@@ -129,6 +165,10 @@ export async function startFirehose(h: FireHandlers): Promise<boolean> {
         );
         fireStats.up = true;
         fireStats.since = Date.now();
+        fcConnected(fireStats.since); // a new epoch: state from before this connection is read again
+        try {
+          h.connected?.();
+        } catch {}
         wait = 2_000;
         // keep-alive: Shyft (like most Yellowstone hosts) closes idle streams; a ping every 15s keeps it open
         const ping = setInterval(() => stream.write({ ping: { id: 1 }, accounts: {}, slots: {}, transactions: {}, transactionsStatus: {}, blocks: {}, blocksMeta: {}, entry: {}, accountsDataSlice: [] } as any, () => {}), 15_000);
@@ -145,6 +185,7 @@ export async function startFirehose(h: FireHandlers): Promise<boolean> {
         fireStats.lastErr = String(e?.message || e).slice(0, 160);
       }
       fireStats.up = false;
+      fcDown();
       if (STOP) break;
       fireStats.reconnects++;
       await new Promise((r) => setTimeout(r, wait));
@@ -156,4 +197,4 @@ export async function startFirehose(h: FireHandlers): Promise<boolean> {
 }
 export const stopFirehose = () => (STOP = true);
 /** Is the firehose live right now (a message in the last 30s)? */
-export const fireLive = () => fireStats.up && Date.now() - fireStats.lastAt < 30_000;
+export const fireLive = () => fireStats.up && Date.now() - fireStats.lastAt < 30_000 && fcLive();

@@ -86,10 +86,13 @@ function trade(o: { mint: string; user: string; isBuy: boolean; sol: bigint; tok
   ok(got.trades[0]?.venue === "curve" && got.trades[0].sol === 1.5 && got.trades[0].prog === cv.progress && got.curves[0][0] === mint, "a curve trade: the trade (with its curve %) and the curve update");
   FH.handleTx([usdc], [], h);
   ok(got.trades.length === 1, "non-SOL curves are skipped");
-  const mint2 = pk(), pool2 = pk();
-  const buy2 = PE.decodeEvent(Uint8Array.from([...buy.slice(0, 8 + 8 * 13), ...bs58.decode(pool2), ...buy.slice(8 + 8 * 13 + 32)])) as any;
+  // v0.1.82: the price is read after the swap (reserves before it + what moved) and only from the coin's canonical pool
+  const mint2 = pk();
+  const { canonicalPool } = await import("../src/lib/pool");
+  const pool2 = canonicalPool(mint2);
+  const buy2 = PE.decodeEvent(new W().disc(BUY).i64(1_790_000_200).u64(10_000_000_000n).u64(0).u64(0).u64(0).u64(200_000_000_000_000n).u64(85_000_000_000n).u64(4_300_000_000n).u64(0).u64(0).u64(0).u64(0).u64(4_300_000_000n).u64(0).pk(pool2).pk(user).pk(pk()).pk(pk()).pk(pk()).pk(pk()).pk(creator).out()) as any;
   FH.handleTx([buy2], [WSOL, mint2, WSOL], h);
-  ok(got.trades[1]?.venue === "pool" && got.trades[1].mint === mint2 && got.pools[0][0] === mint2 && Math.abs(got.pools[0][1].mcSol - 425) < 0.01 && got.pools[0][1].real === 85, "a PumpSwap trade: its coin found from the transaction, pool price 425 SOL mc, 85 SOL in the pool");
+  ok(got.trades[1]?.venue === "pool" && got.trades[1].mint === mint2 && got.pools[0][0] === mint2 && Math.abs(got.pools[0][1].mcSol - 446.52) < 0.01 && got.pools[0][1].real === 89.3, "a PumpSwap trade: its coin found from the transaction, pool price after the swap 446.52 SOL mc, 89.3 SOL in the pool");
   FH.handleTx([cp], [], h);
   FH.handleTx([sw], [WSOL, pk(), pk()], h);
   ok(got.trades[2]?.mint === mint, "a pool created on the stream is mapped to its coin (even when the transaction holds other tokens)");
@@ -162,7 +165,7 @@ function trade(o: { mint: string; user: string; isBuy: boolean; sol: bigint; tok
 
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  ok(BUILD === pkg.version && BUILD === "0.1.81", `build tag ${BUILD}`);
+  ok(BUILD === pkg.version, `build tag ${BUILD}`);
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

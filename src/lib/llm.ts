@@ -7,7 +7,7 @@ export const llmModel = () => process.env.MIND_MODEL || "claude-sonnet-5-5";
 export type Block = { type: "text"; text: string } | { type: "image"; source: { type: "url"; url: string } };
 
 /** One call. Returns the text of the answer, or null on any failure (MIND then just skips that coin). */
-export async function ask(system: string, content: Block[], maxTokens = 900, timeoutMs = 40_000): Promise<string | null> {
+export async function ask(system: string, content: Block[], maxTokens = 900, timeoutMs = 40_000, model = llmModel()): Promise<string | null> {
   if (!llmOn()) return null;
   const go = async (blocks: Block[]) => {
     const ctl = new AbortController();
@@ -16,7 +16,7 @@ export async function ask(system: string, content: Block[], maxTokens = 900, tim
       const r = await fetch(URL_, {
         method: "POST",
         headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY!, "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({ model: llmModel(), max_tokens: maxTokens, system, messages: [{ role: "user", content: blocks }] }),
+        body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: "user", content: blocks }] }),
         signal: ctl.signal,
       });
       const j: any = await r.json().catch(() => null);

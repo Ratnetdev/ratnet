@@ -16,6 +16,10 @@ const MAX_TRADES = 3000;
 
 /** A launch was created (the stream's create message, the dev's first buy included). */
 export function logCreate(mint: string, creator: string, t0: number, devSol: number, devTok: number, fromBirth = false) {
+  // v0.1.82: the FIREHOSE logs every launch from birth (usually before PumpPortal's create message lands): a later
+  // create message for the same launch must not wipe that log
+  const cur = LOGS.get(mint);
+  if (cur?.full && Math.abs(cur.t0 - t0) <= 10_000) return;
   const trades: StreamTrade[] = devSol > 0 ? [{ t: t0, w: creator, sol: devSol, tok: devTok, buy: true }] : [];
   // fromBirth: this launch's trades are streamed from its first second, so its log is complete (v0.1.54: not the case
   // for the shortlist, which joins at minute 1)
@@ -32,7 +36,7 @@ export const tradesFlowing = (now = Date.now()) => now - LAST_TRADE_AT < 60_000;
 export const lastTradeAgo = (now = Date.now()) => (LAST_TRADE_AT ? Math.round((now - LAST_TRADE_AT) / 1000) : null);
 
 /** A trade on any streamed coin. */
-export function logTrade(m: { mint: string; w: string; buy: boolean; sol: number; tok: number; vSol?: number; mcSol?: number; pool?: string }) {
+export function logTrade(m: { mint: string; w: string; buy: boolean; sol: number; tok: number; vSol?: number; mcSol?: number; pool?: string; real?: number }) {
   const now = Date.now();
   LAST_TRADE_AT = now;
   const l = LOGS.get(m.mint);
@@ -42,8 +46,20 @@ export function logTrade(m: { mint: string; w: string; buy: boolean; sol: number
   }
   if (m.mcSol && m.mcSol > 0) {
     const curve = !m.pool || m.pool === "pump";
-    QUOTES.set(m.mint, { at: now, px: m.mcSol / 1e9, real: curve && m.vSol && m.vSol > 30 ? m.vSol - 30 : curve ? 0 : null, mcSol: m.mcSol, curve });
+    // v0.1.82: the firehose passes the curve's real SOL itself (PumpPortal only gives the virtual SOL, real = virtual - 30)
+    const real = curve ? (m.real != null ? m.real : m.vSol && m.vSol > 30 ? m.vSol - 30 : 0) : null;
+    QUOTES.set(m.mint, { at: now, px: m.mcSol / 1e9, real, mcSol: m.mcSol, curve });
   }
+}
+
+/**
+ * v0.1.82: the FIREHOSE reconnected. Trades may have been missed in the gap, so no log from before it counts as
+ * complete any more (those launches get their tape from the chain, as before).
+ */
+export function logsGap(now = Date.now()) {
+  let n = 0;
+  for (const l of LOGS.values()) if (l.full && l.t0 < now) (l.full = false), n++;
+  return n;
 }
 
 /** The launch's log, if the stream saw it from birth (within 5s of the create time the rats recorded). */

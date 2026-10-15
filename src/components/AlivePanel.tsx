@@ -4,8 +4,8 @@
 import { usePoll } from "./usePoll";
 
 type P = { name: string; age: number | null; ok: boolean; stalled: boolean; note: string };
-const LABEL: Record<string, string> = { desk: "desk", rats_fast: "rats (fast)", rats_slow: "rats (slow)", stream: "live stream", flash: "FLASH", historian: "historian", catch: "CATCH", momo: "MOMO", hound: "HOUND", mind: "MIND", lens: "LENS", overseer: "OVERSEER", wire: "WIRE", j7: "J7 feed", receipts: "receipts", telegram: "telegram", archive: "archive" };
-// the 26 agents, by the loop that runs them (feeds and receipts are plumbing, not agents)
+const LABEL: Record<string, string> = { desk: "desk", rats_fast: "rats (fast)", rats_slow: "rats (slow)", stream: "live stream", flash: "FLASH", historian: "historian", catch: "CATCH", momo: "MOMO", hound: "HOUND", mind: "MIND", lens: "LENS", overseer: "OVERSEER", wire: "WIRE", j7: "J7 feed", receipts: "receipts", telegram: "telegram", archive: "archive", firehose: "firehose", researcher: "RESEARCHER" };
+// the agents (27 since v0.1.82), by the loop that runs them (feeds and receipts are plumbing, not agents)
 export const RUNS: Record<string, string[]> = {
   desk: ["VET", "FLOW", "BUZZ", "SIZE", "EXEC", "RISK", "COACH", "LEDGER", "FILM", "PM", "REGIME", "PULSE", "SHIELD"],
   rats_fast: ["SCOUT", "KING", "TAPE", "GRAPH"],
@@ -18,8 +18,9 @@ export const RUNS: Record<string, string[]> = {
   lens: ["LENS"],
   overseer: ["OVERSEER"],
   wire: ["WIRE"],
+  researcher: ["RESEARCHER"],
 };
-const SUB: Record<string, string> = { rats_slow: "hot curves, migrations, lessons", stream: "launches, trades, migrations", j7: "X posts for WIRE", receipts: "hourly proof seals", telegram: "alerts", archive: "Postgres: every launch, trade and trip" };
+const SUB: Record<string, string> = { rats_slow: "hot curves, migrations, lessons", stream: "launches, trades, migrations", j7: "X posts for WIRE", receipts: "hourly proof seals", telegram: "alerts", archive: "Postgres: every launch, trade and trip", firehose: "every pump.fun trade, live", researcher: "proposes GRID LIVE strategies, hourly" };
 const fmt = (s: number | null) => (s == null ? "never" : s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`);
 // the part of a note worth showing when something is off: the error, not the counters
 const why = (p: P) => {

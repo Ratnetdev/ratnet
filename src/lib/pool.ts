@@ -10,6 +10,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { conn } from "./solana";
 import { redis } from "./redis";
+import { fcPool, fcPoolBase } from "./firecache";
 
 const PUMP = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 const PUMP_AMM = new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
@@ -59,10 +60,22 @@ async function accounts(keys: string[]) {
 }
 
 /** Canonical pool reserves for many coins. null = no canonical pool (never migrated). */
+export const poolFire = { hits: 0, reads: 0 };
 export async function readPools(mints: string[]): Promise<Record<string, PoolRead | null>> {
-  const uniq = Array.from(new Set(mints.filter(Boolean)));
+  const all = Array.from(new Set(mints.filter(Boolean)));
   const out: Record<string, PoolRead | null> = {};
+  // v0.1.82: the FIREHOSE first (every swap on every canonical pool, reserves after the swap); the chain for the rest
+  const uniq: string[] = [];
+  for (const m of all) {
+    const f = fcPool(m);
+    if (f) {
+      out[m] = { ...f };
+      poolFire.hits++;
+    } else uniq.push(m);
+  }
   if (!uniq.length) return out;
+  poolFire.reads += uniq.length;
+  const readAt = Date.now();
   const r = redis();
   const cached = ((await r.hmget<Record<string, Vaults>>(POOLS_KEY, ...uniq)) || {}) as Record<string, Vaults | null>;
   const vaults: Record<string, Vaults> = {};
@@ -92,6 +105,7 @@ export async function readPools(mints: string[]): Promise<Record<string, PoolRea
     const tok = b / 1e6;
     const sol = q / 1e9;
     out[m] = { pool: vaults[m].pool, sol, tok, px: (sol + (vaults[m].vq || 0)) / tok };
+    fcPoolBase(m, out[m]!, readAt);
   });
   return out;
 }

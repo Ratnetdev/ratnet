@@ -1,3 +1,4 @@
+import { fcCurve, fcCurveBase } from "./firecache";
 import { Connection, PublicKey, ParsedTransactionWithMeta } from "@solana/web3.js";
 import bs58 from "bs58";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -453,11 +454,19 @@ export function pruneCurves() {
   for (const m of LIVE_CURVES.keys()) if (!live.has(m)) LIVE_CURVES.delete(m);
   return LIVE_CURVES.size;
 }
+export const curveFire = { hits: 0, reads: 0 };
 export async function getCurves(mints: string[]): Promise<Record<string, CurveView | null>> {
   const out: Record<string, CurveView | null> = {};
   const live = liveSet();
   const need: string[] = [];
   for (const m of mints) {
+    // v0.1.82: the FIREHOSE first (every trade on every curve), then the Helius stream, then the chain
+    const f = fcCurve(m);
+    if (f) {
+      out[m] = f;
+      curveFire.hits++;
+      continue;
+    }
     const c = live.has(m) ? LIVE_CURVES.get(m) : undefined;
     if (c) out[m] = c.v;
     else need.push(m);
@@ -465,9 +474,13 @@ export async function getCurves(mints: string[]): Promise<Record<string, CurveVi
   // v0.1.54: counted on followed coins only (old coins the stream never follows made the share look like 1 to 2%)
   curveFeed.hits += mints.length - need.length;
   curveFeed.misses += need.filter((m) => live.has(m)).length;
+  const readAt = Date.now();
   const fetched = await getCurvesRpc(need);
+  curveFire.reads += need.length;
   for (const m of need) {
     out[m] = fetched[m];
+    // v0.1.82: kept for the firehose until the coin's next trade (an account that is not a curve stays a chain read)
+    if (fetched[m]) fcCurveBase(m, fetched[m]!, readAt);
     // a followed coin read once from the chain stays valid until its next update (no update = no trade)
     if (fetched[m] && live.has(m) && !LIVE_CURVES.has(m)) LIVE_CURVES.set(m, { v: fetched[m]!, at: Date.now() });
   }

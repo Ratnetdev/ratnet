@@ -46,6 +46,9 @@ export type LBook = {
   any?: boolean;
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
+  /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
+  by?: "researcher";
+  why?: string;
 };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
 export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean };
@@ -105,7 +108,13 @@ export const gridLiveBooks = () => BOOKS;
  */
 export function dropReason(l: LStat): string | null {
   if (l.passed || l.pending) return null;
-  if (l.n >= 30) return "30 trips without passing the exam";
+  // v0.1.82: the exam reads the last 30 trips, so a strategy that is close keeps trading and can still pass on its next
+  // trips (the hot one was dropped at 30 trips with +0.219 SOL, 47% won and PF 1.19 against the 1.2 it needs). Close =
+  // 40%+ won, in profit and PF 1.0+ on the last 30. It gets up to 60 trips in total; past 30 it must also be positive
+  // over all of them to pass (bookStat).
+  const total = l.total ?? l.n;
+  if (l.n >= 30 && total >= EXTEND_MAX) return `${EXTEND_MAX} trips without passing the exam`;
+  if (l.n >= 30 && !closeToPass(l)) return "30 trips without passing the exam";
   // v0.1.78: free the slot sooner for strategies that are clearly not working
   if (l.n >= 5 && l.wins === 0) return `no win in ${l.n} trips`;
   if (l.n >= 8 && l.avgPct <= -15) return `losing live: avg ${l.avgPct}% after ${l.n} trips`;
@@ -113,6 +122,9 @@ export function dropReason(l: LStat): string | null {
   if (l.n >= 20 && l.pfLessBest < 0.8) return `losing live: PF ${l.pfLessBest} after ${l.n} trips`;
   return null;
 }
+export const EXTEND_MAX = 60;
+/** v0.1.82: near the exam on its last 30 trips: worth more trips (a rolling window, the next trades can pass it). */
+export const closeToPass = (l: LStat) => l.winRate >= 40 && l.pnl > 0 && l.pfLessBest >= 1.0;
 const statOf = (key: string) => bookStat(BOOKS.find((b) => b.key === key) ?? { grid: { testN: 0, testAvg: 0, pass: false } }, TRIPS.filter((t) => t.k === key));
 
 export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
@@ -122,8 +134,8 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
     .filter((r) => !keep.some((b) => b.key === r.key))
     // never bring back a strategy its own live record already ruled out
     .filter((r) => !dropReason(statOf(r.key)))
-    // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16
-    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent).length))
+    // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16 (v0.1.82: RESEARCHER's too)
+    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent && !b.by).length))
     .map((r) => ({
       key: r.key,
       label: `${r.filterLabel}, buy ${r.modeLabel}`,
@@ -383,7 +395,7 @@ export function gridLiveSweep(now = Date.now()) {
   }
 }
 
-export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean };
+export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean; total?: number; totalPnl?: number };
 /** The desk's exam on a strategy's last 30 live trips (a 1 SOL desk at 0.05 SOL a trade: +10% = +0.1 SOL). */
 export function liveStat(trips: LTrip[]): LStat {
   const last = trips.slice(0, 30);
@@ -397,7 +409,10 @@ export function liveStat(trips: LTrip[]): LStat {
   const gl = -less.filter((x) => x < 0).reduce((a, x) => a + x, 0);
   const pf = gl > 0 ? gw / gl : gw > 0 ? 99 : 0;
   const winRate = n ? (wins / n) * 100 : 0;
-  return { n, wins, winRate: Math.round(winRate), avgPct: n ? Math.round((last.reduce((a, t) => a + t.pnlPct, 0) / n) * 10) / 10 : 0, pnl: Math.round(sum * 1e4) / 1e4, pfLessBest: Math.round(pf * 100) / 100, passed: n >= 30 && winRate >= 40 && sum >= 0.1 && pf >= 1.2 };
+  // v0.1.82: every trip it ever made (the extension past 30 trips must not hide a losing start)
+  const totalPnl = trips.reduce((a, t) => a + t.pnl, 0);
+  const exam = n >= 30 && winRate >= 40 && sum >= 0.1 && pf >= 1.2;
+  return { n, wins, winRate: Math.round(winRate), avgPct: n ? Math.round((last.reduce((a, t) => a + t.pnlPct, 0) / n) * 10) / 10 : 0, pnl: Math.round(sum * 1e4) / 1e4, pfLessBest: Math.round(pf * 100) / 100, passed: exam && (trips.length <= 30 || totalPnl > 0), total: trips.length, totalPnl: Math.round(totalPnl * 1e4) / 1e4 };
 }
 
 /**
@@ -549,6 +564,8 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const before = BOOKS.length;
   const dropped = BOOKS.filter((b) => dropReason(statOf(b.key)));
   BOOKS = BOOKS.filter((b) => !dropped.includes(b));
+  const revived = reviveBooks(now);
+  if (revived.length && send) await send(`♻️ <b>GRID LIVE: back in the race</b>\n${revived.map((b) => { const st = statOf(b.key); return `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}\n  last ${st.n}: ${st.winRate}% won, ${st.pnl >= 0 ? "+" : ""}${st.pnl} SOL, PF ${st.pfLessBest}`; }).join("\n")}\n\nClose to the exam: it keeps trading (up to ${EXTEND_MAX} trips) and passes the moment its last 30 do.`).catch(() => null);
   const hot = hotBook();
   let added: LBook[] = [];
   if (hot && !SPAWNED.includes(hot.key)) {
@@ -565,8 +582,41 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || BOOKS.length !== before) await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
-  return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), hot: hot?.key ?? null };
+  if (dropped.length || added.length || revived.length || BOOKS.length !== before) await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
+  return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
+}
+/**
+ * v0.1.82: books dropped at 30 trips before the extension existed, rebuilt from their key (filter, entry and exit are
+ * all in it) when their record is close to the exam. Only strategies with 30 trips (never an unfinished one), never a
+ * twin (its trigger is not in the key), at most 4 at a time.
+ */
+export function bookFromKey(key: string, now: number): LBook | null {
+  if (key.startsWith("any:")) return null;
+  const [filter, mode] = key.split("|");
+  const exit = exitOfKey(key);
+  const m = MODES.find((x) => x.id === mode);
+  if (!filter || !m || !exit) return null;
+  const parts = filter === "all" ? [] : filter.split("+");
+  const labels = parts.map((id) => PREDS.find((p) => p.id === id)?.label);
+  if (labels.some((l) => !l)) return null;
+  if (keyOf(filter, mode, exit) !== key) return null;
+  return { key, label: `${filter === "all" ? "every call" : labels.join(" + ")}, buy ${m.label}`, filter, mode, exit, since: now, grid: { testN: 0, testAvg: 0, pass: false, explore: true } };
+}
+function reviveBooks(now: number): LBook[] {
+  const byKey = new Map<string, LTrip[]>();
+  for (const t of TRIPS) (byKey.get(t.k) || byKey.set(t.k, []).get(t.k)!).push(t);
+  const out: LBook[] = [];
+  for (const [k, ts] of byKey) {
+    if (out.length >= 4) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const b = bookFromKey(k, now);
+    if (!b) continue;
+    const st = bookStat(b, ts);
+    if (st.n < 30 || dropReason(st)) continue;
+    out.push(b);
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
 }
 function refreshCheck() {
   CHECK.clear();
@@ -575,6 +625,36 @@ function refreshCheck() {
     const st = statOf(b.key);
     if (b.key === LEADER || b.key === hot?.key || b.parent || (st.n >= 10 && st.pnl > 0)) CHECK.add(b.key);
   }
+}
+
+// ---------------------------------------------------------------- v0.1.82: RESEARCHER's books
+export const RESEARCH_MAX = 4;
+/** Books RESEARCHER may still add, and whether a key may be added (not trading now, not ruled out by its record). */
+export const researchRoom = () => Math.max(0, RESEARCH_MAX - BOOKS.filter((b) => b.by === "researcher").length);
+export function researchOk(key: string) {
+  if (BOOKS.some((b) => b.key === key)) return "already trading";
+  const ts = TRIPS.filter((t) => t.k === key);
+  if (ts.length) {
+    const why = dropReason(bookStat({ grid: { testN: 0, testAvg: 0, pass: false, explore: true } }, ts));
+    if (why) return `its live record ruled it out (${why})`;
+  }
+  return null;
+}
+/** Add RESEARCHER's strategies as exploring books (45+ trips and positive overall to pass, like GRID's explorers). */
+export async function gridLiveAddResearch(add: { filter: string; mode: string; exit: GExit; label: string; why: string }[], now = Date.now()) {
+  const out: LBook[] = [];
+  for (const a of add) {
+    if (out.length >= researchRoom()) break;
+    const key = keyOf(a.filter, a.mode, a.exit);
+    if (researchOk(key) || out.some((b) => b.key === key)) continue;
+    out.push({ key, label: a.label, filter: a.filter, mode: a.mode, exit: a.exit, since: now, grid: { testN: 0, testAvg: 0, pass: false, explore: true }, by: "researcher", why: a.why.slice(0, 280) });
+  }
+  if (out.length) {
+    BOOKS = [...BOOKS, ...out];
+    refreshCheck();
+    await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
+  }
+  return out;
 }
 
 /** Tests: reset the memory. */

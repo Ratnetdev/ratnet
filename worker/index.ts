@@ -8,9 +8,9 @@ import { deskSession } from "../src/lib/desk";
 import { digFast, digSlow, ingestStream, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
-import { budgetState, curveFeed, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
+import { budgetState, curveFeed, curveFire, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
-import { LOG_MS, logCreate, logTrade, markFeedLive, pruneStream, setFollowHook, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
+import { LOG_MS, logCreate, logTrade, logsGap, markFeedLive, pruneStream, setFollowHook, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
@@ -24,7 +24,7 @@ import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
 import { gridHistory, gridMessage, liveCandidates, withSeen, type GHist, type GridView } from "../src/lib/grid";
 import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep, gridLiveSymbol, gridLiveTend, setGridFollow } from "../src/lib/gridlive";
-import { readPools } from "../src/lib/pool";
+import { poolFire, readPools } from "../src/lib/pool";
 import { afterLoad, afterNoteMigration, afterResolve, afterStats, afterWant, migratedAt } from "../src/lib/after";
 import { markAlive, markBusy } from "../src/lib/alive";
 import { catchPass, noteMigration } from "../src/lib/catcher";
@@ -38,6 +38,9 @@ import { walletComplete, walletCreate, walletSweep, walletTrade, walletsLoad, wa
 import { tapeCreate, tapeFeatures, tapeSize, tapeSweep, tapeTrade } from "../src/lib/tapeall";
 import { setTapeExtra } from "../src/lib/digger";
 import { archivePool } from "../src/lib/archive";
+import { duneBackfill, duneState } from "../src/lib/dune";
+import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
+import { fcSize } from "../src/lib/firecache";
 import { setLiveFeatures } from "../src/lib/gridlive";
 installBwMeter(); // v0.1.40: counts every byte sent to and from Upstash (v0.1.40: through lib/rediswire.ts)
 
@@ -203,7 +206,8 @@ let lastStreamMark = 0;
 function onTrade(m: any, kick: () => void) {
   const mint = String(m.mint);
   const now = Date.now();
-  logTrade({ mint, w: String(m.traderPublicKey || ""), buy: m.txType !== "sell", sol: Number(m.solAmount) || 0, tok: Number(m.tokenAmount) || 0, vSol: Number(m.vSolInBondingCurve) || undefined, mcSol: Number(m.marketCapSol) || undefined, pool: m.pool ? String(m.pool) : undefined });
+  // v0.1.82: while the FIREHOSE is up it logs every trade itself (PumpPortal's would be the same trades twice)
+  if (!fireLive()) logTrade({ mint, w: String(m.traderPublicKey || ""), buy: m.txType !== "sell", sol: Number(m.solAmount) || 0, tok: Number(m.tokenAmount) || 0, vSol: Number(m.vSolInBondingCurve) || undefined, mcSol: Number(m.marketCapSol) || undefined, pool: m.pool ? String(m.pool) : undefined });
   const w = TAPE.get(mint) || [];
   const who = String(m.traderPublicKey || "");
   const seen = SEEN.get(mint) || new Set<string>();
@@ -806,10 +810,18 @@ async function main() {
         walletCreate(c.mint, c.creator, c.at);
         tapeCreate(c.mint, c.creator);
         gridLiveSymbol(c.mint, c.symbol);
+        // v0.1.82: every launch's log from birth (the dev's buy follows as the transaction's first trade): the rats'
+        // minute-1 and minute-5 tapes are built from it instead of ~42 chain reads per coin
+        logCreate(c.mint, c.creator, c.at, 0, 0, true);
       },
       trade: (t) => {
         tapeTrade(t);
         if (t.venue === "curve") walletTrade(t, t.prog ?? 0);
+        logTrade({ mint: t.mint, w: t.user, buy: t.isBuy, sol: t.sol, tok: t.tokens, mcSol: t.mcSol, pool: t.venue === "curve" ? "pump" : "pump-amm", real: t.real });
+      },
+      connected: () => {
+        const n = logsGap();
+        if (n) console.log(`firehose: (re)connected, ${n} launch logs from before it are read from the chain`);
       },
       curve: (mint, v) => gridLiveCurve(mint, v as any),
       pool: (mint, q) => gridLiveQuote(mint, { mcSol: q.mcSol, real: q.real }),
@@ -824,21 +836,41 @@ async function main() {
     setTapeExtra(fx);
     setLiveFeatures(fx);
     setInterval(() => tapeSweep(), 30_000);
+    // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
+    // while PumpPortal is connected, so they are pruned here too (old launch logs, quotes older than 2 minutes)
+    setInterval(() => pruneStream(new Set()), 30_000);
     setInterval(() => walletSweep(), 5 * 60_000);
     setInterval(() => walletsSave(archivePool()).catch(() => 0), 10 * 60_000);
     setInterval(() => {
       if (!on) return void markAlive("firehose", { status: "off until SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN are set" }).catch(() => null);
       markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
-      redis().set("rn:wallets:view", { ...walletsView(), fire: { up: fireLive(), since: fireStats.since, trades: fireStats.trades, creates: fireStats.creates, completes: fireStats.completes, tape: tapeSize() } }, { ex: 3600 }).catch(() => null);
+      // v0.1.82: what the firehose saved (curve and pool reads answered from it) and the Dune backfill's progress
+      const pctOf = (h: number, r: number) => (h + r ? Math.round((h / (h + r)) * 100) : 0);
+      redis().set("rn:wallets:view", { ...walletsView(), fire: { up: fireLive(), since: fireStats.since, trades: fireStats.trades, creates: fireStats.creates, completes: fireStats.completes, tape: tapeSize(), curveSaved: pctOf(curveFire.hits, curveFire.reads), poolSaved: pctOf(poolFire.hits, poolFire.reads), cached: fcSize().curves + fcSize().pools }, dune: { on: !!process.env.DUNE_API_KEY, running: duneState.running, done: duneState.done, chunks: duneState.chunks, rows: duneState.rows, error: duneState.error ? "the history query failed (details in the worker log)" : "", stopped: duneState.stopped ? "paused" : "" } }, { ex: 3600 }).catch(() => null);
     }, 60_000);
   }
   // v0.1.78: every 5 minutes: drop ruled-out books, spawn the hot strategy's family (exit variants + every-launch twin)
   const tend = () =>
     gridLiveTend((t) => criticalSend(t))
-      .then((r) => (r.dropped.length || r.added.length) && console.log(`grid live tend: dropped ${r.dropped.length}, added ${r.added.length}${r.hot ? `, hot ${r.hot}` : ""}`))
+      .then((r) => (r.dropped.length || r.added.length || r.revived.length) && console.log(`grid live tend: dropped ${r.dropped.length}, added ${r.added.length}, revived ${r.revived.length}${r.hot ? `, hot ${r.hot}` : ""}`))
       .catch((e) => console.log("grid live tend error", e?.message || e));
   setTimeout(tend, 2 * 60_000);
   setInterval(tend, 5 * 60_000);
+  // v0.1.82: RESEARCHER, at most once an hour (the last run is kept in Redis, so restarts never make it run more often)
+  let researchLast: Record<string, unknown> = { status: "first run within the hour" };
+  const research = async () => {
+    if (!process.env.ANTHROPIC_API_KEY) return void markAlive("researcher", { status: "off until ANTHROPIC_API_KEY is set" }).catch(() => null);
+    const last = Number((await redis().get("rn:research:at").catch(() => 0)) || 0);
+    if (Date.now() - last >= RESEARCH_EVERY_MS) {
+      await redis().set("rn:research:at", Date.now()).catch(() => null);
+      const res: any = await researchPass((t) => criticalSend(t)).catch((e) => ({ error: String(e?.message || e) }));
+      console.log("researcher:", JSON.stringify(res).slice(0, 300));
+      researchLast = res?.error ? { error: String(res.error).slice(0, 120) } : res?.full ? { status: "all 4 of its books are trading" } : res?.wait ? { status: res.wait } : { added: res?.added?.length ?? 0, refused: res?.refused?.length ?? 0 };
+    }
+    markAlive("researcher", researchLast).catch(() => null);
+  };
+  setTimeout(() => research().catch(() => null), 8 * 60_000);
+  setInterval(() => research().catch(() => null), 10 * 60_000);
   // v0.1.58: ARENA's summary for the site, once a minute (only when it changed)
   setInterval(() => arenaPublish().catch(() => null), 60_000);
   // v0.1.63: REGIME, every 5 minutes (first reading 90s after start): market + ARENA hit rates switch the desk's strategies
@@ -861,7 +893,11 @@ async function main() {
     console.log("archive: connected, tables ready");
     // v0.1.81: WALLETS' scores live in the archive
     walletsLoad(archivePool())
-      .then((n) => console.log(`wallets: ${n} scored wallets loaded`))
+      .then((n) => {
+        console.log(`wallets: ${n} scored wallets loaded`);
+        // v0.1.82: 90 days of history from Dune (once: done chunks are skipped), after the live scores are in memory
+        if (process.env.DUNE_API_KEY) duneBackfill(archivePool()).then((d) => console.log(`dune backfill: ${d.done}/${d.chunks} chunks, ${d.rows} wallets, ${Math.round(d.credits)} credits${d.error ? `, error: ${d.error}` : ""}${d.stopped ? `, ${d.stopped}` : ""}`));
+      })
       .catch(() => null);
     setInterval(() => archiveFlush().catch(() => null), 5_000);
     const board = async () => {
