@@ -911,7 +911,11 @@ async function main() {
       return { pw: f.pw, u60: f.u60, bs60: f.bs60, wh: f.wh };
     };
     setTapeExtra(fx);
-    setLiveFeatures(fx);
+    // v0.1.90: GRID LIVE's every-launch books also know whether the dev sold (the "dev has not sold" rule)
+    setLiveFeatures((m: string) => {
+      const x = fx(m);
+      return x ? { ...x, ds: tapeFeatures(m).ds } : null;
+    });
     setInterval(() => tapeSweep(), 30_000);
     // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
     // while PumpPortal is connected, so they are pruned here too (old launch logs, quotes older than 2 minutes)

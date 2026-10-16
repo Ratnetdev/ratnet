@@ -26,7 +26,7 @@ const GAPBLOCK_KEY = "rn:gridlive:gapblock";
 // v0.1.78: filters a twin can run on every launch (they need only the curve, no King call)
 const CURVE_ONLY = new Set(["p4", "p15", "p35", "p70", "r5", "r15", "pw1", "pw2", "u25", "bs70", "wh"]); // v0.1.81: + FIREHOSE features
 // v0.1.81: the FIREHOSE's live features for a coin (worker), so every-launch books can use WALLETS and TAPE ALL too
-let LIVE_FX: ((mint: string) => { pw: number; u60: number; bs60: number | null; wh: number } | null) | null = null;
+let LIVE_FX: ((mint: string) => { pw: number; u60: number; bs60: number | null; wh: number; ds?: boolean } | null) | null = null;
 export const setLiveFeatures = (f: typeof LIVE_FX) => (LIVE_FX = f);
 const PATH_MS = 62 * 60_000;
 const BOOKS_KEY = "rn:gridlive:books";
@@ -48,7 +48,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner";
+  by?: "researcher" | "runner" | "wallets";
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -278,7 +278,7 @@ function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: numb
   const old = h.filter((x) => x.t <= now - 60_000).pop();
   if (!old || !(px > 0)) return;
   const fx = LIVE_FX ? LIVE_FX(mint) : null;
-  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: false, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null } as unknown as GCoin;
+  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null } as unknown as GCoin;
   for (const b of BOOKS) {
     if (!b.any) continue;
     const k = id(b.key, mint);
@@ -632,6 +632,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const revived = reviveBooks(now);
   // v0.1.89: the RUNNER family trades on live coins from the first tend (its own slots)
   const runners = seedRunners(now);
+  // v0.1.90: the WALLETS family: proven wallets buying, on every launch (not only King calls)
+  const wals = seedWallets(now);
+  if (wals.length && send) await send(`👛 <b>GRID LIVE: proven wallets on every launch</b>\n${wals.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nThe moment proven wallets buy a launch (from the firehose, any launch, no King call needed). Paper on live coins.`).catch(() => null);
   if (runners.length && send) await send(`🏃 <b>GRID LIVE: runner mode</b>\n${runners.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nPaper on live coins. The runner exam: ${RUNNER_MIN}+ trips, in profit, and still in profit without its 2 best.`).catch(() => null);
   if (revived.length && send) await send(`♻️ <b>GRID LIVE: back in the race</b>\n${revived.map((b) => { const st = statOf(b.key); return `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}\n  last ${st.n}: ${st.winRate}% won, ${st.pnl >= 0 ? "+" : ""}${st.pnl} SOL, PF ${st.pfLessBest}`; }).join("\n")}\n\nClose to the exam: it keeps trading (up to ${EXTEND_MAX} trips) and passes the moment its last 30 do.`).catch(() => null);
   const hot = hotBook();
@@ -650,7 +653,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || runners.length || BOOKS.length !== before) await saveBooks();
+  if (dropped.length || added.length || revived.length || runners.length || wals.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
@@ -719,6 +722,37 @@ function seedRunners(now: number): LBook[] {
     const b = bookFromKey(k, now);
     if (!b) continue;
     b.by = "runner";
+    out.push(b);
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+
+// v0.1.90: the WALLETS family. GRID's best explorers all use "a proven wallet bought" (pw1|c5: 63% won, avg +29% on 8
+// test trips). These run on every launch the moment the firehose sees proven wallets buy it, with runner and regular
+// exits. Own slots, like the runners.
+export const WALLETS_MAX = 8;
+const REG = { initials: 2, trail: 0.25, stop: 0.25, timeMin: 60, mig: "hold" as const };
+export const WALLET_SEEDS: string[] = [
+  `any:${keyOf("pw2", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("pw1+u25", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("pw1+bs70", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("pw1", "c5", RUNNER_EXITS[0])}`,
+  `any:${keyOf("pw2", "now", REG)}`,
+  `any:${keyOf("pw1+u25", "now", REG)}`,
+];
+function seedWallets(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = WALLETS_MAX - BOOKS.filter((b) => b.by === "wallets").length;
+  for (const k of WALLET_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const inner = bookFromKey(k.replace(/^any:/, ""), now);
+    if (!inner) continue;
+    const b: LBook = { ...inner, key: k, label: `every launch: ${inner.label}`, any: true, by: "wallets" };
+    const ts = TRIPS.filter((t) => t.k === k);
+    if (ts.length && dropReason(bookStat(b, ts))) continue; // its own record ruled it out
     out.push(b);
     room--;
   }

@@ -86,7 +86,7 @@ const ok = (c: boolean, m: string) => {
 
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");
-  ok(pkg.version === "0.1.89" && bld.includes('"0.1.89"'), "v0.1.89");
+  ok(pkg.version === bld.match(/"([0-9.]+)"/)![1], "build tag matches the package");
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

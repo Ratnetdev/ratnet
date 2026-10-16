@@ -89,6 +89,7 @@ export default function GridLiveBoard({ embedded = false, show = "all" }: { embe
                     {!b.live.passed && d.hot === b.key ? <span className="tag" style={{ color: "var(--gold, #ffb547)", marginRight: 6 }}>HOT</span> : null}
                     {b.any ? <span className="tag" style={{ color: "var(--rat)", marginRight: 6 }}>EVERY LAUNCH</span> : b.parent ? <span className="tag" style={{ marginRight: 6 }}>VARIANT</span> : null}
                     {b.live.runner ? <span className="tag" style={{ color: "var(--gold, #ffb547)", marginRight: 6 }}>RUNNER</span> : null}
+                    {b.by === "wallets" ? <span className="tag" style={{ color: "var(--rat)", marginRight: 6 }}>WALLETS</span> : null}
                     {b.by === "researcher" ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>RESEARCHER</span> : !b.live.passed && b.grid.explore && !b.parent && d.hot !== b.key ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>EXPLORING</span> : null}
                     <b>{b.label}</b>
                     {b.why ? <div className="tiny mute2" style={{ fontStyle: "italic" }}>{b.why}</div> : null}
@@ -105,7 +106,7 @@ export default function GridLiveBoard({ embedded = false, show = "all" }: { embe
                   <td style={{ color: col(b.live.avgPct) }}>{b.live.n ? `${sgn(b.live.avgPct)}%` : "–"}</td>
                   <td>{b.live.n ? pf(b.live.pfLessBest) : "–"}</td>
                   <td>{b.open.length ? b.open.map((o) => <div key={o.mint} className="tiny" style={{ color: col(o.pnlPct) }}>{o.symbol} {sgn(o.pnlPct)}%</div>) : "–"}</td>
-                  <td className="tiny">{b.by === "runner" ? "runner mode" : b.by ? "proposed by RESEARCHER" : !b.grid.testN && !b.grid.pass ? "not in the latest GRID run" : <>{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : b.grid.explore ? " · exploring" : ""}</>}</td>
+                  <td className="tiny">{b.by === "runner" ? "runner mode" : b.by === "wallets" ? "proven wallets, every launch" : b.by ? "proposed by RESEARCHER" : !b.grid.testN && !b.grid.pass ? "not in the latest GRID run" : <>{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : b.grid.explore ? " · exploring" : ""}</>}</td>
                 </tr>
               ))}
             </tbody>
