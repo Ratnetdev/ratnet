@@ -87,7 +87,7 @@ const pk = () => Keypair.generate().publicKey.toBase58();
 
   // ---- 3. live fills next to paper
   const desk = fs.readFileSync(new URL("../src/lib/desk.ts", import.meta.url), "utf8");
-  ok(/par = \{ tok: Math\.round\(\(tokens \/ modelTok - 1\) \* 1000\) \/ 10/.test(desk) && /par = \{ out: Math\.round\(\(proceeds \/ model - 1\) \* 1000\) \/ 10 \}/.test(desk), "every live buy and sell keeps the gap to what paper would have booked");
+  ok(/par = \{ tok: Math\.round\(\(tokens \/ modelTok - 1\) \* 1000\) \/ 10/.test(desk) && /par = \{ out: Math\.round\(\(proceeds \/ model - 1\) \* 1000\) \/ 10/.test(desk), "every live buy and sell keeps the gap to what paper would have booked");
   const db = fs.readFileSync(new URL("../src/components/DeskBoard.tsx", import.meta.url), "utf8");
   ok(/function LiveParity/.test(db) && /<LiveParity trades=/.test(db), "the live panel shows it");
 

@@ -13,12 +13,14 @@
 //   - ranked only if train has 40+ trades, profit factor 1.1+ without the best trade, and BOTH halves of train positive
 //   - "passes" = the test meets PROMOTE's bar: 20+ trips, 35%+ won, avg +2%+, PF 1.1+ without the best trade
 // A pass is a candidate, not a strategy: it goes into ARENA next and must prove itself on live coins.
+import { loadLiveFees, paperPriority } from "./livecost";
 import { SITE } from "@/config/site";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 
 const D = (SITE as any).desk || {};
 export const GRID_SOL = Number(D.minSol ?? 0.05); // the desk's trade size (5% of a 1 SOL paper desk)
-const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, paperPrioritySol: D.paperPrioritySol };
+// v0.1.96: the priority fee paper pays is what live transactions paid (lib/livecost.ts), the setting until there are 10
+const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, get paperPrioritySol() { return paperPriority(D.paperPrioritySol); } };
 const FILL_DELAY = 2_000;
 const PATH_MS = 62 * 60_000; // the curve: the hour after the call
 export const HOLD_MS = 6 * 3600_000; // v0.1.72: through the migration, up to 6 hours (lib/after.ts)
@@ -323,6 +325,7 @@ export function sendersStudy(cs: GCoin[], hit: boolean[][]) {
 export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number } = {}) {
   // the worker's desk shares this thread: hand it the event loop between chunks of work
   const breathe = () => new Promise<void>((res) => setImmediate(res));
+  await loadLiveFees().catch(() => null); // v0.1.96: costs as live pays them
   const t0 = Date.now();
   const sol = opts.sol ?? GRID_SOL;
   const cost = sol + txCost(sol, COST) + ATA_RENT;

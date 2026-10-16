@@ -2,6 +2,8 @@
 // pump.fun launch the moment PumpPortal announces it. Deploy it on Railway (or any always-on host) from the same
 // GitHub repo with the same environment variables; start command: npm run worker. While it runs, the Vercel minute
 // ping steps aside on its own (it sees the worker's heartbeat) and comes back if the worker stops.
+import { LIVE_FEE, loadLiveFees } from "../src/lib/livecost";
+import { senderStats } from "../src/lib/exec";
 import { runSession } from "../src/lib/session";
 import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
@@ -177,7 +179,7 @@ async function beat() {
   // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
   const lag = loopLag();
-  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats }, { ex: 120 }).catch(() => {});
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats, exec: { sender: senderStats, liveFee: LIVE_FEE } }, { ex: 120 }).catch(() => {});
   if (lag && lag.p99 > 250 && Date.now() - lagLogAt > 60_000) (lagLogAt = Date.now()), console.log(`event loop late: p50 ${lag.p50}ms, p99 ${lag.p99}ms, worst ${lag.max}ms (last minute)`);
   flushRpcDay().catch(() => {});
   bwFlush()
@@ -864,6 +866,7 @@ async function main() {
   setInterval(() => pruneCurves(), 5_000);
   // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
+  await loadLiveFees().catch(() => null); // v0.1.96: paper pays what live transactions paid
   setCallHook((call) => {
     gridLiveCall(call);
     // v0.1.89: runner paths: BOND calls and calls already 30%+ up the curve are followed for a day (archive)

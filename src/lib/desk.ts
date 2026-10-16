@@ -10,6 +10,7 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { paperPriority, noteLiveFee } from "./livecost";
 import { sizePlan, KELLY_MIN_TRIPS, type SizeCfg } from "./sizing";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { memo, memoDrop } from "./memo";
@@ -1508,7 +1509,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let learning: Promise<unknown> | null = null;
     let kp = wallet();
     EXEC_CFG = { fastExec: (cfg as any).fastExec !== false, maxPriorityLamports: (cfg as any).maxPriorityLamports, jitoTipMinSol: (cfg as any).jitoTipMinSol, jitoTipMaxSol: (cfg as any).jitoTipMaxSol };
-    COST = { fastExec: (cfg as any).fastExec !== false, jitoTipMinSol: (cfg as any).jitoTipMinSol, jitoTipMaxSol: (cfg as any).jitoTipMaxSol, paperPrioritySol: (cfg as any).paperPrioritySol ?? 0.0005 };
+    // v0.1.96: paper pays the priority fee live transactions paid (median of the last 30, lib/livecost.ts)
+    const prioSet = (cfg as any).paperPrioritySol ?? 0.0005;
+    COST = { fastExec: (cfg as any).fastExec !== false, jitoTipMinSol: (cfg as any).jitoTipMinSol, jitoTipMaxSol: (cfg as any).jitoTipMaxSol, get paperPrioritySol() { return paperPriority(prioSet); } };
     if (kp && state.live) await warm().catch(() => {});
     let lastBeat = 0;
     let sol = (await solUsd()) || 0;
@@ -2714,6 +2717,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
       sig = res.sig;
       // the books follow the confirmed transaction (tokens received, SOL spent incl. tip, fees and rent), not the quote
       const real = await realDelta(res.sig, kp.publicKey, rec.mint).catch(() => null);
+      if (real?.fee) await noteLiveFee(real.fee).catch(() => null);
       tokens = real && real.tok > 0 ? real.tok : Number(res.outRaw) / 1e6;
       if (real?.sol != null && real.sol < 0) paperFixed = -real.sol - sol;
       LIVE_FLOW += real?.sol ?? -sol;
@@ -3108,7 +3112,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   const amt = frac >= 1 ? p.tokens : p.tokens * frac;
   let proceeds = 0;
   let sig: string | undefined;
-  let par: { out: number } | undefined;
+  let par: { out: number; fee?: number } | undefined;
   // a real-money position is only ever sold with the key (never "sold" on paper by a process without it)
   if (p.live && !kp) {
     log(b, "RISK", `$${p.symbol}: live position, but this process has no wallet key. the worker sells it`, "bad", coin);
@@ -3125,10 +3129,13 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
       const res = await swap(kp, p.mint, WSOL, raw, slip);
       sig = res.sig;
       const real = await realDelta(res.sig, kp.publicKey, p.mint).catch(() => null);
+      if (real?.fee) await noteLiveFee(real.fee).catch(() => null);
       proceeds = real?.sol != null && real.sol > 0 ? real.sol : Number(res.outRaw) / 1e9;
-      // v0.1.87: what paper would have booked for this sell at the price that triggered it
-      const model = sellProceeds(amt, px, p.mkt?.grad ?? !!p.gradSeen, p.mkt?.real ?? 0, COST, frac >= 1 || amt >= p.tokens - 1e-9);
-      if (model > 0) par = { out: Math.round((proceeds / model - 1) * 1000) / 10 };
+      // v0.1.87: what paper would have booked for this sell at the price that triggered it. v0.1.96: without the account
+      // rent: the rent comes back in its own transaction after the sell (it was in the model and not in the proceeds, so
+      // every full exit read ~5% worse than it was: SOLCAT -4.7% was 0.0% on 16 Oct)
+      const model = sellProceeds(amt, px, p.mkt?.grad ?? !!p.gradSeen, p.mkt?.real ?? 0, COST, false);
+      if (model > 0) par = { out: Math.round((proceeds / model - 1) * 1000) / 10, ...(real?.fee ? { fee: r4(real.fee / 1e9) } : {}) };
       LIVE_FLOW += proceeds;
       FLOW_SINCE_BAL += proceeds;
     } catch (e) {

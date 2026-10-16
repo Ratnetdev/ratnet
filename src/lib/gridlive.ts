@@ -8,13 +8,15 @@
 // first price 2+ seconds after the signal. Records are kept per strategy, so one that comes back later keeps its record.
 // A strategy that passes the desk's exam here (30 trips, 40%+ won, +10% on a 1 SOL desk, PF 1.2+ without the best
 // trade) is announced on Telegram: the next step is putting the desk on it.
+import { paperPriority } from "./livecost";
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
 import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
 
 const D = (SITE as any).desk || {};
-const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, paperPrioritySol: D.paperPrioritySol };
+// v0.1.96: the priority fee paper pays is what live transactions paid (lib/livecost.ts), the setting until there are 10
+const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, get paperPrioritySol() { return paperPriority(D.paperPrioritySol); } };
 export const LIVE_MAX_BOOKS = 16; // v0.1.73: 8 to 16 (paper costs nothing; more books in parallel = records sooner)
 const MAX_OPEN = 10; // per book
 const MAX_OPEN_ANY = 25; // v0.1.78: a twin on every launch sees many more entries (and holds up to 6h)

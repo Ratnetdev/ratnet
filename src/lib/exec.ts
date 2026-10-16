@@ -13,7 +13,34 @@ import { conn } from "./solana";
 
 const JUP = process.env.JUPITER_API_KEY ? "https://api.jup.ag/swap/v1" : "https://lite-api.jup.ag/swap/v1";
 const jupHeaders = (): Record<string, string> => (process.env.JUPITER_API_KEY ? { "x-api-key": process.env.JUPITER_API_KEY } : {});
-const SENDER = () => process.env.SENDER_URL || "https://sender.helius-rpc.com/fast";
+// v0.1.96: with the Helius key (taken from HELIUS_RPC_URL) Sender allows 50 requests a second; keyless it is 1 a second per
+// IP, and the rebroadcast every 700ms went over it. Each Sender answer is counted (senderStats, on /status).
+const heliusKey = () => {
+  try {
+    return new URL(process.env.HELIUS_RPC_URL || "").searchParams.get("api-key") || "";
+  } catch {
+    return "";
+  }
+};
+const SENDER = () => {
+  const base = process.env.SENDER_URL || "https://sender.helius-rpc.com/fast";
+  const k = heliusKey();
+  return k && !/api-key=/.test(base) ? `${base}${base.includes("?") ? "&" : "?"}api-key=${k}` : base;
+};
+export const senderStats = { ok: 0, err: 0, http: 0, last: "", lastAt: 0 };
+function noteSender(j: any, status: number) {
+  if (status >= 400 || !j) {
+    senderStats.http++;
+    senderStats.last = `http ${status}`;
+  } else if (j.error) {
+    senderStats.err++;
+    senderStats.last = String(j.error?.message || JSON.stringify(j.error)).replace(/api-key=\S+/gi, "").slice(0, 120);
+  } else {
+    senderStats.ok++;
+    return;
+  }
+  senderStats.lastAt = Date.now();
+}
 // Jito's public tip accounts (any one; picked at random so tips spread out)
 const TIP = (process.env.JITO_TIP_ACCOUNTS || "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5,HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe,Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY,ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49,DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh,ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt,DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL,3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT").split(",").map((x) => x.trim()).filter(Boolean);
 
@@ -118,7 +145,7 @@ export async function realDelta(sig: string, owner: PublicKey, mint: string) {
       const sol = wi >= 0 ? ((tx.meta.postBalances[wi] || 0) - (tx.meta.preBalances[wi] || 0)) / 1e9 : null;
       const sum = (arr: any[]) => (arr || []).filter((b) => b.mint === mint && b.owner === me).reduce((a, b) => a + Number(b.uiTokenAmount?.uiAmount || 0), 0);
       const tok = sum(tx.meta.postTokenBalances) - sum(tx.meta.preTokenBalances);
-      return { sol, tok };
+      return { sol, tok, fee: Number(tx.meta.fee) || 0 }; // v0.1.96: lamports (priority + base)
     }
     await new Promise((res) => setTimeout(res, 800));
   }
@@ -186,7 +213,9 @@ async function sendBoth(raw: Uint8Array, fast: boolean) {
   const jobs: Promise<unknown>[] = [conn().sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }).catch(() => null)];
   if (fast)
     jobs.push(
-      fetch(SENDER(), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method: "sendTransaction", params: [b64, { encoding: "base64", skipPreflight: true, maxRetries: 0 }] }), signal: AbortSignal.timeout(3000) }).catch(() => null)
+      fetch(SENDER(), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method: "sendTransaction", params: [b64, { encoding: "base64", skipPreflight: true, maxRetries: 0 }] }), signal: AbortSignal.timeout(3000) })
+        .then(async (r) => noteSender(await r.json().catch(() => null), r.status))
+        .catch((e) => ((senderStats.http++), (senderStats.last = String(e?.message || e).replace(/api-key=\S+/gi, "").slice(0, 80)), (senderStats.lastAt = Date.now())))
     );
   await Promise.all(jobs);
 }
@@ -312,3 +341,4 @@ async function fastSwapInner(kp: Keypair, inputMint: string, outputMint: string,
     return { sig: sig58, outRaw: BigInt(quote.outAmount), ms: Date.now() - t0, landedMs, path: "standard" as const, tipSol: 0, priority: 0, fallbackWhy: String((e as any)?.message || e).slice(0, 80) };
   }
 }
+export const _senderUrl = () => SENDER();
