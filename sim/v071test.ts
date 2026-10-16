@@ -148,7 +148,7 @@ const pump = () => [...Array.from({ length: 12 }, () => 0.06 + rnd() * 0.04), ..
   ok(/order by created_at desc limit 5000/.test(rp), "REPLAY reads the newest 5,000 calls (it was stuck on 11 Oct)");
   const db = fs.readFileSync(new URL("../src/components/DeskBoard.tsx", import.meta.url), "utf8");
   ok(/<GridBoard \/>/.test(db) && /<GridLiveBoard embedded/.test(fs.readFileSync(new URL("../src/components/TrackRecord.tsx", import.meta.url), "utf8")), "GRID on /desk, GRID LIVE inside the records (v0.1.77)");
-  ok(/gridLiveCurve\(mint, v as any\)/.test(wk) && /setCallHook\(\(call\) => gridLiveCall\(call\)\)/.test(wk) && /gridLiveSetBooks\(liveCandidates\(res, 16\)\)/.test(wk) && /gridHistory\(/.test(wk), "the worker feeds GRID LIVE every curve update and call, refills it after each run, and keeps the record across runs");
+  ok(/gridLiveCurve\(mint, v as any\)/.test(wk) && /setCallHook\(\(call\) => \{\s*gridLiveCall\(call\)/.test(wk) && /gridLiveSetBooks\(liveCandidates\(res, 16\)\)/.test(wk) && /gridHistory\(/.test(wk), "the worker feeds GRID LIVE every curve update and call, refills it after each run, and keeps the record across runs");
   const dg = fs.readFileSync(new URL("../src/lib/digger.ts", import.meta.url), "utf8");
   ok(/CALL_HOOK\?\.\(rec\.call\)/.test(dg), "every on-time call reaches GRID LIVE");
   const { BUILD } = await import("../src/config/build");

@@ -148,7 +148,7 @@ function trade(o: { mint: string; user: string; isBuy: boolean; sol: bigint; tok
   const gl = fs.readFileSync(new URL("../src/lib/gridlive.ts", import.meta.url), "utf8");
   ok(/"pw1", "pw2", "u25", "bs70", "wh"\]\); \/\/ v0\.1\.81/.test(gl) && /const fx = LIVE_FX \? LIVE_FX\(mint\) : null;/.test(gl), "every-launch books can use them live");
   const wk = fs.readFileSync(new URL("../worker/index.ts", import.meta.url), "utf8");
-  ok(/if \(!fireLive\(\)\) gridLiveCurve\(mint, v as any\);/.test(wk) && /curve: \(mint, v\) => gridLiveCurve\(mint, v as any\)/.test(wk), "GRID LIVE is fed by the firehose when it is up (the old streams when it is not), never twice");
+  ok(/if \(!fireLive\(\)\) gridLiveCurve\(mint, v as any\);/.test(wk) && /curve: \(mint, v\) => \{\s*gridLiveCurve\(mint, v as any\)/.test(wk), "GRID LIVE is fed by the firehose when it is up (the old streams when it is not), never twice");
   ok(/walletsSave\(archivePool\(\)\)/.test(wk) && /walletsLoad\(archivePool\(\)\)/.test(wk), "wallet scores saved to and loaded from Postgres");
   const ar = fs.readFileSync(new URL("../src/lib/archive.ts", import.meta.url), "utf8");
   ok(/create table if not exists wallet_scores \(wallet text primary key/.test(ar), "archive table wallet_scores");

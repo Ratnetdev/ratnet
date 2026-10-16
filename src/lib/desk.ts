@@ -50,7 +50,7 @@ import { buyersOf, CLASS_LABEL } from "./hound";
 import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
-import { HOLD_MS, type GExit } from "./grid";
+import { HOLD_MS, firstSell, holdMax, isRunner, type GExit } from "./grid";
 import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE" | "REGIME";
@@ -2786,11 +2786,12 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
   const x = p.gx!;
   const xr = q.px / p.entryPx;
   if (q.grad && !p.gradSeen && x.mig !== "hold") return { frac: 1, why: `GRID: migrated, sold at the migration (${xr.toFixed(2)}x)` };
-  if (x.mig === "hold" ? now - p.openedAt >= HOLD_MS : now - p.openedAt >= 62 * 60_000) return { frac: 1, why: `GRID: ${x.mig === "hold" ? "6 hours" : "the hour"} over, out at ${xr.toFixed(2)}x` };
-  if (!p.tp1Done && xr >= x.initials) return { frac: 0.5, why: `GRID: half at ${xr.toFixed(2)}x (target ${x.initials}x)` };
+  // v0.1.89: runner exits (up to `hours`, most sold at the first target, the rest rides a wide trail)
+  if (now - p.openedAt >= holdMax(x)) return { frac: 1, why: `GRID: ${isRunner(x) ? `${x.hours} hours` : x.mig === "hold" ? "6 hours" : "the hour"} over, out at ${xr.toFixed(2)}x` };
+  if (!p.tp1Done && xr >= x.initials) return { frac: firstSell(x), why: `GRID: ${isRunner(x) ? `${Math.round(firstSell(x) * 100)}%` : "half"} at ${xr.toFixed(2)}x (target ${x.initials}x)` };
   if (xr <= 1 - x.stop) return { frac: 1, why: `GRID: stop ${((xr - 1) * 100).toFixed(0)}%` };
   if (p.tp1Done && q.px <= p.peakPx * (1 - x.trail)) return { frac: 1, why: `GRID: trail ${Math.round(x.trail * 100)}% off the peak, out at ${xr.toFixed(2)}x` };
-  if (now - p.openedAt >= x.timeMin * 60_000 && (!p.tp1Done || xr < 1.1)) return { frac: 1, why: `GRID: ${x.timeMin} minutes without initials, out at ${xr.toFixed(2)}x` };
+  if (now - p.openedAt >= x.timeMin * 60_000 && (!p.tp1Done || (!isRunner(x) && xr < 1.1))) return { frac: 1, why: `GRID: ${x.timeMin} minutes without initials, out at ${xr.toFixed(2)}x` };
   return { frac: 0, why: "" };
 }
 

@@ -46,7 +46,7 @@ function coin(curve: [number, number][], pool: number[], f: Partial<GCoin> = {})
   // a migration that dumps: the stop works on pool prices
   const dump = coin(curve, [390, 360, 320, 280, 250, 230]);
   ok(g.tradeFrom(dump, g.entryIndex(dump, g.MODES.find((m) => m.id === "mig")!), hold)! < -0.01, "a migration that dumps hits the stop in the pool");
-  ok(g.keyOf("bond", "mig", hold).endsWith("/hold") && g.GEXITS.length === 48 && g.MODES.length === 8, "48 exits (sell or hold at the migration), 8 entry timings");
+  ok(g.keyOf("bond", "mig", hold).endsWith("/hold") && g.GEXITS.length === 51 && g.MODES.length === 8, "48 regular exits (sell or hold at the migration) + 3 runner exits (v0.1.89), 8 entry timings");
   ok(g.PREDS.some((p) => p.id === "p70"), "a filter for calls near migration (70%+ curve)");
 
   // the search finds it: senders bought near migration and held
@@ -113,7 +113,7 @@ function coin(curve: [number, number][], pool: number[], f: Partial<GCoin> = {})
   const ar = fs.readFileSync(new URL("../src/lib/archive.ts", import.meta.url), "utf8");
   ok(/alter table ticks add column if not exists pool boolean/.test(ar) && /"complete", "pool"\]/.test(ar), "pool prices are archived as ticks marked pool");
   const gr = fs.readFileSync(new URL("../src/lib/grid.ts", import.meta.url), "utf8");
-  ok(/complete, pool from ticks/.test(gr) && /HOLD_MS \+ 30 \* 60_000/.test(gr), "GRID reads 6 hours of pool prices after a call");
+  ok(/complete, pool from ticks/.test(gr) && /RUN_MS \+ 30 \* 60_000/.test(gr), "GRID reads pool prices after a call (a day since v0.1.89)");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   ok(BUILD === pkg.version, `build tag ${BUILD}`);

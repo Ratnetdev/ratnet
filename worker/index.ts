@@ -18,7 +18,7 @@ import { reviveAllowed } from "../src/lib/revive";
 import { loopLag, startLoopLag } from "../src/lib/looplag";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
-import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
+import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
@@ -834,7 +834,11 @@ async function main() {
   setInterval(() => pruneCurves(), 5_000);
   // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
-  setCallHook((call) => gridLiveCall(call));
+  setCallHook((call) => {
+    gridLiveCall(call);
+    // v0.1.89: runner paths: BOND calls and calls already 30%+ up the curve are followed for a day (archive)
+    if (call?.mint && (call.verdict === "BOND" || Number(call.progress) >= 30)) runTrack(String(call.mint), Number(call.at) || Date.now());
+  });
   // v0.1.75: FOLLOW: the desk buys every entry of GRID LIVE's leader (a strategy that passed the exam live)
   {
     const { queueGridOrder } = await import("../src/lib/desk");
@@ -889,8 +893,14 @@ async function main() {
         const n = logsGap();
         if (n) console.log(`firehose: (re)connected, ${n} launch logs from before it are read from the chain`);
       },
-      curve: (mint, v) => gridLiveCurve(mint, v as any),
-      pool: (mint, q) => gridLiveQuote(mint, { mcSol: q.mcSol, real: q.real }),
+      curve: (mint, v) => {
+        gridLiveCurve(mint, v as any);
+        archiveRunTick(mint, { mcSol: v.mcapSol, real: v.realSol, progress: v.progress, pool: false, complete: v.complete });
+      },
+      pool: (mint, q) => {
+        gridLiveQuote(mint, { mcSol: q.mcSol, real: q.real });
+        archiveRunTick(mint, { mcSol: q.mcSol, real: q.real, progress: 100, pool: true });
+      },
       complete: (mint, at) => walletComplete(mint, at),
       otherQuote: (mint) => noteOtherQuote(mint),
     }).catch((e) => (console.log("firehose start error", e?.message || e), false));
@@ -910,7 +920,7 @@ async function main() {
     setInterval(() => walletsSave(archivePool()).catch(() => 0), 10 * 60_000);
     setInterval(() => {
       if (!on) return void markAlive("firehose", { status: "off until SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN are set" }).catch(() => null);
-      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, otherQuote: fireStats.otherQuoteCreates, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
+      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, otherQuote: fireStats.otherQuoteCreates, runners: runTracked(), ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
       // v0.1.82: what the firehose saved (curve and pool reads answered from it) and the Dune backfill's progress
       const pctOf = (h: number, r: number) => (h + r ? Math.round((h / (h + r)) * 100) : 0);
       // v0.1.86: coins read with no curve (remembered 30s); a few examples in the log so the cause can be checked

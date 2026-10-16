@@ -42,9 +42,11 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const r = await L.gridLiveTend(async (t) => msgs.push(t));
   ok(r.dropped.some((d) => d.key === coldKey), "the cold book (0 wins in 5) is dropped");
   ok(r.added.length === 7 && r.added.includes(`any:${hotKey}`), "family spawned: the every-launch twin + 6 exit variants");
-  ok(msgs.length === 1 && /got its family/.test(msgs[0]), "Telegram names the family");
+  // v0.1.89: the runner family is seeded on the first tend too (its own message)
+  const fam = () => msgs.filter((m) => /got its family/.test(m)).length;
+  ok(fam() === 1, "Telegram names the family");
   const r2 = await L.gridLiveTend(async (t) => msgs.push(t));
-  ok(r2.added.length === 0 && msgs.length === 1, "spawned once per hot strategy");
+  ok(r2.added.length === 0 && fam() === 1, "spawned once per hot strategy");
   const books = L.gridLiveBooks();
   ok(books.filter((b) => b.parent === hotKey).every((b) => b.grid.explore), "the family is exploring (45-trip rule applies)");
   ok(L.gridLiveState().check.has(hotKey) && L.gridLiveState().check.has(`any:${hotKey}`), "the hot strategy and its family get their fills checked");
@@ -52,7 +54,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   // GRID's 16 slots do not count the family
   const rows = Array.from({ length: 20 }, (_, i) => ({ key: g.keyOf("bond", "now", { ...exit, initials: 2, trail: 0.4 }) + `#${i}`, filterLabel: "King BOND", filter: "bond", mode: "now", modeLabel: "at the call", exit, test: { n: 40, avgPct: 3 }, pass: false, explore: true })) as any;
   const after = await L.gridLiveSetBooks(rows);
-  ok(after.filter((b: any) => !b.parent).length === 16 && after.filter((b: any) => b.parent).length === 7, "GRID still fills 16; the family has its own slots");
+  ok(after.filter((b: any) => !b.parent && !b.by).length === 16 && after.filter((b: any) => b.parent).length === 7, "GRID still fills 16; the family has its own slots");
 
   // ---- the twin: the hot rule on every launch, from the curve alone
   const quotes: any[] = [];

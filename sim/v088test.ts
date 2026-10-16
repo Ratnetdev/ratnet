@@ -21,7 +21,7 @@ const ok = (c: boolean, m: string) => {
   ok(/if \(e instanceof BudgetError\) refused = true;/.test(h) && /st\.pos -= chunk\.length;\s*break;/.test(h), "a chunk with refused reads is read again next session, not skipped");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");
-  ok(pkg.version === "0.1.88" && bld.includes('"0.1.88"'), "v0.1.88");
+  ok(pkg.version === bld.match(/"([0-9.]+)"/)![1], "build tag matches the package");
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

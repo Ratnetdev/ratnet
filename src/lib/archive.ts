@@ -138,6 +138,28 @@ export function archivePoolTick(mint: string, v: { mcSol: number; real: number }
   push(Q.ticks, { mint, at: ts(now), progress: 100, mc_sol: num(v.mcSol), real_sol: num(v.real), complete: true, pool: true }, CAP.ticks);
 }
 
+// v0.1.89: RUNNER paths. Every King BOND call (and every call already 30%+ up the curve) is followed for a day from
+// the firehose, one price a minute once its first hour is over (the curve stream covers the first hour, AFTER the
+// first 6 hours in the pool). GRID tests the runner exits on these.
+const RUN_TRACK = new Map<string, number>(); // mint -> call time
+const RUN_AT = new Map<string, number>();
+export const RUN_TRACK_MS = 24 * 3600_000;
+export function runTrack(mint: string, callAt: number) {
+  if (RUN_TRACK.size > 20_000) for (const [m, at] of RUN_TRACK) if (Date.now() - at > RUN_TRACK_MS) (RUN_TRACK.delete(m), RUN_AT.delete(m));
+  RUN_TRACK.set(mint, callAt);
+}
+export const runTracked = () => RUN_TRACK.size;
+export function archiveRunTick(mint: string, v: { mcSol: number; real: number; progress: number; pool: boolean; complete?: boolean }, now = Date.now()) {
+  const at = RUN_TRACK.get(mint);
+  if (at == null || !on() || !(v.mcSol > 0)) return false;
+  if (now - at > RUN_TRACK_MS) return (RUN_TRACK.delete(mint), RUN_AT.delete(mint), false);
+  if (now - at < 62 * 60_000) return false;
+  if (now - (RUN_AT.get(mint) || 0) < 60_000) return false;
+  RUN_AT.set(mint, now);
+  push(Q.ticks, { mint, at: ts(now), progress: num(v.pool ? 100 : v.progress), mc_sol: num(v.mcSol), real_sol: num(v.real), complete: !!(v.pool || v.complete), pool: !!v.pool }, CAP.ticks);
+  return true;
+}
+
 // ---- trades and trips
 export function archiveTrades(trades: any[] | undefined, ghost: boolean) {
   if (!on() || !trades?.length) return;

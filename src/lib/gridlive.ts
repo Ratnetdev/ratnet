@@ -11,13 +11,14 @@
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
-import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, exitText, keyOf, type GCoin, type GExit, type GRow } from "./grid";
+import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
 
 const D = (SITE as any).desk || {};
 const COST: CostCfg = { jitoTipMinSol: D.jitoTipMinSol, jitoTipMaxSol: D.jitoTipMaxSol, paperPrioritySol: D.paperPrioritySol };
 export const LIVE_MAX_BOOKS = 16; // v0.1.73: 8 to 16 (paper costs nothing; more books in parallel = records sooner)
 const MAX_OPEN = 10; // per book
 const MAX_OPEN_ANY = 25; // v0.1.78: a twin on every launch sees many more entries (and holds up to 6h)
+const MAX_OPEN_RUN = 40; // v0.1.89: runners hold up to 24h (most coins hit the stop within the hour)
 export const SPAWN_MAX = 8; // v0.1.78: variants and twins of the hot strategy, on top of GRID's 16
 const SPAWNED_KEY = "rn:gridlive:spawned";
 const FILLS_KEY = "rn:gridlive:fills";
@@ -47,7 +48,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher";
+  by?: "researcher" | "runner";
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -144,6 +145,13 @@ export const gridLiveBooks = () => BOOKS;
  */
 export function dropReason(l: LStat): string | null {
   if (l.passed || l.pending) return null;
+  // v0.1.89: runners are not judged by their win rate; they leave when their whole record rules them out
+  if (l.runner) {
+    const total = l.total ?? l.n;
+    if (total >= RUNNER_MAX_TRIPS) return `${RUNNER_MAX_TRIPS} trips without passing the runner exam`;
+    if (total >= 30 && (l.totalPnl ?? 0) <= -0.4 * total * GRID_SOL) return `losing: ${l.totalPnl} SOL after ${total} trips`;
+    return null;
+  }
   // v0.1.82: the exam reads the last 30 trips, so a strategy that is close keeps trading and can still pass on its next
   // trips (the hot one was dropped at 30 trips with +0.219 SOL, 47% won and PF 1.19 against the 1.2 it needs). Close =
   // 40%+ won, in profit and PF 1.0+ on the last 30. It gets up to 60 trips in total; past 30 it must also be positive
@@ -314,7 +322,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (now < pe.fillAfter) return;
   PEND.delete(k);
   const open = [...POS.values()].filter((p) => p.key === b.key).length;
-  if (open >= (b.any ? MAX_OPEN_ANY : MAX_OPEN)) return;
+  if (open >= (b.any ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN)) return;
   const px0 = last.px / 1e9;
   if (!(px0 > 0)) return;
   const sol = GRID_SOL;
@@ -373,14 +381,14 @@ function stepPos(k: string, pos: LPos, now: number) {
   if (px > pos.peak) pos.peak = px;
   const xr = px / pos.fillPx;
   if (!pos.initials && xr >= x.initials) {
-    sell(pos, 0.5, px, last.real);
+    sell(pos, firstSell(x), px, last.real);
     pos.initials = true;
     redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
     return;
   }
   if (xr <= 1 - x.stop) return close(k, pos, now, "stop");
   if (pos.initials && px <= pos.peak * (1 - x.trail)) return close(k, pos, now, "trail");
-  if (now >= pos.tEnd && (!pos.initials || xr < 1.1)) return close(k, pos, now, "time");
+  if (now >= pos.tEnd && (!pos.initials || (!isRunner(x) && xr < 1.1))) return close(k, pos, now, "time");
 }
 
 /** A pool price after the migration (the AFTER feed). */
@@ -396,13 +404,9 @@ export function gridLiveQuote(mint: string, q: { mcSol: number; real: number }, 
   for (const [k, pos] of POS) if (pos.mint === mint) stepPos(k, pos, now);
 }
 
-// a position whose book was dropped keeps its exit (it is in the key)
+// a position whose book was dropped keeps its exit (it is in the key; v0.1.89: runner exits too)
 function exitOfKey(key: string): GExit | null {
-  const m = key.split("|")[2]?.split("/");
-  if (!m || m.length < 4) return null;
-  const v = m.slice(0, 4).map(Number);
-  if (!v.every(Number.isFinite)) return null;
-  return { initials: v[0], trail: v[1], stop: v[2], timeMin: v[3], mig: m[4] === "hold" ? "hold" : "sell" };
+  return exitOfPart(key.replace(/^any:/, "").split("|")[2]);
 }
 
 /** Every 10 seconds: the 2-minute entries, time exits on coins that stopped trading, the end of the hour. */
@@ -427,12 +431,12 @@ export function gridLiveSweep(now = Date.now()) {
   for (const [k, pos] of POS) {
     const x = BOOKS.find((b) => b.key === pos.key)?.exit ?? exitOfKey(pos.key);
     const xr = pos.lastPx / pos.fillPx;
-    if (now - pos.openedAt >= (x?.mig === "hold" ? HOLD_MS : PATH_MS)) close(k, pos, now, x?.mig === "hold" ? "6 hours over" : "hour over");
-    else if (x && now >= pos.tEnd && (!pos.initials || xr < 1.1)) close(k, pos, now, "time");
+    if (now - pos.openedAt >= (x ? holdMax(x) : PATH_MS)) close(k, pos, now, x && isRunner(x) ? `${x.hours} hours over` : x?.mig === "hold" ? "6 hours over" : "hour over");
+    else if (x && now >= pos.tEnd && (!pos.initials || (!isRunner(x) && xr < 1.1))) close(k, pos, now, "time");
   }
 }
 
-export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean; total?: number; totalPnl?: number };
+export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean; total?: number; totalPnl?: number; runner?: boolean; lessTop2?: number };
 /** The desk's exam on a strategy's last 30 live trips (a 1 SOL desk at 0.05 SOL a trade: +10% = +0.1 SOL). */
 export function liveStat(trips: LTrip[]): LStat {
   const last = trips.slice(0, 30);
@@ -457,12 +461,33 @@ export function liveStat(trips: LTrip[]): LStat {
  * and positive over all of them, on top of the exam on its last 30. With 16 books searching, one lucky 30-trip run is
  * the risk this guards against.
  */
-export function bookStat(b: Pick<LBook, "grid">, trips: LTrip[]): LStat {
+export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips: LTrip[]): LStat {
+  // v0.1.89: a runner is judged on its whole record (few wins, big ones), not on 40% won over its last 30
+  const x = b.exit ?? (b.key ? exitOfKey(b.key) : null);
+  if (isRunner(x)) return runnerStat(trips);
   const l = liveStat(trips);
   if (!b.grid?.explore || !l.passed) return l;
   const total = trips.reduce((a, t) => a + t.pnl, 0);
   const ok = trips.length >= 45 && total > 0;
   return { ...l, passed: ok, pending: !ok }; // pending: the exam holds, the extra trips are still coming
+}
+
+/**
+ * v0.1.89: the RUNNER exam. A runner wins rarely and big, so the desk's exam (40%+ won, PF 1.2 without the best trade
+ * over the last 30) would never pass one. It passes on its whole record instead: 60+ trips, in profit after every cost,
+ * and still in profit without its 2 best trips (one lucky coin is not a strategy).
+ */
+export const RUNNER_MIN = 60;
+export const RUNNER_MAX_TRIPS = 120;
+export function runnerStat(trips: LTrip[]): LStat {
+  const l = liveStat(trips);
+  const total = trips.length;
+  const totalPnl = trips.reduce((a, t) => a + t.pnl, 0);
+  const top = trips.map((t) => t.pnl).sort((a, z) => z - a);
+  const lessTop2 = totalPnl - Math.max(0, top[0] ?? 0) - Math.max(0, top[1] ?? 0);
+  const passed = total >= RUNNER_MIN && totalPnl > 0 && lessTop2 > 0;
+  const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+  return { ...l, passed, pending: !passed && total < RUNNER_MIN && lessTop2 > 0, runner: true, total, totalPnl: r4(totalPnl), lessTop2: r4(lessTop2) };
 }
 
 /** The site's summary (once a minute) and the Telegram note when a strategy passes the exam live. */
@@ -572,7 +597,7 @@ const fillView = (key: string) => {
 
 /** The hot strategy: the best live record that is clearly working but not yet through the exam. */
 export function hotBook(): LBook | null {
-  const c = BOOKS.filter((b) => !b.parent && !b.any)
+  const c = BOOKS.filter((b) => !b.parent && !b.any && !isRunner(b.exit)) // v0.1.89: runners have no exit family
     .map((b) => ({ b, s: statOf(b.key) }))
     .filter((x) => x.s.n >= 12 && x.s.pnl > 0 && x.s.pfLessBest >= 1.2 && x.s.avgPct >= 5)
     .sort((a, z) => z.s.pnl - a.s.pnl);
@@ -605,6 +630,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const dropped = BOOKS.filter((b) => dropReason(statOf(b.key)));
   BOOKS = BOOKS.filter((b) => !dropped.includes(b));
   const revived = reviveBooks(now);
+  // v0.1.89: the RUNNER family trades on live coins from the first tend (its own slots)
+  const runners = seedRunners(now);
+  if (runners.length && send) await send(`🏃 <b>GRID LIVE: runner mode</b>\n${runners.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nPaper on live coins. The runner exam: ${RUNNER_MIN}+ trips, in profit, and still in profit without its 2 best.`).catch(() => null);
   if (revived.length && send) await send(`♻️ <b>GRID LIVE: back in the race</b>\n${revived.map((b) => { const st = statOf(b.key); return `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}\n  last ${st.n}: ${st.winRate}% won, ${st.pnl >= 0 ? "+" : ""}${st.pnl} SOL, PF ${st.pfLessBest}`; }).join("\n")}\n\nClose to the exam: it keeps trading (up to ${EXTEND_MAX} trips) and passes the moment its last 30 do.`).catch(() => null);
   const hot = hotBook();
   let added: LBook[] = [];
@@ -622,7 +650,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || BOOKS.length !== before) await saveBooks();
+  if (dropped.length || added.length || revived.length || runners.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
@@ -669,6 +697,35 @@ function reviveBooks(now: number): LBook[] {
   if (out.length) BOOKS = [...BOOKS, ...out];
   return out;
 }
+// v0.1.89: the RUNNER family. The King's BOND call (8.6% of them bond, 4x the base rate), with and without a proven
+// wallet, the hot near-migration rule, and a proven wallet with momentum, each with runner exits.
+export const RUNNER_MAX = 8;
+export const RUNNER_SEEDS: string[] = [
+  keyOf("bond", "now", RUNNER_EXITS[0]),
+  keyOf("bond", "now", RUNNER_EXITS[1]),
+  keyOf("bond+pw1", "now", RUNNER_EXITS[0]),
+  keyOf("pw1", "c5", RUNNER_EXITS[0]),
+  keyOf("p70+r5", "now", RUNNER_EXITS[0]),
+  keyOf("s60", "now", RUNNER_EXITS[2]),
+];
+function seedRunners(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = RUNNER_MAX - BOOKS.filter((b) => b.by === "runner").length;
+  for (const k of RUNNER_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const ts = TRIPS.filter((t) => t.k === k);
+    if (ts.length && dropReason(runnerStat(ts))) continue; // its own record ruled it out
+    const b = bookFromKey(k, now);
+    if (!b) continue;
+    b.by = "runner";
+    out.push(b);
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+
 function refreshCheck() {
   CHECK.clear();
   const hot = hotBook();
