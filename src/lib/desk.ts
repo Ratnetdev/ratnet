@@ -2587,10 +2587,11 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   const liqCap = vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
   // PM: each strategy sleeve is sized by its own record; a paused sleeve sits out
   const sl = sleeveOf(how, rec.wire?.vamp);
-  const pmw = await sleeveWeight(sl).catch(() => ({ w: 1, paused: false, until: 0 }));
+  const pmw: { w: number; paused: boolean; until: number; bench?: string } = await sleeveWeight(sl).catch(() => ({ w: 1, paused: false, until: 0 }));
   if (pmw.paused) {
-    log(b, "PM", `$${rec.symbol}: ${sl} sleeve is paused until ${new Date(pmw.until).toISOString().slice(11, 16)} UTC after a bad run. ghost desk takes it`, "info", coin);
-    await ghostEnter(b, rec, px, real, how, `${sl} sleeve paused by PM`, cfg, true);
+    if (pmw.bench) log(b, "PM", `$${rec.symbol}: ${sl} is benched from live money (${pmw.bench}). ghost desk takes it`, "info", coin);
+    else log(b, "PM", `$${rec.symbol}: ${sl} sleeve is paused until ${new Date(pmw.until).toISOString().slice(11, 16)} UTC after a bad run. ghost desk takes it`, "info", coin);
+    await ghostEnter(b, rec, px, real, how, pmw.bench ? `${sl} benched: ${pmw.bench}` : `${sl} sleeve paused by PM`, cfg, true);
     return;
   }
   // REGIME (v0.1.63): the market state and the strategy's live ARENA hit rate switch it on, to half size, or off.
@@ -3187,7 +3188,8 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     await follow({ id: tripId(p.mint, p.openedAt), mint: p.mint, symbol: p.symbol, creator: p.creator, createdAt: p.ctx?.createdAt, closedAt: Date.now(), entryPx: p.entryPx, exitPx: px, exitGrad: !!p.gradSeen, reason }).catch(() => {});
     log(b, "COACH", `following $${p.symbol} after the exit: checks at 5m, 15m, 1h, 2h, 6h, 1d and 7d, and what moved it`, "info", coin);
     await noteExit(`${sleeveOf(p.how, p.wire?.vamp)}:${p.tier || "micro"}`, Math.max(p.peakPx || 0, px) / p.entryPx, ((p.peakAt ?? p.openedAt) - p.openedAt) / 60_000).catch(() => {});
-    const pmNote = await pmClose(sleeveOf(p.how, p.wire?.vamp), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol))).catch(() => null);
+    // v0.1.97: a live trip also counts toward the LIVE BENCH (its record and its last sell's gap to paper)
+    const pmNote = await pmClose(sleeveOf(p.how, p.wire?.vamp), Math.log(Math.max(1e-6, p.soldSol) / Math.max(1e-9, p.costSol)), !!p.live && !p.gk, par?.out ?? null).catch(() => null); // GRID follows answer to GRID LIVE's own exam
     if (pmNote) log(b, "PM", pmNote, "info");
     if (p.wire?.h) await notePnl(p.wire.h, p.soldSol - p.costSol).catch(() => {});
     state.closed++;

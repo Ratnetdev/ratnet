@@ -2,6 +2,7 @@
 // pump.fun launch the moment PumpPortal announces it. Deploy it on Railway (or any always-on host) from the same
 // GitHub repo with the same environment variables; start command: npm run worker. While it runs, the Vercel minute
 // ping steps aside on its own (it sees the worker's heartbeat) and comes back if the worker stops.
+import { dailyReview } from "../src/lib/review";
 import { LIVE_FEE, loadLiveFees } from "../src/lib/livecost";
 import { senderStats } from "../src/lib/exec";
 import { runSession } from "../src/lib/session";
@@ -885,6 +886,8 @@ async function main() {
     }
   }, 10_000);
   setInterval(() => gridLivePublish((t) => criticalSend(t)).catch(() => null), 60_000);
+  // v0.1.97: the daily review on Telegram, 06:50 UTC (08:50 Amsterdam), once a day
+  setInterval(() => dailyReview((t) => criticalSend(t)).catch((e) => console.log("review error", e?.message || e)), 10 * 60_000);
   // v0.1.81: the FIREHOSE (Shyft gRPC): every pump.fun and PumpSwap trade feeds GRID LIVE, WALLETS and TAPE ALL
   {
     const on = await startFirehose({

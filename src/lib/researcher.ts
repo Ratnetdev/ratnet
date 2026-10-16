@@ -8,6 +8,7 @@
 //     follow one; they are dropped by the same live rules as every other book
 //   - nothing else: no settings, no money, no exam, no live/paper switch
 import { redis } from "./redis";
+import { pmView } from "./pm";
 import { ask, json, llmOn, llmModel } from "./llm";
 import { GEXITS, MODES, PREDS, exitText, keyOf, type GExit } from "./grid";
 import { LIVE_VIEW, gridLiveAddResearch, researchOk, researchRoom } from "./gridlive";
@@ -93,7 +94,7 @@ export function extractIdeas(text: string | null): { ideas: any[] } | null {
 }
 
 /** The model's input: the menu and the evidence, compact. */
-export function brief(grid: any, live: any, seen: Record<string, any>, room: number) {
+export function brief(grid: any, live: any, seen: Record<string, any>, room: number, desk: any = null) {
   const menu = {
     filters: PREDS.map((p) => `${p.id}: ${p.label}`),
     entries: MODES.map((m) => `${m.id}: ${m.label}`),
@@ -111,7 +112,8 @@ export function brief(grid: any, live: any, seen: Record<string, any>, room: num
         senders: grid.senders || null,
       }
     : null;
-  const book = (b: any) => ({ rule: `${String(b.key).replace(/^any:/, "every launch: ")}`, by: b.by || (b.parent ? "variant" : "grid"), live: { trips: b.total ?? b.live?.n, won: b.live?.winRate, avg: r1(b.live?.avgPct), pnl: b.live?.pnl, pf: b.live?.pfLessBest, passed: !!b.live?.passed } });
+  // v0.1.97: runners say so, with their whole record and the record without their 2 best trips (how they are judged)
+  const book = (b: any) => ({ rule: `${String(b.key).replace(/^any:/, "every launch: ")}`, by: b.by || (b.parent ? "variant" : "grid"), live: { trips: b.total ?? b.live?.n, won: b.live?.winRate, avg: r1(b.live?.avgPct), pnl: b.live?.pnl, pf: b.live?.pfLessBest, passed: !!b.live?.passed, ...(b.live?.runner ? { runner: true, totalPnl: b.live?.totalPnl, lessTop2: b.live?.lessTop2 } : {}) }, ...(b.fills?.blocked ? { realFillsTooFarFromPaper: true } : {}) });
   const livePart = live ? { trading: (live.books || []).map(book), ruledOut: (live.past || []).map((p: any) => ({ rule: p.key, live: { trips: p.live?.total ?? p.live?.n, won: p.live?.winRate, avg: r1(p.live?.avgPct), pnl: p.live?.pnl, pf: p.live?.pfLessBest } })) } : null;
   const mine = Object.entries(seen)
     .sort((a, b) => Number(b[1]?.at || 0) - Number(a[1]?.at || 0))
@@ -127,6 +129,9 @@ ${JSON.stringify(gridPart)}
 
 GRID LIVE (live paper records; "ruledOut" no longer trade)
 ${JSON.stringify(livePart)}
+
+DESK, REAL MONEY (v0.1.97: what each strategy family did with live money: trips, % won, average a trip after every cost, sellGap = live sells vs paper in %, bench = taken off live money and why. What loses with real money is not worth proposing again in a nearby form)
+${JSON.stringify(desk)}
 
 YOUR EARLIER PROPOSALS (do not repeat them)
 ${JSON.stringify(mine)}`;
@@ -147,7 +152,10 @@ export async function researchPass(send?: (text: string) => Promise<unknown>, no
   researchStats.runs++;
   researchStats.lastAt = now;
   // v0.1.83: room to think (4,000 tokens; 1,200 cut the first live answer short), the JSON found wherever it is
-  const text = await ask(SYSTEM, [{ type: "text", text: brief(gridOk ? grid : null, live, seen, room) }], 4000, 180_000, model()).catch(() => null);
+  const desk = await pmView()
+    .then((v) => v.map((s: any) => ({ family: s.sleeve, live: s.live, bench: s.bench?.why ?? null, paperAndLive: { trips: s.trades, won: s.winRate, avg: s.avg } })))
+    .catch(() => null);
+  const text = await ask(SYSTEM, [{ type: "text", text: brief(gridOk ? grid : null, live, seen, room, desk) }], 4000, 180_000, model()).catch(() => null);
   const j = extractIdeas(text) ?? json<{ ideas?: any[] }>(text);
   if (!Array.isArray(j?.ideas)) {
     researchStats.lastErr = text ? "answer was not the JSON asked for" : "no answer from the model";

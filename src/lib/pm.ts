@@ -19,7 +19,9 @@ const PAUSE_MS = 2 * 3600_000;
 const BRAKE_V = 50; // v0.1.50: brake window version
 
 // r: the last 30 returns (sizing). b: the brake window, trades since v0.1.50 only (v0.1.50)
-type S = { r: number[]; pausedUntil: number; n: number; wins: number; g?: number[]; b?: number[]; v?: number };
+// v0.1.97 LIVE BENCH: lv the last 30 live returns, lp the last 10 live sells' gap to paper (%), gb the last 30 ghost
+// returns, bench the reason a sleeve is benched (null = not)
+type S = { r: number[]; pausedUntil: number; n: number; wins: number; g?: number[]; b?: number[]; v?: number; lv?: number[]; lp?: number[]; gb?: number[]; bench?: { why: string; at: number } | null };
 type PM = Record<Sleeve, S>;
 
 export const sleeveOf = (how?: string, vamp?: boolean): Sleeve => (how === "early" ? "early" : how === "wire" ? (vamp ? "vamp" : "wire") : how === "mind" ? "mind" : how === "momo" ? "momo" : how === "catch" ? "catch" : how === "flash" ? "flash" : "king");
@@ -70,14 +72,58 @@ export function weightOf(sl: Sleeve, s: S) {
 export async function sleeveWeight(sl: Sleeve) {
   const pm = await load();
   const s = pm[sl];
+  if (s.bench) return { w: 0, paused: true, until: 0, bench: s.bench.why };
   if (s.pausedUntil > Date.now()) return { w: 0, paused: true, until: s.pausedUntil };
   return { w: weightOf(sl, s), paused: false, until: 0 };
 }
 
+/**
+ * v0.1.97 LIVE BENCH. The exam a strategy passed on paper, held against its live record. A sleeve is benched (no more
+ * real money, its signals go to the ghost desk) when:
+ *  - 10+ live trips lose on average and their profit factor without the best trip is under 0.8 (it cannot get there), or
+ *  - 30 live trips fail the exam (40% won, average above 0, profit factor 1.2 without the best trip), or
+ *  - its last 10 live sells came out over 3% worse than paper on average (execution eats the edge).
+ * It comes back when its last 20 ghost trips pass the same exam; its live record then starts fresh.
+ * Returns are log returns; the exam reads them as % (exp - 1).
+ */
+export function examOf(logs: number[]) {
+  const p = logs.map((x) => Math.exp(x) - 1);
+  const n = p.length;
+  const wins = p.filter((x) => x > 0).length;
+  const avg = n ? p.reduce((a, b) => a + b, 0) / n : 0;
+  const less = p.slice();
+  if (less.length) less.splice(less.indexOf(Math.max(...less)), 1);
+  const gw = less.filter((x) => x > 0).reduce((a, b) => a + b, 0);
+  const gl = -less.filter((x) => x < 0).reduce((a, b) => a + b, 0);
+  const pf = gl > 0 ? gw / gl : gw > 0 ? 99 : 0;
+  return { n, winRate: n ? (wins / n) * 100 : 0, avg: avg * 100, pf: Math.round(pf * 100) / 100, pass: n > 0 && wins / n >= 0.4 && avg > 0 && pf >= 1.2 };
+}
+export function benchWhy(lv: number[], lp: number[]): string | null {
+  const e = examOf(lv);
+  if (e.n >= 30 && !e.pass) return `failed the exam on its last 30 live trips (${Math.round(e.winRate)}% won, ${e.avg.toFixed(1)}% a trip, PF ${e.pf} without the best)`;
+  if (e.n >= 10 && e.avg < 0 && e.pf < 0.8) return `${e.n} live trips lose ${e.avg.toFixed(1)}% a trip (PF ${e.pf} without the best)`;
+  if (lp.length >= 10) {
+    const gap = lp.reduce((a, b) => a + b, 0) / lp.length;
+    if (gap < -3) return `its last 10 live sells came out ${gap.toFixed(1)}% worse than paper`;
+  }
+  return null;
+}
+
 /** A trade in a sleeve closed: log return log(back / cost). Returns a line for the log when something changed. */
-export async function onClose(sl: Sleeve, logRet: number): Promise<string | null> {
+export async function onClose(sl: Sleeve, logRet: number, live = false, parOut?: number | null): Promise<string | null> {
   const pm = await load();
   const s = pm[sl];
+  if (live) {
+    s.lv = [...(s.lv || []), Math.max(-3, Math.min(3, logRet))].slice(-30);
+    if (parOut != null && Number.isFinite(parOut)) s.lp = [...(s.lp || []), parOut].slice(-10);
+    const why = !s.bench ? benchWhy(s.lv, s.lp || []) : null;
+    if (why) {
+      s.bench = { why, at: Date.now() };
+      s.gb = [];
+      await redis().set(KEY, pm);
+      return `${sl} benched from live money: ${why}. The ghost desk keeps trading it; it comes back when its last 20 ghost trips pass the exam`;
+    }
+  }
   const before = weightOf(sl, s);
   s.r = [...s.r, Math.max(-3, Math.min(3, logRet))].slice(-30);
   s.n++;
@@ -103,6 +149,21 @@ export async function onGhost(sl: Sleeve, logRet: number): Promise<string | null
   const s = pm[sl];
   s.g = [...(s.g || []), Math.max(-3, Math.min(3, logRet))].slice(-8);
   let note: string | null = null;
+  // v0.1.97: a benched sleeve earns its way back on the ghost desk
+  if (s.bench) {
+    s.gb = [...(s.gb || []), Math.max(-3, Math.min(3, logRet))].slice(-30);
+    const e = examOf(s.gb.slice(-20));
+    if (e.n >= 20 && e.pass) {
+      note = `${sl} back on live money: its last 20 ghost trips passed the exam (${Math.round(e.winRate)}% won, +${e.avg.toFixed(1)}% a trip, PF ${e.pf}). Its live record starts fresh`;
+      s.bench = null;
+      s.lv = [];
+      s.lp = [];
+      s.gb = [];
+      s.pausedUntil = 0;
+    }
+    await redis().set(KEY, pm);
+    return note;
+  }
   const last = s.g.slice(-4);
   if (s.pausedUntil > Date.now() && last.length >= 4 && last.reduce((a, b) => a + b, 0) > 0) {
     s.pausedUntil = 0;
@@ -133,7 +194,9 @@ export async function pmView() {
     const s = pm[sl];
     const { n, mean } = stats(s);
     const g = s.g || [];
-    return { ghost: g.length, ghostAvg: g.length ? Math.round((Math.exp(g.reduce((a, b) => a + b, 0) / g.length) - 1) * 1000) / 10 : null, sleeve: sl, trades: s.n, wins: s.wins, winRate: s.n ? Math.round((s.wins / s.n) * 1000) / 10 : null, avg: n ? Math.round((Math.exp(mean) - 1) * 1000) / 10 : null, w: weightOf(sl, s), paused: s.pausedUntil > now ? s.pausedUntil : null };
+    const lx = examOf(s.lv || []);
+    const lp = s.lp || [];
+    return { live: { trips: lx.n, winRate: Math.round(lx.winRate), avg: Math.round(lx.avg * 10) / 10, pf: lx.pf, sellGap: lp.length ? Math.round((lp.reduce((a, b) => a + b, 0) / lp.length) * 10) / 10 : null }, bench: s.bench || null, benchGhost: s.bench ? (s.gb || []).length : null, ghost: g.length, ghostAvg: g.length ? Math.round((Math.exp(g.reduce((a, b) => a + b, 0) / g.length) - 1) * 1000) / 10 : null, sleeve: sl, trades: s.n, wins: s.wins, winRate: s.n ? Math.round((s.wins / s.n) * 1000) / 10 : null, avg: n ? Math.round((Math.exp(mean) - 1) * 1000) / 10 : null, w: weightOf(sl, s), paused: s.pausedUntil > now ? s.pausedUntil : null };
   });
 }
 
