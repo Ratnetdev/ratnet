@@ -72,7 +72,7 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   SL.noteOtherQuote(mint);
   ok(SL.isOtherQuote(mint) && SL.streamLog(mint, Date.now()) === null, "its log is dropped (no empty tape for the King)");
   const wk = fs.readFileSync(new URL("../worker/index.ts", import.meta.url), "utf8");
-  ok(/if \(c\.solQuote === false\) noteOtherQuote\(c\.mint\);\s*else \{\s*logCreate/.test(wk) && /otherQuote: \(mint\) => noteOtherQuote\(mint\)/.test(wk), "the worker logs only SOL launches from birth");
+  ok(/if \(c\.solQuote === false\) \{\s*noteOtherQuote\(c\.mint\);[\s\S]{0,80}\} else \{\s*logCreate/.test(wk) && /otherQuote: \(mint\) => noteOtherQuote\(mint\)/.test(wk), "the worker logs only SOL launches from birth");
   const dg = fs.readFileSync(new URL("../src/lib/digger.ts", import.meta.url), "utf8");
   ok(/!otherQuote\(it\.mint, curves\[it\.mint\]\)\);/.test(dg) && /inc\(c, "calls_other_quote"\)/.test(dg) && /isOtherQuote\(mint\) \|\| \(!!cv && !cv\.complete && !\(cv\.priceSol > 0\)\)/.test(dg), "the rats never call one (marked by the firehose, or a curve with no SOL price)");
   const curve = Buffer.alloc(151);

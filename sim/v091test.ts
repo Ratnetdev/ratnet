@@ -38,7 +38,7 @@ const ok = (c: boolean, m: string) => {
   ok(/export async function xAllowed\(share = 1, project = false\)/.test(xc) && /if \(pace >= X_BUDGET \* 0\.95\) return false;/.test(xc) && /xAllowed\(0\.7, true\)/.test(lens), "LENS stops when the hour's pace would pass the budget");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");
-  ok(pkg.version === "0.1.91" && bld.includes('"0.1.91"'), "v0.1.91");
+  ok(pkg.version === bld.match(/"([0-9.]+)"/)![1], "build tag matches the package");
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

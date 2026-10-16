@@ -4,8 +4,8 @@
 // Cost: one getSignaturesForAddress (up to 1000 sigs) + one batch of parsed transactions (~40) per coin.
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
-import { bondingCurvePda, conn, parsedTxsAny, pmap, tagged } from "./solana";
-import { seedLog, streamLog, tradesFlowing } from "./streamlog";
+import { bondingCurvePda, conn, parsedTxsAny, pmap, rpcTag, tagged } from "./solana";
+import { seedLog, streamLog, streamLogWhy, tradesFlowing } from "./streamlog";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
 const JITO = new Set([
@@ -149,11 +149,21 @@ const SAMPLE = { early: 28, recent: 14 };
  * slots: the create block is approximated by time (a buy within 400ms of the create is a bundle, within 1.2s a
  * snipe), and no token accounts (insiders are read from the chain only when the desk buys, see desk enter()).
  */
+/**
+ * v0.1.92: why a tape came from the chain (each costs ~42 reads): no trades flowing, no log for the coin (born before
+ * the worker started, or the firehose never saw its create), a log that is not complete from birth, or a create time
+ * more than 5s from the rats' record. Shown on /status so a jump in chain tapes says why.
+ */
+export const tapeStats = { stream: 0, chain: 0, noFlow: 0, noLog: 0, notFull: 0, t0: 0, old: 0, forced: 0 };
 export function tapeFromStream(mint: string, creator: string, createdAt: number, sample = SAMPLE, at = Date.now()): Tape | null {
   // only while trades are actually arriving (a stream that delivers launches but no trades gives empty tapes)
-  if (!tradesFlowing(at)) return null;
+  if (!tradesFlowing(at)) return (tapeStats.noFlow++, null);
   const l = streamLog(mint, createdAt);
-  if (!l) return null;
+  if (!l) {
+    const why = streamLogWhy(mint, createdAt, at);
+    tapeStats[why]++;
+    return null;
+  }
   const slotOf = (t: number) => Math.max(0, Math.floor((t - l.t0) / 400));
   const all: Trade[] = l.trades.map((x) => ({ slot: slotOf(x.t), t: x.t, w: x.w, sol: x.sol, tok: x.tok, acc: null, jito: false }));
   const pick = all.length <= sample.early + sample.recent ? all : [...all.slice(0, sample.early), ...all.slice(-sample.recent)];
@@ -162,13 +172,16 @@ export function tapeFromStream(mint: string, creator: string, createdAt: number,
 }
 
 export async function readTape(mint: string, creator: string, createdAt: number, sample = SAMPLE, opts: { rpc?: boolean } = {}): Promise<Tape | null> {
-  return tagged("tape", () => readTapeInner(mint, creator, createdAt, sample, opts));
+  // v0.1.92: the caller's part stays in the tag (wire+tape, due+tape...), so /status says who asked for chain tapes
+  const outer = rpcTag.getStore();
+  return tagged(outer && outer !== "tape" ? `${outer}+tape` : "tape", () => readTapeInner(mint, creator, createdAt, sample, opts));
 }
 async function readTapeInner(mint: string, creator: string, createdAt: number, sample: typeof SAMPLE, opts: { rpc?: boolean }): Promise<Tape | null> {
   if (!opts.rpc) {
     const st = tapeFromStream(mint, creator, createdAt, sample);
-    if (st) return st;
-  }
+    if (st) return (tapeStats.stream++, st);
+  } else tapeStats.forced++;
+  tapeStats.chain++;
   try {
     const curve = bondingCurvePda(mint);
     const pk = new PublicKey(curve);

@@ -624,6 +624,16 @@ export async function digSlow(): Promise<Record<string, unknown>> {
 
 export const LAT = (k: string) => `rn:lat:${k}`; // last 200 latencies (seconds) per step, for the speed panel
 const SEEN_SIG = (sig: string) => `rn:sig:${sig}`; // create txs the PumpPortal stream already delivered
+/**
+ * v0.1.92: creates the chain backfill must not read: launches quoted in another token (the firehose sees them; the
+ * rats never dig, call or trade them). The backfill read each one with getTransaction (~2,600 reads an hour).
+ */
+export async function markSigsSeen(sigs: string[]) {
+  if (!sigs.length) return;
+  const p = redis().pipeline();
+  for (const s of sigs) p.set(SEEN_SIG(s), 1, { ex: 3 * 3600 });
+  await p.exec().catch(() => {});
+}
 
 async function digNew(model: NanoModel) {
   const r = redis();

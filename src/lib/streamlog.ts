@@ -73,6 +73,13 @@ export function logsGap(now = Date.now()) {
   return n;
 }
 
+/** v0.1.92: why there is no usable log for a launch (for the tape stats). */
+export function streamLogWhy(mint: string, createdAt: number, now = Date.now()): "noLog" | "notFull" | "t0" | "old" {
+  const l = LOGS.get(mint);
+  if (!l) return now - createdAt > LOG_MS ? "old" : "noLog";
+  if (!l.full) return "notFull";
+  return "t0";
+}
 /** The launch's log, if the stream saw it from birth (within 5s of the create time the rats recorded). */
 export function streamLog(mint: string, createdAt: number) {
   const l = LOGS.get(mint);

@@ -340,7 +340,8 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     const js = cs.map((c) => entryIndex(c, MODES[m]));
     for (const j of js) if (j >= 0) entered[m]++;
     for (let x = 0; x < X; x++) {
-      if (x % 6 === 0) await breathe();
+      // v0.1.92: every exit (paths run a day now; 6 exits at a time held the worker's loop for up to 1.4s)
+      await breathe();
       const a = new Float32Array(N).fill(NaN);
       if (MODES[m].kind === "mig" && GEXITS[x].mig === "sell") {
         out.push(a); // buying the migration only makes sense holding into the pool

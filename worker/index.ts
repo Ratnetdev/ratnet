@@ -5,7 +5,7 @@
 import { runSession } from "../src/lib/session";
 import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
-import { FAST_STEP, digFast, digSlow, ingestStream, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
+import { FAST_STEP, digFast, digSlow, ingestStream, markSigsSeen, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
 import { budgetState, curveFeed, curveFire, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
@@ -16,6 +16,7 @@ import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
 import { reviveAllowed } from "../src/lib/revive";
 import { loopLag, startLoopLag } from "../src/lib/looplag";
+import { tapeStats } from "../src/lib/tape";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
 import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
@@ -176,7 +177,7 @@ async function beat() {
   // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
   const lag = loopLag();
-  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag }, { ex: 120 }).catch(() => {});
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats }, { ex: 120 }).catch(() => {});
   if (lag && lag.p99 > 250 && Date.now() - lagLogAt > 60_000) (lagLogAt = Date.now()), console.log(`event loop late: p50 ${lag.p50}ms, p99 ${lag.p99}ms, worst ${lag.max}ms (last minute)`);
   flushRpcDay().catch(() => {});
   bwFlush()
@@ -361,6 +362,7 @@ async function feedWant() {
 // alone (no chain reads). The create message also goes straight to the rats (dug ~1 second after birth).
 const FLW = new Map<string, FlCoin>();
 let INTAKE: any[] = [];
+let OTHER_SIGS: string[] = []; // v0.1.92: creates in another quote, marked seen for the chain backfill
 
 let flashPausedAt = 0;
 // v0.1.54: on only if every launch's trades are streamed from birth. v0.1.87: the FIREHOSE streams every launch's
@@ -396,6 +398,11 @@ function flashTick() {
 // a slow gateway or Redis, and the batches piled up behind each other; now new launches wait in INTAKE and go together.
 let intakeBusy = false;
 async function flushIntake() {
+  if (OTHER_SIGS.length) {
+    const s = OTHER_SIGS;
+    OTHER_SIGS = [];
+    markSigsSeen(s).catch(() => null);
+  }
   if (intakeBusy || !INTAKE.length) return;
   intakeBusy = true;
   const items = INTAKE;
@@ -863,8 +870,10 @@ async function main() {
         // minute-1 and minute-5 tapes are built from it instead of ~42 chain reads per coin
         // v0.1.87: only SOL launches get a log from birth (another quote's trades are never logged: its tape would be
         // empty, and the King scored $ZECRET blind on 16 Oct)
-        if (c.solQuote === false) noteOtherQuote(c.mint);
-        else {
+        if (c.solQuote === false) {
+          noteOtherQuote(c.mint);
+          if (c.sig) OTHER_SIGS.push(c.sig);
+        } else {
           logCreate(c.mint, c.creator, c.at, 0, 0, true);
           // v0.1.87: FLASH watches every launch from its first block (the firehose has all its trades)
           if (!FLW.has(c.mint) && flashAll()) FLW.set(c.mint, { t0: c.at, mint: c.mint, sym: String(c.symbol || ""), creator: c.creator, devSol: c.devSol || 0, vSol: 30 + (c.devSol || 0), vTok: 1_073_000_000, mcSol: 0, trades: [], done: [] });
