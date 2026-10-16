@@ -52,7 +52,7 @@ const ok = (c: boolean, m: string) => {
   ok(books.filter((b: any) => !b.parent && !b.by && !b.back).length === 16 && books.filter((b: any) => b.by === "wallets").length === 6, "GRID keeps its 16; WALLETS has its own slots");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");
-  ok(pkg.version === "0.1.90" && bld.includes('"0.1.90"'), "v0.1.90");
+  ok(pkg.version === bld.match(/"([0-9.]+)"/)![1], "build tag matches the package");
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

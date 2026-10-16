@@ -105,7 +105,7 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   ok(/if \(watched\.has\(t\.mint\) \|\| rtWanted\(t\.mint\)\) TAPE_IN\(/.test(wk) && /for \(const m of ms\) RT_ASKED\.set\(m, now\)/.test(wk), "the firehose feeds the live tape CATCH and SHIELD read");
   ok(/const flashAll = \(\) => fireLive\(\) && bwLevel\(\) < 1;/.test(wk) && /fl\.trades\.push\(\{ t: t\.at/.test(wk) && /if \(!FLW\.has\(mint\)\) FLW\.set/.test(wk), "FLASH watches every launch from the firehose (PumpPortal never overwrites its watch)");
   const lens = fs.readFileSync(new URL("../src/lib/lens.ts", import.meta.url), "utf8");
-  ok(/xAllowed\(0\.7\)/.test(lens), "LENS stops at 70% of the hour's X budget");
+  ok(/xAllowed\(0\.7(, true)?\)/.test(lens), "LENS stops at 70% of the hour's X budget");
 
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");

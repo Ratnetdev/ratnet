@@ -30,12 +30,20 @@ export async function xSpendView() {
 }
 
 /** Whether a part may still spend this hour (LENS and the extras stop first; WIRE's rules are sized in advance). */
-export async function xAllowed(share = 1) {
+export async function xAllowed(share = 1, project = false) {
   const r = redis();
   const now = await r.hgetall<Record<string, number>>(KEY(hourKey())).catch(() => null);
   const used = Object.values(now || {}).reduce((a, x) => a + Number(x || 0), 0);
   const synced = await r.get<any>("rn:x:synced").catch(() => null);
   const paused = await r.get<{ hour: string; min: number }>("rn:x:paused").catch(() => null);
   const rules = paused?.hour === hourKey() ? 0 : synced?.n ? synced.n * (3600 / (synced.interval || 60)) * 15 * ((new Date().getUTCMinutes() + 1) / 60) : 0;
-  return used + rules < X_BUDGET * share;
+  if (used + rules >= X_BUDGET * share) return false;
+  // v0.1.91: the extras (LENS) also look ahead: at this hour's pace, would the whole hour stay under the budget? The
+  // watchlist posts alone ran ~15K an hour on 16 Oct, and LENS kept spending until 70% of the budget was gone.
+  if (project) {
+    const frac = Math.max(10, new Date().getUTCMinutes() + 1) / 60;
+    const pace = used / frac + (synced?.n && paused?.hour !== hourKey() ? synced.n * (3600 / (synced.interval || 60)) * 15 : 0);
+    if (pace >= X_BUDGET * 0.95) return false;
+  }
+  return true;
 }

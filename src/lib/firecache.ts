@@ -59,12 +59,21 @@ export const fcCurveTrade = (mint: string, v: FcCurve, ord: number, now = Date.n
 /** A canonical pool's reserves after a swap. */
 export const fcPoolTrade = (mint: string, v: FcPool, ord: number, now = Date.now()) => put(POOLS, mint, v, ord, now);
 
-/** A chain read: kept as the baseline, unless the firehose already has something newer on this connection. */
+/**
+ * A chain read: kept as the baseline, unless the firehose already has something newer on this connection.
+ * v0.1.91: a chain read always replaces an entry older than the read. It used to go through put() with order -1, and
+ * put() keeps an entry with a higher order: a coin the firehose had seen trade once, then went quiet past the age
+ * limit, was read from the chain on every pass and never kept (post picks: ~10K reads an hour; pools: 12% saved).
+ * The entry keeps its order, so the coin's next trade still replaces it.
+ */
 function base<T>(m: Map<string, E<T>>, mint: string, v: T, readAt: number) {
   if (!fcLive()) return;
   const cur = m.get(mint);
   if (cur && cur.ep === state.ep && cur.at >= readAt) return; // a trade landed while the read was in flight
-  put(m, mint, v, -1, Date.now());
+  const now = Date.now();
+  if (cur) m.delete(mint);
+  m.set(mint, { v, at: now, ord: cur && cur.ep === state.ep ? cur.ord : -1, ep: state.ep });
+  if (m.size > MAX) m.delete(m.keys().next().value as string);
 }
 export const fcCurveBase = (mint: string, v: FcCurve, readAt: number) => base(CURVES, mint, v, readAt);
 export const fcPoolBase = (mint: string, v: FcPool, readAt: number) => base(POOLS, mint, v, readAt);

@@ -476,7 +476,8 @@ export async function xGuard() {
   }
   if (paused?.hour === hour) return { guard: "paused this hour" };
   const used = await xSpendView();
-  if (used.thisHour < X_BUDGET) return { guard: "ok", thisHour: used.thisHour };
+  // v0.1.91: at 92% (posts already on their way and the next check still bill): the hour ended at 15.8K of 14K
+  if (used.thisHour < X_BUDGET * 0.92) return { guard: "ok", thisHour: used.thisHour };
   const ok = await set(0);
   // a rule that would not switch off is deleted (it would keep billing); the next hour builds the set again
   let deleted = false;
