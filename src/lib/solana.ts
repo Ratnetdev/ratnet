@@ -210,13 +210,16 @@ export async function limitedFetch(input: any, init?: any): Promise<Response> {
   const l = lane.getStore() ?? 0;
   let cost = 1;
   let batch: unknown[] | null = null;
+  // v0.1.87: methods are counted when the call is sent (refused calls used to count too: 6,830 "historian
+  // getTransaction" in two minutes on 16 Oct were almost all refused by the budget)
+  const methods: string[] = [];
   try {
     const b = typeof init?.body === "string" ? init.body : "";
     if (b.startsWith("[")) {
       batch = JSON.parse(b) as unknown[];
       cost = Math.max(1, batch.length);
-      if (batch.length <= BATCH_MAX) for (const x of batch as any[]) noteMethod(l, String(x?.method || "?"), 1);
-    } else if (b) noteMethod(l, String(JSON.parse(b)?.method || "?"), 1);
+      if (batch.length <= BATCH_MAX) for (const x of batch as any[]) methods.push(String(x?.method || "?"));
+    } else if (b) methods.push(String(JSON.parse(b)?.method || "?"));
   } catch {}
   // a big JSON-RPC batch (a tape read asks for ~42 transactions at once) goes out in slices of 10: it fits every lane's
   // share and never lands on the plan as one burst (the plan counts every call inside a batch)
@@ -233,6 +236,7 @@ export async function limitedFetch(input: any, init?: any): Promise<Response> {
   }
   for (let i = 0; ; i++) {
     await slot(l, cost);
+    if (i === 0) for (const m of methods) noteMethod(l, m, 1);
     rpcStats.calls += cost;
     // every chain read has a deadline: one stalled connection must never freeze the desk (a long-running worker has
     // no platform timeout to save it)

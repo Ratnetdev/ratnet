@@ -22,7 +22,7 @@ import { acquire, holds, release, renew } from "./lock";
 import { CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, hourKey, redis } from "./redis";
 import { canonicalPool, migrated, readPools } from "./pool";
-import { lane, laneOpen } from "./solana";
+import { BudgetError, lane, laneOpen } from "./solana";
 import { epochReady } from "./epoch";
 import { agentLog } from "./agents";
 import { bondingCurvePda, conn, parsedTx, fetchOffchain, getCurves, limitedFetch, parseCreateTx, pmap, safeErr } from "./solana";
@@ -315,6 +315,9 @@ async function historianInner(budgetMs: number) {
     const half = Math.max(1, cfg.halfLife || 21);
 
     while (st.phase === "scan" && Date.now() - t0 < budgetMs) {
+      // v0.1.87: the lane can close mid-session (the historian now has its own small floor of the day): stop, never
+      // read on into refused calls
+      if (!laneOpen(3)) break;
       const qlen = (await r.llen(HK.queue)) || 0;
       // --- 0. bonds first: every graduation from pump.fun's migration account, newest first. Bonds are the rare
       // lessons the models need most; this finds a month of them with ~1 call per bond instead of parsing every launch
@@ -406,13 +409,20 @@ async function historianInner(budgetMs: number) {
         }
         const chunk = st.sigs.slice(st.pos, st.pos + Math.max(cfg.scanPerRun, 400));
         st.pos += chunk.length;
+        let refused = false;
         const parsed = await pmap(chunk, 16, async (sig) => {
           try {
             return parseCreateTx(sig, await parsedTx(sig));
-          } catch {
+          } catch (e) {
+            if (e instanceof BudgetError) refused = true;
             return null;
           }
         });
+        // v0.1.87: reads refused by the budget: this chunk is read again next session (its launches were skipped for good)
+        if (refused) {
+          st.pos -= chunk.length;
+          break;
+        }
         const launches = parsed.filter((x): x is NonNullable<typeof x> => !!x);
         if (launches.length) {
           const curves = await getCurves(launches.map((l) => l.mint));
