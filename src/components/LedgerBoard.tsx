@@ -10,7 +10,8 @@ type Burn = { sig: string; kind: string; wallet: string; amount: number; at: num
 type Ledger = { rounds: Round[]; burns: Burn[]; current: { id: number; endsAt: number }; stats: { burnedRat: number; sniffs: number } };
 
 export default function LedgerBoard() {
-  const { data } = usePoll<Ledger>("/api/ledger", 10000);
+  const { data, error } = usePoll<Ledger>("/api/ledger", 10000);
+  const wait = !data ? (error ? "Could not load the ledger. Retrying…" : "loading…") : null; // v0.1.100 (audit)
   const [, tick] = useState(0);
   const [open, setOpen] = useState<number | null>(null);
   useEffect(() => {
@@ -47,7 +48,7 @@ export default function LedgerBoard() {
                     <td>{r.ownersSol} ◎{r.cappedSol > 0 && <span className="tiny muted"> ({r.cappedSol} capped)</span>}</td>
                     <td>{r.eligible}</td>
                     <td>{r.status === "paid" ? <span className="green">paid</span> : r.status}</td>
-                    <td><a style={{ cursor: "pointer" }} onClick={() => setOpen(open === r.id ? null : r.id)}>{open === r.id ? "hide" : "payouts"}</a></td>
+                    <td><a role="button" tabIndex={0} style={{ cursor: "pointer" }} onClick={() => setOpen(open === r.id ? null : r.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(open === r.id ? null : r.id); } }}>{open === r.id ? "hide" : "payouts"}</a></td>
                   </tr>
                   {open === r.id &&
                     r.payouts.map((p) => (
@@ -62,7 +63,7 @@ export default function LedgerBoard() {
                     ))}
                 </Fragment>
               ))}
-              {!data?.rounds.length && <tr><td colSpan={8} className="muted">First round closes 12h after launch.</td></tr>}
+              {!data?.rounds.length && <tr><td colSpan={8} className="muted">{wait ?? "First round closes 12h after launch."}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -83,7 +84,7 @@ export default function LedgerBoard() {
                   <td><a href={solscanTx(b.sig)} target="_blank" rel="noreferrer">{short(b.sig, 6, 6)}</a></td>
                 </tr>
               ))}
-              {!data?.burns.length && <tr><td colSpan={5} className="muted">No burns yet.</td></tr>}
+              {!data?.burns.length && <tr><td colSpan={5} className="muted">{wait ?? "No burns yet."}</td></tr>}
             </tbody>
           </table>
         </div>

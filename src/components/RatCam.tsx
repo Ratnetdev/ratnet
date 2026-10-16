@@ -204,7 +204,11 @@ function useTunnel(canvas: React.RefObject<HTMLCanvasElement | null>, active: bo
   }, [active, canvas, nuggets, dims]);
 }
 
-function useRatStream(canvas: React.RefObject<HTMLCanvasElement | null>, keep: number) {
+// v0.1.100 (audit): the typing runs only while the cam is shown and the tab is visible (it re-rendered every 18ms on
+// every page, minimised and in background tabs too), and the "seen" set no longer grows for the whole visit
+function useRatStream(canvas: React.RefObject<HTMLCanvasElement | null>, keep: number, active = true) {
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const [lines, setLines] = useState<Line[]>([]);
   const [typing, setTyping] = useState<{ line: Line; n: number } | null>(null);
   const [rat, setRat] = useState("SCOUT-1");
@@ -222,6 +226,7 @@ function useRatStream(canvas: React.RefObject<HTMLCanvasElement | null>, keep: n
       seen.current.add(k);
       return true;
     });
+    if (seen.current.size > 2000) seen.current = new Set(Array.from(seen.current).slice(-500));
     const ordered = fresh.reverse();
     queue.current.push(...(first.current ? ordered.slice(-8) : ordered));
     first.current = false;
@@ -234,6 +239,10 @@ function useRatStream(canvas: React.RefObject<HTMLCanvasElement | null>, keep: n
     let pending: Line[] = [];
     const tick = () => {
       if (!alive) return;
+      if (!activeRef.current || (typeof document !== "undefined" && document.hidden)) {
+        setTimeout(tick, 1000);
+        return;
+      }
       if (!pending.length) {
         const f = queue.current.shift();
         if (f) {
@@ -355,8 +364,8 @@ export default function RatCam() {
       localStorage.setItem("rn_cam", m);
     } catch {}
   };
-  const { lines, typing, rat, stats } = useRatStream(canvas, 9);
   const home = path === "/";
+  const { lines, typing, rat, stats } = useRatStream(canvas, 9, mode === "open" && !home && !path?.startsWith("/admin"));
   useTunnel(canvas, mode === "open" && !home, nuggets, FLOAT);
 
   if (home || path?.startsWith("/admin")) return null;

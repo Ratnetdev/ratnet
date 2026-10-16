@@ -182,6 +182,8 @@ export type Trade = {
 };
 export type DeskState = {
   live: boolean;
+  /** v0.1.100: SOL moved by trades since the last balance reconcile, saved with the state (a restart lost it) */
+  liveFlow?: number;
   /** v0.1.79: the live wallet the desk switched to when it went live (never the paper wallet again) */
   liveWallet?: string;
   cash: number; // paper cash
@@ -773,6 +775,7 @@ async function flushPositions() {
 const EXAM_FULL = "rn:desk:examfull";
 const PENDING = "rn:desk:pending"; // live swaps sent and not yet booked
 let LIVE_FLOW = 0; // live: SOL in/out from trades since the last balance reconcile
+let FLOW_RESTORED = false;
 // v0.1.45: SOL in/out from trades since the last balance READ. Live equity and sizing are the balance read plus this, so
 // a buy made a few seconds after the read no longer leaves its SOL counted as cash (the read is every 15s)
 let FLOW_SINCE_BAL = 0;
@@ -792,6 +795,12 @@ async function liveReconcile(b: Batch, state: DeskState, kp: Keypair, bal: numbe
   const r = redis();
   const pend = ((await r.hgetall<Record<string, PendingSwap>>(PENDING).catch(() => null)) || {}) as Record<string, PendingSwap>;
   const stalePend = Object.values(pend).filter((x) => Date.now() - x.at > 180_000);
+  // v0.1.100 (audit): after a restart, the trades made since the last balance read come back from the saved state.
+  // Before, they were lost and read as a deposit or a withdrawal, which moved the drawdown and daily loss baselines
+  if (!FLOW_RESTORED) {
+    FLOW_RESTORED = true;
+    LIVE_FLOW += Number(state.liveFlow) || 0;
+  }
   if (state.liveBal != null && !Object.keys(pend).length) {
     const ext = bal - (state.liveBal + LIVE_FLOW);
     if (Math.abs(ext) > 0.01) {
@@ -821,6 +830,8 @@ async function liveReconcile(b: Batch, state: DeskState, kp: Keypair, bal: numbe
       await dropPos(K.deskPos, p.mint);
     } else if (Math.abs(w - p.tokens) > p.tokens * 0.01) {
       log(b, "LEDGER", `$${p.symbol}: the wallet holds ${w.toFixed(0)} tokens, the books said ${p.tokens.toFixed(0)}. books corrected`, "info", p);
+      // v0.1.100: fewer tokens after a sell whose result was unknown: that sell landed (its initials are done)
+      if (w < p.tokens && pend[p.mint]?.side === "sell") p.tp1Done = true;
       p.tokens = w;
       await savePos(K.deskPos, p, true);
     }
@@ -2388,7 +2399,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         // which used to run it on every beat while the desk waited flat for its exam
         const ex = await memo("desk:exam", 30_000, () => exam(state, examWallet(walletSol)));
         await r.set(EXAM_FULL, { at: Date.now(), ex }, { ex: 120 }).catch(() => null);
-        await r.set(K.deskExam, { at: now, live: state.live, passed: ex.checks.filter((c) => c.ok).length, total: ex.checks.length, checks: ex.checks.map((c) => ({ l: c.label, ok: c.ok, now: c.now, need: c.need })), walletSol, wallet: kp ? kp.publicKey.toBase58() : null }, { ex: 600 });
+        // v0.1.100: passed/total count the six own checks (the "or: GRID LIVE" line is an alternative, not a 7th)
+        await r.set(K.deskExam, { at: now, live: state.live, passed: ex.checks.filter((c) => c.ok && !c.label.startsWith("or:")).length, total: ex.checks.filter((c) => !c.label.startsWith("or:")).length, checks: ex.checks.map((c) => ({ l: c.label, ok: c.ok, now: c.now, need: c.need })), walletSol, wallet: kp ? kp.publicKey.toBase58() : null }, { ex: 600 });
       }
 
       // --- books
@@ -2416,6 +2428,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         await r.ltrim(K.deskEq, -3000, -1);
       }
       // only the lock holder writes the books (a desk that lost its lock must not overwrite the new holder's state)
+      state.liveFlow = FLOW_RESTORED ? LIVE_FLOW : (Number(state.liveFlow) || 0) + LIVE_FLOW;
       if (!DESK_LOST) await r.set(K.deskState, state);
       // the heartbeat key every 5s (it was every beat; readers only need to know the desk ran in the last 90s)
       if (now - beatWrittenAt >= 5_000) {
@@ -3122,6 +3135,14 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     return false;
   }
   if (p.live && kp) {
+    // v0.1.100 (audit): a sell of this coin whose fate is unknown (it may have landed) waits for the wallet check. Before,
+    // the next beat sold again: a full exit found 0 tokens and dropped the position unbooked, and the initials sold
+    // their share of what was left a second time
+    const pendSell = (await redis().hget<PendingSwap>(PENDING, p.mint).catch(() => null)) as PendingSwap | null;
+    if (pendSell?.side === "sell") {
+      log(b, "EXEC", `$${p.symbol}: an earlier sell is still being checked against the wallet. no new sell until it is settled`, "info", coin);
+      return false;
+    }
     try {
       const have = await tokenBalanceRaw(kp.publicKey, p.mint);
       const raw = frac >= 1 ? have : (have * BigInt(Math.round(frac * 1000))) / 1000n;
@@ -3779,4 +3800,13 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
       ? trips.reverse().filter((t) => t.mint === onlyMint)
       : trips.reverse().slice(0, 300).map((t, i) => (i < 60 ? t : { ...t, series: undefined, ctx: undefined })),
   };
+}
+
+/** v0.1.100: a worker handing over to a newer one frees the desk lock at once (it waited out its 75s TTL before). */
+export async function releaseDeskLock() {
+  const l = DESK_LOCK;
+  if (!l) return;
+  DESK_LOST = true; // nothing more from this process
+  DESK_LOCK = null;
+  await release(l).catch(() => null);
 }

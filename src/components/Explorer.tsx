@@ -255,7 +255,7 @@ export default function Explorer() {
                 </tr>
               ))}
               {!view.length && (
-                <tr><td colSpan={10} className="muted">{data ? "No coins match. Loosen a filter." : "Loading the index…"}</td></tr>
+                <tr><td colSpan={10} className="muted">{data ? "No coins match. Loosen a filter." : error ? "Could not load the index. Retrying…" : "Loading the index…"}</td></tr>
               )}
             </tbody>
           </table>

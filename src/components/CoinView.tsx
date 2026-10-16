@@ -80,7 +80,9 @@ export default function CoinView({ mint }: { mint: string }) {
       </div>
     );
 
-  const url = typeof window !== "undefined" ? window.location.href : "";
+  // v0.1.100 (audit): the same on the server and the client (window.location in render broke hydration: the share link
+  // kept an empty url for the whole visit)
+  const url = `https://www.ratnet.network/c/${mint}`;
   const tweet = c
     ? `The Rat King called $${sym} ${c.verdict} ${c.score}/100, 5 minutes after launch.${outcome ? ` Outcome: ${outcome}${l?.bondSecs ? ` in ${fmtSecs(l.bondSecs)}` : ""}.` : ""}\n\nEvery call logged and checked on chain.`
     : `The rats are watching $${sym}.`;

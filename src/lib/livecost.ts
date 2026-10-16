@@ -39,7 +39,8 @@ export async function loadLiveFees() {
 export async function noteLiveFee(feeLamports: number) {
   if (!Number.isFinite(feeLamports) || feeLamports <= 0) return;
   const r = redis();
-  await r.lpush(KEY, feeLamports / 1e9).catch(() => 0);
+  // v0.1.100: the priority part only (meta.fee includes the 5,000-lamport base fee, which txCost adds on its own)
+  await r.lpush(KEY, Math.max(0, feeLamports - 5000) / 1e9).catch(() => 0);
   await r.ltrim(KEY, 0, KEEP - 1).catch(() => null);
   await loadLiveFees().catch(() => null);
 }

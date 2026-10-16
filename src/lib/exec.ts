@@ -79,7 +79,8 @@ export function ownAtas(owner: PublicKey, mint: string) {
  *  - the swap's output must land in the wallet's own account for the output mint
  * Every address is resolved through the lookup tables, so nothing hides behind a table index.
  */
-export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: AddressLookupTableAccount[] = [], outputMint?: string) {
+export type VetLimits = { inputMint?: string; amountIn?: bigint; tipMaxSol?: number };
+export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: AddressLookupTableAccount[] = [], outputMint?: string, lim: VetLimits = {}) {
   const keys = tx.message.getAccountKeys({ addressLookupTableAccounts: lookups });
   if (!keys.get(0)?.equals(payer)) throw new Error("tx payer is not the desk wallet");
   // v0.1.46: the desk wallet is the only signer (a second signer could be an account created for someone else)
@@ -89,6 +90,15 @@ export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: Addre
   const tips = new Set(TIP);
   const outAtas = outputMint ? ownAtas(payer, outputMint) : null;
   let outSeen = !outAtas || (outputMint === WSOL_MINT); // selling to SOL: the proceeds arrive as lamports on the wallet itself
+  // v0.1.100 (audit): amounts are capped too. Before, any amount could go to a tip or the wallet's own wSOL account, and
+  // an account created with a seed and then handed to another owner (System 3 + token init with a stranger as owner)
+  // passed every check: a tampered Jupiter answer could empty the wallet that way.
+  const solIn = lim.inputMint === WSOL_MINT && lim.amountIn != null ? lim.amountIn : 0n;
+  const tipCap = BigInt(Math.round(Math.max(0.0001, lim.tipMaxSol ?? 0.002) * 1.5 * 1e9));
+  const RENT_ROOM = 5_000_000n; // 0.005 SOL: rent for the temporary accounts a swap opens
+  let toTips = 0n;
+  let toWsol = 0n;
+  let seeded = 0n;
   for (const ix of tx.message.compiledInstructions) {
     const pid = keys.get(ix.programIdIndex)?.toBase58();
     if (!pid || !ALLOWED.has(pid)) throw new Error(`tx touches an unexpected program ${pid?.slice(0, 6)}`);
@@ -99,13 +109,29 @@ export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: Addre
       const kind = data.length >= 4 ? data.readUInt32LE(0) : -1;
       if (kind === 2) {
         if (acc(0) !== me || !(tips.has(acc(1)) || wsolAtas.has(acc(1)))) throw new Error("SOL transfer to an address that is not a tip or the wallet's own wSOL account");
-      } else if (kind === 0 || kind === 3) {
+        const lamports = data.length >= 12 ? data.readBigUInt64LE(4) : 0n;
+        if (tips.has(acc(1))) toTips += lamports;
+        else toWsol += lamports;
+      } else if (kind === 3) {
+        // create account with seed: only a token account (its owner is checked at its init below), only rent-sized
         if (acc(0) !== me) throw new Error("account creation not paid by the desk wallet");
-      } else throw new Error(`unexpected system instruction ${kind}`);
+        const seedLen = Number(data.readBigUInt64LE(36));
+        const at = 44 + seedLen;
+        if (data.length < at + 48) throw new Error("account creation refused: malformed");
+        const lamports = data.readBigUInt64LE(at);
+        const owner = new PublicKey(data.subarray(at + 16, at + 48)).toBase58();
+        if (owner !== TOKEN && owner !== TOKEN22) throw new Error("account creation refused: not a token account");
+        seeded += lamports;
+      } else throw new Error(`system instruction ${kind} refused`);
     } else if (pid === TOKEN || pid === TOKEN22) {
       const t = data[0];
       if (t === 17) continue; // sync native
-      if (t === 1 || t === 16 || t === 18) continue; // initialize account (temporary wSOL accounts)
+      if (t === 1 || t === 16 || t === 18) {
+        // initialize account (temporary wSOL accounts): the desk wallet must own it, or its SOL is someone else's
+        const owner = t === 1 ? acc(2) : data.length >= 33 ? new PublicKey(data.subarray(1, 33)).toBase58() : "";
+        if (owner !== me) throw new Error("token account initialised for someone other than the desk wallet, refused");
+        continue;
+      }
       if (t === 9) {
         if (acc(1) !== me || acc(2) !== me) throw new Error("token account closed to someone other than the desk wallet");
         continue;
@@ -116,6 +142,64 @@ export function vetTx(tx: VersionedTransaction, payer: PublicKey, lookups: Addre
     }
   }
   if (!outSeen) throw new Error("the swap's output does not go to the desk wallet's own account");
+  if (toTips > tipCap) throw new Error(`tip of ${Number(toTips) / 1e9} SOL refused (cap ${Number(tipCap) / 1e9})`);
+  if (toWsol + seeded > solIn + RENT_ROOM) throw new Error(`${Number(toWsol + seeded) / 1e9} SOL into wSOL/new accounts refused (the trade is ${Number(solIn) / 1e9})`);
+}
+
+/**
+ * v0.1.100 (audit): the transaction is simulated before it is signed and sent, and refused unless the wallet ends up as
+ * the quote says: a buy spends at most its amount plus fees and lands at least the quote's minimum output in the
+ * wallet's own token account; a sell gives up at most its tokens and brings at least the minimum output in SOL. This is
+ * what the static checks cannot see: where the Jupiter program itself sends the money. A failed RPC call does not block
+ * the trade (a stop must still go out); a simulation that runs and shows a loss or an error does.
+ */
+export const simStats = { ok: 0, refused: 0, rpcFail: 0, last: "" };
+const tokAmount = (d: Buffer | null | undefined) => (d && d.length >= 72 ? d.readBigUInt64LE(64) : 0n);
+export async function simCheck(tx: VersionedTransaction, payer: PublicKey, inputMint: string, outputMint: string, amountIn: bigint, minOut: bigint) {
+  const c: any = conn();
+  const me = payer;
+  const tokMint = inputMint === WSOL_MINT ? outputMint : inputMint;
+  const atas = [...ownAtas(me, tokMint)].map((a) => new PublicKey(a));
+  const addrs = [me, ...atas];
+  let pre: any[] | null = null;
+  let sim: any = null;
+  try {
+    [pre, sim] = await Promise.all([
+      c.getMultipleAccountsInfo(addrs, "processed"),
+      c.simulateTransaction(tx, { sigVerify: false, commitment: "processed", accounts: { encoding: "base64", addresses: addrs.map((a) => a.toBase58()) } }),
+    ]);
+  } catch (e) {
+    simStats.rpcFail++;
+    simStats.last = String((e as any)?.message || e).replace(/api-key=\S+/gi, "").slice(0, 80);
+    return { checked: false };
+  }
+  const v = sim?.value;
+  if (!v || !pre) {
+    simStats.rpcFail++;
+    return { checked: false };
+  }
+  const refuse = (why: string) => {
+    simStats.refused++;
+    simStats.last = why.slice(0, 120);
+    throw new Error(`simulation refused: ${why}`);
+  };
+  if (v.err) refuse(`the swap fails (${JSON.stringify(v.err).slice(0, 80)})`);
+  const post = (v.accounts || []) as any[];
+  const lam0 = BigInt(pre[0]?.lamports ?? 0);
+  const lam1 = BigInt(post[0]?.lamports ?? 0);
+  const tok = (arr: any[], fromSim: boolean) => arr.slice(1).reduce((s: bigint, a: any) => s + tokAmount(a ? (fromSim ? Buffer.from(a.data?.[0] || "", "base64") : (a.data as Buffer)) : null), 0n);
+  const t0 = tok(pre, false);
+  const t1 = tok(post, true);
+  const FEES = 20_000_000n; // 0.02 SOL: priority fee, tip, account rent
+  if (inputMint === WSOL_MINT) {
+    if (lam0 - lam1 > amountIn + FEES) refuse(`the wallet would lose ${Number(lam0 - lam1) / 1e9} SOL on a ${Number(amountIn) / 1e9} SOL buy`);
+    if (t1 - t0 < minOut) refuse(`the wallet would get ${t1 - t0} tokens, the quote's minimum is ${minOut}`);
+  } else {
+    if (t0 - t1 > amountIn) refuse(`the wallet would give up ${t0 - t1} tokens on a sell of ${amountIn}`);
+    if (lam1 - lam0 < minOut - FEES) refuse(`the wallet would get ${Number(lam1 - lam0) / 1e9} SOL, the quote's minimum is ${Number(minOut) / 1e9}`);
+  }
+  simStats.ok++;
+  return { checked: true };
 }
 
 /**
@@ -312,7 +396,8 @@ async function fastSwapInner(kp: Keypair, inputMint: string, outputMint: string,
     ];
     const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: bh.blockhash, instructions: ixs }).compileToV0Message(lookup);
     const tx = new VersionedTransaction(msg);
-    vetTx(tx, kp.publicKey, lookup, outputMint);
+    vetTx(tx, kp.publicKey, lookup, outputMint, { inputMint, amountIn: amountRaw, tipMaxSol: cfg.jitoTipMaxSol });
+    await simCheck(tx, kp.publicKey, inputMint, outputMint, amountRaw, BigInt(quote.otherAmountThreshold ?? "0"));
     tx.sign([kp]);
     const raw = tx.serialize();
     const sig58 = bs58.encode(tx.signatures[0]);
@@ -334,7 +419,8 @@ async function fastSwapInner(kp: Keypair, inputMint: string, outputMint: string,
     const { swapTransaction, lastValidBlockHeight } = await s.json();
     const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
     const lk = await alts((tx.message.addressTableLookups || []).map((x) => x.accountKey.toBase58()));
-    vetTx(tx, kp.publicKey, lk, outputMint);
+    vetTx(tx, kp.publicKey, lk, outputMint, { inputMint, amountIn: amountRaw, tipMaxSol: cfg.jitoTipMaxSol });
+    await simCheck(tx, kp.publicKey, inputMint, outputMint, amountRaw, BigInt(quote.otherAmountThreshold ?? "0"));
     tx.sign([kp]);
     const raw = tx.serialize();
     const sig58 = bs58.encode(tx.signatures[0]);

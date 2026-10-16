@@ -113,6 +113,7 @@ export function benchWhy(lv: number[], lp: number[]): string | null {
 export async function onClose(sl: Sleeve, logRet: number, live = false, parOut?: number | null): Promise<string | null> {
   const pm = await load();
   const s = pm[sl];
+  let benchNote: string | null = null;
   if (live) {
     s.lv = [...(s.lv || []), Math.max(-3, Math.min(3, logRet))].slice(-30);
     if (parOut != null && Number.isFinite(parOut)) s.lp = [...(s.lp || []), parOut].slice(-10);
@@ -120,10 +121,10 @@ export async function onClose(sl: Sleeve, logRet: number, live = false, parOut?:
     if (why) {
       s.bench = { why, at: Date.now() };
       s.gb = [];
-      await redis().set(KEY, pm);
-      return `${sl} benched from live money: ${why}. The ghost desk keeps trading it; it comes back when its last 20 ghost trips pass the exam`;
+      benchNote = `${sl} benched from live money: ${why}. The ghost desk keeps trading it; it comes back when its last 20 ghost trips pass the exam`;
     }
   }
+  // v0.1.100: the trip that benches a sleeve still counts in its record (it returned before the record, audit)
   const before = weightOf(sl, s);
   s.r = [...s.r, Math.max(-3, Math.min(3, logRet))].slice(-30);
   s.n++;
@@ -140,7 +141,7 @@ export async function onClose(sl: Sleeve, logRet: number, live = false, parOut?:
   const after = weightOf(sl, s);
   if (!note && Math.abs(after - before) >= 0.1) note = `${sl} sleeve weight ${before} → ${after} (${s.r.length} trades on record)`;
   await redis().set(KEY, pm);
-  return note;
+  return benchNote ?? note;
 }
 
 /** Ghost desk result for a sleeve. A paused sleeve whose ghost trades keep winning is let back in early. */

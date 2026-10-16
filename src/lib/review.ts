@@ -72,9 +72,11 @@ export async function dailyReview(send: (t: string) => Promise<unknown>, now = D
   const d = new Date(now);
   if (d.getUTCHours() * 60 + d.getUTCMinutes() < 6 * 60 + 50) return { wait: true };
   const day = d.toISOString().slice(0, 10);
-  if (!(await redis().set(`rn:review:${day}`, now, { nx: true, ex: 3 * 86400 }))) return { sent: "already today" };
+  // v0.1.100: marked sent only once it went out (a failed read or send used to lose the day's review)
+  if (await redis().get(`rn:review:${day}`)) return { sent: "already today" };
   const v = await reviewView(now);
   await redis().set("rn:review:last", v, { ex: 3 * 86400 }).catch(() => null);
   await send(reviewText(v));
+  await redis().set(`rn:review:${day}`, now, { ex: 3 * 86400 });
   return { sent: day };
 }

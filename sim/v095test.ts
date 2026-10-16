@@ -33,7 +33,7 @@ const near = (a: number, b: number, e = 0.011) => Math.abs(a - b) <= e;
   const desk = fs.readFileSync("src/lib/desk.ts", "utf8");
   const gl = fs.readFileSync("src/lib/gridlive.ts", "utf8");
   const site = fs.readFileSync("src/config/site.ts", "utf8");
-  const admin = fs.readFileSync("src/app/api/admin/route.ts", "utf8");
+  const admin = fs.readFileSync("src/lib/deskbounds.ts", "utf8"); // v0.1.100: the bounds moved here
   ok(/sizePlan\(o\.pcts/.test(desk) && /\(eqValue \* pct\) \/ 100\), liqCap/.test(desk), "the desk sizes FOLLOW buys from the leader's record, on its equity, under the liquidity cap");
   ok(/pcts: TRIPS\.filter\(\(t\) => t\.k === b\.key\)\.map\(\(t\) => t\.pnlPct\)/.test(gl), "GRID LIVE sends the leader's record with each order");
   ok(/kellyFrac: 0\.25/.test(site) && /kellyMaxPct: 10/.test(site) && /kellyMaxPct: \[1, 20\]/.test(admin), "defaults and admin bounds set");

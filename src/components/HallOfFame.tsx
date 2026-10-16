@@ -15,7 +15,7 @@ function tweet(v: View, site: string) {
 
 /** Best BOND calls of the last 7 days, by how far they ran from the market cap at the call. */
 export default function HallOfFame({ limit = 6, full = false }: { limit?: number; full?: boolean }) {
-  const d = usePoll<{ fame: View[] }>("/api/runners?fame=1", 30000).data;
+  const { data: d, error } = usePoll<{ fame: View[] }>("/api/runners?fame=1", 30000);
   const fame = (d?.fame || []).slice(0, limit);
   const site = typeof window !== "undefined" ? window.location.origin : "";
   return (
@@ -46,7 +46,7 @@ export default function HallOfFame({ limit = 6, full = false }: { limit?: number
           ))}
         </div>
       ) : (
-        <div className="pb small muted">{d ? "No BOND call has doubled from its call yet in the last 7 days. The first one lands here." : "loading…"}</div>
+        <div className="pb small muted">{d ? "No BOND call has doubled from its call yet in the last 7 days. The first one lands here." : error ? "Could not load the Hall of Fame. Retrying…" : "loading…"}</div>
       )}
       <div className="pb tiny muted">Peak market cap after the call, read from the chain. These are the King&apos;s calls, not the desk&apos;s trades: the desk&apos;s own results are in the track record.</div>
     </section>

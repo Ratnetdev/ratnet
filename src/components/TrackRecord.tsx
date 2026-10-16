@@ -126,7 +126,7 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
   const [sort, setSort] = useState<{ k: SortKey; dir: 1 | -1 }>({ k: "opened", dir: -1 });
   const [limit, setLimit] = useState(PAGE);
   // each number opens its chart (full track record only)
-  const st = (k: RecKey) => (compact ? {} : { className: `rec-stat-btn ${chart === k ? "on" : ""}`, role: "button" as const, tabIndex: 0, onClick: () => setChart(chart === k ? null : k), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter") setChart(chart === k ? null : k); } });
+  const st = (k: RecKey) => (compact ? {} : { className: `rec-stat-btn ${chart === k ? "on" : ""}`, role: "button" as const, tabIndex: 0, onClick: () => setChart(chart === k ? null : k), onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") (e.preventDefault(), setChart(chart === k ? null : k)); } });
   const admin = useAdmin();
   const isGhost = !compact && book === "ghost";
   const isGrid = !compact && book === "grid";
@@ -182,14 +182,16 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
       </div>
       {isGrid ? <GridLiveBoard embedded show={show} /> : <>
       <div className="rec-stats">
-        <div {...st("return")}><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
+        {/* v0.1.100 (audit): the ghost book has no equity series of its own (the chart drew the main desk's equity over the
+            ghost's total stake), so its return is a number only */}
+        <div {...(isGhost ? {} : st("return"))}><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
         <div {...st("trades")}><span className="k">Trades closed</span><b>{s?.closed ?? 0}</b><em>{s ? `${s.open} open now` : ""}</em></div>
         <div {...st("winrate")}><span className="k">Win rate</span><b>{s?.winRate != null ? `${s.winRate}%` : "–"}</b><em>{s ? `${s.wins} of ${s.closed} in profit` : ""}</em></div>
         <div {...st("realized")}><span className="k">Realized</span><b style={{ color: col(s?.realizedSol ?? 0) }}>{s ? `${sgn(s.realizedSol, 3)} ◎` : "–"}</b><em>{s && s.open ? `${sgn(s.openSol, 3)} ◎ open` : "closed trades"}</em></div>
         {!compact && <div {...st("trades")}><span className="k">Best / worst</span><b>{s?.best ? <span style={{ color: col(s.best.pnlPct) }}>{sgn(s.best.pnlPct, 0)}%</span> : "–"} <span className="muted">/</span> {s?.worst ? <span style={{ color: col(s.worst.pnlPct) }}>{sgn(s.worst.pnlPct, 0)}%</span> : "–"}</b><em>{s?.best ? `$${s.best.symbol} · $${s.worst?.symbol}` : ""}</em></div>}
         {!compact && <div {...st("hold")}><span className="k">Avg hold</span><b>{s?.avgHoldMs ? dur(s.avgHoldMs) : "–"}</b><em>closed trades</em></div>}
       </div>
-      {!compact && chart && d ? <RecordCharts which={chart} setWhich={setChart} trips={d.trips || []} start={d.summary.start} /> : null}
+      {!compact && chart && d && !(isGhost && chart === "return") ? <RecordCharts which={chart} setWhich={setChart} trips={d.trips || []} start={d.summary.start} /> : null}
       {!compact && (
         <label className="rc-sort">
           <span>sort</span>

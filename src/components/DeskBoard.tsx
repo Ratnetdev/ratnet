@@ -200,7 +200,7 @@ export default function DeskBoard() {
         ))}
       </nav>
       <div id="now" className="sec-anchor" />
-      <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={d?.exam?.checks || []} pm={(d as any)?.pm || []} />
+      <DeskNow now={d?.now} live={!!d?.live} open={d?.positions.length ?? 0} closed={st?.closed ?? 0} exam={own} pm={(d as any)?.pm || []} />
 
       {d && today <= -d.cfg.dailyLoss ? (
         <div className="panel mt ghost-note">
@@ -496,7 +496,7 @@ export default function DeskBoard() {
                       <td className="muted">{x.trades}</td>
                       <td className="muted">{x.winRate != null ? `${x.winRate}%` : "–"}</td>
                       <td style={{ color: (x.avg ?? 0) >= 0 ? "var(--rat)" : "var(--dust)" }}>{x.avg != null ? `${sign(x.avg)}%` : "–"}</td>
-                      <td style={{ color: x.paused ? "var(--dust)" : x.w > 1 ? "var(--rat)" : "var(--text)" }}>{x.paused ? `paused to ${new Date(x.paused).toISOString().slice(11, 16)} UTC` : `${x.w}x`}</td>
+                      <td style={{ color: x.paused ? "var(--dust)" : x.w > 1 ? "var(--rat)" : "var(--text)" }}>{x.paused ? `paused to ${new Date(x.paused).toISOString().slice(11, 16)} UTC` : x.w != null ? `${x.w}x` : "–"}</td>
                     </tr>
                   ))}
                 </tbody>

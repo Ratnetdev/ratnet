@@ -42,6 +42,9 @@ export async function getRounds(): Promise<Round[]> {
 }
 
 export async function computeRound(id: number, feesSol: number): Promise<Round> {
+  // v0.1.100 (audit): a round's fees are a real, bounded number (a stolen admin session could set any amount)
+  if (!Number.isFinite(feesSol) || feesSol < 0 || feesSol > 1000) throw new Error("feesSol must be between 0 and 1000 SOL");
+  if (!Number.isInteger(id) || id < 0) throw new Error("bad round id");
   const r = redis();
   const existing = (await getRounds()).find((x) => x.id === id);
   if (existing?.status === "paid") throw new Error("Round already paid");

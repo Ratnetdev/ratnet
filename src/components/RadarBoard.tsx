@@ -15,7 +15,7 @@ export default function RadarBoard() {
     <div className="panel glow">
       <div className="ph wrapx" style={{ gap: 12 }}>
         <span className="row" style={{ gap: 6 }}>
-          <span className={`dot ${error ? "off" : ""}`} /> <b>radar</b> · {rows.length} coins · refresh 3s
+          <span className={`dot ${error ? "off" : ""}`} /> <b>radar</b> · {rows.length} coins · refresh 5s
         </span>
         <span className="row wrapx" style={{ gap: 6 }}>
           {[0, 20, 50, 80].map((m) => (

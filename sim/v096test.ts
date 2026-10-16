@@ -19,9 +19,10 @@ const ok = (c: boolean, m: string) => {
   ok(L.medianFee(Array(12).fill(0.05)) === 0.003 && L.medianFee(Array(12).fill(0.00001)) === 0.0001, "bounded 0.0001 to 0.003");
   ok(L.paperPriority(0.0003) === 0.0003, "no live record yet: the setting");
   for (const f of oct16) await L.noteLiveFee(Math.round(f * 1e9));
-  ok(L.LIVE_FEE.prioritySol === m && L.LIVE_FEE.n === 11, `after 11 live transactions paper pays ${L.LIVE_FEE.prioritySol}`);
+  // v0.1.100: the base fee (5,000 lamports) is left out, txCost adds it on its own
+  ok(Math.abs((L.LIVE_FEE.prioritySol ?? 0) - (m - 0.000005)) < 1e-9 && L.LIVE_FEE.n === 11, `after 11 live transactions paper pays ${L.LIVE_FEE.prioritySol}`);
   const cost: any = { jitoTipMinSol: 0.0001, jitoTipMaxSol: 0.002, get paperPrioritySol() { return L.paperPriority(0.0003); } };
-  ok(Math.abs(C.txCost(0.05, cost) - (0.0002 + m + 0.000005)) < 1e-9, "txCost reads the live fee through the getter");
+  ok(Math.abs(C.txCost(0.05, cost) - (0.0002 + m)) < 1e-9, "txCost reads the live fee through the getter (base fee once)");
   // sell parity: SOLCAT 16 Oct, proceeds 0.04096 (wallet delta), triggered at 4.025e-8 on 1,055,064 tokens
   const model = C.sellProceeds(1055064, 4.025e-8, false, 10, { jitoTipMinSol: 0.0001, jitoTipMaxSol: 0.002, paperPrioritySol: 0.0003 }, false);
   const parNow = (0.04096 / model - 1) * 100;

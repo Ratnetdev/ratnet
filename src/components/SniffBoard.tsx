@@ -73,6 +73,7 @@ export default function SniffBoard() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const isLive = !!live?.live.mint;
+  const liveKnown = !!live; // v0.1.100 (audit): until /api/live answers, the free path is not offered (after launch it is refused)
   useEffect(() => {
     const ca = new URLSearchParams(window.location.search).get("ca");
     if (ca) setCa(ca);
@@ -116,7 +117,7 @@ export default function SniffBoard() {
             <label className="l">Contract address</label>
             <input className="input" placeholder="paste any pump.fun CA" value={ca} onChange={(e) => setCa(e.target.value)} spellCheck={false} />
             <div className="row mt" style={{ gap: 12 }}>
-              <button className="btn" disabled={busy || ca.trim().length < 32 || (isLive && !address)} onClick={go}>
+              <button className="btn" disabled={busy || !liveKnown || ca.trim().length < 32 || (isLive && !address)} onClick={go}>
                 {busy ? "Sniffing…" : isLive ? "Burn & sniff" : "Sniff"}
               </button>
               <span className="muted small">{step}</span>

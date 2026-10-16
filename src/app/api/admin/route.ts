@@ -1,3 +1,4 @@
+import { BOUNDS } from "@/lib/deskbounds";
 import { isAdmin } from "@/lib/admin";
 import { DEFAULT_SETTINGS } from "@/config/site";
 import { fail, json } from "@/lib/http";
@@ -86,11 +87,8 @@ export async function POST(req: Request) {
 // keys, the same type, enums from their list, finite numbers, and hard bounds on anything that moves money. A typo
 // (or a stolen session) can't set maxSol 1000 or 100% slippage.
 const ENUMS: Record<string, string[]> = { mode: ["off", "paper", "auto", "live"], momoMode: ["on", "off"], mindMode: ["auto", "on", "off"], catchMode: ["auto", "on", "off"], flashMode: ["auto", "on", "off"] };
-const BOUNDS: Record<string, [number, number]> = {
-  start: [0.01, 1000], sizePct: [0.1, 25], kellyFrac: [0.05, 0.5], kellyMinPct: [0.1, 10], kellyMaxPct: [1, 20], minSol: [0.001, 5], maxSol: [0.001, 5], maxImpact: [0.1, 20], maxOpen: [0, 20],
-  slippageBps: [50, 3000], maxPriorityLamports: [0, 20_000_000], jitoTipMinSol: [0, 0.01], jitoTipMaxSol: [0, 0.02],
-  dailyLoss: [1, 60], sl: [-90, -1], momoSl: [-90, -1], ghostSol: [0, 1], flowWaitMs: [0, 10_000], catchFirstFrac: [0.05, 1], catchSendFrac: [0, 1], catchSl: [-90, -1], flashSl: [-90, -1], flashMaxOpen: [0, 10], flashFreshMs: [1000, 60_000], flashMaxCurve: [5, 95], flashMaxChase: [0, 300],
-};
+// v0.1.100: the bounds live in lib/deskbounds.ts; getSettings enforces them on every read too
+
 
 function cleanDesk(raw: Record<string, unknown>): Record<string, unknown> | string {
   const def = DEFAULT_SETTINGS.desk as Record<string, unknown>;

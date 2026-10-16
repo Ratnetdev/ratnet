@@ -53,7 +53,7 @@ function Verify({ s }: { s: Seal }) {
 }
 
 export default function Receipts() {
-  const d = usePoll<{ seals: Seal[] }>("/api/receipts", 30000).data;
+  const { data: d, error } = usePoll<{ seals: Seal[] }>("/api/receipts", 30000);
   const seals = d?.seals || [];
   const total = seals.reduce((a, s) => a + s.n, 0);
   return (
@@ -69,11 +69,11 @@ export default function Receipts() {
                   <td>{s.hour.replace("T", " ")}:00<div className="tiny mute2">sealed {ago(s.at)} ago</div></td>
                   <td>{s.n}</td>
                   <td className="muted"><code className="rc-sha">{s.sha.slice(0, 16)}…</code></td>
-                  <td>{s.sig ? <a href={solscanTx(s.sig)} target="_blank" rel="noreferrer">{short(s.sig, 6, 6)}</a> : <span className="muted">no calls</span>}</td>
+                  <td>{s.sig ? <a href={solscanTx(s.sig)} target="_blank" rel="noreferrer">{short(s.sig, 6, 6)}</a> : <span className="muted">{s.n > 0 ? "sealing…" : "no calls"}</span>}</td>
                   <td>{s.sig ? <Verify s={s} /> : null}</td>
                 </tr>
               ))}
-              {!seals.length && <tr><td colSpan={5} className="muted">{d ? "The first hour is sealed a few minutes after it ends." : "loading…"}</td></tr>}
+              {!seals.length && <tr><td colSpan={5} className="muted">{d ? "The first hour is sealed a few minutes after it ends." : error ? "Could not load the receipts. Retrying…" : "loading…"}</td></tr>}
             </tbody>
           </table>
         </div>

@@ -39,7 +39,9 @@ export default function StatusBoard() {
   const warn = parts.filter((p) => !p.stalled && !p.ok).length;
   const beatAge = now?.beatAt ? Math.round((Date.now() - now.beatAt) / 1000) : null;
   const ex = desk?.exam;
-  const passed = (ex?.checks || []).filter((c: any) => c.ok).length;
+  // v0.1.100: the six own checks (the "or: GRID LIVE" line is an alternative, audit)
+  const own = (ex?.checks || []).filter((c: any) => !String(c.l ?? c.label ?? "").startsWith("or:"));
+  const passed = own.filter((c: any) => c.ok).length;
   // v0.1.49: one placeholder style. "…" only while the data loads; once it is in and a value is missing: "–" and a
   // plain reason, grey (it showed "…" forever, and "–" in one tile)
   const nil = (loaded: unknown) => (loaded ? "–" : "…");
@@ -116,7 +118,7 @@ export default function StatusBoard() {
     {
       title: "Desk",
       tiles: [
-        { k: "Exam", v: ex ? `${passed}/${ex.checks?.length ?? 6}` : nil(deskIn), s: desk?.live ? "live wallet" : "paper until every check passes", level: ex ? lvl(passed === (ex.checks?.length ?? 6), true) : "idle" },
+        { k: "Exam", v: ex ? `${passed}/${own.length || 6}` : nil(deskIn), s: desk?.live ? "live wallet" : "paper until every check passes", level: ex ? lvl(!!desk?.live || passed === (own.length || 6), true) : "idle" },
         { k: "Open positions", v: desk ? String((desk.positions || []).length) : "…", s: desk?.state ? `${desk.state.closed} closed, ${desk.state.wins} won${now && !now.running ? " · desk paused" : ""}` : "", level: now?.running ? "ok" : "idle" },
       ],
     },

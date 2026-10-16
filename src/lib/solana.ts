@@ -701,7 +701,8 @@ export async function solUsd(): Promise<number | null> {
   try {
     const cached = await redis().get<number>(K.solPrice);
     if (cached) return cached;
-    const r = await fetch("https://lite-api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112", { cache: "no-store" });
+    // v0.1.100 (audit): 3s at most (the desk awaits it, also inside a sell; a hung price API held exits up to 5 minutes)
+    const r = await fetch("https://lite-api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112", { cache: "no-store", signal: AbortSignal.timeout(3000) });
     const j: any = await r.json();
     const p = Number(j?.So11111111111111111111111111111111111111112?.usdPrice);
     if (p > 0) {
@@ -724,7 +725,7 @@ export async function ratPriceSol(mint: string): Promise<number | null> {
     if (c && !c.complete && c.vTok > 0n) {
       p = Number(c.vSol) / 1e9 / (Number(c.vTok) / 1e6);
     } else {
-      const r = await fetch(`https://lite-api.jup.ag/price/v3?ids=${mint}`, { cache: "no-store" });
+      const r = await fetch(`https://lite-api.jup.ag/price/v3?ids=${mint}`, { cache: "no-store", signal: AbortSignal.timeout(3000) });
       const j: any = await r.json();
       const usd = Number(j?.[mint]?.usdPrice);
       const sol = await solUsd();

@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS, Settings } from "@/config/site";
 import { K, redis } from "./redis";
+import { clampDesk } from "./deskbounds";
 
 // v0.1.38: read at most every 3s per process (20 call sites read it, several of them every loop); a save in this
 // process clears it at once
@@ -25,7 +26,7 @@ export async function getSettings(): Promise<Settings> {
       litter: { ...DEFAULT_SETTINGS.litter, ...(s?.litter || {}) },
       // an empty link saved in /admin never hides a default (the X handle is known)
       links: { ...DEFAULT_SETTINGS.links, ...Object.fromEntries(Object.entries(s?.links || {}).filter(([, v]) => !!v)) },
-      desk: { ...DEFAULT_SETTINGS.desk, ...(s?.desk || {}) },
+      desk: clampDesk({ ...DEFAULT_SETTINGS.desk, ...(s?.desk || {}) }, DEFAULT_SETTINGS.desk as Record<string, unknown>),
       refs: { ...DEFAULT_SETTINGS.refs, ...(s?.refs || {}) },
       venueTpl: { ...DEFAULT_SETTINGS.venueTpl, ...(s?.venueTpl || {}) },
       history: { ...DEFAULT_SETTINGS.history, ...(s?.history || {}) },

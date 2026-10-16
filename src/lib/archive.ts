@@ -144,9 +144,27 @@ export function archivePoolTick(mint: string, v: { mcSol: number; real: number }
 const RUN_TRACK = new Map<string, number>(); // mint -> call time
 const RUN_AT = new Map<string, number>();
 export const RUN_TRACK_MS = 24 * 3600_000;
+// v0.1.100 (audit): the tracked calls are kept in Redis too. Only in memory, every deploy stopped the paths of the day's
+// calls after their first hour, and GRID scored runner exits on prices that simply ended
+const RUN_KEY = "rn:archive:runtrack";
 export function runTrack(mint: string, callAt: number) {
   if (RUN_TRACK.size > 20_000) for (const [m, at] of RUN_TRACK) if (Date.now() - at > RUN_TRACK_MS) (RUN_TRACK.delete(m), RUN_AT.delete(m));
   RUN_TRACK.set(mint, callAt);
+  import("./redis")
+    .then(({ redis }) => redis().zadd(RUN_KEY, { score: callAt, member: `${mint}|${callAt}` }))
+    .catch(() => null);
+}
+/** Worker boot: the last day's tracked calls back into memory (older ones are dropped from Redis too). */
+export async function loadRunTrack(now = Date.now()) {
+  const { redis } = await import("./redis");
+  const r = redis();
+  await r.zremrangebyscore(RUN_KEY, 0, now - RUN_TRACK_MS).catch(() => 0);
+  const rows = ((await r.zrange<string[]>(RUN_KEY, now - RUN_TRACK_MS, now, { byScore: true }).catch(() => [])) || []) as string[];
+  for (const row of rows) {
+    const [m, at] = String(row).split("|");
+    if (m && Number(at) > 0) RUN_TRACK.set(m, Number(at));
+  }
+  return RUN_TRACK.size;
 }
 export const runTracked = () => RUN_TRACK.size;
 export function archiveRunTick(mint: string, v: { mcSol: number; real: number; progress: number; pool: boolean; complete?: boolean }, now = Date.now()) {

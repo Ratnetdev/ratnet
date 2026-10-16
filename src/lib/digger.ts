@@ -819,6 +819,9 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
   const hotAdds: { score: number; member: string }[] = [];
   const radarAdds: { score: number; member: string }[] = [];
 
+  // v0.1.100 (audit): checked before any record is made. putLaunch writes the worker's launch cache at once, so a late
+  // batch that stopped at its flush left the launch in memory only: every later dig found it "stored" and it was lost
+  if (via === "stream" && Date.now() - tIn > DIGGING_MS) return { dug: 0, via, late: launches.length };
   launches.forEach((l, i) => {
     const o = off[i];
     const cv = curves[l.mint];
@@ -905,7 +908,6 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
   p.expire(K.day(dayKey()), 60 * 60 * 24 * 40);
   const lastL = launches[launches.length - 1];
   if (via === "chain" || Math.random() < 0.2) agentLog(p, [{ agent: "SCOUT", at: c.now, mint: lastL.mint, symbol: lastL.symbol, text: `dug ${launches.length} new launch${launches.length > 1 ? "es" : ""}${via === "stream" ? " the second they were born" : " the chain path caught"}, latest $${lastL.symbol}`, tone: "info" }]);
-  if (via === "stream" && Date.now() - tIn > DIGGING_MS) return { dug: 0, via, late: launches.length };
   iStep(via, "flush");
   await flush(c);
   iStep(via, "record");

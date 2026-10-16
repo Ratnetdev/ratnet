@@ -18,6 +18,12 @@ export type RestAnswer = { status: number; body: string };
 const toArgs = (cmd: unknown[]) => [String(cmd[0]).toUpperCase(), ...cmd.slice(1)].map((x) => (typeof x === "string" ? x : x == null ? "" : typeof x === "object" ? JSON.stringify(x) : String(x)));
 const errOf = (e: unknown) => String((e as any)?.message || e || "error").replace(/^ReplyError: /, "");
 
+// v0.1.100 (audit): server and admin commands are refused. The REST service is reachable over public HTTPS behind its
+// token; with the token leaked, CONFIG SET (write files on the Redis host), FLUSHALL or REPLICAOF would have run too.
+// The app never sends any of these.
+const DENY = new Set(["CONFIG", "MODULE", "FLUSHALL", "FLUSHDB", "DEBUG", "SHUTDOWN", "SAVE", "BGSAVE", "BGREWRITEAOF", "REPLICAOF", "SLAVEOF", "MIGRATE", "ACL", "CLIENT", "FUNCTION", "MONITOR", "SYNC", "PSYNC", "CLUSTER", "FAILOVER", "SWAPDB", "RESTORE", "LATENCY", "MEMORY", "OBJECT"]);
+export const refused = (name: string) => DENY.has(String(name).toUpperCase());
+
 function isCmd(x: unknown): x is unknown[] {
   return Array.isArray(x) && x.length > 0 && typeof x[0] === "string";
 }
@@ -34,6 +40,7 @@ export async function answer(r: IORedis, path: string, body: string): Promise<Re
   if (p === "/" || p === "") {
     if (!isCmd(parsed)) return { status: 400, body: JSON.stringify({ error: "ERR expected a command array" }) };
     const [name, ...args] = toArgs(parsed);
+    if (refused(name)) return { status: 400, body: JSON.stringify({ error: `ERR ${name} is not allowed` }) };
     try {
       const result = await r.call(name, ...args);
       return { status: 200, body: JSON.stringify({ result: norm(result) }) };
@@ -44,6 +51,8 @@ export async function answer(r: IORedis, path: string, body: string): Promise<Re
   if (p.endsWith("/pipeline") || p.endsWith("/multi-exec")) {
     if (!Array.isArray(parsed) || !parsed.every(isCmd)) return { status: 400, body: JSON.stringify({ error: "ERR expected an array of commands" }) };
     if (!parsed.length) return { status: 200, body: "[]" };
+    const bad = (parsed as unknown[][]).find((c) => refused(String(c[0])));
+    if (bad) return { status: 400, body: JSON.stringify({ error: `ERR ${String(bad[0]).toUpperCase()} is not allowed` }) };
     const tx = p.endsWith("/multi-exec");
     const pl = tx ? r.multi() : r.pipeline();
     for (const c of parsed as unknown[][]) {

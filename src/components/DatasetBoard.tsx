@@ -33,7 +33,7 @@ const TUNNELS = [
 ];
 
 export default function DatasetBoard() {
-  const { data } = usePoll<D>("/api/ledger", 8000);
+  const { data, error } = usePoll<D>("/api/ledger", 8000);
   const s = data?.stats;
   return (
     <>
@@ -54,7 +54,7 @@ export default function DatasetBoard() {
                 {(data?.exports || []).map((e) => (
                   <tr key={e.day}><td>{e.day}</td><td>{num(e.rows)}</td><td><a href={e.url} target="_blank" rel="noreferrer">download</a></td></tr>
                 ))}
-                {!data?.exports.length && <tr><td colSpan={3} className="muted">The first day drops 48h after launch, once every launch in it has an outcome.</td></tr>}
+                {!data?.exports.length && <tr><td colSpan={3} className="muted">{!data ? (error ? "Could not load the drops. Retrying…" : "loading…") : "The first day drops 48h after launch, once every launch in it has an outcome."}</td></tr>}
               </tbody>
             </table>
           </div>

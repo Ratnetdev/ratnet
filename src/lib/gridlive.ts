@@ -250,6 +250,18 @@ export function gridLiveCall(call: any, now = Date.now()) {
   if (PEND.size > 3000) for (const [k, p] of PEND) if (p.until < now) PEND.delete(k);
 }
 
+// v0.1.100 (audit): the price map is trimmed at most every 30s. Before, with 6,000+ coins priced inside 2 hours (the
+// firehose prices every migrated coin), nothing was old enough to drop and every curve trade (hundreds a second) looped
+// over the whole map on the desk's thread. Past 20,000 coins, anything quiet for 30 minutes goes too.
+let lastEvict = 0;
+function evictLast(now: number) {
+  if (now - lastEvict < 30_000 || LAST.size <= 6000) return;
+  lastEvict = now;
+  const cut = LAST.size > 20_000 ? 30 * 60_000 : 2 * 3600_000;
+  const held = new Set([...POS.values()].map((x) => x.mint));
+  for (const [k, x] of LAST) if (now - x.at > cut && !held.has(k)) (LAST.delete(k), HIST.delete(k));
+}
+
 /** Every live curve update (worker). */
 export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: number; realSol?: number; complete?: boolean }, now = Date.now()) {
   const px = Number(v.mcapSol) || 0;
@@ -260,7 +272,7 @@ export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: nu
   h.push({ t: now, p });
   while (h.length && h[0].t < now - 180_000) h.shift();
   HIST.set(mint, h);
-  if (LAST.size > 6000) for (const [k, x] of LAST) if (now - x.at > 2 * 3600_000) (LAST.delete(k), HIST.delete(k));
+  evictLast(now);
   if (!BOOKS.length && !POS.size) return;
   if (!v.complete) anyTrigger(mint, p, px, h, now);
   for (const b of BOOKS) {
@@ -398,6 +410,7 @@ function stepPos(k: string, pos: LPos, now: number) {
 export function gridLiveQuote(mint: string, q: { mcSol: number; real: number }, now = Date.now()) {
   if (!(q.mcSol > 0)) return;
   LAST.set(mint, { at: now, px: q.mcSol, real: q.real, p: 100, done: true, pool: true });
+  evictLast(now);
   if (!BOOKS.length && !POS.size) return;
   for (const b of BOOKS) {
     const k = id(b.key, mint);

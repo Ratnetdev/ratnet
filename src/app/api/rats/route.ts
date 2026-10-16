@@ -5,12 +5,15 @@ import { allPups, priceFor } from "@/lib/rats";
 import { getSettings } from "@/lib/settings";
 import { cached, fail, json } from "@/lib/http";
 import { memo } from "@/lib/memo";
+import { isPubkey } from "@/lib/solana";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   try {
-    const wallet = new URL(req.url).searchParams.get("wallet") || "";
+    // v0.1.100 (audit): only a real address reaches the price lookup (it went into a Redis key as given)
+    const w0 = new URL(req.url).searchParams.get("wallet") || "";
+    const wallet = isPubkey(w0) ? w0 : "";
     // v0.1.40: the shared part at most every 15s per server instance (it read the payout rounds twice, uncached)
     const [[board, rounds, econ, pups], myPrice] = await Promise.all([
       memo("api:rats", 15_000, () => Promise.all([getRatBoard(), getRounds().catch(() => []), getEcon().catch(() => null), allPups().catch(() => [])])),

@@ -22,7 +22,7 @@ import { loopLag, startLoopLag } from "../src/lib/looplag";
 import { tapeStats } from "../src/lib/tape";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
-import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
+import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
@@ -802,10 +802,32 @@ async function gridAlert(res: GridView) {
   await criticalSend(msg);
 }
 
+// v0.1.100 (audit): one worker at a time. On a deploy Railway starts the new worker before the old one is gone, and on
+// 16 Oct the old one ran ~6 more minutes next to it (two firehoses, two diggers, two GRID LIVE books writing over each
+// other, the old desk holding the lock). Each boot claims the generation; a worker that sees a newer one hands over:
+// it frees the desk lock and exits once no swap of its own is in flight.
+const GEN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+let handing = false;
+async function checkGen() {
+  if (handing) return;
+  const g = await redis().get<string>("rn:worker:gen").catch(() => null);
+  if (!g || g === GEN) return;
+  if (swapsInFlight() > 0) return console.log("a newer worker started: handing over once the swap in flight settles");
+  handing = true;
+  console.log(`a newer worker started (${g}): handing over and exiting`);
+  const { releaseDeskLock } = await import("../src/lib/desk");
+  await releaseDeskLock().catch(() => null);
+  await redis().lpush("rn:worker:exits", { at: Date.now(), why: "handed over to a newer worker" }).catch(() => {});
+  await redis().ltrim("rn:worker:exits", 0, 49).catch(() => {});
+  process.exit(0);
+}
+
 async function main() {
   await setupRedis();
   await redis().incr("rn:worker:boots").catch(() => 0);
   await redis().set("rn:worker:bootAt", Date.now()).catch(() => null);
+  await redis().set("rn:worker:gen", GEN).catch(() => null);
+  setInterval(() => checkGen().catch(() => null), 5_000);
   await seedRpcDay().catch(() => null);
   // v0.1.41: the epoch check first. On an empty database it wipes the models, so the warm start must come after it
   // (on 8 Oct it ran the other way round and the historian's queue was wiped twice)
@@ -868,6 +890,7 @@ async function main() {
   // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
   await loadLiveFees().catch(() => null); // v0.1.96: paper pays what live transactions paid
+  await loadRunTrack().catch(() => null); // v0.1.100: the day's runner paths keep going after a restart
   setCallHook((call) => {
     gridLiveCall(call);
     // v0.1.89: runner paths: BOND calls and calls already 30%+ up the curve are followed for a day (archive)

@@ -46,9 +46,16 @@ export default function Admin() {
   const [tab, setTab] = useState<"settings" | "setup" | "strategy" | "wallets" | "overseer">("settings");
 
   const load = useCallback(async () => {
-    const r = await fetch("/api/admin", { cache: "no-store" });
-    if (r.status === 401) return setAuthed(false);
-    const j = await r.json();
+    const r = await fetch("/api/admin", { cache: "no-store" }).catch(() => null);
+    if (r?.status === 401) return setAuthed(false);
+    // v0.1.100 (audit): an error answer (5xx, not JSON) used to leave a blank page; now it says so
+    const j = r ? await r.json().catch(() => null) : null;
+    if (!r?.ok || !j?.settings?.desk) {
+      setErr(`admin data did not load (${r?.status ?? "offline"}). retrying in 5s`);
+      if (typeof window !== "undefined") window.setTimeout(() => load(), 5000);
+      return;
+    }
+    setErr("");
     setAuthed(true);
     setS(j.settings);
     setDeskJson(JSON.stringify(j.settings.desk, null, 2));
@@ -76,7 +83,7 @@ export default function Admin() {
     }
   };
 
-  if (authed === null) return <p className="muted">Loading…</p>;
+  if (authed === null) return <p className="muted">{err || "Loading…"}</p>;
   if (!authed)
     return (
       <div className="panel" style={{ maxWidth: 420 }}>
@@ -158,7 +165,7 @@ export default function Admin() {
               {(["gmgn", "axiom", "fomo", "pump"] as const).map((k) => (
                 <div key={k} className="grid g2" style={{ gap: 10 }}>
                   <div><label className="l">{k} code</label><input className="input" value={s.refs?.[k] || ""} onChange={(e) => set({ refs: { ...s.refs, [k]: e.target.value.trim() } })} /></div>
-                  <div><label className="l">{k} link with code</label><input className="input" style={{ fontSize: 11 }} value={s.venueTpl?.[k]?.ref || ""} onChange={(e) => set({ venueTpl: { ...s.venueTpl, [k]: { ...s.venueTpl[k], ref: e.target.value.trim() } } })} /></div>
+                  <div><label className="l">{k} link with code</label><input className="input" style={{ fontSize: 11 }} value={s.venueTpl?.[k]?.ref || ""} onChange={(e) => set({ venueTpl: { ...s.venueTpl, [k]: { ...(s.venueTpl?.[k] || {}), ref: e.target.value.trim() } } })} /></div>
                 </div>
               ))}
               <button className="btn mt" onClick={() => run("Save codes", () => call({ action: "settings", settings: { refs: s.refs, venueTpl: s.venueTpl } }))}>Save codes</button>

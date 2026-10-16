@@ -70,7 +70,7 @@ export default function KingBoard() {
                   ["fame", "hall of fame"],
                 ] as const
               ).map(([k, label]) => (
-                <a key={k} onClick={() => { setTab(k); setPage(0); }} style={{ cursor: "pointer", color: tab === k ? "var(--rat)" : undefined }}>
+                <a key={k} role="tab" tabIndex={0} aria-selected={tab === k} onClick={() => { setTab(k); setPage(0); }} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setTab(k); setPage(0); } }} style={{ cursor: "pointer", color: tab === k ? "var(--rat)" : undefined }}>
                   {label}
                 </a>
               ))}

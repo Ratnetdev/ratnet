@@ -107,7 +107,9 @@ export default function RatsBoard() {
             </button>
           </div>
           <div className="pb">
-            {!data?.live ? (
+            {!data ? (
+              <p className="muted small" style={{ marginTop: 0 }}>Loading the litter…</p>
+            ) : !data.live ? (
               <p className="muted small" style={{ marginTop: 0 }}>Spawning opens the moment $RAT is live. Litter 1: {l?.size ?? 100} rats.</p>
             ) : (
               <>

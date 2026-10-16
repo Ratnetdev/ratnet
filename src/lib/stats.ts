@@ -192,6 +192,9 @@ export async function getCoin(mint: string) {
     r.zscore(K.radar, mint),
     r.zscore(K.peak, mint),
   ]);
+  // v0.1.100 (audit): a coin the rats never dug costs nothing more. Before, any valid address on /c/ or /api/coin read
+  // the chain and DexScreener (Helius credits on the key the desk shares, open to anyone with a list of addresses)
+  if (!launch && !call) return { launch: null, call: null, mkt: null, run: null, seal: null };
   if (launch && !launch.outcome) {
     if (live != null) launch.pNow = Number(live);
     if (peak != null) launch.peak = Math.max(launch.peak ?? 0, Number(peak));

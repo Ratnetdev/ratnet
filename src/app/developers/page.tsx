@@ -32,7 +32,8 @@ export default function Developers() {
               {EPS.map(([m, p, d]) => (
                 <tr key={p}>
                   <td className="green">{m}</td>
-                  <td><a href={p.replace("{CA}", "").replace("?page=0", "")} target="_blank" rel="noreferrer">{p}</a></td>
+                  {/* v0.1.100 (audit): an endpoint that needs a CA is shown, not linked (stripping {CA} gave /api/coin/, a 404) */}
+                  <td>{p.includes("{CA}") ? <code>{p}</code> : <a href={p.replace("?page=0", "")} target="_blank" rel="noreferrer">{p}</a>}</td>
                   <td className="muted" style={{ whiteSpace: "normal" }}>{d}</td>
                 </tr>
               ))}

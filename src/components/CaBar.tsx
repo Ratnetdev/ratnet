@@ -27,6 +27,12 @@ export default function CaBar() {
               [{copied ? "copied" : "copy"}]
             </button>
           </span>
+        ) : !data ? (
+          // v0.1.100 (audit): while the live data loads (or if it fails) nothing says "not live": after launch that read
+          // as "the real CA is a scam"
+          <span className="ca-wait">
+            The $RAT CA is only ever posted on <a href="https://x.com/Ratnetdev" target="_blank" rel="noreferrer">@Ratnetdev</a>. Anything else is a scam.
+          </span>
         ) : (
           <span className="ca-wait">
             $RAT is not live. The CA will only be posted on <a href="https://x.com/Ratnetdev" target="_blank" rel="noreferrer">@Ratnetdev</a>. Anything else is a scam.
