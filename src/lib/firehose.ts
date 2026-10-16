@@ -7,7 +7,8 @@
 // One connection, reconnects by itself with backoff; nothing here can block the desk.
 import { PUMP_AMM_PROGRAM_ID, PUMP_PROGRAM_ID, WSOL_MINT, curveOf, eventsOf, isSolQuote, poolAfter, type PumpEv, type SwapEv, type TradeEv } from "./pumpevents";
 import { canonicalPool } from "./pool";
-import { fcBeat, fcConnected, fcCurveTrade, fcDown, fcLive, fcPoolTrade } from "./firecache";
+import bs58 from "bs58";
+import { fcBeat, fcConnected, fcCurveTrade, fcDown, fcLive, fcPoolCreated, fcPoolTrade } from "./firecache";
 
 export type FireTrade = { mint: string; user: string; isBuy: boolean; sol: number; tokens: number; at: number; venue: "curve" | "pool"; creator?: string; sig?: string; prog?: number; mcSol?: number; real?: number };
 export type FireCurve = { progress: number; mcapSol: number; realSol: number; complete: boolean; priceSol: number; supply: number };
@@ -15,7 +16,8 @@ export type FireHandlers = {
   trade?: (t: FireTrade) => void;
   curve?: (mint: string, v: FireCurve) => void;
   pool?: (mint: string, q: { mcSol: number; real: number; pool: string }) => void;
-  create?: (c: { mint: string; symbol: string; name: string; creator: string; at: number }) => void;
+  /** v0.1.85: with the transaction's signature, the metadata uri and the dev's first buy (the rats dig it from here) */
+  create?: (c: { mint: string; symbol: string; name: string; creator: string; at: number; sig?: string; uri?: string; devSol?: number; devTok?: number; solQuote?: boolean }) => void;
   complete?: (mint: string, at: number) => void;
   /** v0.1.82: a (re)connection: anything kept from before it may have missed trades in the gap */
   connected?: () => void;
@@ -52,11 +54,14 @@ export function handleTx(evs: PumpEv[], tokenMints: string[], h: FireHandlers, s
   for (const ev of evs) {
     if (ev.kind === "createPool") {
       if (isSolQuote(ev.quoteMint)) POOL_MINT.set(ev.pool, ev.baseMint);
+      if (isCanonical(ev.pool, ev.baseMint)) fcPoolCreated(ev.baseMint); // v0.1.85: its "no pool yet" mark ends now
       continue;
     }
     if (ev.kind === "create") {
       fireStats.creates++;
-      h.create?.({ mint: ev.mint, symbol: ev.symbol, name: ev.name, creator: ev.creator, at: ev.ts ? ev.ts * 1000 : now });
+      // the dev's buy is the same transaction's first trade by the creator; its quote mint says whether this is a SOL curve
+      const dev = evs.find((x) => x.kind === "trade" && (x as TradeEv).mint === ev.mint && (x as TradeEv).isBuy && ((x as TradeEv).user === ev.user || (x as TradeEv).user === ev.creator)) as TradeEv | undefined;
+      h.create?.({ mint: ev.mint, symbol: ev.symbol, name: ev.name, creator: ev.creator, at: ev.ts ? ev.ts * 1000 : now, sig, uri: ev.uri, devSol: dev ? Number(dev.sol) / 1e9 : 0, devTok: dev ? Number(dev.tokens) / 1e6 : 0, solQuote: dev ? isSolQuote(dev.quoteMint) : true });
       continue;
     }
     if (ev.kind === "complete") {
@@ -141,7 +146,9 @@ export async function startFirehose(h: FireHandlers): Promise<boolean> {
             const mints = [...(tx.meta.postTokenBalances || []), ...(tx.meta.preTokenBalances || [])].map((b: any) => String(b.mint || ""));
             // slot, then the transaction's position in it: the order the chain applied them in
             const ord = Number(u.transaction.slot || 0) * 100_000 + (Number(tx.index) || 0);
-            handleTx(evs, mints, h, undefined, Date.now(), ord);
+            // v0.1.85: the signature only for creates (the rats' backfill knows a launch by it); encoding every one costs CPU
+            const sig = evs.some((e) => e.kind === "create") && tx.signature ? bs58.encode(tx.signature) : undefined;
+            handleTx(evs, mints, h, sig, Date.now(), ord);
           } catch (e: any) {
             fireStats.errors++;
             fireStats.lastErr = String(e?.message || e).slice(0, 160);

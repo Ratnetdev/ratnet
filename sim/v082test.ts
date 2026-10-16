@@ -48,7 +48,8 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   ok(hs.winRate === 47 && Math.abs(hs.pnl - 0.2187) < 0.001 && hs.pfLessBest === 1.19 && !hs.passed, `the hot record: ${hs.winRate}% won, +${hs.pnl} SOL, PF ${hs.pfLessBest}, not passed`);
   const msgs: string[] = [];
   const t1 = await L.gridLiveTend(async (t) => msgs.push(t));
-  ok(t1.revived.length === 1 && t1.revived[0] === hotKey, "gridLiveTend brings back the hot strategy only (not the cold one, not one with 12 trips)");
+  // v0.1.85: the young one (12 trips, in profit, nothing against it) comes back too; the cold one never
+  ok(t1.revived.length === 2 && t1.revived[0] === hotKey && t1.revived[1] === "p15|now|2/0.25/0.25/15/sell", "gridLiveTend brings back the hot strategy and the young one in profit (never the cold one)");
   ok(msgs.some((m) => /back in the race/.test(m)), "Telegram says so");
   const t2 = await L.gridLiveTend(async (t) => msgs.push(t));
   ok(t2.revived.length === 0 && L.gridLiveBooks().filter((x) => x.key === hotKey).length === 1, "once (it is trading again)");
@@ -79,7 +80,14 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   ok(FC.fcCurve(m1)?.progress === 40, "an older transaction never overwrites a newer one");
   FC.fcCurveTrade(m1, { ...cv, progress: 45 }, 11);
   ok(FC.fcCurve(m1)?.progress === 45, "a newer one does");
-  ok(FC.fcCurve(m1, Date.now() + FC.MAX_AGE_MS + 1) === null, "quiet for over 60s: read from the chain again");
+  // v0.1.85: a curve stays exact until its next trade (10 minutes at most, a guard against a missed message)
+  const fut = Date.now() + FC.MAX_AGE_MS + 1;
+  FC.fcBeat(fut);
+  ok(FC.fcCurve(m1, fut) !== null, "quiet for over 60s: a curve is still trusted (it only changes with a trade)");
+  const fut2 = Date.now() + FC.CURVE_MAX_AGE_MS + 1;
+  FC.fcBeat(fut2);
+  ok(FC.fcCurve(m1, fut2) === null, "quiet for over 10 minutes: checked against the chain again");
+  FC.fcBeat(Date.now());
   const readAt = Date.now();
   FC.fcCurveTrade(m1, { ...cv, progress: 50 }, 12, readAt + 5);
   FC.fcCurveBase(m1, { ...cv, progress: 41 }, readAt);
@@ -274,7 +282,7 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   ok(typeof okIdea === "object" && okIdea.key === g.keyOf("p70+r5", "d15", g.GEXITS[3]) && okIdea.label === "curve 70%+ (near migration) + curve +5 pts in the minute before, buy on a 15% dip (within 10 min)", "a good idea: GRID's key and label");
   // a pass with the model mocked
   L.gridLiveReset();
-  await R.set("rn:grid:view", { coins: 2000, trainN: 1400, testN: 600, rows: [{ key: hotKey, filter: "p70+r5", mode: "now", exit, train: { n: 50, winRate: 40, avgPct: 3 }, test: { n: 20, winRate: 45, avgPct: 4, pfLessBest: 1.3 }, pass: true }], explore: [], base: [], senders: { lifts: [] } });
+  await R.set("rn:grid:view", { at: Date.now(), coins: 2000, trainN: 1400, testN: 600, rows: [{ key: hotKey, filter: "p70+r5", mode: "now", exit, train: { n: 50, winRate: 40, avgPct: 3 }, test: { n: 20, winRate: 45, avgPct: 4, pfLessBest: 1.3 }, pass: true }], explore: [], base: [], senders: { lifts: [] } });
   await R.set(L.LIVE_VIEW, { books: [], past: [] });
   process.env.ANTHROPIC_API_KEY = "sk-test";
   let sent: any = null;

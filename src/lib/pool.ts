@@ -10,7 +10,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { conn } from "./solana";
 import { redis } from "./redis";
-import { fcPool, fcPoolBase } from "./firecache";
+import { fcNoPool, fcNoPoolYet, fcPool, fcPoolBase } from "./firecache";
 
 const PUMP = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 const PUMP_AMM = new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
@@ -71,6 +71,9 @@ export async function readPools(mints: string[]): Promise<Record<string, PoolRea
     if (f) {
       out[m] = { ...f };
       poolFire.hits++;
+    } else if (fcNoPoolYet(m)) {
+      out[m] = null; // v0.1.85: no canonical pool 30s ago, and the firehose has not seen one created since
+      poolFire.hits++;
     } else uniq.push(m);
   }
   if (!uniq.length) return out;
@@ -96,6 +99,7 @@ export async function readPools(mints: string[]): Promise<Record<string, PoolRea
   }
   const found = uniq.filter((m) => vaults[m]);
   for (const m of uniq) out[m] = null;
+  for (const m of uniq) if (!vaults[m]) fcNoPool(m); // v0.1.85: no pool account yet
   if (!found.length) return out;
   const datas = await accounts(found.flatMap((m) => [vaults[m].bv, vaults[m].qv]));
   found.forEach((m, i) => {

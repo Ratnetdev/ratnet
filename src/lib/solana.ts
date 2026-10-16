@@ -12,6 +12,10 @@ import { K, redis } from "./redis";
 // inside it (that is how Helius counts). A 429 empties the bucket so everyone slows down, then retries.
 export const RPS = Math.max(1, Number(process.env.RPC_RPS || 10));
 export const lane = new AsyncLocalStorage<number>(); // 0 desk (default), 1 the rats (dig), 2 agents, 3 historian
+// v0.1.85: which part of a lane made a read (/status lists the top ones as lane:method@part), so a lane that eats the
+// budget says exactly where. tagged("hot", fn): every chain read inside fn is counted under "hot".
+export const rpcTag = new AsyncLocalStorage<string>();
+export const tagged = <T,>(tag: string, fn: () => Promise<T>) => rpcTag.run(tag, fn);
 export const lowLane = { run: <T,>(_: boolean, fn: () => T) => lane.run(3, fn) };
 const queues: { cost: number; go: () => void; at: number }[][] = [[], [], [], []];
 const log1m: [number, number, number, number][] = []; // [time, lane, calls, waited ms] over the last minute
@@ -160,10 +164,11 @@ const METHODS = new Map<string, number>();
 export function noteMethod(l: number, method: string, n: number) {
   const h = new Date().toISOString().slice(0, 13);
   if (h !== methodsHour) (methodsHour = h), METHODS.clear();
-  const k = `${["desk", "rats", "agents", "historian"][l] || "?"}:${method}`;
+  const tag = rpcTag.getStore();
+  const k = `${["desk", "rats", "agents", "historian"][l] || "?"}:${method}${tag ? `@${tag}` : ""}`;
   METHODS.set(k, (METHODS.get(k) || 0) + n);
 }
-export const methodsView = () => ({ hour: methodsHour, top: Array.from(METHODS.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12) });
+export const methodsView = () => ({ hour: methodsHour, top: Array.from(METHODS.entries()).sort((a, b) => b[1] - a[1]).slice(0, 16) });
 const thr1m: number[] = [];
 /** The limiter's last minute, per lane: calls, average wait in the queue, what is waiting now, 429s, the live ceiling. */
 export function rpcView() {

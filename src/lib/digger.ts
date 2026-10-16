@@ -4,7 +4,7 @@ import { radarTop } from "./lcache";
 import { launchesCached } from "./lcache";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, dayRoom, followLonger, RPS } from "./solana";
+import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, dayRoom, followLonger, RPS, tagged } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
@@ -531,21 +531,62 @@ async function digPrep(fast = false) {
  * and launches were dug ~12 minutes late, so the "minute-5" call was made at minute 12.
  */
 let lastBackfill = 0;
+/** v0.1.85: the fast lane's step right now (the worker's watchdog names it when a pass hangs). */
+export const FAST_STEP = { step: "", at: 0 };
 const BACKFILL_MS = Number(process.env.BACKFILL_MS || 10_000);
+/**
+ * v0.1.85: a fast pass has 100 seconds. Before, one awaited read that never answered held the pass (and its Redis lock)
+ * forever, and the watchdog restarted the whole worker (4 restarts on 16 Oct: the stream, the live curves and every
+ * cache start over each time). Now the pass gives up, releases the lock and the next pass starts; the abandoned one
+ * stops at its next step (a newer pass exists), so it can never run a step twice alongside the new one.
+ */
+export const FAST_PASS_MS = Number(process.env.FAST_PASS_MS || 100_000);
+let FAST_GEN = 0;
+export const fastStats = { timeouts: 0, lastTimeout: "" };
+function within<T>(ms: number, p: Promise<T>, what: () => string): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<T>((_, no) => (t = setTimeout(() => no(new Error(what())), ms)))]).finally(() => clearTimeout(t));
+}
 export async function digFast(): Promise<Record<string, unknown>> {
+  const my = ++FAST_GEN;
+  const cur = () => {
+    if (my !== FAST_GEN) throw new Error("abandoned: a newer fast pass took over");
+  };
   const out = await withLock("rn:lock:digfast", 60_000, () => lane.run(1, async () => {
     const t0 = Date.now();
     try {
-      const model = await digPrep(true); // v0.1.40: models from memory (15s), both lanes only score with them
-      // the chain backfill (launches the stream missed) every 10s instead of every pass: one call a second was ~86K
-      // credits a day on its own, and the stream already delivers nearly every launch within a second (v0.1.36)
-      const dug = Date.now() - lastBackfill >= BACKFILL_MS ? ((lastBackfill = Date.now()), await digNew(model).catch((e) => ({ digError: safeErr(e) }))) : { dug: 0 };
-      // v0.1.62: picks read the chain; with the rats' budget closed they failed and re-read the posts every second
-      const wire = laneOpen(1) ? await wirePicks().catch((e) => ({ wireError: safeErr(e) })) : { wire: "waiting: daily chain budget" };
-      const due = await processDue(model);
-      return { ok: true, ...dug, ...wire, ...due, ms: Date.now() - t0 };
+      return await within(
+        FAST_PASS_MS,
+        (async () => {
+          const model = await digPrep(true); // v0.1.40: models from memory (15s), both lanes only score with them
+          // the chain backfill (launches the stream missed) every 10s instead of every pass: one call a second was ~86K
+          // credits a day on its own, and the stream already delivers nearly every launch within a second (v0.1.36)
+          // v0.1.85: each step is named while it runs (a stuck pass says where it hangs) and tags its chain reads
+          cur();
+          FAST_STEP.at = Date.now();
+          FAST_STEP.step = "backfill";
+          const dug = Date.now() - lastBackfill >= BACKFILL_MS ? ((lastBackfill = Date.now()), await tagged("backfill", () => digNew(model)).catch((e) => ({ digError: safeErr(e) }))) : { dug: 0 };
+          // v0.1.62: picks read the chain; with the rats' budget closed they failed and re-read the posts every second
+          cur();
+          FAST_STEP.step = "wire";
+          const wire = laneOpen(1) ? await tagged("wire", () => wirePicks()).catch((e) => ({ wireError: safeErr(e) })) : { wire: "waiting: daily chain budget" };
+          cur();
+          FAST_STEP.step = "due";
+          const due = await tagged("due", () => processDue(model));
+          if (my === FAST_GEN) FAST_STEP.step = "";
+          return { ok: true, ...dug, ...wire, ...due, ms: Date.now() - t0 };
+        })(),
+        () => `fast pass over ${Math.round(FAST_PASS_MS / 1000)}s (at: ${FAST_STEP.step || "start"})`,
+      );
     } catch (e) {
-      return { ok: false, error: safeErr(e) };
+      const msg = safeErr(e);
+      if (/^fast pass over/.test(msg)) {
+        fastStats.timeouts++;
+        fastStats.lastTimeout = `${new Date().toISOString()} ${msg}`;
+        FAST_GEN++; // the hung pass stops at its next step
+        FAST_STEP.step = "";
+      }
+      return { ok: false, error: msg };
     }
   }));
   return out as Record<string, unknown>;
@@ -557,19 +598,19 @@ export async function digSlow(): Promise<Record<string, unknown>> {
     const t0 = Date.now();
     try {
       const model = await digPrep(true); // v0.1.40: models from memory (15s), both lanes only score with them
-      const tl = await tweetLinks().catch((e) => ({ tlinkError: safeErr(e) }));
+      const tl = await tagged("tlinks", () => tweetLinks()).catch((e) => ({ tlinkError: safeErr(e) }));
       // v0.1.51: both read the chain; with the rats' budget closed they only re-read Redis and fail, every 4 seconds
       const chainOk = laneOpen(1);
-      const hot = chainOk ? await hotWatch(model) : { hot: "waiting: daily chain budget" };
-      const mig = chainOk ? await migrations(model).catch((e) => ({ migError: safeErr(e) })) : {};
-      const les = await lessons(model);
+      const hot = chainOk ? await tagged("hot", () => hotWatch(model)) : { hot: "waiting: daily chain budget" };
+      const mig = chainOk ? await tagged("migr", () => migrations(model)).catch((e) => ({ migError: safeErr(e) })) : {};
+      const les = await tagged("lessons", () => lessons(model));
       // the runner pass takes the events gathered since its last run (from both lanes), then starts a fresh list
       const ev = RUN_EV;
       const cu = CURVE_USD;
       RUN_EV = { bonded: [], died: [], stuck: [] };
       CURVE_USD = {};
-      const run = await runnerPass(cu, ev, SOL_USD).catch((e) => ({ runnerError: safeErr(e) }));
-      await Promise.all([trackFees().catch(() => null), trackWeights().catch(() => null)]);
+      const run = await tagged("runner", () => runnerPass(cu, ev, SOL_USD)).catch((e) => ({ runnerError: safeErr(e) }));
+      await Promise.all([tagged("fees", () => trackFees()).catch(() => null), tagged("weights", () => trackWeights()).catch(() => null)]);
       return { ok: true, ...tl, ...hot, ...mig, ...les, ...run, ms: Date.now() - t0 };
     } catch (e) {
       return { ok: false, error: safeErr(e) };
@@ -1090,7 +1131,7 @@ async function processDue0(model: NanoModel, callsOnly: boolean) {
   await pmap(tapeable, 4, async (it) => {
     const rec = recs[it.mint];
     const tape = await readTape(rec.mint, rec.creator, rec.createdAt);
-    const g = await readGraph(rec.creator, tape?.early || [], base).catch(() => null);
+    const g = await tagged("graph", () => readGraph(rec.creator, tape?.early || [], base)).catch(() => null);
     extras[it.m] = { ...extras[it.m], tape, g };
   });
 

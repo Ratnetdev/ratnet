@@ -49,6 +49,8 @@ export type LBook = {
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
   by?: "researcher";
   why?: string;
+  /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
+  back?: boolean;
 };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
 export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean };
@@ -81,22 +83,56 @@ const FILLS = new Map<string, Fill>();
 const TRIG = new Set<string>(); // key#mint a twin already entered once
 let SPAWNED: string[] = []; // parents already spawned (once each)
 
-export async function gridLiveLoad() {
-  if (loaded) return;
-  loaded = true;
+/**
+ * v0.1.85: the books and trips are only trusted when Redis answered. Before, a failed read at boot (the worker restarted
+ * 70+ times, some during Redis trouble) loaded zero books, the next GRID run filled 16 fresh ones and saved them over
+ * the real list: two strategies in profit (15 and 23 trips, +0.39 SOL each) vanished with no drop reason. Now a failed
+ * read is retried (5 tries, 2s apart, then again on every GRID LIVE save), and nothing writes the books until they
+ * were read.
+ */
+let booksOk = false;
+export const gridLiveLoaded = () => booksOk;
+const FAIL = Symbol("redis read failed");
+async function tryRead<T>(f: () => Promise<T>): Promise<T | typeof FAIL> {
+  try {
+    return await f();
+  } catch {
+    return FAIL;
+  }
+}
+export async function gridLiveLoad(tries = 5, waitMs = 2000) {
+  if (loaded) return true;
   const r = redis();
-  const [b, pos, trips, fills, sp] = await Promise.all([
-    r.get<LBook[]>(BOOKS_KEY).catch(() => null),
-    r.hgetall<Record<string, LPos>>(POS_KEY).catch(() => null),
-    r.lrange<LTrip>(LIVE_TRIPS, 0, 2999).catch(() => []),
-    r.hgetall<Record<string, Fill>>(FILLS_KEY).catch(() => null),
-    r.get<string[]>(SPAWNED_KEY).catch(() => null),
-  ]);
-  for (const [k, f] of Object.entries(fills || {})) if (f && typeof f === "object") FILLS.set(k, f as Fill);
-  SPAWNED = Array.isArray(sp) ? sp : [];
-  BOOKS = Array.isArray(b) ? b : [];
-  for (const [k, p] of Object.entries(pos || {})) if (p && typeof p === "object") POS.set(k, p as LPos);
-  TRIPS = ((trips || []) as LTrip[]).filter(Boolean);
+  for (let i = 0; i < tries; i++) {
+    if (i) await new Promise((res) => setTimeout(res, waitMs));
+    const [b, pos, trips, fills, sp] = await Promise.all([
+      tryRead(() => r.get<LBook[]>(BOOKS_KEY)),
+      r.hgetall<Record<string, LPos>>(POS_KEY).catch(() => null),
+      tryRead(() => r.lrange<LTrip>(LIVE_TRIPS, 0, 2999)),
+      r.hgetall<Record<string, Fill>>(FILLS_KEY).catch(() => null),
+      r.get<string[]>(SPAWNED_KEY).catch(() => null),
+    ]);
+    if (b === FAIL || trips === FAIL) continue;
+    loaded = true;
+    booksOk = true;
+    for (const [k, f] of Object.entries(fills || {})) if (f && typeof f === "object") FILLS.set(k, f as Fill);
+    SPAWNED = Array.isArray(sp) ? sp : SPAWNED;
+    // books added while the read was failing (a GRID run, RESEARCHER) join the saved ones instead of replacing them
+    const saved = Array.isArray(b) ? (b as LBook[]) : [];
+    BOOKS = [...saved, ...BOOKS.filter((x) => !saved.some((y) => y.key === x.key))];
+    for (const [k, p] of Object.entries(pos || {})) if (p && typeof p === "object" && !POS.has(k)) POS.set(k, p as LPos);
+    const got = ((trips || []) as LTrip[]).filter(Boolean);
+    TRIPS = [...TRIPS.filter((t) => !got.some((g) => g.k === t.k && g.mint === t.mint && g.closedAt === t.closedAt)), ...got];
+    return true;
+  }
+  console.log("grid live: the books could not be read from Redis; they are not saved until they are");
+  return false;
+}
+/** v0.1.85: the books are written only after they were read (a failed boot read retries here first). */
+async function saveBooks() {
+  if (!booksOk && !(await gridLiveLoad(1, 0).catch(() => false))) return false;
+  await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
+  return true;
 }
 export const gridLiveBooks = () => BOOKS;
 
@@ -128,6 +164,7 @@ export const closeToPass = (l: LStat) => l.winRate >= 40 && l.pnl > 0 && l.pfLes
 const statOf = (key: string) => bookStat(BOOKS.find((b) => b.key === key) ?? { grid: { testN: 0, testAvg: 0, pass: false } }, TRIPS.filter((t) => t.k === key));
 
 export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
+  if (!booksOk) await gridLiveLoad(1, 0).catch(() => false); // v0.1.85: never decide on a list that was not read
   const keep = BOOKS.filter((b) => !dropReason(statOf(b.key)));
   const dropped = BOOKS.filter((b) => !keep.includes(b)).map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) }));
   const fresh = rows
@@ -135,7 +172,7 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
     // never bring back a strategy its own live record already ruled out
     .filter((r) => !dropReason(statOf(r.key)))
     // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16 (v0.1.82: RESEARCHER's too)
-    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent && !b.by).length))
+    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent && !b.by && !b.back).length))
     .map((r) => ({
       key: r.key,
       label: `${r.filterLabel}, buy ${r.modeLabel}`,
@@ -152,7 +189,7 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
   }
   BOOKS = [...keep, ...fresh];
   for (const k of [...PEND.keys()]) if (!BOOKS.some((b) => k.startsWith(`${b.key}#`))) PEND.delete(k);
-  await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
+  await saveBooks();
   return Object.assign(BOOKS, { kept: keep.length, added: fresh.length, dropped });
 }
 
@@ -430,6 +467,8 @@ export function bookStat(b: Pick<LBook, "grid">, trips: LTrip[]): LStat {
 
 /** The site's summary (once a minute) and the Telegram note when a strategy passes the exam live. */
 export async function gridLivePublish(send?: (text: string) => Promise<unknown>) {
+  // v0.1.85: an unread book list would publish an empty GRID LIVE (and RESEARCHER would read it): the last view stays
+  if (!booksOk && !(await gridLiveLoad(1, 0).catch(() => false))) return;
   const now = Date.now();
   const byKey = new Map<string, LTrip[]>();
   for (const t of TRIPS) (byKey.get(t.k) || byKey.set(t.k, []).get(t.k)!).push(t);
@@ -561,6 +600,7 @@ function spawnOf(hot: LBook, now: number): LBook[] {
  * whichever passes first with the best record. Spawned once per hot strategy, up to SPAWN_MAX books.
  */
 export async function gridLiveTend(send?: (text: string) => Promise<unknown>, now = Date.now()) {
+  if (!booksOk && !(await gridLiveLoad(1, 0).catch(() => false))) return { dropped: [], added: [], revived: [], hot: null, wait: "books not read from Redis yet" };
   const before = BOOKS.length;
   const dropped = BOOKS.filter((b) => dropReason(statOf(b.key)));
   BOOKS = BOOKS.filter((b) => !dropped.includes(b));
@@ -582,14 +622,19 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || BOOKS.length !== before) await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
+  if (dropped.length || added.length || revived.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
  * v0.1.82: books dropped at 30 trips before the extension existed, rebuilt from their key (filter, entry and exit are
- * all in it) when their record is close to the exam. Only strategies with 30 trips (never an unfinished one), never a
- * twin (its trigger is not in the key), at most 4 at a time.
+ * all in it) when their record is close to the exam. Never a twin (its trigger is not in the key), at most 4 at a time.
+ * v0.1.85: also a strategy that left with no drop reason and money made (8+ trips, in profit): it was lost, not ruled
+ * out (the boot that loaded zero books). Up to REVIVE_MAX of these at once, in their own slots.
  */
+export const REVIVE_MAX = 8;
+export const REVIVE_MIN_TRIPS = 8;
+/** v0.1.85: a record worth bringing back: close to the exam at 30+ trips, or in profit at 8+ with nothing against it. */
+export const reviveWorthy = (st: LStat) => !dropReason(st) && (st.n >= 30 || (st.n >= REVIVE_MIN_TRIPS && st.pnl > 0));
 export function bookFromKey(key: string, now: number): LBook | null {
   if (key.startsWith("any:")) return null;
   const [filter, mode] = key.split("|");
@@ -606,14 +651,20 @@ function reviveBooks(now: number): LBook[] {
   const byKey = new Map<string, LTrip[]>();
   for (const t of TRIPS) (byKey.get(t.k) || byKey.set(t.k, []).get(t.k)!).push(t);
   const out: LBook[] = [];
-  for (const [k, ts] of byKey) {
-    if (out.length >= 4) break;
-    if (BOOKS.some((b) => b.key === k)) continue;
-    const b = bookFromKey(k, now);
-    if (!b) continue;
-    const st = bookStat(b, ts);
-    if (st.n < 30 || dropReason(st)) continue;
+  let room = REVIVE_MAX - BOOKS.filter((b) => b.back).length;
+  // the best records first (the cap keeps the strongest)
+  const cands = [...byKey]
+    .filter(([k]) => !BOOKS.some((b) => b.key === k))
+    .map(([k, ts]) => ({ b: bookFromKey(k, now), ts }))
+    .filter((x): x is { b: LBook; ts: LTrip[] } => !!x.b)
+    .map((x) => ({ ...x, st: bookStat(x.b, x.ts) }))
+    .filter((x) => reviveWorthy(x.st))
+    .sort((a, z) => z.st.pnl - a.st.pnl);
+  for (const { b } of cands) {
+    if (out.length >= 4 || room <= 0) break;
+    b.back = true;
     out.push(b);
+    room--;
   }
   if (out.length) BOOKS = [...BOOKS, ...out];
   return out;
@@ -652,7 +703,7 @@ export async function gridLiveAddResearch(add: { filter: string; mode: string; e
   if (out.length) {
     BOOKS = [...BOOKS, ...out];
     refreshCheck();
-    await redis().set(BOOKS_KEY, BOOKS).catch(() => null);
+    await saveBooks();
   }
   return out;
 }
@@ -672,6 +723,13 @@ export function gridLiveReset() {
   SPAWNED = [];
   LEADER = null;
   loaded = true;
+  booksOk = true;
+}
+/** Tests: a worker that has just booted (nothing read from Redis yet). */
+export function _gridLiveUnload() {
+  gridLiveReset();
+  loaded = false;
+  booksOk = false;
 }
 export const gridLiveState = () => ({ pend: PEND, pos: POS, trips: TRIPS, fills: FILLS, check: CHECK, queue: QUEUE });
 /** Tests: set the books directly. */

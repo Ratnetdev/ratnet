@@ -5,7 +5,7 @@
 import { runSession } from "../src/lib/session";
 import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
-import { digFast, digSlow, ingestStream, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
+import { FAST_STEP, digFast, digSlow, ingestStream, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
 import { budgetState, curveFeed, curveFire, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
@@ -145,7 +145,10 @@ async function siteTick() {
 // desk, the stream, the live curves and every subscription keep running. A third hang of the same loop within 30
 // minutes still restarts the process (something is wrong that a fresh loop does not fix). The desk and the rats' fast
 // lane still restart the process: they hold money and the King calls.
-const LOOP_GEN = { agents: 0, slow: 0, hist: 0 };
+// v0.1.85: the rats' fast lane too. Its pass is now capped at 100s (digFast), so a stale fast lane means the loop
+// itself waited on something outside the pass (its Redis lock or heartbeat); a fresh loop is started instead of a
+// restart, and a third time within 30 minutes still restarts the process.
+const LOOP_GEN = { agents: 0, slow: 0, hist: 0, fast: 0 };
 const REVIVED: Record<string, number[]> = {};
 function revive(name: keyof typeof LOOP_GEN, why: string, now = Date.now()) {
   const ra = reviveAllowed(REVIVED[name] || [], now);
@@ -156,6 +159,7 @@ function revive(name: keyof typeof LOOP_GEN, why: string, now = Date.now()) {
   redis().hincrby("rn:worker:revives", name, 1).catch(() => 0);
   if (name === "agents") (sessionAt = now), agentLoop(LOOP_GEN.agents).catch(() => null);
   else if (name === "slow") (slowAt = now), digSlowLoop(LOOP_GEN.slow).catch(() => null);
+  else if (name === "fast") (fastAt = now), digFastLoop(LOOP_GEN.fast).catch(() => null);
   else (histAt = now), historianLoop(LOOP_GEN.hist).catch(() => null);
   return true;
 }
@@ -182,7 +186,10 @@ async function beat() {
       .then((x) => x.prune !== "not due" && console.log("prune", JSON.stringify(x)))
       .catch(() => {});
   }
-  if (Date.now() - fastAt > 150_000) return restart("the rats' fast lane is stuck");
+  if (Date.now() - fastAt > 150_000) {
+    const at = FAST_STEP.step ? ` (at: ${FAST_STEP.step}, ${Math.round((Date.now() - FAST_STEP.at) / 1000)}s)` : "";
+    if (!revive("fast", `the rats' fast lane is stuck${at}`)) return restart(`the rats' fast lane is stuck again${at}`);
+  }
   if (Date.now() - slowAt > 300_000 && !revive("slow", "the rats' slow lane is stuck")) return restart("the rats' slow lane is stuck again");
   if (Date.now() - histAt > 900_000 && !revive("hist", "the historian is stuck")) return restart("the historian is stuck again");
   if (deskStuck > DESK_MS + 180_000) return restart(`the desk loop is stuck (${Math.round(deskStuck / 1000)}s)`);
@@ -588,8 +595,9 @@ async function waitFor<T>(name: string, p: Promise<T>, warnMs: number) {
     clearInterval(tick);
   }
 }
-async function digFastLoop() {
+async function digFastLoop(my = LOOP_GEN.fast) {
   for (;;) {
+    if (my !== LOOP_GEN.fast) return; // a newer copy of this loop took over (see revive)
     const t0 = Date.now();
     fastAt = t0;
     const r: any = await waitFor("rats_fast", digFast().catch((e) => ({ error: e?.message || e })), 20_000);
@@ -813,6 +821,11 @@ async function main() {
         // v0.1.82: every launch's log from birth (the dev's buy follows as the transaction's first trade): the rats'
         // minute-1 and minute-5 tapes are built from it instead of ~42 chain reads per coin
         logCreate(c.mint, c.creator, c.at, 0, 0, true);
+        // v0.1.85: every launch goes to the rats from here too (PumpPortal misses many: the chain backfill then read each
+        // one with getTransaction, ~3,000 an hour). The rats keep the first copy of a launch, from either source.
+        if (c.solQuote !== false && c.mint && c.sig) {
+          INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });
+        }
       },
       trade: (t) => {
         tapeTrade(t);
@@ -948,7 +961,10 @@ async function main() {
         }
       } catch (e: any) {
         console.log("grid error", e?.message || e);
-        await redis().set("rn:grid:view", { at: null, error: String(e?.message || e).slice(0, 200), failedAt: Date.now() }, { ex: 86400 }).catch(() => null);
+        // v0.1.85: the last good run stays (the site and RESEARCHER read it); the failure is noted next to it
+        const prev = await redis().get<any>("rn:grid:view").catch(() => null);
+        const err = { error: String(e?.message || e).slice(0, 200), failedAt: Date.now() };
+        await redis().set("rn:grid:view", prev?.at ? { ...prev, ...err } : { at: null, ...err }, { ex: prev?.at ? 3 * 86400 : 86400 }).catch(() => null);
       } finally {
         gridding = false;
       }

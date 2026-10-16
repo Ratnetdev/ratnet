@@ -33,7 +33,7 @@ const ok = (c: boolean, m: string) => {
   const hf = fs.readFileSync(new URL("../src/lib/heliusfeed.ts", import.meta.url), "utf8");
   ok(/max: CURVE_MAX, pools: false/.test(w) && /opts\.pools !== false/.test(hf), "the launch-curve feed never looks up pool vaults (28MB an hour)");
   const dg = fs.readFileSync(new URL("../src/lib/digger.ts", import.meta.url), "utf8");
-  ok((dg.match(/laneOpen\(1\) \? await wirePicks\(\)/g) || []).length === 2, "post picks wait while the rats' budget is closed (they failed and re-read the posts every second)");
+  ok((dg.match(/laneOpen\(1\) \? await (tagged\("wire", \(\) => )?wirePicks\(\)/g) || []).length === 2, "post picks wait while the rats' budget is closed (they failed and re-read the posts every second)");
   // an open post older than 30 minutes is dropped before the pass reads candidates
   const { dueTweets } = await import("../src/lib/wire");
   await R.zadd("rn:x:open", { score: Date.now() - 40 * 60_000, member: "old" });

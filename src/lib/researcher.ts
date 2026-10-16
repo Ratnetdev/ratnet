@@ -139,12 +139,15 @@ export async function researchPass(send?: (text: string) => Promise<unknown>, no
   if (!room) return { full: true };
   const r = redis();
   const [grid, live, seen0] = await Promise.all([r.get<any>("rn:grid:view").catch(() => null), r.get<any>(LIVE_VIEW).catch(() => null), r.hgetall<Record<string, any>>(SEEN).catch(() => null)]);
-  if (!grid?.rows?.length) return { wait: "no GRID run yet" };
+  // v0.1.85: GRID's newest run can rank nothing (no rule clears its bar), and a failed run left only its error: RESEARCHER
+  // waited on "no GRID run yet" all day. Its other evidence (GRID's explorers, the senders, every live record) is enough.
+  const gridOk = !!grid?.at;
+  if (!gridOk && !live?.books?.length) return { wait: "no GRID run or GRID LIVE record yet" };
   const seen = (seen0 || {}) as Record<string, any>;
   researchStats.runs++;
   researchStats.lastAt = now;
   // v0.1.83: room to think (4,000 tokens; 1,200 cut the first live answer short), the JSON found wherever it is
-  const text = await ask(SYSTEM, [{ type: "text", text: brief(grid, live, seen, room) }], 4000, 180_000, model()).catch(() => null);
+  const text = await ask(SYSTEM, [{ type: "text", text: brief(gridOk ? grid : null, live, seen, room) }], 4000, 180_000, model()).catch(() => null);
   const j = extractIdeas(text) ?? json<{ ideas?: any[] }>(text);
   if (!Array.isArray(j?.ideas)) {
     researchStats.lastErr = text ? "answer was not the JSON asked for" : "no answer from the model";

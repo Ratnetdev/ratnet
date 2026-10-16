@@ -4,7 +4,7 @@
 // Cost: one getSignaturesForAddress (up to 1000 sigs) + one batch of parsed transactions (~40) per coin.
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
-import { bondingCurvePda, conn, parsedTxsAny, pmap } from "./solana";
+import { bondingCurvePda, conn, parsedTxsAny, pmap, tagged } from "./solana";
 import { seedLog, streamLog, tradesFlowing } from "./streamlog";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
@@ -162,6 +162,9 @@ export function tapeFromStream(mint: string, creator: string, createdAt: number,
 }
 
 export async function readTape(mint: string, creator: string, createdAt: number, sample = SAMPLE, opts: { rpc?: boolean } = {}): Promise<Tape | null> {
+  return tagged("tape", () => readTapeInner(mint, creator, createdAt, sample, opts));
+}
+async function readTapeInner(mint: string, creator: string, createdAt: number, sample: typeof SAMPLE, opts: { rpc?: boolean }): Promise<Tape | null> {
   if (!opts.rpc) {
     const st = tapeFromStream(mint, creator, createdAt, sample);
     if (st) return st;

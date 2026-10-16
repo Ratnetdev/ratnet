@@ -17,7 +17,7 @@ const ok = (c: boolean, m: string) => {
   ok(RS.extractIdeas(`Some thinking {"ideas": [ {"filter": "p70"`) === null, "an answer cut off: null (logged, no books)");
   ok(RS.extractIdeas(`{"note":"x"} then ${J}`)?.ideas.length === 1, "another object first");
   const src = fs.readFileSync(new URL("../src/lib/researcher.ts", import.meta.url), "utf8");
-  ok(/brief\(grid, live, seen, room\) \}\], 4000, 180_000, model\(\)\)/.test(src), "room to think: 4,000 tokens");
+  ok(/brief\(gridOk \? grid : null, live, seen, room\) \}\], 4000, 180_000, model\(\)\)/.test(src), "room to think: 4,000 tokens");
   ok(/head: text \? text\.slice\(0, 600\)/.test(src), "a failed answer is kept (start and end) in Redis for the next fix");
   const { BUILD } = await import("../src/config/build");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
