@@ -64,7 +64,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[] };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -334,7 +334,8 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens });
   if (FOLLOW && LEADER === b.key) {
     try {
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool });
+      // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: TRIPS.filter((t) => t.k === b.key).map((t) => t.pnlPct) });
     } catch {}
   }
 }

@@ -73,6 +73,11 @@ export const DEFAULT_SETTINGS = {
     mode: "paper" as "off" | "paper" | "auto" | "live", // auto = paper until the exam is passed, then live. v0.1.43: paper by default, live is approved by hand
     start: 1, // paper starting balance in SOL
     sizePct: 5, // % of equity per trade
+    // v0.1.95 COMPOUNDING SIZE: a passed GRID LIVE strategy is sized by its own record (lib/sizing.ts): a quarter of its
+    // Kelly share of the bank, between these bounds. Its trades grow with the bank and shrink after losses
+    kellyFrac: 0.25,
+    kellyMinPct: 1,
+    kellyMaxPct: 10,
     minSol: 0.05,
     maxSol: 0.5, // safety cap per trade; raise it as the wallet grows (the liquidity cap below still applies)
     maxImpact: 6, // % price impact a buy may cause on the curve: caps size by the coin's liquidity, so a big desk never apes 10 SOL into a 5K coin

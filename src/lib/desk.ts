@@ -10,6 +10,7 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { sizePlan, KELLY_MIN_TRIPS, type SizeCfg } from "./sizing";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { memo, memoDrop } from "./memo";
 import { alertClose, alertOpen, alertsFlush } from "./tradealerts";
@@ -2797,7 +2798,7 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
 
 // v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
 // the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
-export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean };
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[] };
 const GRID_ORDERS: GridOrder[] = [];
 export function queueGridOrder(o: GridOrder) {
   GRID_ORDERS.push(o);
@@ -2821,8 +2822,12 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     const avail = state.live ? (walletSol == null ? 0 : liveCash(state)) - 0.02 : state.cash;
     const vSol = 30 + Math.max(0, fresh.real);
     const liqCap = fresh.grad ? cfg.maxSol : vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
-    const size = Math.min(cfg.maxSol, Math.max(cfg.minSol, (eqValue * cfg.sizePct) / 100), liqCap, avail * 0.95);
+    // v0.1.95 COMPOUNDING SIZE: the leader passed its exam, so its own record sets its share of the bank
+    const plan = sizePlan(o.pcts, cfg as SizeCfg);
+    const pct = plan ? plan.pct : cfg.sizePct;
+    const size = Math.min(cfg.maxSol, Math.max(cfg.minSol, (eqValue * pct) / 100), liqCap, avail * 0.95);
     if (size < cfg.minSol * 0.99) return log(b, "SIZE", `no room for $${o.symbol}: ${avail.toFixed(3)} SOL free`, "info", coin);
+    log(b, "SIZE", `${size.toFixed(3)} SOL on $${o.symbol}: ${pct}% of a ${eqValue.toFixed(2)} SOL bank (${plan ? `${plan.n} live trips, ${plan.why}` : `flat ${cfg.sizePct}%, under ${KELLY_MIN_TRIPS} trips`})${size < (eqValue * pct) / 100 - 1e-9 ? `, capped by ${size >= cfg.maxSol - 1e-9 ? `maxSol ${cfg.maxSol}` : size >= liqCap - 1e-9 ? "liquidity" : "free cash"}` : ""}`, "info", coin);
     // SHIELD, the scam guard, still runs before any money moves
     const known = await getLaunch(o.mint).catch(() => null);
     const sh = await shield({ mint: o.mint, symbol: o.symbol, grad: !!fresh.grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / fresh.px) * 1e6))), tape: known?.tape, ageMs: known ? Date.now() - known.createdAt : undefined }).catch(() => null);
