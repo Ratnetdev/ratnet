@@ -66,15 +66,26 @@ function get<T>(m: Map<string, E<T>>, mint: string, now: number): T | null {
   if (!e || e.ep !== state.ep || now - e.at > MAX_AGE_MS) return null;
   return e.v;
 }
-export function fcCurve(mint: string, now = Date.now()) {
+export function fcCurve(mint: string, now = Date.now(), count = true) {
   const v = get(CURVES, mint, now);
-  v ? fcStats.curveHits++ : fcStats.curveMiss++;
+  if (count) v ? fcStats.curveHits++ : fcStats.curveMiss++;
   return v;
 }
-export function fcPool(mint: string, now = Date.now()) {
+export function fcPool(mint: string, now = Date.now(), count = true) {
   const v = get(POOLS, mint, now);
-  v ? fcStats.poolHits++ : fcStats.poolMiss++;
+  if (count) v ? fcStats.poolHits++ : fcStats.poolMiss++;
   return v;
+}
+/**
+ * v0.1.84: a coin's price from the firehose alone (no chain read, no stats): its curve while it is on the curve, its
+ * canonical pool once it migrated. Null when the firehose has nothing current for it.
+ */
+export function fcPrice(mint: string, now = Date.now()): { px: number; grad: boolean } | null {
+  const c = get(CURVES, mint, now);
+  if (c && !c.complete && c.priceSol > 0) return { px: c.priceSol, grad: false };
+  const p = get(POOLS, mint, now);
+  if (p && p.px > 0) return { px: p.px, grad: true };
+  return null;
 }
 export const fcSize = () => ({ curves: CURVES.size, pools: POOLS.size, epoch: state.ep });
 /** Tests. */

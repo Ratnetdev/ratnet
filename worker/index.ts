@@ -18,7 +18,7 @@ import { reviveAllowed } from "../src/lib/revive";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
 import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
-import { refreshPxCache } from "../src/lib/pxcache";
+import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
@@ -40,7 +40,7 @@ import { setTapeExtra } from "../src/lib/digger";
 import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
-import { fcSize } from "../src/lib/firecache";
+import { fcPrice, fcSize } from "../src/lib/firecache";
 import { setLiveFeatures } from "../src/lib/gridlive";
 installBwMeter(); // v0.1.40: counts every byte sent to and from Upstash (v0.1.40: through lib/rediswire.ts)
 
@@ -983,6 +983,16 @@ async function main() {
       .catch(() => null)
       .finally(() => (pxBusy = false));
   }, 4_000);
+  // v0.1.84: the same prices every second from the firehose (every trade, no chain read), so the site's market caps,
+  // changes and P&L follow the chain within ~2-3s instead of up to ~20s
+  let pxFastBusy = false;
+  setInterval(() => {
+    if (pxFastBusy || !fireLive()) return;
+    pxFastBusy = true;
+    refreshPxFast((m) => fcPrice(m))
+      .catch(() => null)
+      .finally(() => (pxFastBusy = false));
+  }, 1_000);
   setInterval(beat, 20_000);
   // X webhook posts the site queued (v0.1.40): ingested here, where WIRE's account list is in memory
   let xqBusy = false;

@@ -9,6 +9,7 @@ import { fullUrl, useAdmin } from "./useAdmin";
 import { TradeIcons } from "./venues";
 import CoinImg from "./CoinImg";
 import LiveMc from "./LiveMc";
+import { useLiveTrip } from "./liveTrip";
 import RecordCharts, { RecKey } from "./RecordCharts";
 import Boundary from "./Boundary";
 import GridLiveBoard, { GridLiveView } from "./GridLiveBoard";
@@ -19,7 +20,8 @@ type Rec = {
   trips: Trip[];
 };
 
-function Row({ t, full }: { t: Trip; full: boolean }) {
+function Row({ t: t0, full }: { t: Trip; full: boolean }) {
+  const t = useLiveTrip(t0); // v0.1.84: open trades follow the live price
   const [open, setOpen] = useState(false);
   const move = moveOf(t);
   const end = t.open ? t.nowMc : t.exitMc;
@@ -55,7 +57,8 @@ function Row({ t, full }: { t: Trip; full: boolean }) {
 }
 
 /** One trade as a card (phones): the numbers that matter in two lines, tap for the full detail at full width. */
-function Card({ t }: { t: Trip }) {
+function Card({ t: t0 }: { t: Trip }) {
+  const t = useLiveTrip(t0); // v0.1.84: open trades follow the live price
   const [open, setOpen] = useState(false);
   const move = moveOf(t);
   const end = t.open ? t.nowMc : t.exitMc;

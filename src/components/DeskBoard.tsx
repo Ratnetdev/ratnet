@@ -26,6 +26,7 @@ import { TradeIcons } from "./venues";
 import { fullUrl, useAdmin } from "./useAdmin";
 import CoinImg from "./CoinImg";
 import LiveMc from "./LiveMc";
+import { useLivePct } from "./liveTrip";
 
 type Ev = { agent: string; at: number; mint?: string; symbol?: string; text: string; tone: string };
 type Sample = [number, number, number];
@@ -122,6 +123,11 @@ const ROLES: [string, string][] = [
 ];
 const TONE: Record<string, string> = { ok: "var(--rat)", bad: "var(--dust)", info: "var(--dim)", win: "var(--bond)", loss: "var(--dust)" };
 const pct = (a: number, b: number) => (b ? ((a - b) / b) * 100 : 0);
+/** v0.1.84: an open position's change from the live price (every ~1.5s), the page copy's price until it is in. */
+function LivePnlCell({ mint, entryPx, lastPx }: { mint: string; entryPx: number; lastPx: number }) {
+  const g = useLivePct(mint, entryPx, lastPx);
+  return <td style={{ color: g >= 0 ? "var(--rat)" : "var(--dust)" }}>{sign(g)}%</td>;
+}
 const sign = (n: number, d = 1) => `${n >= 0 ? "+" : ""}${n.toFixed(d)}`;
 
 function Spark({ s, entry, w = 90, h = 24 }: { s: Sample[]; entry: number; w?: number; h?: number }) {
@@ -347,12 +353,11 @@ export default function DeskBoard() {
               <thead><tr><th>Coin</th><th>Chart</th><th>P&amp;L</th><th><Info k="mcap">Mcap</Info></th><th><Info k="pnext">P(next)</Info></th><th><Info k="trail">Trail</Info></th><th><Info k="insiders">Insiders</Info></th><th>Age</th></tr></thead>
               <tbody>
                 {(d?.positions || []).map((p) => {
-                  const g = pct(p.lastPx, p.entryPx);
                   return (
                     <tr key={p.mint}>
                       <td><Link href={`/c/${p.mint}`} className="coin-a"><CoinImg mint={p.mint} sym={p.symbol} size={16} />${p.symbol}</Link><TradeIcons ca={p.mint} /> <span className="tiny muted">{p.costSol.toFixed(2)}◎ · {p.how || "direct"}{p.tp1Done ? ` · initials, ${Math.round((p.tokens / Math.max(1e-9, p.tokens0)) * 100)}% left` : ""}</span></td>
                       <td><Spark s={p.series} entry={p.entryPx} /></td>
-                      <td style={{ color: g >= 0 ? "var(--rat)" : "var(--dust)" }}>{sign(g)}%</td>
+                      <LivePnlCell mint={p.mint} entryPx={p.entryPx} lastPx={p.lastPx} />
                       <td className="muted"><LiveMc mint={p.mint} usd={p.usd} /></td>
                       <td>{p.pn != null ? `${Math.round(p.pn * 100)}%` : "–"}</td>
                       <td className="muted">{p.tp1Done && p.trail ? `${p.trail}%` : "after initials"}</td>
