@@ -26,6 +26,17 @@ export function logCreate(mint: string, creator: string, t0: number, devSol: num
   LOGS.set(mint, { t0, creator, trades, n: trades.length, full: fromBirth });
 }
 
+// v0.1.87: launches whose curve is quoted in another token (ZEC, PUMP...). Their trades are not in SOL, so no log, no
+// tape, no call and no trade for them; the firehose marks them at the create or at their first trade.
+const OTHER = new Map<string, number>();
+export function noteOtherQuote(mint: string, now = Date.now()) {
+  LOGS.delete(mint);
+  OTHER.set(mint, now);
+  if (OTHER.size > 50_000) OTHER.delete(OTHER.keys().next().value as string);
+}
+export const isOtherQuote = (mint: string) => OTHER.has(mint);
+export const otherQuoteCount = () => OTHER.size;
+
 let LAST_TRADE_AT = 0;
 /**
  * Are trade messages arriving at all? On 7 Oct the stream delivered launches but no trades for hours, and every

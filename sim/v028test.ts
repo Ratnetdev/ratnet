@@ -46,10 +46,12 @@ const ok = (c: boolean, m: string) => {
   const day = new Date().toISOString().slice(0, 10);
   const b0 = sol.budgetState();
   ok(b0.budget === 100000, `budget read from RPC_CALLS_PER_DAY (${b0.budget})`);
-  sol.seedDayUsed(day, Math.round(b0.pace * 0.8));
-  ok(!sol.laneOpen(3) && sol.laneOpen(2) && sol.laneOpen(1) && sol.laneOpen(0), "at 80% of pace only the historian pauses (v0.1.36: it stops at 75%)");
-  sol.seedDayUsed(day, Math.round(b0.pace * 1.02));
-  ok(!sol.laneOpen(3) && !sol.laneOpen(2) && sol.laneOpen(1) && sol.laneOpen(0), "past pace the agents pause too, the rats and desk still read");
+  // v0.1.87: each lane's own count matters (seeded per lane); the agents and the historian keep a floor of their own
+  const P = b0.pace;
+  sol.seedDayUsed(day, Math.round(P * 0.8), [Math.round(P * 0.05), Math.round(P * 0.55), Math.round(P * 0.15), Math.round(P * 0.05)]);
+  ok(!sol.laneOpen(3) && sol.laneOpen(2) && sol.laneOpen(1) && sol.laneOpen(0), "at 80% of pace only the historian pauses (past its own floor; v0.1.36: it stops at 75%)");
+  sol.seedDayUsed(day, Math.round(P * 1.02), [Math.round(P * 0.05), Math.round(P * 0.7), Math.round(P * 0.2), Math.round(P * 0.07)]);
+  ok(!sol.laneOpen(3) && !sol.laneOpen(2) && sol.laneOpen(1) && sol.laneOpen(0), "past pace the agents pause too (past their floor), the rats and desk still read");
   sol.seedDayUsed(day, 106_000); // above the rats' limit at any time of day (pace x 1.05 tops out at 105K)
   ok(!sol.laneOpen(1) && sol.laneOpen(0), "at the full day's budget only the desk reads");
   sol.seedDayUsed(day, 116_000);

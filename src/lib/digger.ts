@@ -4,12 +4,13 @@ import { radarTop } from "./lcache";
 import { launchesCached } from "./lcache";
 import { CALL_MAX_AGE_MS, CALL_ON_TIME_MS, CHECKPOINTS, PUMP_MINT_AUTHORITY } from "@/config/site";
 import { K, dayKey, hourKey, redis } from "./redis";
-import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, dayRoom, followLonger, RPS, tagged } from "./solana";
+import { conn, parsedTx, fetchOffchain, getCurves, parseCreateTx, pmap, safeErr, solUsd, lane, laneOpen, dayRoom, followLonger, RPS, tagged, type CurveView } from "./solana";
 import { score, Verdict, KING_VERSION, verdictOf } from "./king";
 import { assignWork, recordWork } from "./rats";
 import { getSettings } from "./settings";
 import { contributions, emptyModel, features, FeatureInput, learn, NanoModel, nanoReady, nanoScore, NANO_MIN, NANO_V } from "./nano";
 import { readTape, Tape } from "./tape";
+import { isOtherQuote } from "./streamlog";
 import { whyOf, type Why } from "./why";
 import { noteCall } from "./receipts";
 import { queueBonded, queueCall } from "./tg";
@@ -1151,7 +1152,7 @@ async function processDue0(model: NanoModel, callsOnly: boolean) {
   // one call per coin, whatever runs at the same time (v0.1.38). The King called $FLY twice within 4 seconds on
   // 7 Oct: two passes read the launch before either had saved its call. Each call now claims the coin first in Redis
   // (SET NX), and a pass that loses the claim skips it.
-  const wantsCall = items.filter((it) => it.stage === "t5" && recs[it.mint] && !recs[it.mint].call && !recs[it.mint].outcome && c.now - recs[it.mint].createdAt <= CALL_MAX_AGE_MS);
+  const wantsCall = items.filter((it) => it.stage === "t5" && recs[it.mint] && !recs[it.mint].call && !recs[it.mint].outcome && c.now - recs[it.mint].createdAt <= CALL_MAX_AGE_MS && !otherQuote(it.mint, curves[it.mint]));
   const claimed = new Set<string>();
   await Promise.all(
     wantsCall.map(async (it) => {
@@ -1166,6 +1167,12 @@ async function processDue0(model: NanoModel, callsOnly: boolean) {
     const rat = work.names[i];
     if (!rec || rec.outcome) return;
     const cv = curves[it.mint];
+    // v0.1.87: a curve quoted in another token (ZEC, PUMP...): no SOL price, no tape. Never read, called or traded
+    // (it was resolved like any launch, and the King called $ZECRET BOND on an empty tape)
+    if (otherQuote(it.mint, cv)) {
+      if (it.stage === "t5") inc(c, "calls_other_quote");
+      return;
+    }
     const prog = cv?.progress ?? rec.pNow ?? rec.p0;
     const cp: Cp = { p: prog, mcap: cv?.mcapSol ?? 0, at: c.now };
     rec.cp[it.stage] = cp;
@@ -1230,6 +1237,11 @@ async function processDue0(model: NanoModel, callsOnly: boolean) {
   }
   await recordWork(work.counts, last, work.real);
   return { checked: items.length };
+}
+
+/** v0.1.87: a launch whose curve is not quoted in SOL (the firehose saw it, or the curve has no SOL price). */
+function otherQuote(mint: string, cv: CurveView | null | undefined) {
+  return isOtherQuote(mint) || (!!cv && !cv.complete && !(cv.priceSol > 0));
 }
 
 function tapeBase(st: Record<string, number> | null) {

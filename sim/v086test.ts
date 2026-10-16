@@ -52,7 +52,7 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   ok(/console\.log\("curves missing", curveFire\.missing, curveFire\.missingSample\.join\(","\)\)/.test(wk) && /curveMissing: curveFire\.missing/.test(wk), "the worker logs the count and examples every minute");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");
-  ok(pkg.version === "0.1.86" && bld.includes('"0.1.86"'), "v0.1.86");
+  ok(pkg.version === bld.match(/"([0-9.]+)"/)![1], "build tag matches the package");
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

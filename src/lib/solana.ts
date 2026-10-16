@@ -109,17 +109,20 @@ function pump() {
 // The daily credit budget (RPC_CALLS_PER_DAY, default 300K: the 10M-a-month plan spread over 30 days). Spending is
 // paced through the UTC day: the historian stops first, then the agents, then the rats; the desk is never stopped. Before v0.1.28 nothing capped the total and the plan's month was gone in 3 days.
 export const DAY_BUDGET = Math.max(0, Number(process.env.RPC_CALLS_PER_DAY ?? 300_000));
-const budget = { day: "", used: 0 };
+const budget = { day: "", used: 0, lane: [0, 0, 0, 0] };
 const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
 /** Start the day's count from what Redis already recorded (a worker restart must not reset the budget). */
-export function seedDayUsed(day: string, used: number) {
-  if (day === utcDay() && used > budget.used) Object.assign(budget, { day, used });
+export function seedDayUsed(day: string, used: number, lanes?: number[]) {
+  if (day !== utcDay() || used <= budget.used) return;
+  // v0.1.87: the lanes' own counts too (without them, all of it counts as the rats': the lane that can wait)
+  const lane = lanes && lanes.length === 4 ? lanes.map((x) => Math.max(0, Number(x) || 0)) : [0, used, 0, 0];
+  Object.assign(budget, { day, used, lane });
 }
 export function budgetState() {
   const now = new Date();
   const frac = (now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds()) / 86400;
-  if (budget.day !== utcDay()) Object.assign(budget, { day: utcDay(), used: 0 });
-  return { budget: DAY_BUDGET, used: budget.used, pace: Math.round(DAY_BUDGET * Math.min(1, frac + 0.05)) };
+  if (budget.day !== utcDay()) Object.assign(budget, { day: utcDay(), used: 0, lane: [0, 0, 0, 0] });
+  return { budget: DAY_BUDGET, used: budget.used, pace: Math.round(DAY_BUDGET * Math.min(1, frac + 0.05)), lanes: [...budget.lane] };
 }
 /** Helius websocket data is billed by volume (2 credits per 0.1 MB): counted against the day like any call. */
 export function noteStreamBytes(bytes: number) {
@@ -129,20 +132,37 @@ export function noteStreamBytes(bytes: number) {
   if (credits > 0) {
     STREAM_BYTES -= credits * 50_000;
     budget.used += credits;
+    budget.lane[1] += credits;
     rpcStats.byLane[1] += credits;
     rpcStats.calls += credits;
   }
 }
 let STREAM_BYTES = 0;
 export class BudgetError extends Error {}
+/**
+ * v0.1.87: each lane's own room in the day. On 16 Oct the rats overspent in the morning; the agents (MOMO, CATCH,
+ * HOUND, LENS) stop at 95% of the day's pace, so they made ~1,200 chain reads all day and the historian none. Now:
+ *  - the rats (King calls) keep their line (pace x 1.05 for the whole day) but may use at most RATS_MAX of it, so the
+ *    other lanes always keep a part of the day
+ *  - the agents and the historian keep a floor of their own (a share of the pace), even when the day is over pace
+ * RPC_LANE_FLOORS="agents,historian" as fractions of the pace (default 0.10,0.04).
+ */
+const FLOORS = (process.env.RPC_LANE_FLOORS || "0.10,0.04").split(",").map(Number);
+export const LANE_FLOOR = [0, 0, Number.isFinite(FLOORS[0]) ? FLOORS[0] : 0.1, Number.isFinite(FLOORS[1]) ? FLOORS[1] : 0.04];
+export const RATS_MAX = Math.min(1, Math.max(0.5, Number(process.env.RPC_RATS_MAX || 0.8)));
 function budgetBlocks(l: number) {
   if (!DAY_BUDGET) return false;
   const b = budgetState();
   // the desk is never locked out: it must always be able to price and exit what it holds (v0.1.28 stopped it at 115%
   // of the day, so late in a heavy day it could not see its own positions). It is counted, and it is the smallest lane.
-  // v0.1.36: the historian stops at 75% of pace and the agents at 95%, so the rats (King calls) keep their room
-  const lim = [Infinity, b.pace * 1.05, b.pace * 0.95, b.pace * 0.75][Math.max(0, Math.min(3, l))];
-  return b.used >= lim;
+  if (l <= 0) return false;
+  const line = b.pace * 1.05;
+  if (l === 1) return b.used >= line || budget.lane[1] >= line * RATS_MAX;
+  // v0.1.36: the historian stops at 75% of pace and the agents at 95%, so the rats (King calls) keep their room;
+  // v0.1.87: below its own floor a lane reads anyway (never past the day's whole budget)
+  const lim = l === 2 ? b.pace * 0.95 : b.pace * 0.75;
+  if (b.used < lim) return false;
+  return b.used >= DAY_BUDGET || budget.lane[l] >= b.pace * LANE_FLOOR[l];
 }
 /** v0.1.52: whether the whole day's budget still has room (the hard ceiling for the King's priority reads). */
 export const dayRoom = () => !DAY_BUDGET || budgetState().used < DAY_BUDGET;
@@ -153,6 +173,7 @@ const slot = (l: number, cost: number) =>
     if (budgetBlocks(l)) return no(new BudgetError(`daily chain-read budget reached (${["desk", "rats", "agents", "historian"][l] || "lane"} paused)`));
     budgetState();
     budget.used += cost;
+    budget.lane[Math.max(0, Math.min(3, l))] += cost;
     queues[Math.max(0, Math.min(3, l))].push({ cost, go, at: Date.now() });
     pump();
   });

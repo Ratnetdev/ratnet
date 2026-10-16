@@ -19,11 +19,13 @@ export type FireHandlers = {
   /** v0.1.85: with the transaction's signature, the metadata uri and the dev's first buy (the rats dig it from here) */
   create?: (c: { mint: string; symbol: string; name: string; creator: string; at: number; sig?: string; uri?: string; devSol?: number; devTok?: number; solQuote?: boolean }) => void;
   complete?: (mint: string, at: number) => void;
+  /** v0.1.87: a trade on a curve quoted in another token (ZEC, PUMP...): not a SOL launch */
+  otherQuote?: (mint: string) => void;
   /** v0.1.82: a (re)connection: anything kept from before it may have missed trades in the gap */
   connected?: () => void;
 };
 
-export const fireStats = { up: false, since: 0, msgs: 0, trades: 0, curveTrades: 0, poolTrades: 0, creates: 0, completes: 0, errors: 0, reconnects: 0, lastAt: 0, lastErr: "" };
+export const fireStats = { up: false, since: 0, msgs: 0, trades: 0, curveTrades: 0, poolTrades: 0, creates: 0, completes: 0, errors: 0, reconnects: 0, lastAt: 0, lastErr: "", otherQuote: 0, otherQuoteCreates: 0 };
 const POOL_MINT = new Map<string, string>(); // PumpSwap pool -> base mint
 export const poolMintOf = (pool: string) => POOL_MINT.get(pool) || null;
 // v0.1.82: only a coin's canonical pool (the one pump.fun's migration creates) prices it, as in lib/pool.ts. Anyone can
@@ -61,7 +63,8 @@ export function handleTx(evs: PumpEv[], tokenMints: string[], h: FireHandlers, s
       fireStats.creates++;
       // the dev's buy is the same transaction's first trade by the creator; its quote mint says whether this is a SOL curve
       const dev = evs.find((x) => x.kind === "trade" && (x as TradeEv).mint === ev.mint && (x as TradeEv).isBuy && ((x as TradeEv).user === ev.user || (x as TradeEv).user === ev.creator)) as TradeEv | undefined;
-      h.create?.({ mint: ev.mint, symbol: ev.symbol, name: ev.name, creator: ev.creator, at: ev.ts ? ev.ts * 1000 : now, sig, uri: ev.uri, devSol: dev ? Number(dev.sol) / 1e9 : 0, devTok: dev ? Number(dev.tokens) / 1e6 : 0, solQuote: dev ? isSolQuote(dev.quoteMint) : true });
+      if (ev.quoteMint && !isSolQuote(ev.quoteMint)) fireStats.otherQuoteCreates++;
+      h.create?.({ mint: ev.mint, symbol: ev.symbol, name: ev.name, creator: ev.creator, at: ev.ts ? ev.ts * 1000 : now, sig, uri: ev.uri, devSol: dev ? Number(dev.sol) / 1e9 : 0, devTok: dev ? Number(dev.tokens) / 1e6 : 0, solQuote: ev.quoteMint ? isSolQuote(ev.quoteMint) : dev ? isSolQuote(dev.quoteMint) : true });
       continue;
     }
     if (ev.kind === "complete") {
@@ -71,7 +74,12 @@ export function handleTx(evs: PumpEv[], tokenMints: string[], h: FireHandlers, s
     }
     if (ev.kind === "trade") {
       const t = ev as TradeEv;
-      if (!isSolQuote(t.quoteMint)) continue; // curves quoted in another token: no SOL price
+      if (!isSolQuote(t.quoteMint)) {
+        // curves quoted in another token: no SOL price, and the rats never call or trade them (v0.1.87)
+        fireStats.otherQuote++;
+        h.otherQuote?.(t.mint);
+        continue;
+      }
       fireStats.trades++;
       fireStats.curveTrades++;
       const cv = curveOf(t);

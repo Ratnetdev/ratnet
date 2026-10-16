@@ -239,7 +239,10 @@ export default function DeskBoard() {
           </div>
           <div className="pb small">
             {d?.live ? (
-              <div className="muted">Went live {st?.promotedAt ? ago(st.promotedAt) + " ago" : ""} with {st?.liveStart?.toFixed(3)} SOL. Drops back to paper at -40%.</div>
+              <>
+                <div className="muted">Went live {st?.promotedAt ? ago(st.promotedAt) + " ago" : ""} with {st?.liveStart?.toFixed(3)} SOL. Drops back to paper at -40%.</div>
+                <LiveParity trades={d?.trades || []} />
+              </>
             ) : (
               (d?.exam?.checks || []).map((c) => (
                 <div key={c.label} className="row between" style={{ padding: "3px 0" }}>
@@ -602,5 +605,19 @@ export default function DeskBoard() {
       </section>
       <p className="tiny muted mt">Not financial advice. The desk is an experiment run in public; it can and will lose trades.</p>
     </>
+  );
+}
+
+/** v0.1.87: every live fill next to what paper would have booked for it (tokens on buys, SOL on sells). */
+function LiveParity({ trades }: { trades: any[] }) {
+  const buys = trades.filter((t) => t.live && t.side === "buy" && t.par && Number.isFinite(t.par.tok)).map((t) => t.par.tok as number);
+  const sells = trades.filter((t) => t.live && t.side === "sell" && t.par && Number.isFinite(t.par.out)).map((t) => t.par.out as number);
+  if (!buys.length && !sells.length) return <div className="tiny mute2" style={{ marginTop: 6 }}>Live fills vs paper: measured from the next live trade.</div>;
+  const avg = (xs: number[]) => Math.round((xs.reduce((a, x) => a + x, 0) / xs.length) * 10) / 10;
+  const f = (x: number) => `${x >= 0 ? "+" : ""}${x}%`;
+  return (
+    <div className="tiny" style={{ marginTop: 6 }}>
+      Live fills vs paper:{buys.length ? <> buys {f(avg(buys))} tokens ({buys.length})</> : null}{sells.length ? <> · sells {f(avg(sells))} SOL ({sells.length})</> : null}
+    </div>
   );
 }

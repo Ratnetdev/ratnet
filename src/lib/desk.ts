@@ -2704,6 +2704,9 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   let sig: string | undefined;
   let fillPx = px;
   let paperFixed = 0;
+  // v0.1.87: what paper would have booked for this buy, kept next to the real fill (live vs paper, per trade)
+  let par: { tok: number; fixed: number } | undefined;
+  const curveReal = real;
   if (state.live && kp) {
     try {
       const res = await swap(kp, WSOL, rec.mint, BigInt(Math.floor(sol * 1e9)), slip, { symbol: rec.symbol, how });
@@ -2717,6 +2720,8 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
       // v0.1.45: the entry price without the venue fee, as paper books it (the fee is in the cost, not the price), so a
       // live gain reads the same as the paper gain on the same move
       fillPx = (sol * (1 - venueFee(grad, px * SUPPLY))) / Math.max(tokens, 1e-9);
+      const modelTok = (sol * (1 - venueFee(grad, px * SUPPLY))) / (px * (1 + slipOf(sol, grad, curveReal)));
+      if (px > 0 && modelTok > 0) par = { tok: Math.round((tokens / modelTok - 1) * 1000) / 10, fixed: r4(paperFixed - (txCost(sol, COST) + ATA_RENT)) };
     } catch (e) {
       log(b, "EXEC", `buy $${rec.symbol} failed: ${safeErr(e)}`, "bad", coin);
       return null;
@@ -2736,7 +2741,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   const now = Date.now();
   const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : `King ${rec.call?.verdict} ${rec.call?.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
-  b.trades.push({ v: BUILD, cfg: cfgTag(ALERT_CFG), id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null });
+  b.trades.push({ v: BUILD, cfg: cfgTag(ALERT_CFG), id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ...(par ? { par } : {}) });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
   alertOpen({ book: state.live ? "live" : "paper", mint: rec.mint, symbol: rec.symbol, how, sol: sol + paperFixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, sig }, ALERT_CFG);
   return {
@@ -3097,6 +3102,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   const amt = frac >= 1 ? p.tokens : p.tokens * frac;
   let proceeds = 0;
   let sig: string | undefined;
+  let par: { out: number } | undefined;
   // a real-money position is only ever sold with the key (never "sold" on paper by a process without it)
   if (p.live && !kp) {
     log(b, "RISK", `$${p.symbol}: live position, but this process has no wallet key. the worker sells it`, "bad", coin);
@@ -3114,6 +3120,9 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
       sig = res.sig;
       const real = await realDelta(res.sig, kp.publicKey, p.mint).catch(() => null);
       proceeds = real?.sol != null && real.sol > 0 ? real.sol : Number(res.outRaw) / 1e9;
+      // v0.1.87: what paper would have booked for this sell at the price that triggered it
+      const model = sellProceeds(amt, px, p.mkt?.grad ?? !!p.gradSeen, p.mkt?.real ?? 0, COST, frac >= 1 || amt >= p.tokens - 1e-9);
+      if (model > 0) par = { out: Math.round((proceeds / model - 1) * 1000) / 10 };
       LIVE_FLOW += proceeds;
       FLOW_SINCE_BAL += proceeds;
     } catch (e) {
@@ -3134,7 +3143,7 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
   const now = Date.now();
   const pnlPct = pct(proceeds, costPart);
   const sol$ = await solUsd().catch(() => null);
-  b.trades.push({ v: p.build, cfg: p.cfg, id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pnlPct * 10) / 10, live: p.live, sig, mc: mcUsd(px, sol$) });
+  b.trades.push({ v: p.build, cfg: p.cfg, id: `${now}${p.mint.slice(0, 4)}s`, mint: p.mint, symbol: p.symbol, side: "sell", at: now, sol: r4(proceeds), tokens: amt, px, reason, pnlSol: r4(pnl), pnlPct: Math.round(pnlPct * 10) / 10, live: p.live, sig, mc: mcUsd(px, sol$), ...(par ? { par } : {}) });
   log(b, "RISK", `${reason}: sold ${frac >= 1 ? "all" : `${Math.round(frac * 100)}%`} of $${p.symbol}`, pnl >= 0 ? "win" : "loss", coin);
   if (p.tokens <= 1e-9) {
     p.tokens = 0;

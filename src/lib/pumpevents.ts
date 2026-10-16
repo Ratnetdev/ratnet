@@ -99,7 +99,7 @@ export type TradeEv = {
   creator?: string;
   quoteMint?: string; // SOL when missing or the default key
 };
-export type CreateEv = { kind: "create"; name: string; symbol: string; uri: string; mint: string; curve: string; user: string; creator: string; ts: number; supply?: bigint };
+export type CreateEv = { kind: "create"; name: string; symbol: string; uri: string; mint: string; curve: string; user: string; creator: string; ts: number; supply?: bigint; quoteMint?: string };
 export type CompleteEv = { kind: "complete"; user: string; mint: string; curve: string; ts: number };
 export type SwapEv = {
   kind: "swap";
@@ -167,6 +167,14 @@ export function decodeEvent(b: Uint8Array): PumpEv | null {
     r.u64(); // real_token_reserves
     const sup = r.u64();
     if (!r.short) ev.supply = sup;
+    // v0.1.87: pump.fun curves can be quoted in another token now (ZEC, PUMP: $ZECRET on 16 Oct was called BOND at a
+    // 63.7% curve with an empty tape, its trades were never in SOL). token_program, is_mayhem_mode,
+    // is_cashback_enabled, then quote_mint (missing on older creates = SOL)
+    r.pk();
+    r.bool();
+    r.bool();
+    const qm = r.pk();
+    if (!r.short && qm) ev.quoteMint = qm;
     return ev.mint ? ev : null;
   }
   if (same(b, 0, D.complete)) {

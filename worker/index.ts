@@ -10,11 +10,12 @@ import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type Fl
 import { K, redis } from "../src/lib/redis";
 import { budgetState, curveFeed, curveFire, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
 import { swapsInFlight } from "../src/lib/exec";
-import { LOG_MS, logCreate, logTrade, logsGap, markFeedLive, pruneStream, setFollowHook, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
+import { LOG_MS, logCreate, logTrade, logsGap, noteOtherQuote, markFeedLive, pruneStream, setFollowHook, setQuote, streamSize, tradesFlowing, youngMints } from "../src/lib/streamlog";
 import { flushRpcDay, seedRpcDay } from "../src/lib/rpcday";
 import { pruneRedis } from "../src/lib/prune";
 import { heliusFeed } from "../src/lib/heliusfeed";
 import { reviveAllowed } from "../src/lib/revive";
+import { loopLag, startLoopLag } from "../src/lib/looplag";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
 import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
@@ -164,6 +165,7 @@ function revive(name: keyof typeof LOOP_GEN, why: string, now = Date.now()) {
   return true;
 }
 let beatSide = false;
+let lagLogAt = 0;
 async function beat() {
   if (!beatSide) {
     beatSide = true;
@@ -173,7 +175,9 @@ async function beat() {
   const deskStuck = Date.now() - deskAt;
   // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
-  redis().set("rn:rpc", { at: Date.now(), ...rpcView() }, { ex: 120 }).catch(() => {});
+  const lag = loopLag();
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag }, { ex: 120 }).catch(() => {});
+  if (lag && lag.p99 > 250 && Date.now() - lagLogAt > 60_000) (lagLogAt = Date.now()), console.log(`event loop late: p50 ${lag.p50}ms, p99 ${lag.p99}ms, worst ${lag.max}ms (last minute)`);
   flushRpcDay().catch(() => {});
   bwFlush()
     .then(() => govAlert())
@@ -254,9 +258,19 @@ function tapeOf(w: Trade[], now: number) {
 }
 
 // CATCH and SHIELD run in this process and read the tape straight from memory (v0.1.40; v0.1.41 drops the Redis copy)
+// v0.1.87: coins CATCH or SHIELD asked for in the last 2 minutes: the firehose keeps their live tape from then on
+const RT_ASKED = new Map<string, number>();
+const rtWanted = (mint: string, now = Date.now()) => {
+  const a = RT_ASKED.get(mint);
+  if (a == null) return false;
+  if (now - a > 120_000) return RT_ASKED.delete(mint), false;
+  return true;
+};
 (globalThis as any).__rnRt = (ms: string[]) => {
   const now = Date.now();
   const out: Record<string, unknown> = {};
+  for (const m of ms) RT_ASKED.set(m, now);
+  if (RT_ASKED.size > 5000) for (const [k, a] of RT_ASKED) if (now - a > 120_000) RT_ASKED.delete(k);
   for (const m of ms) {
     const w = TAPE.get(m);
     const l = LAST.get(m);
@@ -265,8 +279,14 @@ function tapeOf(w: Trade[], now: number) {
   }
   return out;
 };
+let rtPruneAt = 0;
 async function flushTape() {
   const now = Date.now();
+  // v0.1.87: tapes of coins nobody watches or asked for any more
+  if (now - rtPruneAt > 60_000) {
+    rtPruneAt = now;
+    for (const k of [...TAPE.keys()]) if (!watched.has(k) && !rtWanted(k, now)) (TAPE.delete(k), LAST.delete(k), SEEN.delete(k));
+  }
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
@@ -282,7 +302,7 @@ async function wantList() {
   const now = Date.now();
   // v0.1.54: without a PumpPortal key nothing is subscribed, so nothing is read (this list used to read the positions,
   // the radar, migrations and CATCH's whole watch list from Redis every 15 seconds for nothing: ~10MB an hour)
-  if (!PP_KEY) {
+  if (!PP_KEY && !fireLive()) {
     pruneStream(new Set(), now);
     return new Set<string>();
   }
@@ -343,18 +363,20 @@ const FLW = new Map<string, FlCoin>();
 let INTAKE: any[] = [];
 
 let flashPausedAt = 0;
-const FLASH_ALL = false; // v0.1.54: on only if every launch's trades are streamed from birth
+// v0.1.54: on only if every launch's trades are streamed from birth. v0.1.87: the FIREHOSE streams every launch's
+// trades from its first block, so FLASH runs while it is up (and the day's Redis bandwidth is on pace)
+const flashAll = () => fireLive() && bwLevel() < 1;
 function flashTick() {
   const now = Date.now();
   // FLASH reads the first seconds from trade messages alone. Without a PumpPortal key there are none (v0.1.34: the
   // Helius feed follows positions only), and a launch with no trades would read as dead and be learned as dead.
   // v0.1.54: FLASH needs every launch's trades from birth. The trade stream follows a shortlist only (paid per trade),
   // so FLASH stays paused: a launch without its trades would read as dead and be learned as dead
-  if (!tradesFlowing(now) || !FLASH_ALL) {
+  if (!tradesFlowing(now) || !flashAll()) {
     FLW.clear();
     if (now - flashPausedAt > 30_000) {
       flashPausedAt = now;
-      markAlive("flash", { paused: PP_KEY ? "trades are streamed for the shortlist only, not every launch from birth" : "no stream trades (PumpPortal trades need a key)" }).catch(() => {});
+      markAlive("flash", { paused: fireLive() ? "Redis bandwidth ahead of pace" : "the firehose is down (every launch's trades from birth come from it)" }).catch(() => {});
     }
     return;
   }
@@ -389,6 +411,10 @@ let noteAt = 0;
 const PP_KEY = process.env.PUMPPORTAL_API_KEY || "";
 // every trade, from PumpPortal (with a key) or the Helius feed, goes through here
 let TRADE_IN: (msg: any) => void = () => {};
+// v0.1.87: coins PumpPortal streams trades for right now (only while the firehose is down), and the live-tape hook the
+// firehose uses for the watch list (CATCH and SHIELD read that tape; with PumpPortal's trades refused it was empty)
+const PP_SUBBED = new Set<string>();
+let TAPE_IN: (msg: any) => void = () => {};
 let FEED: ReturnType<typeof heliusFeed> | null = null;
 // v0.1.53: the live curve stream for every launch in its first 7 minutes (the minute-1 read and the minute-5 call).
 // Its own socket, so the positions' feed never waits behind 400+ launch subscriptions.
@@ -440,15 +466,25 @@ function pumpportal() {
     }
     return onTrade(msg, kick);
   };
+  TAPE_IN = (msg: any) => onTrade(msg, kick);
   const resync = async () => {
     if (!up) return;
     const want = await wantList();
     const add = [...want].filter((k) => !watched.has(k));
     const drop = [...watched].filter((k) => !want.has(k));
     // PumpPortal streams trades only with a funded key (since Oct 2026); without one the Helius feed brings them
-    if (add.length && PP_KEY) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: add }));
+    // v0.1.87: while the FIREHOSE is up it has every trade; PumpPortal's keyed trade stream then only answered "Minimum
+    // balance not met for PumpSwap websocket data" (386 reconnects). It is asked again only when the firehose is down.
+    // The watch list itself stays: the firehose feeds these coins' live tape (CATCH, SHIELD) instead.
+    const pp = !fireLive();
+    if (add.length && PP_KEY && pp) ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: add }));
+    if (!pp && PP_SUBBED.size) {
+      ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: [...PP_SUBBED] }));
+      PP_SUBBED.clear();
+    } else if (pp) for (const k of add) PP_SUBBED.add(k);
     if (drop.length) {
-      if (PP_KEY) ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: drop }));
+      if (PP_KEY && PP_SUBBED.size) ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: drop }));
+      for (const k of drop) PP_SUBBED.delete(k);
       drop.forEach((k) => (TAPE.delete(k), LAST.delete(k), SEEN.delete(k)));
     }
     watched = want;
@@ -478,6 +514,7 @@ function pumpportal() {
       }
       up = true;
       watched = new Set();
+      PP_SUBBED.clear();
       ws.send(JSON.stringify({ method: "subscribeNewToken" }));
       ws.send(JSON.stringify({ method: "subscribeMigration" }));
       resync().catch(() => null);
@@ -519,7 +556,7 @@ function pumpportal() {
         gridLiveSymbol(mint, String(msg.symbol || "").slice(0, 16)); // v0.1.78: names for the every-launch twins
         INTAKE.push({ mint, sig: String(msg.signature || msg.sig || msg.txSignature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
         logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
-        FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
+        if (!FLW.has(mint)) FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
         FEED?.nudge();
         CURVES?.nudge();
         if (++createN % LAG_EVERY === 0 && msg.signature) sampleLag(String(msg.signature), now);
@@ -820,7 +857,14 @@ async function main() {
         gridLiveSymbol(c.mint, c.symbol);
         // v0.1.82: every launch's log from birth (the dev's buy follows as the transaction's first trade): the rats'
         // minute-1 and minute-5 tapes are built from it instead of ~42 chain reads per coin
-        logCreate(c.mint, c.creator, c.at, 0, 0, true);
+        // v0.1.87: only SOL launches get a log from birth (another quote's trades are never logged: its tape would be
+        // empty, and the King scored $ZECRET blind on 16 Oct)
+        if (c.solQuote === false) noteOtherQuote(c.mint);
+        else {
+          logCreate(c.mint, c.creator, c.at, 0, 0, true);
+          // v0.1.87: FLASH watches every launch from its first block (the firehose has all its trades)
+          if (!FLW.has(c.mint) && flashAll()) FLW.set(c.mint, { t0: c.at, mint: c.mint, sym: String(c.symbol || ""), creator: c.creator, devSol: c.devSol || 0, vSol: 30 + (c.devSol || 0), vTok: 1_073_000_000, mcSol: 0, trades: [], done: [] });
+        }
         // v0.1.85: every launch goes to the rats from here too (PumpPortal misses many: the chain backfill then read each
         // one with getTransaction, ~3,000 an hour). The rats keep the first copy of a launch, from either source.
         if (c.solQuote !== false && c.mint && c.sig) {
@@ -829,6 +873,15 @@ async function main() {
       },
       trade: (t) => {
         tapeTrade(t);
+        // v0.1.87: the live tape for the watch list (CATCH bursts, SHIELD), in PumpPortal's message shape
+        const fl = t.venue === "curve" ? FLW.get(t.mint) : undefined;
+        if (fl) {
+          fl.trades.push({ t: t.at, side: t.isBuy ? "buy" : "sell", sol: t.sol, w: t.user });
+          if (t.real != null) fl.vSol = 30 + t.real;
+          if (t.prog != null) fl.vTok = 1_073_000_000 - (t.prog / 100) * 793_100_000;
+          if (t.mcSol) fl.mcSol = t.mcSol;
+        }
+        if (watched.has(t.mint) || rtWanted(t.mint)) TAPE_IN({ mint: t.mint, traderPublicKey: t.user, txType: t.isBuy ? "buy" : "sell", solAmount: t.sol, tokenAmount: t.tokens, marketCapSol: t.mcSol, pool: t.venue === "curve" ? "pump" : "pump-amm" });
         if (t.venue === "curve") walletTrade(t, t.prog ?? 0);
         logTrade({ mint: t.mint, w: t.user, buy: t.isBuy, sol: t.sol, tok: t.tokens, mcSol: t.mcSol, pool: t.venue === "curve" ? "pump" : "pump-amm", real: t.real });
       },
@@ -839,6 +892,7 @@ async function main() {
       curve: (mint, v) => gridLiveCurve(mint, v as any),
       pool: (mint, q) => gridLiveQuote(mint, { mcSol: q.mcSol, real: q.real }),
       complete: (mint, at) => walletComplete(mint, at),
+      otherQuote: (mint) => noteOtherQuote(mint),
     }).catch((e) => (console.log("firehose start error", e?.message || e), false));
     console.log(on ? "firehose: starting (Shyft gRPC)" : "firehose: off (set SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN)");
     const fx = (mint: string) => {
@@ -856,7 +910,7 @@ async function main() {
     setInterval(() => walletsSave(archivePool()).catch(() => 0), 10 * 60_000);
     setInterval(() => {
       if (!on) return void markAlive("firehose", { status: "off until SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN are set" }).catch(() => null);
-      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
+      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, otherQuote: fireStats.otherQuoteCreates, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
       // v0.1.82: what the firehose saved (curve and pool reads answered from it) and the Dune backfill's progress
       const pctOf = (h: number, r: number) => (h + r ? Math.round((h / (h + r)) * 100) : 0);
       // v0.1.86: coins read with no curve (remembered 30s); a few examples in the log so the cause can be checked
@@ -1027,6 +1081,7 @@ async function main() {
   tgHook();
   setInterval(tgHook, 10 * 60_000);
   await beat();
+  startLoopLag();
   await Promise.all([deskLoop(), agentLoop(), digFastLoop(), digSlowLoop(), historianLoop()]);
 }
 main();

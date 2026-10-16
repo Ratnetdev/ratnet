@@ -28,7 +28,7 @@ const sum = (o: Record<string, number> | null) => Object.values(o || {}).reduce(
 export async function seedRpcDay() {
   const d = day();
   const v = await redis().hgetall<Record<string, number>>(KEY(d)).catch(() => null);
-  seedDayUsed(d, sum(v));
+  seedDayUsed(d, sum(v), LANES.map((k) => Number(v?.[k] || 0)));
 }
 
 /**

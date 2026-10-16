@@ -380,8 +380,9 @@ export async function lensSession(ms: number) {
     while (Date.now() < end - 8000) {
       const hk = HOUR(Date.now());
       if (Number((await r.get(hk)) || 0) >= MAX_PER_HOUR) break;
-      // the hourly X credit budget: LENS stops at 80% so WIRE's live watching never runs dry
-      if (!(await xAllowed(0.8))) break;
+      // the hourly X credit budget: LENS stops at 70% so WIRE's live watching never runs dry (v0.1.87: was 80%; a coin's
+      // dossier is several paid reads after the check, and the hour ended at 15.3K of 14K on 16 Oct)
+      if (!(await xAllowed(0.7))) break;
       const top = (await r.zpopmax<string>(Q, 1)) as any[];
       if (!top?.length) {
         await new Promise((res) => setTimeout(res, 2000));
