@@ -5,7 +5,7 @@
 
 import { ParsedTransactionWithMeta, PublicKey } from "@solana/web3.js";
 import { bondingCurvePda, conn, parsedTxsAny, pmap, rpcTag, tagged } from "./solana";
-import { seedLog, streamLog, streamLogWhy, tradesFlowing } from "./streamlog";
+import { LOG_MS, seedLog, streamLog, streamLogWhy, tradesFlowing } from "./streamlog";
 
 // Jito tip accounts (a tip in the same tx marks a bundle-style buy)
 const JITO = new Set([
@@ -154,7 +154,7 @@ const SAMPLE = { early: 28, recent: 14 };
  * the worker started, or the firehose never saw its create), a log that is not complete from birth, or a create time
  * more than 5s from the rats' record. Shown on /status so a jump in chain tapes says why.
  */
-export const tapeStats = { stream: 0, chain: 0, noFlow: 0, noLog: 0, notFull: 0, t0: 0, old: 0, forced: 0 };
+export const tapeStats = { stream: 0, chain: 0, cached: 0, noFlow: 0, noLog: 0, notFull: 0, t0: 0, old: 0, forced: 0 };
 export function tapeFromStream(mint: string, creator: string, createdAt: number, sample = SAMPLE, at = Date.now()): Tape | null {
   // only while trades are actually arriving (a stream that delivers launches but no trades gives empty tapes)
   if (!tradesFlowing(at)) return (tapeStats.noFlow++, null);
@@ -181,7 +181,22 @@ async function readTapeInner(mint: string, creator: string, createdAt: number, s
     const st = tapeFromStream(mint, creator, createdAt, sample);
     if (st) return (tapeStats.stream++, st);
   } else tapeStats.forced++;
+  // v0.1.93: a chain tape of a coin past its first 7 minutes is kept 3 minutes (holders, bundles and farms change
+  // slowly; post picks asked every second). Never for the minute-1 and minute-5 reads: those must be read fresh.
+  const cacheable = !opts.rpc && Date.now() - createdAt > LOG_MS;
+  const hit = cacheable ? CHAIN_TAPES.get(mint) : undefined;
+  if (hit && Date.now() - hit.at < CHAIN_TAPE_MS) return (tapeStats.cached++, hit.tape);
   tapeStats.chain++;
+  const fresh = await readChainTape(mint, creator, createdAt, sample);
+  if (fresh && cacheable) {
+    CHAIN_TAPES.set(mint, { at: Date.now(), tape: fresh });
+    if (CHAIN_TAPES.size > 2000) CHAIN_TAPES.delete(CHAIN_TAPES.keys().next().value as string);
+  }
+  return fresh;
+}
+const CHAIN_TAPES = new Map<string, { at: number; tape: Tape }>();
+export const CHAIN_TAPE_MS = 180_000;
+async function readChainTape(mint: string, creator: string, createdAt: number, sample: typeof SAMPLE): Promise<Tape | null> {
   try {
     const curve = bondingCurvePda(mint);
     const pk = new PublicKey(curve);

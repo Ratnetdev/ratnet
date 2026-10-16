@@ -13,6 +13,13 @@ const LOGS = new Map<string, Log>();
 const QUOTES = new Map<string, Quote>();
 export const LOG_MS = 7 * 60_000; // launches are followed this long (the minute-5 call is made by ~5m30s)
 const MAX_TRADES = 3000;
+/**
+ * v0.1.93: how long a launch's trades are logged (the firehose has every trade, so this costs memory only). Post picks
+ * read the tapes of copies up to 30 minutes old; past 7 minutes they came from the chain, every pass: ~108K reads an
+ * hour on 16 Oct. A full log keeps its first 200 trades and the newest, so a tape's "recent" trades stay recent.
+ */
+export const LOG_KEEP_MS = 30 * 60_000;
+const KEEP_FIRST = 200;
 
 /** A launch was created (the stream's create message, the dev's first buy included). */
 export function logCreate(mint: string, creator: string, t0: number, devSol: number, devTok: number, fromBirth = false) {
@@ -51,9 +58,10 @@ export function logTrade(m: { mint: string; w: string; buy: boolean; sol: number
   const now = Date.now();
   LAST_TRADE_AT = now;
   const l = LOGS.get(m.mint);
-  if (l && now - l.t0 <= LOG_MS) {
+  if (l && now - l.t0 <= LOG_KEEP_MS) {
     l.n++;
-    if (l.trades.length < MAX_TRADES) l.trades.push({ t: now, w: m.w, sol: m.buy ? m.sol : -m.sol, tok: m.tok, buy: m.buy });
+    if (l.trades.length >= MAX_TRADES) l.trades.splice(KEEP_FIRST, 1);
+    l.trades.push({ t: now, w: m.w, sol: m.buy ? m.sol : -m.sol, tok: m.tok, buy: m.buy });
   }
   if (m.mcSol && m.mcSol > 0) {
     const curve = !m.pool || m.pool === "pump";
@@ -76,7 +84,7 @@ export function logsGap(now = Date.now()) {
 /** v0.1.92: why there is no usable log for a launch (for the tape stats). */
 export function streamLogWhy(mint: string, createdAt: number, now = Date.now()): "noLog" | "notFull" | "t0" | "old" {
   const l = LOGS.get(mint);
-  if (!l) return now - createdAt > LOG_MS ? "old" : "noLog";
+  if (!l) return now - createdAt > LOG_KEEP_MS ? "old" : "noLog";
   if (!l.full) return "notFull";
   return "t0";
 }
@@ -140,7 +148,7 @@ export function streamQuote(mint: string, maxAgeMs = 3_000, now = Date.now()) {
 
 /** Drop what is no longer needed (called by the worker every few seconds). */
 export function pruneStream(keep: Set<string>, now = Date.now()) {
-  for (const [m, l] of LOGS) if (now - l.t0 > LOG_MS + 3 * 60_000) LOGS.delete(m);
+  for (const [m, l] of LOGS) if (now - l.t0 > LOG_KEEP_MS + 3 * 60_000) LOGS.delete(m);
   for (const [m, q] of QUOTES) if (!keep.has(m) && now - q.at > 120_000) QUOTES.delete(m);
 }
 

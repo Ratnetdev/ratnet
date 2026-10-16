@@ -20,7 +20,7 @@ const ok = (c: boolean, m: string) => {
   SL.logCreate("FULL", "c", now - 60_000, 0, 0, true);
   ok(T.tapeFromStream("FULL", "c", now - 30_000, undefined, now) === null && T.tapeStats.t0 === 1, "create time 30s off: counted");
   ok(T.tapeFromStream("FULL", "c", now - 60_000, undefined, now)?.src === "stream", "the right create time: a stream tape");
-  ok(T.tapeFromStream("OLD", "c", now - 9 * 60_000, undefined, now) === null && T.tapeStats.old === 1, "older than the log window: counted as old");
+  ok(T.tapeFromStream("OLD", "c", now - 31 * 60_000, undefined, now) === null && T.tapeStats.old === 1, "older than the log window: counted as old");
   const S = await import("../src/lib/solana");
   let tag = "";
   (globalThis as any).__rnConn = { getSignaturesForAddress: async () => ((tag = S.rpcTag.getStore() || ""), []) };
@@ -40,7 +40,7 @@ const ok = (c: boolean, m: string) => {
   ok(/tapes since start:/.test(st), "/status shows where tapes came from");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");
-  ok(pkg.version === "0.1.92" && bld.includes('"0.1.92"'), "v0.1.92");
+  ok(pkg.version === bld.match(/"([0-9.]+)"/)![1], "build tag matches the package");
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();
