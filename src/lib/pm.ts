@@ -239,3 +239,19 @@ export async function exitProfiles(initialsAt: number, timeStop: number): Promis
   }
   return out;
 }
+
+/**
+ * v0.1.98, once: FLASH benched from live money on its 16 Oct record (15 live sells, 1 won, -0.196 SOL). The LIVE BENCH
+ * (v0.1.97) started every record empty, so FLASH would have needed 10 more losing live trips first. It keeps trading
+ * on the ghost desk and comes back when its last 20 ghost trips pass the exam.
+ */
+export async function benchOnce098() {
+  if (!(await redis().set("rn:fix:0.1.98", Date.now(), { nx: true }))) return null;
+  const pm = await load();
+  const s = pm.flash;
+  if (s.bench) return null;
+  s.bench = { why: "16 Oct live record: 15 sells, 1 won, -0.196 SOL", at: Date.now() };
+  s.gb = [];
+  await redis().set(KEY, pm);
+  return `flash benched from live money (16 Oct: 15 live sells, 1 won, -0.196 SOL). The ghost desk keeps trading it; it comes back when its last 20 ghost trips pass the exam`;
+}
