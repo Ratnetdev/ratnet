@@ -64,7 +64,7 @@ export type GCoin = {
  * the dig, also in the archive for older calls); lens/xf/tg (LENS), kol/ftop (HOUND) and mind (MIND) only exist on
  * calls from this build on, and only when that agent had read the coin by minute 5 (never looked ahead).
  */
-export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null };
+export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null };
 export type Pred = { id: string; label: string; ok: (c: GCoin) => boolean };
 export const PREDS: Pred[] = [
   { id: "bond", label: "King BOND", ok: (c) => c.verdict === "BOND" },
@@ -104,6 +104,10 @@ export const PREDS: Pred[] = [
   { id: "ftop", label: "a FOMO top trader bought", ok: (c) => (c.sx?.ftop ?? -1) >= 1 },
   { id: "mindpass", label: "MIND passed on it", ok: (c) => c.sx?.mind === "PASS" },
   { id: "mindwatch", label: "MIND rated it WATCH or SEND", ok: (c) => c.sx?.mind === "WATCH" || c.sx?.mind === "SEND" },
+  // v0.1.102 SEER: on the watchlist before it was launched (lib/seer.ts)
+  { id: "seer", label: "SEER foresaw it (on the watchlist before launch)", ok: (c) => !!c.sx?.seer },
+  { id: "seertop", label: "SEER foresaw it, a tier-1 event or person", ok: (c) => c.sx?.seer?.tier === 1 },
+  { id: "seerfirst", label: "the first coin for a SEER watchlist entry", ok: (c) => c.sx?.seer?.rank === 1 },
 ];
 
 /** v0.1.101: the call's social read for GRID, from call.sx, or for calls before this build from the archived launch. */
@@ -332,8 +336,7 @@ export function sendersStudy(cs: GCoin[], hit: boolean[][]) {
     const rate = n ? sn / n : 0;
     return { id: p.id, label: p.label, calls: n, senders: sn, rate: Math.round(rate * 1000) / 10, lift: base > 0 ? Math.round((rate / base) * 100) / 100 : 0 };
   })
-    .filter((x) => x.calls >= 30)
-    .sort((a, b) => b.lift - a.lift);
+    .sort((a, b) => (b.calls >= 30 ? 1 : 0) - (a.calls >= 30 ? 1 : 0) || b.lift - a.lift); // under 30 calls: listed last (too few to read)
   const fast = sIdx.filter((i) => (cs[i].bondSecs ?? Infinity) <= 3600).length;
   return {
     calls: N,
@@ -346,7 +349,7 @@ export function sendersStudy(cs: GCoin[], hit: boolean[][]) {
       const m = med(sIdx.map((i) => (cs[i].bondSecs != null ? (cs[i].createdAt + cs[i].bondSecs! * 1000 - cs[i].at) / 60_000 : NaN)));
       return m == null ? null : Math.round(m * 10) / 10;
     })(),
-    lifts: lifts.slice(0, 8),
+    lifts, // v0.1.101: every rule (it was the top 8: the new social rules never showed)
   };
 }
 

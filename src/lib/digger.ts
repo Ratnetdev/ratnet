@@ -1,3 +1,4 @@
+import { seerSee } from "./seer";
 import { PublicKey } from "@solana/web3.js";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { radarTop } from "./lcache";
@@ -86,6 +87,7 @@ export type Launch = {
   bondSecs?: number;
   wire?: WireMatch | null; // born from a tracked X post (see lib/wire.ts)
   pulse?: { term: string; x: number; mood: string } | null; // named after a narrative rising on X right now (see lib/pulse.ts)
+  seer?: import("./seer").SeerMatch | null; // v0.1.102: on SEER's watchlist before it was launched
   completeAt?: number; // curve hit 100%: waiting for proof it migrated into its canonical pool
   stuck?: boolean; // curve completed but never migrated: not a graduation
   supply?: number; // token supply from the curve (1B on standard pump.fun)
@@ -93,7 +95,7 @@ export type Launch = {
 
 export type Call = {
   /** v0.1.101 SIGNAL PIPE: the social agents' reads at the call (lib/grid.ts Sx) */
-  sx?: { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null };
+  sx?: { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null };
   mint: string;
   symbol: string;
   name: string;
@@ -852,6 +854,13 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
     const wm = posts.length ? matchOne({ ...l, description: rec.description, twitter: rec.twitter }, posts) : null;
     const pm = !wm && rising.length ? pulseMatch(l, rising) : null;
     if (pm) rec.pulse = pm;
+    // v0.1.102 SEER: on the watchlist before it was launched (the create already matched name and ticker; the dig adds
+    // the description and the post it links)
+    const sm = seerSee(l.mint, l.name, l.symbol, l.createdAt, `${rec.description || ""} ${wm?.text || ""}`);
+    if (sm) {
+      rec.seer = sm;
+      agentLog(p, [{ agent: "SEER", at: c.now, mint: l.mint, symbol: l.symbol, text: `$${l.symbol} foreseen: "${sm.title.slice(0, 80)}" (tier ${sm.tier}, ${sm.rank === 1 ? "the first coin for it" : `coin #${sm.rank} for it`})`, tone: "ok", stance: sm.rank === 1 ? 0.6 : 0.1 }]);
+    }
     // a post WIRE was not watching: fetch it (lib/wire.ts tweetLinks) and treat it as a match
     const tid = !wm ? tweetIdOf(rec.twitter, rec.description, rec.website) : null;
     if (tid) noteTweetLink(p, tid, l.mint, l.createdAt);
@@ -1427,6 +1436,7 @@ export function sxAt(rec: Launch, read: Awaited<ReturnType<typeof socialRead>> |
     kol: read ? read.kol : null,
     ftop: read ? read.ftop : null,
     mind: read?.mind ?? null,
+    seer: rec.seer ? { tier: rec.seer.tier, rank: rec.seer.rank } : null, // v0.1.102
   };
 }
 

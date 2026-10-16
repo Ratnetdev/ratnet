@@ -11,10 +11,12 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
-  const [trades, live, rpc] = await Promise.all([
+  const [trades, live, rpc, seer, seerHits] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     r.get<any>("rn:rpc").catch(() => null),
+    r.get<any>("rn:seer:view").catch(() => null),
+    r.lrange<any>("rn:seer:matches", 0, 49).catch(() => [] as any[]),
   ]);
   const day = ((trades || []) as any[]).filter((t) => t && t.live && now - t.at < DAY);
   const sells = day.filter((t) => t.side === "sell");
@@ -37,6 +39,15 @@ export async function reviewView(now = Date.now()) {
     live: { trades: day.length, roundTrips: sells.length, won, pnlSol: r4(pnl), sellGapPct: avg(gaps), buyTokGapPct: avg(toks), feeSol: rpc?.exec?.liveFee?.prioritySol ?? null, feeN: rpc?.exec?.liveFee?.n ?? 0, sender: { ok: 0, err: 0, http: 0, last: "", ...(rpc?.exec?.sender || {}) } },
     families: fams.map((f) => ({ family: f.sleeve, live: f.live, bench: f.bench?.why ?? null, ghostSinceBench: f.benchGhost, weight: f.w, pausedUntil: f.paused })),
     grid: { books: books.length, passed: books.filter((b) => b.passed).map((b) => b.label), leader: live?.follow?.label ?? null, closest: close, runners: { books: runners.length, inProfit: runners.filter((b) => b.pnl > 0).length, best: runners.sort((a, z) => z.pnl - a.pnl)[0] ?? null } },
+    // v0.1.102: what SEER is watching for, and which launches matched it in the last day
+    seer: {
+      at: seer?.at ?? null,
+      armed: seer?.stats?.armed ?? (seer?.armed?.length || 0),
+      runs: seer?.stats?.runs ?? 0,
+      error: seer?.stats?.lastErr || null,
+      top: ((seer?.armed || []) as any[]).filter((a) => a.tier === 1).slice(0, 5).map((a) => ({ title: String(a.title).slice(0, 90), tickers: a.tickers, at: a.at })),
+      matches: ((seerHits || []) as any[]).filter((m) => m && now - (m.at0 || 0) < DAY).slice(0, 10).map((m) => ({ mint: m.mint, sym: m.sym, title: String(m.title).slice(0, 90), tier: m.tier, rank: m.rank, by: m.by })),
+    },
     health: { chainUsed: rpc?.day?.used ?? null, chainPace: rpc?.day?.pace ?? null, chainBudget: rpc?.day?.budget ?? null, loopP99: rpc?.loop?.p99 ?? null },
   };
 }
@@ -62,6 +73,9 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `<b>GRID LIVE</b>: ${g.books} books, ${g.passed.length} passed${g.leader ? `, desk follows "${esc(g.leader)}"` : ", nothing to follow yet"}`,
     ...g.closest.map((b) => `• close: ${esc(b.label)} (${b.trips} trips, ${sign(r4(b.pnl))} SOL, ${b.won}% won)`),
     `Runners: ${g.runners.books} books, ${g.runners.inProfit} in profit${g.runners.best ? `; best ${esc(g.runners.best.label)} ${sign(r4(g.runners.best.pnl))} SOL over ${g.runners.best.trips}` : ""}`,
+    "",
+    `<b>SEER</b>: watching for ${v.seer.armed} coins${v.seer.error ? ` (last error: ${esc(v.seer.error).slice(0, 60)})` : ""}; ${v.seer.matches.length} launches matched in 24h`,
+    ...v.seer.matches.slice(0, 5).map((m) => `• ${esc(m.sym || "?")} for "${esc(m.title)}" (tier ${m.tier}, #${m.rank}, by ${m.by})`),
     "",
     `<b>Health</b>: chain ${v.health.chainUsed != null ? `${Math.round(v.health.chainUsed / 1000)}K of ${Math.round((v.health.chainBudget || 0) / 1000)}K (pace ${Math.round((v.health.chainPace || 0) / 1000)}K)` : "n/a"}, event loop p99 ${v.health.loopP99 != null ? `${v.health.loopP99}ms` : "n/a"}`,
   ].join("\n");

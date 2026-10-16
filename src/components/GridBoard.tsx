@@ -84,7 +84,7 @@ function SendersStudy({ s }: { s: Senders }) {
               <tr><th>what senders had at the call</th><th>calls with it</th><th>of them migrated</th><th>vs average</th></tr>
             </thead>
             <tbody>
-              {s.lifts.map((l) => (
+              {s.lifts.filter((l) => l.calls >= 30).slice(0, 10).map((l) => (
                 <tr key={l.id}>
                   <td>{l.label}</td>
                   <td>{l.calls.toLocaleString()}</td>

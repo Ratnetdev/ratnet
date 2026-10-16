@@ -46,7 +46,21 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer } from "../src/lib/gridlive";
+import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
+
+// v0.1.102 SEER: a launch whose name or ticker matches a coin SEER saw coming (an event, a trend, a big post) goes to the
+// SEER GRID LIVE books at once. Both launch feeds call this; each coin fires once.
+const SEER_FIRED = new Set<string>();
+function seerOn(mint: string, name: string, symbol: string, at: number) {
+  if (!mint || SEER_FIRED.has(mint)) return;
+  const m = seerSee(mint, name, symbol, at);
+  if (!m) return;
+  SEER_FIRED.add(mint);
+  if (SEER_FIRED.size > 20_000) SEER_FIRED.delete(SEER_FIRED.values().next().value as string);
+  console.log(`SEER match ${symbol} (${name}) for "${m.title}" tier ${m.tier} rank ${m.rank} by ${m.by}, ${m.lagMs}ms after create`);
+  gridLiveSeer(mint, m);
+}
 installBwMeter(); // v0.1.40: counts every byte sent to and from Upstash (v0.1.40: through lib/rediswire.ts)
 
 process.env.RATNET_WORKER = "1";
@@ -587,6 +601,7 @@ function pumpportal() {
         const now = Date.now();
         const mint = String(msg.mint);
         gridLiveSymbol(mint, String(msg.symbol || "").slice(0, 16)); // v0.1.78: names for the every-launch twins
+        seerOn(mint, String(msg.name || ""), String(msg.symbol || ""), now);
         INTAKE.push({ mint, sig: String(msg.signature || msg.sig || msg.txSignature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
         logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
         if (!FLW.has(mint)) FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
@@ -889,6 +904,19 @@ async function main() {
   setInterval(() => pruneCurves(), 5_000);
   // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
+  await seerLoad().catch((e) => console.log("seer load error", e?.message || e));
+  // v0.1.102: SEER looks ahead every 10 minutes (events, trends, big posts -> names and tickers to watch for)
+  let seerBusy = false;
+  const seerRun = () => {
+    if (seerBusy) return;
+    seerBusy = true;
+    seerTick()
+      .then((s) => s && console.log("SEER tick", JSON.stringify(s)))
+      .catch((e) => console.log("seer error", e?.message || e))
+      .finally(() => (seerBusy = false));
+  };
+  setTimeout(seerRun, 60_000);
+  setInterval(seerRun, 10 * 60_000);
   await loadLiveFees().catch(() => null); // v0.1.96: paper pays what live transactions paid
   await loadRunTrack().catch(() => null); // v0.1.100: the day's runner paths keep going after a restart
   setCallHook((call) => {
@@ -932,6 +960,7 @@ async function main() {
         }
         // v0.1.85: every launch goes to the rats from here too (PumpPortal misses many: the chain backfill then read each
         // one with getTransaction, ~3,000 an hour). The rats keep the first copy of a launch, from either source.
+        if (c.solQuote !== false && c.mint) seerOn(c.mint, String(c.name || ""), String(c.symbol || ""), c.at);
         if (c.solQuote !== false && c.mint && c.sig) {
           if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
           INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });

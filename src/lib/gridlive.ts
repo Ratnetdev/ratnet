@@ -50,7 +50,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets";
+  by?: "researcher" | "runner" | "wallets" | "seer";
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -66,7 +66,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[] };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -75,7 +75,7 @@ export const gridLeaderKey = () => LEADER;
 export function gridLeader(): LBook | null {
   const passed = BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) }))
     .filter((x) => x.s.passed && !gapBlock(x.b.key))
-    .sort((a, z) => z.s.pnl - a.s.pnl);
+    .sort((a, z) => Number(!!a.s.probation) - Number(!!z.s.probation) || z.s.pnl - a.s.pnl); // v0.1.102: a full pass leads a SEER probation
   return passed[0]?.b ?? null;
 }
 let loaded = false;
@@ -263,12 +263,70 @@ function evictLast(now: number) {
   for (const [k, x] of LAST) if (now - x.at > cut && !held.has(k)) (LAST.delete(k), HIST.delete(k));
 }
 
+// ---------------------------------------------------------------- v0.1.102 SEER family
+// A foreseen coin is bought in its first seconds: the match arrives with the create (before any price), so it waits
+// here for the coin's first curve price, then every SEER book whose filter takes it starts its entry.
+const SEER_Q = new Map<string, number>(); // mint -> match time
+const SEER_LIVE = new Map<string, { tier: number; rank: number; at: number | null }>(); // mint -> the match (for later entries and the event exit)
+export function gridLiveSeer(mint: string, m: { tier: number; rank: number; at: number | null }, now = Date.now()) {
+  SEER_LIVE.set(mint, { tier: m.tier, rank: m.rank, at: m.at });
+  if (SEER_LIVE.size > 5000) SEER_LIVE.delete(SEER_LIVE.keys().next().value as string);
+  const last = LAST.get(mint);
+  if (last && last.px > 0 && !last.done) return seerFire(mint, last.p, last.px, now);
+  SEER_Q.set(mint, now);
+  if (SEER_Q.size > 2000) SEER_Q.delete(SEER_Q.keys().next().value as string);
+}
+function seerFire(mint: string, p: number, px: number, now: number) {
+  SEER_Q.delete(mint);
+  const sm = SEER_LIVE.get(mint);
+  if (!sm) return;
+  const fx = LIVE_FX ? LIVE_FX(mint) : null;
+  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: 0, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null, sx: { seer: { tier: sm.tier, rank: sm.rank } } } as unknown as GCoin;
+  for (const b of BOOKS) {
+    if (!b.any || b.by !== "seer") continue;
+    const k = id(b.key, mint);
+    if (TRIG.has(k) || PEND.has(k) || POS.has(k)) continue;
+    if (!filterOk(b.filter, c)) continue;
+    const m = MODES.find((x) => x.id === b.mode);
+    if (!m || m.kind === "mig") continue;
+    TRIG.add(k);
+    PEND.set(k, { key: b.key, mint, symbol: SYM.get(mint) || mint.slice(0, 4), callAt: now, p0: p, px0: px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
+  }
+}
+export const SEER_MAX = 8;
+export const SEER_SEEDS: string[] = [
+  `any:${keyOf("seer", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("seerfirst", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("seertop", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("seerfirst", "now", { initials: 2, trail: 0.25, stop: 0.25, timeMin: 60, mig: "hold" })}`,
+  `any:${keyOf("seer", "c5", RUNNER_EXITS[0])}`,
+  `any:${keyOf("seertop+seerfirst", "now", RUNNER_EXITS[0])}`,
+];
+function seedSeer(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = SEER_MAX - BOOKS.filter((b) => b.by === "seer").length;
+  for (const k of SEER_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const inner = bookFromKey(k.replace(/^any:/, ""), now);
+    if (!inner) continue;
+    const b: LBook = { ...inner, key: k, label: `every launch: ${inner.label}`, any: true, by: "seer" };
+    const ts = TRIPS.filter((t) => t.k === k);
+    if (ts.length && dropReason(bookStat(b, ts))) continue;
+    out.push(b);
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+
 /** Every live curve update (worker). */
 export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: number; realSol?: number; complete?: boolean }, now = Date.now()) {
   const px = Number(v.mcapSol) || 0;
   const p = Number(v.progress) || 0;
   if (LAST.get(mint)?.pool) return; // migrated: the pool prices (gridLiveQuote) lead from here
   LAST.set(mint, { at: now, px, real: Number(v.realSol) || 0, p, done: !!v.complete });
+  if (SEER_Q.has(mint) && px > 0 && !v.complete) seerFire(mint, p, px, now); // v0.1.102: a foreseen coin's first price
   const h = HIST.get(mint) || [];
   h.push({ t: now, p });
   while (h.length && h[0].t < now - 180_000) h.shift();
@@ -293,7 +351,8 @@ function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: numb
   const old = h.filter((x) => x.t <= now - 60_000).pop();
   if (!old || !(px > 0)) return;
   const fx = LIVE_FX ? LIVE_FX(mint) : null;
-  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null } as unknown as GCoin;
+  const sl = SEER_LIVE.get(mint);
+  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null, sx: sl ? { seer: { tier: sl.tier, rank: sl.rank } } : null } as unknown as GCoin;
   for (const b of BOOKS) {
     if (!b.any) continue;
     const k = id(b.key, mint);
@@ -350,7 +409,8 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (FOLLOW && LEADER === b.key) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: TRIPS.filter((t) => t.k === b.key).map((t) => t.pnlPct) });
+      const mine = TRIPS.filter((t) => t.k === b.key);
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation });
     } catch {}
   }
 }
@@ -403,6 +463,9 @@ function stepPos(k: string, pos: LPos, now: number) {
     return;
   }
   if (xr <= 1 - x.stop) return close(k, pos, now, "stop");
+  // v0.1.102: a foreseen coin is sold 15 minutes after its event (the debate case: +125% in 4 min, then -90% in 30)
+  const ev = /\bseer/.test(pos.key) ? SEER_LIVE.get(pos.mint)?.at : null;
+  if (ev && now >= ev + 15 * 60_000 && pos.openedAt < ev) return close(k, pos, now, "SEER: the event happened, sold the news");
   if (pos.initials && px <= pos.peak * (1 - x.trail)) return close(k, pos, now, "trail");
   if (now >= pos.tEnd && (!pos.initials || (!isRunner(x) && xr < 1.1))) return close(k, pos, now, "time");
 }
@@ -453,7 +516,7 @@ export function gridLiveSweep(now = Date.now()) {
   }
 }
 
-export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean; total?: number; totalPnl?: number; runner?: boolean; lessTop2?: number };
+export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean; total?: number; totalPnl?: number; runner?: boolean; lessTop2?: number; probation?: boolean };
 /** The desk's exam on a strategy's last 30 live trips (a 1 SOL desk at 0.05 SOL a trade: +10% = +0.1 SOL). */
 export function liveStat(trips: LTrip[]): LStat {
   const last = trips.slice(0, 30);
@@ -479,6 +542,17 @@ export function liveStat(trips: LTrip[]): LStat {
  * the risk this guards against.
  */
 export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips: LTrip[]): LStat {
+  // v0.1.102 SEER: event trips are rare (a few to 20 a day), so its books may trade live at the minimum size on a
+  // probation exam: 15+ trips, in profit, and still in profit without the 2 best. Full size only through the normal exam
+  const st = bookStat0(b, trips);
+  if (st.passed || !b.key || !/^any:[^|]*\bseer/.test(b.key)) return st;
+  const total = trips.reduce((a, t) => a + t.pnl, 0);
+  const top = trips.map((t) => t.pnl).sort((a, z) => z - a);
+  const lessTop2 = total - Math.max(0, top[0] ?? 0) - Math.max(0, top[1] ?? 0);
+  return trips.length >= SEER_PROBATION && total > 0 && lessTop2 > 0 ? { ...st, passed: true, probation: true, total: trips.length, totalPnl: Math.round(total * 1e4) / 1e4, lessTop2: Math.round(lessTop2 * 1e4) / 1e4 } : st;
+}
+export const SEER_PROBATION = 15;
+function bookStat0(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips: LTrip[]): LStat {
   // v0.1.89: a runner is judged on its whole record (few wins, big ones), not on 40% won over its last 30
   const x = b.exit ?? (b.key ? exitOfKey(b.key) : null);
   if (isRunner(x)) return runnerStat(trips);
@@ -519,8 +593,12 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   const past = [...byKey.entries()].filter(([k]) => !BOOKS.some((b) => b.key === k)).map(([k, ts]) => ({ key: k, live: liveStat(ts) })).filter((x) => x.live.n >= 5).sort((a, b) => b.live.avgPct - a.live.avgPct).slice(0, 6);
   for (const b of books) {
     if (!b.live.passed || !send) continue;
-    const fresh = await redis().hsetnx(PASSED_KEY, b.key, { at: now, ...b.live }).catch(() => 0);
-    if (fresh) await send(`🏁 <b>GRID LIVE: a strategy passed the exam on live coins</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.n} trips, ${b.live.winRate}% won, ${b.live.pnl >= 0 ? "+" : ""}${b.live.pnl} SOL on 0.05 SOL trades, PF ${b.live.pfLessBest} without the best.\n\nNext: the desk trades it.`).catch(() => null);
+    // v0.1.102: a SEER probation pass has its own mark, so the full pass later still gets its message
+    const fresh = await redis().hsetnx(PASSED_KEY, b.live.probation ? `${b.key}#probation` : b.key, { at: now, ...b.live }).catch(() => 0);
+    const tp = b.live.totalPnl ?? 0;
+    const l2 = b.live.lessTop2 ?? 0;
+    if (fresh && b.live.probation) await send(`🔮 <b>GRID LIVE: a SEER strategy passed its probation</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.total} trips, ${tp >= 0 ? "+" : ""}${tp} SOL on 0.05 SOL trades, ${l2 >= 0 ? "+" : ""}${l2} SOL without the 2 best.\n\nNext: the desk may follow it at the minimum size until it passes the full exam.`).catch(() => null);
+    else if (fresh) await send(`🏁 <b>GRID LIVE: a strategy passed the exam on live coins</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.n} trips, ${b.live.winRate}% won, ${b.live.pnl >= 0 ? "+" : ""}${b.live.pnl} SOL on 0.05 SOL trades, PF ${b.live.pfLessBest} without the best.\n\nNext: the desk trades it.`).catch(() => null);
   }
   // v0.1.78: a strategy that passed but whose real fills are too far from paper is not followed, and says so once
   for (const b of books) {
@@ -651,6 +729,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const runners = seedRunners(now);
   // v0.1.90: the WALLETS family: proven wallets buying, on every launch (not only King calls)
   const wals = seedWallets(now);
+  // v0.1.102: the SEER family: coins on the watchlist before they were launched, bought in their first seconds
+  const seers = seedSeer(now);
+  if (seers.length && send) await send(`🔮 <b>GRID LIVE: SEER family</b>\n${seers.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nCoins SEER put on its watchlist before they existed (events, big posts, trends), bought in their first seconds. Paper on live coins. Probation exam: ${SEER_PROBATION} trips in profit, also without the 2 best, then the desk may follow at the minimum size.`).catch(() => null);
   if (wals.length && send) await send(`👛 <b>GRID LIVE: proven wallets on every launch</b>\n${wals.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nThe moment proven wallets buy a launch (from the firehose, any launch, no King call needed). Paper on live coins.`).catch(() => null);
   if (runners.length && send) await send(`🏃 <b>GRID LIVE: runner mode</b>\n${runners.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nPaper on live coins. The runner exam: ${RUNNER_MIN}+ trips, in profit, and still in profit without its 2 best.`).catch(() => null);
   if (revived.length && send) await send(`♻️ <b>GRID LIVE: back in the race</b>\n${revived.map((b) => { const st = statOf(b.key); return `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}\n  last ${st.n}: ${st.winRate}% won, ${st.pnl >= 0 ? "+" : ""}${st.pnl} SOL, PF ${st.pfLessBest}`; }).join("\n")}\n\nClose to the exam: it keeps trading (up to ${EXTEND_MAX} trips) and passes the moment its last 30 do.`).catch(() => null);
@@ -670,7 +751,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || runners.length || wals.length || BOOKS.length !== before) await saveBooks();
+  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**

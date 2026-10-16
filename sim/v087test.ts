@@ -22,7 +22,8 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   const day = new Date().toISOString().slice(0, 10);
   const P = S.budgetState().pace;
   // 16 Oct: the rats spent the morning, the agents made ~1,200 reads all day
-  S.seedDayUsed(day, Math.round(P * 1.0), [Math.round(P * 0.12), Math.round(P * 0.83), Math.round(P * 0.003), Math.round(P * 0.03)]);
+  // (after 22:48 UTC the pace is the whole day: "at pace" is then held just under it, the day's ceiling stops every lane)
+  S.seedDayUsed(day, Math.round(Math.min(P, 99_000)), [Math.round(P * 0.12), Math.round(P * 0.83), Math.round(P * 0.003), Math.round(P * 0.03)]);
   ok(S.laneOpen(2), "the day is at pace, the agents used almost nothing: they read (their own floor)");
   ok(S.laneOpen(3), "the historian under its own floor reads too");
   ok(S.laneOpen(1) || P * 1.05 * S.RATS_MAX <= P * 0.83, "the rats stop at their share of the line");

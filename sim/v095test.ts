@@ -35,7 +35,7 @@ const near = (a: number, b: number, e = 0.011) => Math.abs(a - b) <= e;
   const site = fs.readFileSync("src/config/site.ts", "utf8");
   const admin = fs.readFileSync("src/lib/deskbounds.ts", "utf8"); // v0.1.100: the bounds moved here
   ok(/sizePlan\(o\.pcts/.test(desk) && /\(eqValue \* pct\) \/ 100\), liqCap/.test(desk), "the desk sizes FOLLOW buys from the leader's record, on its equity, under the liquidity cap");
-  ok(/pcts: TRIPS\.filter\(\(t\) => t\.k === b\.key\)\.map\(\(t\) => t\.pnlPct\)/.test(gl), "GRID LIVE sends the leader's record with each order");
+  ok(/pcts: TRIPS\.filter\(\(t\) => t\.k === b\.key\)\.map\(\(t\) => t\.pnlPct\)/.test(gl) || (/const mine = TRIPS\.filter\(\(t\) => t\.k === b\.key\);/.test(gl) && /pcts: mine\.map\(\(t\) => t\.pnlPct\)/.test(gl)), "GRID LIVE sends the leader's record with each order");
   ok(/kellyFrac: 0\.25/.test(site) && /kellyMaxPct: 10/.test(site) && /kellyMaxPct: \[1, 20\]/.test(admin), "defaults and admin bounds set");
   ok(/daily_loss_ok/.test(desk) && /roomFor\("direct"/.test(desk), "the daily loss stop still gates FOLLOW buys");
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
