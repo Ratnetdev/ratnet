@@ -1,4 +1,4 @@
-import { fcCurve, fcCurveBase } from "./firecache";
+import { fcCurve, fcCurveBase, fcNoCurve, fcNoCurveYet } from "./firecache";
 import { Connection, PublicKey, ParsedTransactionWithMeta } from "@solana/web3.js";
 import bs58 from "bs58";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -459,7 +459,7 @@ export function pruneCurves() {
   for (const m of LIVE_CURVES.keys()) if (!live.has(m)) LIVE_CURVES.delete(m);
   return LIVE_CURVES.size;
 }
-export const curveFire = { hits: 0, reads: 0 };
+export const curveFire = { hits: 0, reads: 0, missing: 0, missingSample: [] as string[] };
 export async function getCurves(mints: string[]): Promise<Record<string, CurveView | null>> {
   const out: Record<string, CurveView | null> = {};
   const live = liveSet();
@@ -469,6 +469,12 @@ export async function getCurves(mints: string[]): Promise<Record<string, CurveVi
     const f = fcCurve(m);
     if (f) {
       out[m] = f;
+      curveFire.hits++;
+      continue;
+    }
+    // v0.1.86: no curve at the last read (30s), and no trade on one since: no chain read
+    if (fcNoCurveYet(m)) {
+      out[m] = null;
       curveFire.hits++;
       continue;
     }
@@ -486,6 +492,12 @@ export async function getCurves(mints: string[]): Promise<Record<string, CurveVi
     out[m] = fetched[m];
     // v0.1.82: kept for the firehose until the coin's next trade (an account that is not a curve stays a chain read)
     if (fetched[m]) fcCurveBase(m, fetched[m]!, readAt);
+    else {
+      // v0.1.86: remembered for 30s; counted (with a few examples for the worker log) so the cause is visible
+      fcNoCurve(m);
+      curveFire.missing++;
+      if (!curveFire.missingSample.includes(m)) curveFire.missingSample = [m, ...curveFire.missingSample].slice(0, 5);
+    }
     // a followed coin read once from the chain stays valid until its next update (no update = no trade)
     if (fetched[m] && live.has(m) && !LIVE_CURVES.has(m)) LIVE_CURVES.set(m, { v: fetched[m]!, at: Date.now() });
   }

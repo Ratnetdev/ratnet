@@ -112,12 +112,29 @@ export function fcNoPoolYet(mint: string, now = Date.now()) {
   return !!e && fcLive(now) && e.ep === state.ep && now - e.at < NOPOOL_MS;
 }
 
+// v0.1.86: mints with no readable bonding curve at the last chain read. Post picks re-read every copy of a post every
+// second; a copy with no curve came back empty, was never kept, and was asked again the next second (~14K reads an
+// hour on 16 Oct). While the firehose is up a curve's first trade lands here (fcCurveTrade wins over this mark), so
+// "no curve" is trusted for 30 seconds before the chain is asked again.
+const NOCURVE = new Map<string, { at: number; ep: number }>();
+export const NOCURVE_MS = 30_000;
+export function fcNoCurve(mint: string, now = Date.now()) {
+  if (!fcLive(now)) return;
+  NOCURVE.set(mint, { at: now, ep: state.ep });
+  if (NOCURVE.size > 20_000) NOCURVE.delete(NOCURVE.keys().next().value as string);
+}
+export function fcNoCurveYet(mint: string, now = Date.now()) {
+  const e = NOCURVE.get(mint);
+  return !!e && fcLive(now) && e.ep === state.ep && now - e.at < NOCURVE_MS;
+}
+
 export const fcSize = () => ({ curves: CURVES.size, pools: POOLS.size, epoch: state.ep });
 /** Tests. */
 export function _fcReset() {
   CURVES.clear();
   POOLS.clear();
   NOPOOL.clear();
+  NOCURVE.clear();
   Object.assign(state, { ep: 0, up: false, lastAt: 0 });
   Object.assign(fcStats, { curveHits: 0, curveMiss: 0, poolHits: 0, poolMiss: 0 });
 }
