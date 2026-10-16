@@ -47,6 +47,8 @@ export type GCoin = {
   u60?: number | null;
   bs60?: number | null;
   wh?: number | null;
+  // v0.1.101 SIGNAL PIPE: what the social agents knew at the call (call.sx). Unknown (null) never passes
+  sx?: Sx | null;
   bonded?: boolean; // migrated (the senders: every coin that did millions in volume is one of these)
   bondSecs?: number | null;
   // the path from the call on (ms after the call), mcSol, real SOL, migrated
@@ -57,6 +59,12 @@ export type GCoin = {
   done: Uint8Array;
 };
 
+/**
+ * v0.1.101: the social and narrative signals at the call. post/bigpost/pulse come from the launch record (known at
+ * the dig, also in the archive for older calls); lens/xf/tg (LENS), kol/ftop (HOUND) and mind (MIND) only exist on
+ * calls from this build on, and only when that agent had read the coin by minute 5 (never looked ahead).
+ */
+export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null };
 export type Pred = { id: string; label: string; ok: (c: GCoin) => boolean };
 export const PREDS: Pred[] = [
   { id: "bond", label: "King BOND", ok: (c) => c.verdict === "BOND" },
@@ -84,7 +92,28 @@ export const PREDS: Pred[] = [
   { id: "u25", label: "25+ buyers in the last minute", ok: (c) => (c.u60 ?? 0) >= 25 },
   { id: "bs70", label: "70%+ of the last minute's SOL was buying", ok: (c) => c.bs60 != null && c.bs60 >= 0.7 },
   { id: "wh", label: "a 2+ SOL buy in the last minute", ok: (c) => (c.wh ?? 0) >= 1 },
+  // v0.1.101 SIGNAL PIPE: the social agents' reads, so GRID tests them like every other rule (appended: pair ids keep
+  // their order). Unknown never passes
+  { id: "post", label: "born from an X post", ok: (c) => c.sx?.post === 1 },
+  { id: "bigpost", label: "the post's author has 100K+ followers, or the CA was posted", ok: (c) => c.sx?.bigpost === 1 },
+  { id: "pulse", label: "matches a rising X topic", ok: (c) => c.sx?.pulse === 1 },
+  { id: "lens60", label: "LENS score 60+", ok: (c) => (c.sx?.lens ?? -1) >= 60 },
+  { id: "xf5k", label: "its X account has 5K+ followers", ok: (c) => (c.sx?.xf ?? -1) >= 5000 },
+  { id: "tg500", label: "its Telegram has 500+ members", ok: (c) => (c.sx?.tg ?? -1) >= 500 },
+  { id: "kol2", label: "2+ tracked KOL wallets bought", ok: (c) => (c.sx?.kol ?? -1) >= 2 },
+  { id: "ftop", label: "a FOMO top trader bought", ok: (c) => (c.sx?.ftop ?? -1) >= 1 },
+  { id: "mindpass", label: "MIND passed on it", ok: (c) => c.sx?.mind === "PASS" },
+  { id: "mindwatch", label: "MIND rated it WATCH or SEND", ok: (c) => c.sx?.mind === "WATCH" || c.sx?.mind === "SEND" },
 ];
+
+/** v0.1.101: the call's social read for GRID, from call.sx, or for calls before this build from the archived launch. */
+export function sxOf(call: any, wire?: any, pulse?: any): Sx | null {
+  if (call?.sx) return call.sx as Sx;
+  if (wire === undefined && pulse === undefined) return null;
+  // a CA posted can come long after the call (a later post): not counted for older calls, never a look ahead
+  const w = wire && !/\bCA\b|posted the ca/i.test(String(wire.how || "")) ? wire : null;
+  return { post: w ? 1 : 0, bigpost: w ? (Number(w.f) >= 100_000 ? 1 : 0) : 0, pulse: pulse ? 1 : 0, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null };
+}
 
 export type Mode = { id: string; label: string; kind: "now" | "climb" | "dip" | "hold" | "mig"; a: number; win: number };
 export const MODES: Mode[] = [
@@ -498,7 +527,7 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
   const since = await pool.query(`select min(opened_at) as at from trips where build >= '0.1.66'`).catch(() => ({ rows: [] }));
   const from = Math.max(Date.now() - days * 86400_000, since.rows[0]?.at ? new Date(since.rows[0].at).getTime() : 0);
   const ls = await pool.query(
-    `select mint, symbol, created_at, outcome, bond_secs, data->'call' as call from launches
+    `select mint, symbol, created_at, outcome, bond_secs, data->'call' as call, data->'wire' as wire, data->'pulse' as pulse from launches
      where created_at > $1 and created_at < now() - interval '70 minutes' and data->'call' is not null
      order by created_at desc limit $2`,
     [new Date(from).toISOString(), max],
@@ -533,6 +562,7 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
       u60: num(tp.u60),
       bs60: num(tp.bs60),
       wh: num(tp.wh),
+      sx: sxOf(c, typeof r.wire === "string" ? JSON.parse(r.wire) : r.wire, typeof r.pulse === "string" ? JSON.parse(r.pulse) : r.pulse),
       bonded: r.outcome === "BONDED",
       bondSecs: num(r.bond_secs),
       t: new Int32Array(0),

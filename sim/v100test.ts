@@ -141,7 +141,7 @@ const ok = (c: boolean, m: string) => {
   ok(/evictLast\(now\)/.test(fs.readFileSync("src/lib/gridlive.ts", "utf8")), "GRID LIVE trims its price map on a timer");
 
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-  ok(pkg.version === "0.1.100" && fs.readFileSync("src/config/build.ts", "utf8").includes('"0.1.100"'), "v0.1.100");
+  ok(Number(pkg.version.split(".")[2]) >= 100 && fs.readFileSync("src/config/build.ts", "utf8").includes(`"${pkg.version}"`), "v0.1.100 or later");
   console.log(fail ? `\n${fail} FAILED` : "\nall v0.1.100 checks pass");
   process.exit(fail ? 1 : 0);
 })().catch((e) => {

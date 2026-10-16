@@ -92,6 +92,8 @@ export type Launch = {
 };
 
 export type Call = {
+  /** v0.1.101 SIGNAL PIPE: the social agents' reads at the call (lib/grid.ts Sx) */
+  sx?: { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null };
   mint: string;
   symbol: string;
   name: string;
@@ -1211,6 +1213,11 @@ async function processDue0(model: NanoModel, callsOnly: boolean) {
     }),
   );
 
+  // v0.1.101 SIGNAL PIPE: what LENS, HOUND and MIND already know about each coin being called (read once, before
+  // the calls are made: makeCall itself does no reads)
+  SX_IN.clear();
+  if (claimed.size) await Promise.all([...claimed].map(async (m) => SX_IN.set(m, await socialRead(m).catch(() => null))));
+
   items.forEach((it, i) => {
     const rec = recs[it.mint];
     const rat = work.names[i];
@@ -1387,6 +1394,42 @@ function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   c.feed.push({ kind: "t1", rat: "RAT KING", mint: rec.mint, symbol: rec.symbol, name: rec.name, at: c.now, text: `early read ${verdict} ${sc} · curve ${curveNow}%${ex.tape ? ` · ${ex.tape.n} trades` : ""}` });
 }
 
+// v0.1.101 SIGNAL PIPE: the social agents' reads at the call, for GRID (history) and GRID LIVE (live)
+const SX_IN = new Map<string, Awaited<ReturnType<typeof socialRead>> | null>();
+async function socialRead(mint: string) {
+  const r = redis();
+  const [dossier, buys, mind] = await Promise.all([
+    r.get<any>(`rn:lens:d:${mint}`).catch(() => null),
+    r.hgetall<Record<string, any>>(`rn:hd:m:${mint}`).catch(() => null),
+    r.get<any>(`rn:mind:d:${mint}`).catch(() => null),
+  ]);
+  const bs = Object.values((buys || {}) as Record<string, any>).filter((b) => b && b.side !== "sell");
+  const lensDone = !!dossier?.done;
+  return {
+    lens: lensDone ? Number(dossier.score) || 0 : null,
+    xf: lensDone && dossier.x?.followers != null ? Number(dossier.x.followers) : null,
+    tg: lensDone && dossier.tg?.members != null ? Number(dossier.tg.members) : null,
+    // HOUND's book: no buy recorded means none of the tracked wallets bought (0), not unknown
+    kol: bs.filter((b) => b.cls === "kol").length,
+    ftop: bs.filter((b) => String(b.cls || "").startsWith("fomo")).length,
+    mind: mind?.verdict ? String(mind.verdict) : null,
+  };
+}
+export function sxAt(rec: Launch, read: Awaited<ReturnType<typeof socialRead>> | null | undefined) {
+  const w = rec.wire;
+  return {
+    post: (w ? 1 : 0) as 0 | 1,
+    bigpost: (w && (Number(w.f) >= 100_000 || w.how === "posted the CA") ? 1 : 0) as 0 | 1,
+    pulse: (rec.pulse ? 1 : 0) as 0 | 1,
+    lens: read?.lens ?? null,
+    xf: read?.xf ?? null,
+    tg: read?.tg ?? null,
+    kol: read ? read.kol : null,
+    ftop: read ? read.ftop : null,
+    mind: read?.mind ?? null,
+  };
+}
+
 function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   c.p.lpush(LAT("call"), Math.round((c.now - rec.createdAt) / 1000));
   c.p.ltrim(LAT("call"), 0, 199);
@@ -1455,6 +1498,7 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
     devN: rec.devN ?? 0,
     devB: rec.devB ?? 0,
     soc: [rec.twitter, rec.telegram, rec.website].filter(Boolean).length,
+    sx: sxAt(rec, SX_IN.get(rec.mint)), // v0.1.101
     px: ex.px || undefined,
     farm: farm?.why || undefined,
     why: whyOf({ ...rec, progress: curveNow, progress0: rec.p0, twitter: !!rec.twitter, telegram: !!rec.telegram, website: !!rec.website, tape: rec.tape ?? null, g: rec.g ?? null, meta: rec.meta ?? null }),

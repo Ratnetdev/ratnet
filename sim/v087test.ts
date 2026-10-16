@@ -32,7 +32,10 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   S.seedDayUsed(day, Math.round(P * 1.02), [Math.round(P * 0.1), Math.round(P * 0.7), Math.round(P * 0.15), Math.round(P * 0.07)]);
   ok(!S.laneOpen(2) && !S.laneOpen(3), "past pace and past their own floors: the agents and the historian wait");
   S.seedDayUsed(day, 100_001, [0, 100_001, 0, 0]);
-  ok(!S.laneOpen(2) && !S.laneOpen(3) && !S.laneOpen(1) && S.laneOpen(0), "the whole day's budget used: only the desk");
+  // v0.1.101: the rats' line is pace x 1.05 by design, so late in the UTC day (pace near the whole budget) they may still
+  // read up to that line; the test ran green only before ~21:00 UTC
+  const bst = S.budgetState();
+  ok(!S.laneOpen(2) && !S.laneOpen(3) && (!S.laneOpen(1) || bst.used < bst.pace * 1.05) && S.laneOpen(0), "the whole day's budget used: only the desk (the rats up to their line)");
   ok(Array.isArray(S.budgetState().lanes) && S.budgetState().lanes.length === 4, "the lanes' counts are part of the budget view");
   const rd = fs.readFileSync(new URL("../src/lib/rpcday.ts", import.meta.url), "utf8");
   ok(/seedDayUsed\(d, sum\(v\), LANES\.map/.test(rd), "a restart carries each lane's count for the day");

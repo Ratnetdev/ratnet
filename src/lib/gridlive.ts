@@ -238,6 +238,7 @@ export function gridLiveCall(call: any, now = Date.now()) {
     u60: tp.u60 ?? null,
     bs60: tp.bs60 ?? null,
     wh: tp.wh ?? null,
+    sx: call.sx ?? null, // v0.1.101
   } as unknown as GCoin;
   for (const b of BOOKS) {
     if (b.any) continue; // twins trigger on the curve itself (gridLiveCurve)
