@@ -48,7 +48,7 @@ const ok = (c: boolean, m: string) => {
   ok(/reused/.test(st) && /older than 30 min/.test(st), "/status shows reused tapes");
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const bld = fs.readFileSync(new URL("../src/config/build.ts", import.meta.url), "utf8");
-  ok(pkg.version === "0.1.93" && bld.includes('"0.1.93"'), "v0.1.93");
+  ok(Number(pkg.version.split(".")[2]) >= 93 && bld.includes(`"${pkg.version}"`), "v0.1.93 or later");
   console.log(fail ? `\n${fail} FAILED` : "\nall passed");
   process.exit(fail ? 1 : 0);
 })();

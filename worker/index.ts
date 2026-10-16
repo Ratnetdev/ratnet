@@ -5,7 +5,7 @@
 import { runSession } from "../src/lib/session";
 import { historianSession } from "../src/lib/historian";
 import { deskSession } from "../src/lib/desk";
-import { FAST_STEP, digFast, digSlow, ingestStream, markSigsSeen, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
+import { FAST_STEP, INTAKE_STEP, DIGGING_MS, digFast, digSlow, ingestStream, markSigsSeen, migrateNano, setCallHook, streamComplete } from "../src/lib/digger";
 import { flashFollow, flashLook, streamStats, FL_STAGES, type FlashLook, type FlCoin } from "../src/lib/flash";
 import { K, redis } from "../src/lib/redis";
 import { budgetState, curveFeed, curveFire, followedLonger, lane, laneOpen, liveCurveOf, noteCurve, parsedTx, pruneCurves, rpcView, setCurveLive } from "../src/lib/solana";
@@ -291,7 +291,7 @@ async function flushTape() {
   if (now - lastStreamMark > 10_000) {
     lastStreamMark = now;
     const quiet = Math.round((now - lastMsgAt) / 1000);
-    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", curves: CURVES ? `${CURVES.view().up ? "up" : "down"} ${CURVES.view().addrs} coins ${Math.round(CURVES.view().perDay / 1000)}K/day hit ${curveFeed.hits + curveFeed.misses ? Math.round((curveFeed.hits / (curveFeed.hits + curveFeed.misses)) * 100) : 0}%${CURVES.view().error ? ` err ${CURVES.view().error.slice(0, 30)}` : ""}` : "off", ppKey: PP_KEY ? 1 : 0, ...(PP_KEY ? { pp: `${watched.size} coins · ${ppCount()} trades today ~${((ppCount() / 10_000) * 0.01).toFixed(4)} SOL of ${PP_DAILY_SOL} SOL cap${ppCapped() ? " REACHED" : ""}` } : {}), lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
+    markAlive("stream", quiet > 20 ? { error: `no message for ${quiet}s` } : { feed: FEED ? `${FEED.view().up ? "up" : "down"} ${FEED.view().addrs} accts ${FEED.view().quotes} px ${Math.round(FEED.view().perDay / 1000)}K/day${FEED.view().error ? ` err ${FEED.view().error.slice(0, 30)}` : ""}` : PP_KEY ? "pumpportal key" : "off", curves: CURVES ? `${CURVES.view().up ? "up" : "down"} ${CURVES.view().addrs} coins ${Math.round(CURVES.view().perDay / 1000)}K/day hit ${curveFeed.hits + curveFeed.misses ? Math.round((curveFeed.hits / (curveFeed.hits + curveFeed.misses)) * 100) : 0}%${CURVES.view().error ? ` err ${CURVES.view().error.slice(0, 30)}` : ""}` : "off", intake: intakeNote(), ppKey: PP_KEY ? 1 : 0, ...(PP_KEY ? { pp: `${watched.size} coins · ${ppCount()} trades today ~${((ppCount() / 10_000) * 0.01).toFixed(4)} SOL of ${PP_DAILY_SOL} SOL cap${ppCapped() ? " REACHED" : ""}` } : {}), lastTradeSec: streamSize().lastTradeSec ?? "never", lastMsgSec: quiet, logs: streamSize().logs, coins: TAPE.size, quotes: streamSize().quotes }).catch(() => {});
   }
   // v0.1.41: no copy of the tape in Redis any more (rn:rt). CATCH and SHIELD read it from this process's memory
   // (__rnRt); the copy was only for readers outside the worker, which only run when the worker is down.
@@ -397,6 +397,10 @@ function flashTick() {
 // v0.1.42: one intake batch at a time. Every 300ms a new batch used to start even while the last was still waiting on
 // a slow gateway or Redis, and the batches piled up behind each other; now new launches wait in INTAKE and go together.
 let intakeBusy = false;
+// v0.1.94: a batch gets 15s (DIGGING_MS). On 16 Oct one batch never ended (a read that never answered) and the intake
+// stood still from 18:17: every launch after it was read from the chain, 20 to 30s late. Now the next batch starts.
+const intakeStats = { batches: 0, items: 0, timeouts: 0, errors: 0, lastMs: 0, maxMs: 0, last: "", dropped: 0 };
+const INTAKE_MAX = 5_000;
 async function flushIntake() {
   if (OTHER_SIGS.length) {
     const s = OTHER_SIGS;
@@ -407,12 +411,31 @@ async function flushIntake() {
   intakeBusy = true;
   const items = INTAKE;
   INTAKE = [];
+  const t0 = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await ingestStream(items).catch((e) => console.log("intake error", e?.message || e));
+    await Promise.race([
+      ingestStream(items),
+      new Promise((_, no) => (timer = setTimeout(() => no(new Error(`intake batch over ${DIGGING_MS / 1000}s (at: ${INTAKE_STEP.step || "start"})`)), DIGGING_MS))),
+    ]).catch((e) => {
+      const msg = String(e?.message || e);
+      if (/^intake batch over/.test(msg)) intakeStats.timeouts++;
+      else intakeStats.errors++;
+      intakeStats.last = `${new Date().toISOString().slice(11, 19)} ${msg.slice(0, 80)}`;
+      console.log("intake error", msg);
+    });
   } finally {
+    clearTimeout(timer);
+    const ms = Date.now() - t0;
+    intakeStats.batches++;
+    intakeStats.items += items.length;
+    intakeStats.lastMs = ms;
+    intakeStats.maxMs = Math.max(intakeStats.maxMs, ms);
     intakeBusy = false;
   }
 }
+const intakeNote = () =>
+  `${intakeStats.batches} batches ${intakeStats.items} launches last ${intakeStats.lastMs}ms max ${intakeStats.maxMs}ms queue ${INTAKE.length}${intakeStats.timeouts ? ` timeouts ${intakeStats.timeouts}` : ""}${intakeStats.errors ? ` errors ${intakeStats.errors}` : ""}${intakeStats.dropped ? ` dropped ${intakeStats.dropped}` : ""}${intakeStats.last ? ` (${intakeStats.last})` : ""}`;
 
 let noteAt = 0;
 const PP_KEY = process.env.PUMPPORTAL_API_KEY || "";
@@ -881,6 +904,7 @@ async function main() {
         // v0.1.85: every launch goes to the rats from here too (PumpPortal misses many: the chain backfill then read each
         // one with getTransaction, ~3,000 an hour). The rats keep the first copy of a launch, from either source.
         if (c.solQuote !== false && c.mint && c.sig) {
+          if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
           INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });
         }
       },

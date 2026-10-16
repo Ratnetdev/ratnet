@@ -80,7 +80,7 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   const fhSrc = fs.readFileSync(new URL("../src/lib/firehose.ts", import.meta.url), "utf8");
   ok(/evs\.some\(\(e\) => e\.kind === "create"\) && tx\.signature \? bs58\.encode\(tx\.signature\)/.test(fhSrc), "the stream encodes a signature only for transactions with a create");
   const wk = fs.readFileSync(new URL("../worker/index.ts", import.meta.url), "utf8");
-  ok(/c\.solQuote !== false && c\.mint && c\.sig\) \{\s*INTAKE\.push\(\{ mint: c\.mint, sig: c\.sig/.test(wk), "the worker hands every firehose launch to the rats (intake marks its signature seen)");
+  ok(/c\.solQuote !== false && c\.mint && c\.sig\) \{\s*(if \(INTAKE\.length >= INTAKE_MAX\)[^\n]*\n\s*)?INTAKE\.push\(\{ mint: c\.mint, sig: c\.sig/.test(wk), "the worker hands every firehose launch to the rats (intake marks its signature seen)");
   const dg = fs.readFileSync(new URL("../src/lib/digger.ts", import.meta.url), "utf8");
   ok(/!seen\[i\]/.test(dg) && /p\.set\(SEEN_SIG\(x\.sig\)/.test(dg), "the backfill skips any launch whose signature the intake marked");
 

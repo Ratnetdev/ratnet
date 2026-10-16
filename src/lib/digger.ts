@@ -713,6 +713,15 @@ async function digNew(model: NanoModel) {
 let LAST_PARSE_ERR = "";
 const PARSE_FAILS = new Map<string, number>();
 
+/**
+ * v0.1.94: where the stream intake is right now (the worker names it when a batch runs over its time). On 16 Oct the
+ * intake stopped at 18:17, 11 minutes after boot: one awaited read never answered, the batch never ended, and every
+ * launch after it was read from the chain instead (~2,400 getTransaction an hour, each one 20 to 30s late).
+ */
+export const INTAKE_STEP = { step: "", at: 0 };
+const iStep = (via: string, step: string) => {
+  if (via === "stream") (INTAKE_STEP.step = step), (INTAKE_STEP.at = Date.now());
+};
 /** Launches straight from the PumpPortal stream (worker): dug about a second after they are born, no chain read. */
 export async function ingestStream(items: { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number }[]) {
   return lane.run(1, async () => {
@@ -721,6 +730,7 @@ export async function ingestStream(items: { mint: string; sig: string; creator: 
     const fresh = items.filter((x) => x.mint);
     if (!fresh.length) return { dug: 0 };
     // never overwrite a launch already dug (the chain backfill may have it)
+    iStep("stream", "have");
     const have = await getLaunches(fresh.map((x) => x.mint), 60_000).catch(() => [] as (Launch | null)[]);
     const todo = fresh.filter((_, i) => !have[i]);
     const markSeen = async (xs: typeof fresh) => {
@@ -729,43 +739,64 @@ export async function ingestStream(items: { mint: string; sig: string; creator: 
       for (const x of xs) if (x.sig) p.set(SEEN_SIG(x.sig), 1, { ex: 3 * 3600 });
       await p.exec().catch(() => {});
     };
+    iStep("stream", "seen");
     await markSeen(fresh.filter((_, i) => !!have[i]));
     if (!todo.length) return { dug: 0 };
+    iStep("stream", "model");
     const model = await memo("dig:nano", 15_000, () => loadModel());
+    iStep("stream", "sol");
     if (!SOL_USD) SOL_USD = (await solUsd().catch(() => null)) || SOL_USD;
     // seen only after the launch is stored: if ingest fails, the chain backfill digs it (before v0.1.28 it was marked
     // seen first, so a failed ingest lost the launch for good)
-    const out = await ingest(model, todo, "stream");
-    await markSeen(todo);
+    const out: Record<string, unknown> = await ingest(model, todo, "stream");
+    iStep("stream", "mark");
+    // v0.1.94: a batch that stored nothing (unsure, or over its time) is not marked: the chain backfill stores them
+    if (!out.retry && !out.late) await markSeen(todo);
+    iStep("stream", "");
     return out;
   });
 }
 
 // v0.1.42: mints being dug right now. The stream and the chain backfill can see the same launch within a second; the
 // second one used to write a fresh record (cp {}, peak = the curve then) over the first, losing its checkpoints.
-const DIGGING = new Set<string>();
+// v0.1.94: each mark expires after 15s. A batch that never ends (its read never answered) used to hold its mints here
+// for good, and the chain backfill skipped them and marked them seen: those launches were lost. A stream batch older
+// than 15s writes nothing (the chain backfill, from 20s, stores those launches instead; never two copies).
+export const DIGGING_MS = 15_000;
+const DIGGING = new Map<string, number>();
+const digging = (mint: string, now = Date.now()) => {
+  const at = DIGGING.get(mint);
+  if (at == null) return false;
+  if (now - at > DIGGING_MS) return DIGGING.delete(mint), false;
+  return true;
+};
 type NewLaunch = { mint: string; sig: string; creator: string; name: string; symbol: string; uri: string; devBuySol: number; createdAt: number };
 
 /** Every new launch, from the stream or the chain. A launch already stored or being dug is skipped, never rewritten. */
 async function ingest(model: NanoModel, launches: NewLaunch[], via: "stream" | "chain") {
-  const uniq = launches.filter((l, i) => l.mint && !DIGGING.has(l.mint) && launches.findIndex((x) => x.mint === l.mint) === i);
+  const uniq = launches.filter((l, i) => l.mint && !digging(l.mint) && launches.findIndex((x) => x.mint === l.mint) === i);
   if (!uniq.length) return { dug: 0, via };
+  iStep(via, "stored?");
   const have = await getLaunches(uniq.map((l) => l.mint), 60_000).catch(() => null);
   if (!have) return { dug: 0, via, retry: uniq.length }; // unsure: the chain path retries, never a blind overwrite
   const todo = uniq.filter((_, i) => !have[i]);
   if (!todo.length) return { dug: 0, via };
-  for (const l of todo) DIGGING.add(l.mint);
+  const t0 = Date.now();
+  for (const l of todo) DIGGING.set(l.mint, t0);
   try {
     return await ingestNew(model, todo, via);
   } finally {
-    for (const l of todo) DIGGING.delete(l.mint);
+    for (const l of todo) if (DIGGING.get(l.mint) === t0) DIGGING.delete(l.mint);
   }
 }
 
 async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" | "chain") {
   const r = redis();
+  const tIn = Date.now();
+  iStep(via, "settings");
   const s = await getSettings();
   const creators = Array.from(new Set(launches.map((l) => l.creator).filter(Boolean)));
+  iStep(via, "meta+curves");
   const [off, curves, devN, devB] = await Promise.all([
     // metadata (IPFS): 1.5s at most, a slow gateway never holds the launch back (socials stay empty, LENS reads them later)
     pmap(launches, 12, (l) => fetchOffchain(l.uri, 1500)),
@@ -774,12 +805,15 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
     creators.length ? r.hmget<Record<string, number>>(K.devN, ...creators) : Promise.resolve(null),
     creators.length ? r.hmget<Record<string, number>>(K.devB, ...creators) : Promise.resolve(null),
   ]);
+  iStep(via, "work");
   const work = await assignWork(launches.length, s);
   const c = newCtx(model);
   const p = c.p;
   const last: Record<string, unknown> = {};
   const seenDev: Record<string, number> = {};
+  iStep(via, "posts");
   const posts: XTweet[] = await recentTweets().catch(() => []);
+  iStep(via, "pulse");
   const rising = (await pulseView().catch(() => null))?.rising || [];
   const dueAdds: { score: number; member: string }[] = [];
   const hotAdds: { score: number; member: string }[] = [];
@@ -871,7 +905,10 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
   p.expire(K.day(dayKey()), 60 * 60 * 24 * 40);
   const lastL = launches[launches.length - 1];
   if (via === "chain" || Math.random() < 0.2) agentLog(p, [{ agent: "SCOUT", at: c.now, mint: lastL.mint, symbol: lastL.symbol, text: `dug ${launches.length} new launch${launches.length > 1 ? "es" : ""}${via === "stream" ? " the second they were born" : " the chain path caught"}, latest $${lastL.symbol}`, tone: "info" }]);
+  if (via === "stream" && Date.now() - tIn > DIGGING_MS) return { dug: 0, via, late: launches.length };
+  iStep(via, "flush");
   await flush(c);
+  iStep(via, "record");
   await recordWork(work.counts, last, work.real);
   return { dug: launches.length, via };
 }
