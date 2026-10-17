@@ -62,7 +62,8 @@ export async function reviewView(now = Date.now()) {
       const ch = chooseVariants(table);
       return { learned: ch.learned, picks: ch.picks.map((v) => ({ v, text: variantText(v) })), top: table.slice(0, 5) };
     })(),
-    attention: rpc?.dx ?? null, // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
+    attention: rpc?.dx ?? null,
+    theme: rpc?.theme ?? null, // v0.1.109: Claude's labels (asked, made, capped, queue) // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
     origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
     health: { chainUsed: rpc?.day?.used ?? null, chainPace: rpc?.day?.pace ?? null, chainBudget: rpc?.day?.budget ?? null, loopP99: rpc?.loop?.p99 ?? null },
   };

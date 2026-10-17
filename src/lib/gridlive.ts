@@ -231,6 +231,16 @@ const filterOk = (filter: string, c: GCoin) => filter === "all" || filter.split(
 const id = (key: string, mint: string) => `${key}#${mint}`;
 
 /** A King call was made (digger). Every book whose filter takes it starts watching for its entry. */
+const CALLS = new Map<string, any>();
+/** v0.1.109: a label arrived for a coin called in the last 3 minutes: books that need it can start their entry now. */
+export function gridLiveRelabel(mint: string, th: { m: number; t: string; heat: number }, now = Date.now()) {
+  const call = CALLS.get(mint);
+  if (!call) return false;
+  CALLS.delete(mint);
+  if (now - (Number(call.at) || 0) > 3 * 60_000) return false;
+  gridLiveCall({ ...call, sx: { ...(call.sx || {}), th } }, now); // books already watching or holding it are skipped
+  return true;
+}
 export function gridLiveCall(call: any, now = Date.now()) {
   if (!BOOKS.length || !call?.mint || call.farm) return;
   const mint = String(call.mint);
@@ -261,8 +271,19 @@ export function gridLiveCall(call: any, now = Date.now()) {
     u60: tp.u60 ?? null,
     bs60: tp.bs60 ?? null,
     wh: tp.wh ?? null,
+    // v0.1.109 (fix): the v0.1.105 flow read reached GRID but not GRID LIVE, so kol3/kolsmall/kolout/hold20/exit20 books
+    // could never enter live
+    kf: tp.kf ?? null,
+    kmu: tp.kmu ?? null,
+    kx: tp.kx ?? null,
+    e20: tp.e20 ?? null,
     sx: call.sx ?? null, // v0.1.101
   } as unknown as GCoin;
+  // v0.1.109: Claude's label lands seconds after the call: the call is kept 3 minutes and read again when it does
+  if (!call.sx?.th) {
+    CALLS.set(mint, call);
+    if (CALLS.size > 500) CALLS.delete(CALLS.keys().next().value as string);
+  }
   for (const b of BOOKS) {
     if (b.any) continue; // twins trigger on the curve itself (gridLiveCurve)
     if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;

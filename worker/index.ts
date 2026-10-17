@@ -47,10 +47,11 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { originLoad, originMc, originSee, originStats } from "../src/lib/origin";
 import { dxDrain, dxPoll, dxStats } from "../src/lib/attention";
+import { setOnLabel, themeAt, themeBond, themeDrain, themeLoad, themeStats } from "../src/lib/theme";
 
 // v0.1.102 SEER: a launch whose name or ticker matches a coin SEER saw coming (an event, a trend, a big post) goes to the
 // SEER GRID LIVE books at once. Both launch feeds call this; each coin fires once.
@@ -197,7 +198,7 @@ async function beat() {
   // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
   const lag = loopLag();
-  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats, exec: { sender: senderStats, liveFee: LIVE_FEE }, origin: originStats, dx: dxStats }, { ex: 120 }).catch(() => {});
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats, exec: { sender: senderStats, liveFee: LIVE_FEE }, origin: originStats, dx: dxStats, theme: themeStats }, { ex: 120 }).catch(() => {});
   if (lag && lag.p99 > 250 && Date.now() - lagLogAt > 60_000) (lagLogAt = Date.now()), console.log(`event loop late: p50 ${lag.p50}ms, p99 ${lag.p99}ms, worst ${lag.max}ms (last minute)`);
   flushRpcDay().catch(() => {});
   bwFlush()
@@ -909,6 +910,18 @@ async function main() {
   // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
   await seerLoad().catch((e) => console.log("seer load error", e?.message || e));
+  // v0.1.109 IMAGE and THEME: Claude's labels, one every 6s within the daily cap; a new label re-reads its call
+  await themeLoad().catch(() => 0);
+  setOnLabel((mint) => {
+    const th = themeAt(mint, Date.now());
+    if (th) gridLiveRelabel(mint, th);
+  });
+  let themeBusy = false;
+  setInterval(() => {
+    if (themeBusy) return;
+    themeBusy = true;
+    themeDrain().catch(() => null).finally(() => (themeBusy = false));
+  }, 6_000);
   // v0.1.102: SEER looks ahead every 10 minutes (events, trends, big posts -> names and tickers to watch for)
   let seerBusy = false;
   const seerRun = () => {
@@ -998,7 +1011,7 @@ async function main() {
         gridLiveQuote(mint, { mcSol: q.mcSol, real: q.real });
         archiveRunTick(mint, { mcSol: q.mcSol, real: q.real, progress: 100, pool: true });
       },
-      complete: (mint, at) => walletComplete(mint, at),
+      complete: (mint, at) => (walletComplete(mint, at), themeBond(mint, at)),
       otherQuote: (mint) => noteOtherQuote(mint),
     }).catch((e) => (console.log("firehose start error", e?.message || e), false));
     console.log(on ? "firehose: starting (Shyft gRPC)" : "firehose: off (set SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN)");

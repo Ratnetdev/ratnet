@@ -15,6 +15,7 @@
 // A pass is a candidate, not a strategy: it goes into ARENA next and must prove itself on live coins.
 import { originHist } from "./origin";
 import { dxAt, dxHistAll, dxQueue } from "./attention";
+import { themeHeat, themeOf, themeQueue } from "./theme";
 import { loadLiveFees, paperPriority } from "./livecost";
 import { SITE } from "@/config/site";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
@@ -59,6 +60,8 @@ export type GCoin = {
   sx?: Sx | null;
   bonded?: boolean; // migrated (the senders: every coin that did millions in volume is one of these)
   bondSecs?: number | null;
+  image?: string; // v0.1.109: for Claude's label (from the archived call)
+  name?: string;
   // the path from the call on (ms after the call), mcSol, real SOL, migrated
   t: Int32Array;
   mc: Float32Array;
@@ -72,7 +75,7 @@ export type GCoin = {
  * the dig, also in the archive for older calls); lens/xf/tg (LENS), kol/ftop (HOUND) and mind (MIND) only exist on
  * calls from this build on, and only when that agent had read the coin by minute 5 (never looked ahead).
  */
-export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null; ev?: { rank: number | null; md: 0 | 1 | null; rep: number | null; f: number } | null };
+export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null; ev?: { rank: number | null; md: 0 | 1 | null; rep: number | null; f: number } | null; th?: { m: number; t: string; heat: number } | null };
 export type Pred = { id: string; label: string; ok: (c: GCoin) => boolean };
 export const PREDS: Pred[] = [
   { id: "bond", label: "King BOND", ok: (c) => c.verdict === "BOND" },
@@ -138,6 +141,15 @@ export const PREDS: Pred[] = [
   { id: "bigfirst", label: "the first coin for a 100K+ account's post", ok: (c) => c.sx?.ev?.rank === 1 && (c.sx?.ev?.f ?? 0) >= 100_000 },
   { id: "mediapost", label: "its post had an image or video", ok: (c) => c.sx?.ev?.md === 1 },
   { id: "repeatpost", label: "the author posted about it 2+ times in the hour", ok: (c) => (c.sx?.ev?.rep ?? 0) >= 2 },
+  // v0.1.109 IMAGE and THEME (lib/theme.ts): Claude's label of the picture and name; theme heat = labelled coins of the
+  // same theme that migrated in the 6 hours before. Unknown never passes
+  { id: "meme70", label: "Claude rates the meme 70+", ok: (c) => (c.sx?.th?.m ?? -1) >= 70 },
+  { id: "thanimal", label: "theme: animal", ok: (c) => c.sx?.th?.t === "animal" },
+  { id: "thpolitical", label: "theme: political", ok: (c) => c.sx?.th?.t === "political" },
+  { id: "thai", label: "theme: AI", ok: (c) => c.sx?.th?.t === "ai" },
+  { id: "thcelebrity", label: "theme: celebrity", ok: (c) => c.sx?.th?.t === "celebrity" },
+  { id: "thculture", label: "theme: culture", ok: (c) => c.sx?.th?.t === "culture" },
+  { id: "themehot", label: "2+ coins of its theme migrated in the last 6 hours", ok: (c) => (c.sx?.th?.heat ?? 0) >= 2 },
 ];
 
 /** v0.1.101: the call's social read for GRID, from call.sx, or for calls before this build from the archived launch. */
@@ -624,6 +636,8 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
       kx: num(tp.kx),
       e20: num(tp.e20),
       sx: sxOf(c, typeof r.wire === "string" ? JSON.parse(r.wire) : r.wire, typeof r.pulse === "string" ? JSON.parse(r.pulse) : r.pulse, originHist(r.mint), dxAt(dxh[r.mint], Number(c.at)), postRank.get(r.mint) ?? null),
+      image: c.image ? String(c.image) : undefined,
+      name: c.name ? String(c.name) : undefined,
       bonded: r.outcome === "BONDED",
       bondSecs: num(r.bond_secs),
       t: new Int32Array(0),
@@ -668,9 +682,19 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
     delete (g as any).pre;
     delete (g as any).tk;
     res.push(g);
+    // v0.1.109: no label yet (calls from before this build): queued for one (an image read, within the daily cap)
+    if (!themeOf(g.mint) && c.image) themeQueue({ mint: g.mint, image: String(c.image), name: String(c.name || ""), symbol: g.symbol, desc: "" }, false);
     // v0.1.106: GRID's own coins are the ones that need their DexScreener history (v0.1.104/105 queued 35K-71K calls
     // at boot, ~20 to 40 hours of fetching; these are ~3.4K)
     if (!dxh[g.mint]) dxQueue(g.mint, false);
+  }
+  // v0.1.109: the labels, and theme heat from the labelled coins of this window (migrations in the 6 hours before)
+  const bonds = res.filter((x) => x.bonded && x.bondSecs != null && themeOf(x.mint)).map((x) => ({ t: themeOf(x.mint)!.t, at: x.createdAt + Number(x.bondSecs) * 1000 }));
+  for (const x of res) {
+    const l = themeOf(x.mint);
+    if (!l) continue;
+    const th = { m: l.m, t: l.t, heat: themeHeat(l.t, x.at, bonds) };
+    x.sx = x.sx ? { ...x.sx, th } : { post: null, bigpost: null, pulse: null, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null, th };
   }
   return res;
 }
