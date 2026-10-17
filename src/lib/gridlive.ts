@@ -106,7 +106,9 @@ export function gridLeader(): LBook | null {
 let loaded = false;
 // v0.1.78: real-fill check. Jupiter (the route live money takes, tawtis' point on Reels: not PumpSwap directly) quoted
 // at every paper fill of the strategies that matter, so the gap between paper and real is measured before money moves.
-type Fill = { bn: number; bg: number; sn: number; sg: number; nr: number };
+type Fill = { bn: number; bg: number; sn: number; sg: number; nr: number; v?: number; lag?: number };
+// v0.1.118: fill checks before this build compared a delayed quote with the fill-time price (see drain): dropped once
+const FILL_V = 118;
 const FILLS = new Map<string, Fill>();
 const TRIG = new Set<string>(); // key#mint a twin already entered once
 let SPAWNED: string[] = []; // parents already spawned (once each)
@@ -144,7 +146,13 @@ export async function gridLiveLoad(tries = 5, waitMs = 2000) {
     if (b === FAIL || trips === FAIL) continue;
     loaded = true;
     booksOk = true;
-    for (const [k, f] of Object.entries(fills || {})) if (f && typeof f === "object") FILLS.set(k, f as Fill);
+    for (const [k, f0] of Object.entries(fills || {})) {
+      const f = f0 as Fill;
+      if (!f || typeof f !== "object") continue;
+      if (f.v === FILL_V) FILLS.set(k, f);
+      // a strategy the old check blocked stays blocked until the new check has its 8 quotes each way
+      else if (f.bn >= 8 && f.sn >= 8 && f.bg + f.sg <= GAP_LIMIT) RECHECK.add(k);
+    }
     SPAWNED = Array.isArray(sp) ? sp : SPAWNED;
     if (Array.isArray(fxs) && !FLOWX.length) FLOWX = (fxs as FlowX[]).filter(Boolean);
     // books added while the read was failing (a GRID run, RESEARCHER) join the saved ones instead of replacing them
@@ -456,7 +464,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool, f0: flowNow(pe.mint) };
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
-  if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens });
+  if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens, sol, at: now });
   if (FOLLOW && LEADER === b.key) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
@@ -474,7 +482,7 @@ function sell(pos: LPos, frac: number, px: number, real: number) {
 function close(k: string, pos: LPos, now: number, why: string) {
   if (pos.tokens > 1e-12) {
     // the market part of the paper sale (no tx costs), to set against Jupiter's quote for the same tokens
-    if (CHECK.has(pos.key)) queueCheck({ side: "sell", key: pos.key, mint: pos.mint, amount: BigInt(Math.floor(pos.tokens * 1e6)), paper: sellProceeds(pos.tokens, pos.lastPx, !!pos.pool, pos.lastReal, { fastExec: false, paperPrioritySol: 0 } as CostCfg) });
+    if (CHECK.has(pos.key)) queueCheck({ side: "sell", key: pos.key, mint: pos.mint, amount: BigInt(Math.floor(pos.tokens * 1e6)), paper: sellProceeds(pos.tokens, pos.lastPx, !!pos.pool, pos.lastReal, { fastExec: false, paperPrioritySol: 0 } as CostCfg), tokens: pos.tokens, at: now });
     sell(pos, 1, pos.lastPx, pos.lastReal);
   }
   POS.delete(k);
@@ -732,7 +740,7 @@ const JUP = process.env.JUPITER_API_KEY ? "https://api.jup.ag/swap/v1" : "https:
 const jupHeaders = (): Record<string, string> => (process.env.JUPITER_API_KEY ? { "x-api-key": process.env.JUPITER_API_KEY } : {});
 /** The books whose fills are checked: the leader, the hot strategy and its family, and any book in profit after 10+ trips. */
 const CHECK = new Set<string>();
-type Check = { side: "buy" | "sell"; key: string; mint: string; amount: bigint; paper: number };
+type Check = { side: "buy" | "sell"; key: string; mint: string; amount: bigint; paper: number; sol?: number; tokens?: number; at?: number };
 const QUEUE: Check[] = [];
 let checking = false;
 let QUOTE: (c: Check) => Promise<number | null> = async (c) => {
@@ -748,6 +756,18 @@ let QUOTE: (c: Check) => Promise<number | null> = async (c) => {
   // buy: tokens received (6 decimals); sell: SOL received
   return c.side === "buy" ? Number(q.outAmount) / 1e6 : Number(q.outAmount) / 1e9;
 };
+/** v0.1.118: paper's fill for this check at the live price right now (the same model as the paper fill). */
+function reprice(c: Check) {
+  const l = LAST.get(c.mint);
+  if (!l || !(l.px > 0) || l.done) return c;
+  const px = l.px / 1e9;
+  const pool = !!l.pool;
+  if (c.side === "buy" && c.sol) c.paper = (c.sol * (1 - venueFee(pool, l.px))) / (px * (1 + slipOf(c.sol, pool, l.real)));
+  else if (c.side === "sell" && c.tokens) c.paper = sellProceeds(c.tokens, px, pool, l.real, { fastExec: false, paperPrioritySol: 0 } as CostCfg);
+  return c;
+}
+/** Tests only. */
+export const _reprice = (c: Check) => reprice({ ...c });
 /** Tests: replace the quote source. */
 export const _setQuote = (f: (c: Check) => Promise<number | null>) => (QUOTE = f);
 function queueCheck(c: Check) {
@@ -761,9 +781,16 @@ async function drain() {
   try {
     while (QUEUE.length) {
       const c = QUEUE.shift()!;
+      // v0.1.118 (audit): the quote comes up to a minute after the fill (the queue, 1.5s apart). On a coin climbing 15
+      // curve points a minute, the price moved in between, so Jupiter looked 11% worse than paper on the EARLY momentum
+      // books and blocked them: price drift, not the route. Paper is now priced again at the moment of the quote, from
+      // the same live curve, so only the route's own cost is measured
+      reprice(c);
       const got = await QUOTE(c).catch(() => null);
       if (got != null) {
-        const f = FILLS.get(c.key) || { bn: 0, bg: 0, sn: 0, sg: 0, nr: 0 };
+        const f = FILLS.get(c.key) || { bn: 0, bg: 0, sn: 0, sg: 0, nr: 0, v: FILL_V, lag: 0 };
+        f.v = FILL_V;
+        if (c.at) f.lag = Math.round(((f.lag || 0) * (f.bn + f.sn) + (Date.now() - c.at)) / (f.bn + f.sn + 1));
         if (got === 0) f.nr++;
         else {
           const gap = got / c.paper - 1; // below 0: real money gets less than paper
@@ -780,8 +807,10 @@ async function drain() {
 }
 /** A strategy whose real fills run 10%+ worse than paper over a round trip (8+ checks each way) is not followed. */
 export const GAP_LIMIT = -0.1;
+const RECHECK = new Set<string>();
 export function gapBlock(key: string) {
   const f = FILLS.get(key);
+  if (RECHECK.has(key) && (!f || f.bn < 8 || f.sn < 8)) return true;
   if (!f || f.bn < 8 || f.sn < 8) return false;
   return f.bg + f.sg <= GAP_LIMIT;
 }
@@ -789,7 +818,7 @@ const fillView = (key: string) => {
   const f = FILLS.get(key);
   if (!f) return null;
   const r = (x: number) => Math.round(x * 1000) / 10;
-  return { buyN: f.bn, buyGap: r(f.bg), sellN: f.sn, sellGap: r(f.sg), noRoute: f.nr, blocked: gapBlock(key) };
+  return { buyN: f.bn, buyGap: r(f.bg), sellN: f.sn, sellGap: r(f.sg), noRoute: f.nr, blocked: gapBlock(key), lagMs: f.lag ?? null };
 };
 
 // ---------------------------------------------------------------- v0.1.78: spawn (variants and every-launch twin)
@@ -1220,6 +1249,7 @@ export function gridLiveReset() {
   HIST.clear();
   TRIPS = [];
   FILLS.clear();
+  RECHECK.clear();
   TRIG.clear();
   CHECK.clear();
   QUEUE.length = 0;
