@@ -12,7 +12,7 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
-  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv] = await Promise.all([
+  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     r.get<any>("rn:rpc").catch(() => null),
@@ -21,6 +21,7 @@ export async function reviewView(now = Date.now()) {
     r.lrange<any>("rn:gridlive:flowx", 0, 1999).catch(() => [] as any[]),
     r.lrange<any>("rn:x:tw", 0, 199).catch(() => [] as any[]),
     r.get<any>("rn:grid:view").catch(() => null),
+    r.get<any>("rn:grid:early").catch(() => null),
   ]);
   // v0.1.107: the media read on WIRE's latest posts (posts from before this build carry none)
   const xs = ((xposts || []) as any[]).filter((t) => t && t.md !== undefined);
@@ -69,6 +70,9 @@ export async function reviewView(now = Date.now()) {
       passedBasic: gv?.passedBasic ?? null,
       score: gv?.score ? { used: gv.score.used, effN: gv.score.effN, auc: gv.score.test?.auc ?? null, base: gv.score.test?.base ?? null, top10: gv.score.test?.top10 ?? null, top20: gv.score.test?.top20 ?? null, why: gv.score.why || "" } : null,
       nullRun: gv?.nullRun ?? null,
+      wscore: gv?.wscore ? { avgPct: gv.wscore.test?.avgPct ?? null, edge: gv.wscore.test?.edge ?? null, top10: gv.wscore.test?.top10 ?? null, top20: gv.wscore.test?.top20 ?? null, why: gv.wscore.why || "" } : null,
+      // v0.1.115: the EARLY search (every launch read at 2 minutes)
+      early: ge ? { coins: ge.coins ?? 0, why: ge.why || ge.error || "", passed: ge.passed ?? null, passedBasic: ge.passedBasic ?? null, bar: ge.nullRun?.bar ?? null, lucky: ge.nullRun ? `${ge.nullRun.lucky}/${ge.nullRun.kept}` : null, avgPct: ge.wscore?.test?.avgPct ?? null, winEdge: ge.wscore?.test?.edge ?? null, winTop20: ge.wscore?.test?.top20?.avgPct ?? null, best: (ge.rows || [])[0] ? { key: ge.rows[0].key, testN: ge.rows[0].test.n, testAvg: ge.rows[0].test.avgPct } : null } : null,
       pscore: gv?.pscore ? { auc: gv.pscore.test?.auc ?? null, base: gv.pscore.test?.base ?? null, avgPct: gv.pscore.test?.avgPct ?? null, top10: gv.pscore.test?.top10 ?? null, top20: gv.pscore.test?.top20 ?? null, why: gv.pscore.why || "" } : null,
     },
     attention: rpc?.dx ?? null,
@@ -103,6 +107,8 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `<b>GRID checks</b>: ${v.gridChecks.passed ?? 0} passed every check (${v.gridChecks.passedBasic ?? 0} on the test alone). Luck bar t ${v.gridChecks.nullRun?.bar ?? 0}; ${v.gridChecks.nullRun ? `${v.gridChecks.nullRun.lucky}/${v.gridChecks.nullRun.kept} shuffled runs found a "pass"` : "no null runs yet"}`,
     v.gridChecks.score ? `GRID SCORE: ${v.gridChecks.score.used} rules, ${v.gridChecks.score.effN} independent. On newer calls: AUC ${v.gridChecks.score.auc ?? "-"}, top 10% migrate ${v.gridChecks.score.top10?.rate ?? 0}% (${v.gridChecks.score.top10?.lift ?? 0}x the ${v.gridChecks.score.base}% average), top 20% ${v.gridChecks.score.top20?.lift ?? 0}x${v.gridChecks.score.why ? ` (${esc(v.gridChecks.score.why)})` : ""}` : "GRID SCORE: not fitted yet",
     v.gridChecks.pscore ? `PROFIT SCORE (buy at the call, runner exit): on newer calls AUC ${v.gridChecks.pscore.auc ?? "-"}; every call ${v.gridChecks.pscore.avgPct ?? "-"}% a trade, top 10% ${v.gridChecks.pscore.top10?.avgPct ?? "-"}% (${v.gridChecks.pscore.top10?.n ?? 0} trades, ${v.gridChecks.pscore.top10?.rate ?? 0}% paid), top 20% ${v.gridChecks.pscore.top20?.avgPct ?? "-"}%${v.gridChecks.pscore.why ? ` (${esc(v.gridChecks.pscore.why)})` : ""}` : "PROFIT SCORE: not fitted yet",
+    v.gridChecks.wscore ? `WIN SCORE (size of the win): top 20% ${v.gridChecks.wscore.top20?.avgPct ?? "-"}% a trade vs ${v.gridChecks.wscore.avgPct ?? "-"}% for every call (${v.gridChecks.wscore.edge ?? "-"} pts)${v.gridChecks.wscore.why ? ` (${esc(v.gridChecks.wscore.why)})` : ""}` : "WIN SCORE: not fitted yet",
+    v.gridChecks.early ? (v.gridChecks.early.why ? `<b>EARLY</b> (every launch at 2 minutes): ${esc(v.gridChecks.early.why)}` : `<b>EARLY</b> (every launch at 2 minutes): ${v.gridChecks.early.coins} reads, ${v.gridChecks.early.passed} passed every check (${v.gridChecks.early.passedBasic} the test alone), luck ${v.gridChecks.early.lucky}; every read ${v.gridChecks.early.avgPct ?? "-"}% a trade, win score top 20% ${v.gridChecks.early.winTop20 ?? "-"}%${v.gridChecks.early.best ? `; best: ${esc(v.gridChecks.early.best.key)} ${v.gridChecks.early.best.testAvg}% on ${v.gridChecks.early.best.testN} newer reads` : ""}`) : "EARLY: no search yet",
     "",
     `<b>Exit flows</b> (paper, measured only): ${v.flowExit.n ? `on ${v.flowExit.n} trips the flow turned; actual ${sign(v.flowExit.actAvg ?? 0)}% a trip, selling then ${sign(v.flowExit.flagAvg ?? 0)}% (better on ${v.flowExit.flagBetter})` : "no trip has seen the flow turn yet"}`,
     "",

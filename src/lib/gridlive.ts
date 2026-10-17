@@ -13,7 +13,7 @@ import { paperPriority } from "./livecost";
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
-import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, profitModel, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
+import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, profitModel, winModel, withScoreModels, asModels, type Models, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
 
 const D = (SITE as any).desk || {};
 // v0.1.96: the priority fee paper pays is what live transactions paid (lib/livecost.ts), the setting until there are 10
@@ -68,7 +68,9 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early";
+  /** v0.1.115: an EARLY book: trades the 2-minute read of every launch (lib/early.ts), never a King call */
+  early?: boolean;
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -285,7 +287,7 @@ export function gridLiveCall(call: any, now = Date.now()) {
     if (CALLS.size > 500) CALLS.delete(CALLS.keys().next().value as string);
   }
   for (const b of BOOKS) {
-    if (b.any) continue; // twins trigger on the curve itself (gridLiveCurve)
+    if (b.any || b.early) continue; // twins trigger on the curve itself (gridLiveCurve); EARLY books on the 2-minute read
     if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;
     if (!filterOk(b.filter, c)) continue;
     const m = MODES.find((x) => x.id === b.mode);
@@ -443,7 +445,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (now < pe.fillAfter) return;
   PEND.delete(k);
   const open = [...POS.values()].filter((p) => p.key === b.key).length;
-  if (open >= (b.any ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN)) return;
+  if (open >= (b.any || b.early ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN)) return;
   const px0 = last.px / 1e9;
   if (!(px0 > 0)) return;
   const sol = GRID_SOL;
@@ -826,7 +828,7 @@ export function seedFlow(now: number) {
 }
 
 export function hotBook(): LBook | null {
-  const c = BOOKS.filter((b) => !b.parent && !b.fv && !b.any && !isRunner(b.exit)) // v0.1.89: runners have no exit family
+  const c = BOOKS.filter((b) => !b.parent && !b.fv && !b.any && !b.early && !isRunner(b.exit)) // v0.1.89: runners have no exit family
     .map((b) => ({ b, s: statOf(b.key) }))
     .filter((x) => x.s.n >= 12 && x.s.pnl > 0 && x.s.pfLessBest >= 1.2 && x.s.avgPct >= 5)
     .sort((a, z) => z.s.pnl - a.s.pnl);
@@ -995,9 +997,15 @@ export function seedSignals(now: number): LBook[] {
 // The GRID SCORE (every signal combined, lib/grid.ts) trades on live calls from the moment a model exists: its top
 // 10% and top 20% with the runner exit, in their own slots, paper like every family. GRID judges the score on its test
 // like any rule; this family gathers the live record at the same time instead of after.
-export const SCORE_MAX = 4;
-// v0.1.114: the PROFIT SCORE's bands first (fitted on trades that paid), then the migration score's
-export const SCORE_SEEDS = [keyOf("pscore10", "now", RUNNER_EXITS[0]), keyOf("pscore20", "now", RUNNER_EXITS[0]), keyOf("score10", "now", RUNNER_EXITS[0]), keyOf("score20", "now", RUNNER_EXITS[0])];
+export const SCORE_MAX = 6;
+// v0.1.115: the WIN SCORE's bands first (fitted on the size of the win), then the PROFIT SCORE's, then the migration score's
+export const SCORE_SEEDS = ["wscore10", "wscore20", "pscore10", "pscore20", "score10", "score20"].map((f) => keyOf(f, "now", RUNNER_EXITS[0]));
+/** v0.1.115: the WIN SCORE trades when its top 20% beat the average trade by 5+ points on the newer calls. */
+export const WIN_MIN_EDGE = 5;
+const scoreWorthy = (k: string) => {
+  const m = k.startsWith("wscore") ? winModel() : k.startsWith("pscore") ? profitModel() : scoreModel();
+  return k.startsWith("wscore") ? (m?.edge ?? -99) >= WIN_MIN_EDGE : (m?.auc ?? 0) >= SCORE_MIN_AUC;
+};
 /** A score worth trading: it ranks the newer calls it never saw better than a coin flip by a margin (AUC 0.55+). */
 export const SCORE_MIN_AUC = 0.55;
 export function seedScore(now: number): LBook[] {
@@ -1005,8 +1013,7 @@ export function seedScore(now: number): LBook[] {
   let room = SCORE_MAX - BOOKS.filter((b) => b.by === "score" && !b.fv).length;
   for (const k of SCORE_SEEDS) {
     if (room <= 0) break;
-    const m = k.startsWith("pscore") ? profitModel() : scoreModel();
-    if ((m?.auc ?? 0) < SCORE_MIN_AUC) continue;
+    if (!scoreWorthy(k)) continue;
     if (BOOKS.some((b) => b.key === k)) continue;
     const ts = TRIPS.filter((t) => t.k === k);
     const b = bookFromKey(k, now);
@@ -1018,6 +1025,55 @@ export function seedScore(now: number): LBook[] {
   }
   if (out.length) BOOKS = [...BOOKS, ...out];
   return out;
+}
+
+// ---------------------------------------------------------------- v0.1.115 EARLY family
+// The EARLY search (GRID on every launch read at 2 minutes, lib/early.ts) has its own scores and its own candidates.
+// Its best strategies trade the same 2-minute read on live launches, in their own slots (paper; the exam decides).
+export const EARLY_MAX = 6;
+let EARLY_MODELS: Models = { mig: null, pft: null, win: null };
+export const setEarlyModels = (m: Partial<Record<keyof Models, any>> | null | undefined) => (EARLY_MODELS = asModels(m));
+export const earlyModels = () => EARLY_MODELS;
+/** After each EARLY search (worker): passed rows first, then the ones still in profit on the test, then the explore rows. */
+export async function gridLiveEarlyBooks(rows: GRow[], explore: GRow[] = [], now = Date.now()) {
+  if (!booksOk) await gridLiveLoad(1, 0).catch(() => false);
+  if (!booksOk) return [];
+  const mine = BOOKS.filter((b) => b.early && !b.fv);
+  // a kept EARLY book gets its newest numbers
+  for (const b of mine) {
+    const r = [...rows, ...explore].find((x) => `early:${x.key}` === b.key);
+    if (r) b.grid = { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass, explore: !!r.explore };
+  }
+  const ranked = [...rows.filter((r) => r.pass), ...rows.filter((r) => !r.pass && r.test.n >= 10 && r.test.avgPct > 0), ...explore];
+  let room = EARLY_MAX - mine.length;
+  const out: LBook[] = [];
+  for (const r of ranked) {
+    if (room <= 0) break;
+    const key = `early:${r.key}`;
+    if (BOOKS.some((b) => b.key === key) || out.some((b) => b.key === key)) continue;
+    const ts = TRIPS.filter((t) => t.k === key);
+    const b: LBook = { key, label: `2 minutes after launch: ${r.filterLabel}`, filter: r.filter, mode: "now", exit: r.exit, since: now, grid: { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass, explore: !!r.explore }, by: "early", early: true };
+    if (ts.length && dropReason(bookStat(b, ts))) continue;
+    out.push(b);
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  if (out.length || mine.length) await saveBooks();
+  return out;
+}
+/** A launch was read at 2 minutes (worker, lib/early.ts): the EARLY books whose filter takes it start their entry. */
+export function gridLiveEarly(mint: string, c: GCoin, now = Date.now()) {
+  const last = LAST.get(mint);
+  if (!last || last.done || !(last.px > 0)) return 0;
+  let n = 0;
+  for (const b of BOOKS) {
+    if (!b.early) continue;
+    if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;
+    if (!withScoreModels(EARLY_MODELS, () => filterOk(b.filter, c))) continue;
+    PEND.set(id(b.key, mint), { key: b.key, mint, symbol: c.symbol, callAt: now, p0: last.p, px0: last.px, until: now + 30_000, fillAfter: now + 2_000 });
+    n++;
+  }
+  return n;
 }
 
 function seedRunners(now: number): LBook[] {

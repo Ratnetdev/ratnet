@@ -22,12 +22,13 @@ import { loopLag, startLoopLag } from "../src/lib/looplag";
 import { tapeStats } from "../src/lib/tape";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
-import { archiveBoard, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
+import { archiveBoard, archiveEarlyGrid, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
-import { gridHistory, gridMessage, liveCandidates, setProfitModel, setScoreModel, withSeen, type GHist, type GridView } from "../src/lib/grid";
+import { gridHistory, gridMessage, liveCandidates, setProfitModel, setScoreModel, setWinModel, withSeen, type GCoin, type GHist, type GridView } from "../src/lib/grid";
+import { earlyCoin, earlyCreate, earlyCurve, earlyPool, earlyStats, earlySweep } from "../src/lib/early";
 import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep, gridLiveSymbol, gridLiveTend, setGridFollow } from "../src/lib/gridlive";
 import { poolFire, readPools } from "../src/lib/pool";
 import { afterLoad, afterNoteMigration, afterResolve, afterStats, afterWant, migratedAt } from "../src/lib/after";
@@ -47,7 +48,7 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { originAt, originCreated, originLoad, originMc, originSee, originStats } from "../src/lib/origin";
 import { dxDrain, dxLive, dxPoll, dxStats } from "../src/lib/attention";
@@ -912,7 +913,12 @@ async function main() {
   // v0.1.112 GRID SCORE: the last run's model scores live calls until the next GRID run fits a new one
   await redis()
     .get<any>("rn:grid:view")
-    .then((v) => (setScoreModel(v?.score?.model), setProfitModel(v?.pscore?.model)))
+    .then((v) => (setScoreModel(v?.score?.model), setProfitModel(v?.pscore?.model), setWinModel(v?.wscore?.model)))
+    .catch(() => null);
+  // v0.1.115: the EARLY search's scores for the EARLY books
+  await redis()
+    .get<any>("rn:grid:early")
+    .then((v) => setEarlyModels({ mig: v?.score?.model, pft: v?.pscore?.model, win: v?.wscore?.model }))
     .catch(() => null);
   await seerLoad().catch((e) => console.log("seer load error", e?.message || e));
   // v0.1.109 IMAGE and THEME: Claude's labels, one every 6s within the daily cap; a new label re-reads its call
@@ -984,6 +990,7 @@ async function main() {
         // one with getTransaction, ~3,000 an hour). The rats keep the first copy of a launch, from either source.
         if (c.solQuote !== false && c.mint) seerOn(c.mint, String(c.name || ""), String(c.symbol || ""), c.at);
         if (c.solQuote !== false && c.mint) originSee(c.mint, String(c.name || ""), String(c.symbol || ""), String(c.creator || ""), c.at); // v0.1.103
+        if (c.solQuote !== false && c.mint) earlyCreate(c.mint, c.at, String(c.symbol || "")); // v0.1.115 EARLY
         if (c.solQuote !== false && c.mint && c.sig) {
           if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
           INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });
@@ -1010,10 +1017,12 @@ async function main() {
       },
       curve: (mint, v) => {
         gridLiveCurve(mint, v as any);
+        earlyCurve(mint, v as any); // v0.1.115
         archiveRunTick(mint, { mcSol: v.mcapSol, real: v.realSol, progress: v.progress, pool: false, complete: v.complete });
       },
       pool: (mint, q) => {
         gridLiveQuote(mint, { mcSol: q.mcSol, real: q.real });
+        earlyPool(mint, { mcSol: q.mcSol, real: q.real }); // v0.1.115
         archiveRunTick(mint, { mcSol: q.mcSol, real: q.real, progress: 100, pool: true });
       },
       complete: (mint, at) => (walletComplete(mint, at), themeBond(mint, at)),
@@ -1062,6 +1071,22 @@ async function main() {
         e20: fl.e20,
       };
     });
+    // v0.1.115 EARLY: every launch still alive at 2 minutes is read (the same reads as the every-launch books), archived
+    // and followed; the EARLY books trade the read on paper
+    setInterval(() => {
+      if (!fireLive()) return;
+      try {
+        const reads = earlySweep((m: string, now: number) => {
+          const x = fx(m);
+          if (!x) return null;
+          const created = originCreated(m);
+          return { ...x, ds: tapeFeatures(m).ds, og: originAt(m, null, now), dx: created ? dxLive(m, created, now) : null };
+        });
+        for (const r of reads) gridLiveEarly(r.mint, earlyCoin(r.mint, r.at, r.createdAt, r.f) as unknown as GCoin, r.at);
+      } catch (e: any) {
+        console.log("early sweep error", e?.message || e);
+      }
+    }, 5_000);
     // v0.1.108: the desk runs a followed strategy's flow exit on live money with the same read
     import("../src/lib/desk").then((d) => d.setDeskFlow(flowOf)).catch(() => null);
     // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
@@ -1071,7 +1096,7 @@ async function main() {
     setInterval(() => walletsSave(archivePool()).catch(() => 0), 10 * 60_000);
     setInterval(() => {
       if (!on) return void markAlive("firehose", { status: "off until SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN are set" }).catch(() => null);
-      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, otherQuote: fireStats.otherQuoteCreates, runners: runTracked(), ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
+      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, otherQuote: fireStats.otherQuoteCreates, runners: runTracked(), early: `${earlyStats.read}/${earlyStats.seen}`, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
       // v0.1.82: what the firehose saved (curve and pool reads answered from it) and the Dune backfill's progress
       const pctOf = (h: number, r: number) => (h + r ? Math.round((h / (h + r)) * 100) : 0);
       // v0.1.86: coins read with no curve (remembered 30s); a few examples in the log so the cause can be checked
@@ -1191,8 +1216,21 @@ async function main() {
           gridLiveSignals(res.senders?.lifts); // v0.1.110: the SIGNALS family reads the lift table
           console.log(`grid live: ${books.length} strategies trading on live coins (${(books as any).kept} kept, ${(books as any).added} new, ${(books as any).dropped?.length ?? 0} dropped)`);
           await redis().set("rn:grid:view", res, { ex: 3 * 86400 }).catch(() => null);
-          console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed every check (${res.passedBasic} the test alone; luck bar t ${res.nullRun.bar}, ${res.nullRun.lucky}/${res.nullRun.kept} null runs lucky; score AUC ${res.score.test?.auc ?? "-"}, profit score AUC ${res.pscore.test?.auc ?? "-"}, effective N ${res.score.effN}) (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
+          console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed every check (${res.passedBasic} the test alone; luck bar t ${res.nullRun.bar}, ${res.nullRun.lucky}/${res.nullRun.kept} null runs lucky; score AUC ${res.score.test?.auc ?? "-"}, profit score AUC ${res.pscore.test?.auc ?? "-"}, win score edge ${res.wscore.test?.edge ?? "-"} pts, effective N ${res.score.effN}) (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
           await gridAlert(res).catch(() => null);
+        }
+        // v0.1.115 the EARLY search: every launch read at 2 minutes, its own scores, checks and luck bar
+        const eHist = ((await redis().get<number[]>("rn:grid:enull").catch(() => null)) || []) as number[];
+        const er: any = await archiveEarlyGrid(10, { nulls: 2, nullHist: Array.isArray(eHist) ? eHist : [] }).catch((e: any) => ({ early: true, error: String(e?.message || e).slice(0, 200) }));
+        if (er) {
+          if (er.nullHist) await redis().set("rn:grid:enull", er.nullHist).catch(() => null);
+          if (er.rows) {
+            setEarlyModels({ mig: er.score?.model, pft: er.pscore?.model, win: er.wscore?.model });
+            const eb = await gridLiveEarlyBooks(er.rows, er.explore);
+            console.log(`grid early: ${er.coins} reads, ${er.passed} passed every check (${er.passedBasic} the test alone), win score edge ${er.wscore?.test?.edge ?? "-"} pts, ${eb.length} new EARLY books`);
+          } else console.log(`grid early: ${er.why || er.error || "no run"}`);
+          const { nullHist: _nh, ...ev } = er;
+          await redis().set("rn:grid:early", { ...ev, at: Date.now() }, { ex: 3 * 86400 }).catch(() => null);
         }
       } catch (e: any) {
         console.log("grid error", e?.message || e);

@@ -50,6 +50,7 @@ const run = () => [...Array.from({ length: 20 }, () => 0.07 + rnd() * 0.05), ...
   // the live family: the profit score's bands first
   const L = await import("../src/lib/gridlive");
   L.gridLiveReset();
+  g.setWinModel(null); // v0.1.115: the WIN SCORE goes before it (v115test)
   const s1 = L.seedScore(Date.now());
   ok(s1.length >= 2 && s1[0].key.startsWith("pscore10") && s1[1].key.startsWith("pscore20"), `the SCORE family trades the profit score's bands first (${s1.map((b) => b.key.split("|")[0]).join(", ")})`);
   g.setProfitModel({ ...v.pscore.model!, auc: 0.5 });

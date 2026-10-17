@@ -103,6 +103,7 @@ const dump = () => Array.from({ length: 60 }, () => -0.02 + (rnd() - 0.55) * 0.0
   L.gridLiveReset();
   g.setScoreModel(null);
   g.setProfitModel(null); // v0.1.114: the profit score has its own test (v114test)
+  g.setWinModel(null); // v0.1.115: the win score too (v115test)
   ok(L.seedScore(Date.now()).length === 0, "no score yet: no SCORE books");
   g.setScoreModel({ ...sc.model!, auc: 0.5 });
   ok(L.seedScore(Date.now()).length === 0, "a score that ranks no better than a coin flip on the newer calls (AUC under 0.55): not traded");

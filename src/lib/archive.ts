@@ -16,9 +16,9 @@ const on = () => process.env.RATNET_WORKER === "1" && !!process.env.DATABASE_URL
 let pool: any = null;
 let ready = false;
 let initErr = "";
-const Q = { launches: new Map<string, Row>(), ticks: [] as Row[], trades: [] as Row[], trips: [] as Row[] };
-const CAP = { ticks: 60_000, trades: 20_000, trips: 5_000, launches: 20_000 };
-export const archiveStats = { written: { launches: 0, ticks: 0, trades: 0, trips: 0 }, fails: 0, dropped: 0, lastError: "", lastAt: 0 };
+const Q = { launches: new Map<string, Row>(), ticks: [] as Row[], trades: [] as Row[], trips: [] as Row[], early: [] as Row[] };
+const CAP = { ticks: 60_000, trades: 20_000, trips: 5_000, launches: 20_000, early: 10_000 };
+export const archiveStats = { written: { launches: 0, ticks: 0, trades: 0, trips: 0, early: 0 }, fails: 0, dropped: 0, lastError: "", lastAt: 0 };
 
 const SCHEMA = `
 create table if not exists launches (
@@ -47,6 +47,8 @@ create table if not exists trips (
 );
 create index if not exists trips_closed on trips (closed_at);
 create index if not exists trips_build on trips (build);
+create table if not exists early_reads (mint text primary key, at timestamptz not null, created_at timestamptz, f jsonb);
+create index if not exists early_reads_at on early_reads (at);
 `;
 
 /** Connect and create the tables (worker boot). Safe to call when DATABASE_URL is missing: it does nothing. */
@@ -112,6 +114,13 @@ export function archiveLaunch(rec: any) {
     // the full picture only for coins with something to learn from (a read, a call, a tape or a bond); dead launches keep the columns
     data: heavy ? safeJson({ cp: rec.cp, call: rec.call, early: rec.early, tape: rec.tape, g: rec.g, meta: rec.meta, wire: rec.wire, pulse: rec.pulse, devN: rec.devN, devB: rec.devB, socials: { x: !!rec.twitter, tg: !!rec.telegram, web: !!rec.website } }) : null,
   });
+}
+
+// ---- v0.1.115 EARLY: every launch read at 2 minutes old (lib/early.ts), before any call
+const EARLY_COLS = ["mint", "at", "created_at", "f"];
+export function archiveEarly(mint: string, at: number, createdAt: number, f: unknown) {
+  if (!on() || !mint) return;
+  push(Q.early, { mint, at: ts(at), created_at: ts(createdAt), f: safeJson(f) }, CAP.early);
 }
 
 // ---- curve ticks: at most one per coin every 10 seconds (a change is kept, the next one waits)
@@ -266,11 +275,12 @@ export async function archiveFlush() {
       ["trades", Q.trades, TRADE_COLS, "on conflict (id) do nothing"],
       ["trips", Q.trips, TRIP_COLS, "on conflict (book, mint, opened_at) do nothing"],
       ["ticks", Q.ticks, TICK_COLS, ""],
+      ["early", Q.early, EARLY_COLS, "on conflict (mint) do nothing"],
     ] as [keyof typeof archiveStats.written, Row[], string[], string][]) {
       const rows = take(q, 500);
       if (!rows.length) continue;
       try {
-        const res = await insertSafe(name, cols, rows, conflict);
+        const res = await insertSafe(name === "early" ? "early_reads" : name, cols, rows, conflict);
         archiveStats.written[name] += res.ok;
         archiveStats.dropped = (archiveStats.dropped || 0) + res.dropped;
       } catch (e) {
@@ -302,10 +312,11 @@ export async function archiveBoard() {
 export async function archivePrune() {
   if (!ready) return;
   await pool.query(`delete from ticks where at < now() - interval '10 days'`).catch(() => null);
+  await pool.query(`delete from early_reads where at < now() - interval '21 days'`).catch(() => null); // v0.1.115
 }
 
 export function archiveView() {
-  return { on: on(), ready, error: initErr || archiveStats.lastError, queued: Q.launches.size + Q.ticks.length + Q.trades.length + Q.trips.length, ...archiveStats };
+  return { on: on(), ready, error: initErr || archiveStats.lastError, queued: Q.launches.size + Q.ticks.length + Q.trades.length + Q.trips.length + Q.early.length, ...archiveStats };
 }
 
 /** REPLAY over the archive (v0.1.59): every King call with its curve path, every entry rule x exit setting. */
@@ -317,6 +328,18 @@ export async function archiveGrid(days = 14, opts: { nulls?: number; nullHist?: 
   const coins = await loadGrid(pool, days);
   const loadMs = Date.now() - t0;
   return { ...(await runGrid(coins, opts)), loadMs };
+}
+
+/** v0.1.115: the EARLY search (every launch read at 2 minutes, lib/early.ts): its own scores, its own checks. */
+export async function archiveEarlyGrid(days = 10, opts: { nulls?: number; nullHist?: number[] } = {}) {
+  if (!ready) return null;
+  const { runGrid } = await import("./grid");
+  const { loadEarly } = await import("./early");
+  const t0 = Date.now();
+  const coins = await loadEarly(pool, days);
+  const loadMs = Date.now() - t0;
+  if (coins.length < 300) return { early: true, coins: coins.length, loadMs, why: `${coins.length} early reads with a path so far (300 needed)` } as any;
+  return { early: true, ...(await runGrid(coins, { ...opts, fitScore: false })), loadMs };
 }
 
 export async function archiveReplay(days = 14) {
