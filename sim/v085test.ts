@@ -126,9 +126,9 @@ const pk = () => Keypair.generate().publicKey.toBase58();
   const t = await L.gridLiveTend();
   ok(t.revived.length === 2 && t.revived[0] === k2 && t.revived[1] === k3, "the two strategies lost in profit (15 and 23 trips) come back, best record first");
   ok(!t.revived.includes(g.keyOf("p70", "now", exit)) && !t.revived.includes(g.keyOf("p35", "now", exit)), "never one with under 8 trips or one losing");
-  ok(L.gridLiveBooks().filter((b) => b.back).length === 2, "marked as brought back");
+  ok(L.gridLiveBooks().filter((b) => b.back).length === 2, "marked as brought back (v0.1.108: their flow exit twins are not)");
   const books = await L.gridLiveSetBooks(Array.from({ length: 20 }, (_, i) => row(10 + i)) as any);
-  ok(books.filter((b: any) => !b.parent && !b.by && !b.back).length === 16 && books.filter((b: any) => b.back).length === 2, "GRID still gets its 16; the revived ones have their own slots");
+  ok(books.filter((b: any) => !b.parent && !b.by && !b.back && !b.fv).length === 16 && books.filter((b: any) => b.back).length === 2, "GRID still gets its 16; the revived ones have their own slots");
   // the cap
   L.gridLiveReset();
   const many = Array.from({ length: 12 }, (_, j) => Array.from({ length: 9 }, (_, i) => tr(g.keyOf("p70", "now", g.GEXITS[j]), 0.02, j * 100 + i))).flat();

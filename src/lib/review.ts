@@ -2,7 +2,7 @@
 // money did in the last 24 hours, each strategy family's live record and bench, live vs paper, GRID LIVE's exam race
 // and the runners, and the desk's health. The same numbers are public at /api/review (no secrets, no wallet keys).
 // It reads and reports only: it changes nothing (the LIVE BENCH and the exams do that on their own).
-import { flowxStats } from "./flowx";
+import { chooseVariants, flowxStats, learnTable, variantText } from "./flowx";
 import { redis, K } from "./redis";
 import { pmView } from "./pm";
 
@@ -56,6 +56,12 @@ export async function reviewView(now = Date.now()) {
     // v0.1.105: GRID LIVE trips where the flow turned (early buyers or a KOL selling): actual result vs selling then
     xMedia: { posts: xs.length, photo: xs.filter((t) => t.md === "photo").length, video: xs.filter((t) => t.md === "video").length },
     flowExit: flowxStats(((flowx || []) as any[]).filter(Boolean)),
+    // v0.1.108: the FLOW EXIT learner (every variant on the same trips) and what the twin books run now
+    flowLearn: (() => {
+      const table = learnTable(((flowx || []) as any[]).filter(Boolean));
+      const ch = chooseVariants(table);
+      return { learned: ch.learned, picks: ch.picks.map((v) => ({ v, text: variantText(v) })), top: table.slice(0, 5) };
+    })(),
     attention: rpc?.dx ?? null, // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
     origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
     health: { chainUsed: rpc?.day?.used ?? null, chainPace: rpc?.day?.pace ?? null, chainBudget: rpc?.day?.budget ?? null, loopP99: rpc?.loop?.p99 ?? null },
@@ -85,6 +91,8 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `Runners: ${g.runners.books} books, ${g.runners.inProfit} in profit${g.runners.best ? `; best ${esc(g.runners.best.label)} ${sign(r4(g.runners.best.pnl))} SOL over ${g.runners.best.trips}` : ""}`,
     "",
     `<b>Exit flows</b> (paper, measured only): ${v.flowExit.n ? `on ${v.flowExit.n} trips the flow turned; actual ${sign(v.flowExit.actAvg ?? 0)}% a trip, selling then ${sign(v.flowExit.flagAvg ?? 0)}% (better on ${v.flowExit.flagBetter})` : "no trip has seen the flow turn yet"}`,
+    "",
+    `<b>Flow exit learner</b>: ${v.flowLearn.learned ? "learned" : "starting suggestion"}: ${v.flowLearn.picks.map((p) => p.text).join("; ")}${v.flowLearn.top[0]?.n ? `\n• best on record: ${variantText(v.flowLearn.top[0].v)}, ${v.flowLearn.top[0].uplift >= 0 ? "+" : ""}${v.flowLearn.top[0].uplift} pts a trip over ${v.flowLearn.top[0].n} trips (fired ${v.flowLearn.top[0].fired})` : ""}`,
     "",
     `<b>SEER</b>: watching for ${v.seer.armed} coins${v.seer.error ? ` (last error: ${esc(v.seer.error).slice(0, 60)})` : ""}; ${v.seer.matches.length} launches matched in 24h`,
     ...v.seer.matches.slice(0, 5).map((m) => `• ${esc(m.sym || "?")} for "${esc(m.title)}" (tier ${m.tier}, #${m.rank}, by ${m.by})`),

@@ -54,7 +54,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   // GRID's 16 slots do not count the family
   const rows = Array.from({ length: 20 }, (_, i) => ({ key: g.keyOf("bond", "now", { ...exit, initials: 2, trail: 0.4 }) + `#${i}`, filterLabel: "King BOND", filter: "bond", mode: "now", modeLabel: "at the call", exit, test: { n: 40, avgPct: 3 }, pass: false, explore: true })) as any;
   const after = await L.gridLiveSetBooks(rows);
-  ok(after.filter((b: any) => !b.parent && !b.by).length === 16 && after.filter((b: any) => b.parent).length === 7, "GRID still fills 16; the family has its own slots");
+  ok(after.filter((b: any) => !b.parent && !b.by && !b.fv).length === 16 && after.filter((b: any) => b.parent).length === 7, "GRID still fills 16; the family has its own slots");
 
   // ---- the twin: the hot rule on every launch, from the curve alone
   const quotes: any[] = [];

@@ -8,7 +8,7 @@
 // first price 2+ seconds after the signal. Records are kept per strategy, so one that comes back later keeps its record.
 // A strategy that passes the desk's exam here (30 trips, 40%+ won, +10% on a 1 SOL desk, PF 1.2+ without the best
 // trade) is announced on Telegram: the next step is putting the desk on it.
-import { flowxStats, type FlowX } from "./flowx";
+import { chooseVariants, fired, FLOW_SEED, flowxStats, learnTable, parseVariant, TRIGS, variantText, type FlowX, type Trig } from "./flowx";
 import { paperPriority } from "./livecost";
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
@@ -36,12 +36,18 @@ export const setLiveFeatures = (f: typeof LIVE_FX) => (LIVE_FX = f);
 // position notes what selling right then would have made. At its real close the two are set side by side: on the same
 // trips, would the flow exit have done better? (Evidence elsewhere: surges were up an hour later 60% of the time, 6%
 // when the early buyers were exiting.) Nothing changes the trades until this record says so.
-let FLOW_FX: ((mint: string) => { kx: number; e20: number | null } | null) | null = null;
+let FLOW_FX: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
 export const setFlowFeatures = (f: typeof FLOW_FX) => (FLOW_FX = f);
 export const FLOWX_KEY = "rn:gridlive:flowx";
 let FLOWX: FlowX[] = [];
 export const flowxView = () => flowxStats(FLOWX);
 export { flowxStats, type FlowX };
+// v0.1.108 FLOW EXIT: the learner's current picks (twin books run them for real; see seedFlow)
+let FLOW_PICKS: { picks: string[]; learned: boolean; at: number } = { picks: [FLOW_SEED], learned: false, at: 0 };
+export const flowPicks = () => FLOW_PICKS;
+export const flowTable = () => learnTable(FLOWX);
+/** Tests only. */
+export const _flowxSet = (xs: FlowX[]) => (FLOWX = xs);
 const PATH_MS = 62 * 60_000;
 const BOOKS_KEY = "rn:gridlive:books";
 const POS_KEY = "rn:gridlive:pos";
@@ -66,9 +72,12 @@ export type LBook = {
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
+  /** v0.1.108 FLOW EXIT twin: the same strategy as `fxOf`, plus this flow exit variant (lib/flowx.ts) */
+  fv?: string;
+  fxOf?: string;
 };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
-export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null };
+export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean };
 export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string };
 
 let BOOKS: LBook[] = [];
@@ -78,7 +87,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -120,18 +129,20 @@ export async function gridLiveLoad(tries = 5, waitMs = 2000) {
   const r = redis();
   for (let i = 0; i < tries; i++) {
     if (i) await new Promise((res) => setTimeout(res, waitMs));
-    const [b, pos, trips, fills, sp] = await Promise.all([
+    const [b, pos, trips, fills, sp, fxs] = await Promise.all([
       tryRead(() => r.get<LBook[]>(BOOKS_KEY)),
       r.hgetall<Record<string, LPos>>(POS_KEY).catch(() => null),
       tryRead(() => r.lrange<LTrip>(LIVE_TRIPS, 0, 2999)),
       r.hgetall<Record<string, Fill>>(FILLS_KEY).catch(() => null),
       r.get<string[]>(SPAWNED_KEY).catch(() => null),
+      r.lrange<FlowX>(FLOWX_KEY, 0, 1999).catch(() => null), // v0.1.108: the learner's record survives a restart
     ]);
     if (b === FAIL || trips === FAIL) continue;
     loaded = true;
     booksOk = true;
     for (const [k, f] of Object.entries(fills || {})) if (f && typeof f === "object") FILLS.set(k, f as Fill);
     SPAWNED = Array.isArray(sp) ? sp : SPAWNED;
+    if (Array.isArray(fxs) && !FLOWX.length) FLOWX = (fxs as FlowX[]).filter(Boolean);
     // books added while the read was failing (a GRID run, RESEARCHER) join the saved ones instead of replacing them
     const saved = Array.isArray(b) ? (b as LBook[]) : [];
     BOOKS = [...saved, ...BOOKS.filter((x) => !saved.some((y) => y.key === x.key))];
@@ -194,7 +205,7 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
     // never bring back a strategy its own live record already ruled out
     .filter((r) => !dropReason(statOf(r.key)))
     // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16 (v0.1.82: RESEARCHER's too)
-    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent && !b.by && !b.back).length))
+    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent && !b.by && !b.back && !b.fv).length))
     .map((r) => ({
       key: r.key,
       label: `${r.filterLabel}, buy ${r.modeLabel}`,
@@ -316,7 +327,7 @@ export const SEER_SEEDS: string[] = [
 ];
 function seedSeer(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = SEER_MAX - BOOKS.filter((b) => b.by === "seer").length;
+  let room = SEER_MAX - BOOKS.filter((b) => b.by === "seer" && !b.fv).length;
   for (const k of SEER_SEEDS) {
     if (room <= 0) break;
     if (BOOKS.some((b) => b.key === k)) continue;
@@ -422,7 +433,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
       const mine = TRIPS.filter((t) => t.k === b.key);
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation });
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv });
     } catch {}
   }
 }
@@ -441,9 +452,11 @@ function close(k: string, pos: LPos, now: number, why: string) {
   POS.delete(k);
   const pnl = pos.back - pos.cost;
   const t: LTrip = { k: pos.key, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / pos.cost) * 1000) / 10, why };
-  if (pos.fx) {
-    // v0.1.105: the same trip, had it sold when the flow turned
-    const fx: FlowX = { k: pos.key, mint: pos.mint, at: now, act: t.pnlPct, flag: pos.fx.pct, why: pos.fx.why };
+  if (pos.f0 && pos.f0.kx != null) {
+    // (a coin whose flow is unknown, not seen from its create, is left out of the record)
+    // v0.1.105: the same trip, had it sold when the flow turned. v0.1.108: every flow-watched trip is kept (also those
+    // where nothing fired: they count for every variant at their actual result), with a note per trigger
+    const fx: FlowX = { k: pos.key, mint: pos.mint, at: now, act: t.pnlPct, flag: pos.fx ? pos.fx.pct : t.pnlPct, why: pos.fx ? pos.fx.why : "none", fl: pos.fl || {} };
     FLOWX = [fx, ...FLOWX].slice(0, 2000);
     redis().lpush(FLOWX_KEY, fx).then(() => redis().ltrim(FLOWX_KEY, 0, 1999)).catch(() => null);
   }
@@ -461,15 +474,26 @@ function flowNow(mint: string) {
     return null;
   }
 }
+/** The flow after the buy: each trigger notes, the first time it fires, what selling the rest right then would make. */
 function flowCheck(k: string, pos: LPos, px: number, now: number) {
   const f = flowNow(pos.mint);
-  if (!f) return;
-  const f0 = pos.f0 || { kx: 0, e20: null };
-  const why = f.kx > f0.kx ? "kol" : f.e20 != null && f.e20 >= 0.5 && (f0.e20 == null || f0.e20 < 0.5) ? "e20" : null;
-  if (!why) return;
-  const back = pos.back + (pos.tokens > 1e-12 ? sellProceeds(pos.tokens, px, !!pos.pool, pos.lastReal, COST, true) : 0);
-  pos.fx = { at: now, pct: Math.round(((back - pos.cost) / pos.cost) * 1000) / 10, why };
-  redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
+  if (!f) return null;
+  const fl = (pos.fl ||= {});
+  let changed = false;
+  let pct: number | null = null;
+  for (const t of TRIGS) {
+    if (fl[t.id] != null || !fired(t.id, pos.f0, f)) continue;
+    if (pct == null) {
+      const back = pos.back + (pos.tokens > 1e-12 ? sellProceeds(pos.tokens, px, !!pos.pool, pos.lastReal, COST, true) : 0);
+      pct = Math.round(((back - pos.cost) / pos.cost) * 1000) / 10;
+    }
+    fl[t.id] = pct;
+    changed = true;
+  }
+  // v0.1.105's single note (the earliest of: a KOL sold, half of the first 20 sold)
+  if (!pos.fx && (fl.kol1 != null || fl.e50 != null)) pos.fx = { at: now, pct: (fl.kol1 ?? fl.e50)!, why: fl.kol1 != null ? "kol" : "e20" };
+  if (changed) redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
+  return f;
 }
 
 function stepPos(k: string, pos: LPos, now: number) {
@@ -491,7 +515,15 @@ function stepPos(k: string, pos: LPos, now: number) {
   if (!(px > 0)) return;
   pos.lastPx = px;
   pos.lastReal = last.real;
-  if (!pos.fx && pos.f0 !== undefined) flowCheck(k, pos, px, now);
+  const flow = pos.f0 !== undefined ? flowCheck(k, pos, px, now) : null;
+  // v0.1.108 FLOW EXIT: a twin book runs its variant for real (sell half or all when its trigger fires)
+  const fv = b?.fv ? parseVariant(b.fv) : null;
+  if (fv && !pos.fd && fired(fv.trig, pos.f0, flow)) {
+    pos.fd = true;
+    if (fv.share >= 1) return close(k, pos, now, `FLOW EXIT: ${variantText(b!.fv!)}`);
+    sell(pos, fv.share, px, last.real);
+    redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
+  }
   if (px > pos.peak) pos.peak = px;
   const xr = px / pos.fillPx;
   if (!pos.initials && xr >= x.initials) {
@@ -524,7 +556,7 @@ export function gridLiveQuote(mint: string, q: { mcSol: number; real: number }, 
 
 // a position whose book was dropped keeps its exit (it is in the key; v0.1.89: runner exits too)
 function exitOfKey(key: string): GExit | null {
-  return exitOfPart(key.replace(/^any:/, "").split("|")[2]);
+  return exitOfPart(key.replace(/^any:/, "").replace(/~fx:.*$/, "").split("|")[2]);
 }
 
 /** Every 10 seconds: the 2-minute entries, time exits on coins that stopped trading, the end of the hour. */
@@ -729,8 +761,44 @@ const fillView = (key: string) => {
 // ---------------------------------------------------------------- v0.1.78: spawn (variants and every-launch twin)
 
 /** The hot strategy: the best live record that is clearly working but not yet through the exam. */
+// ---------------------------------------------------------------- v0.1.108 FLOW EXIT twins
+// The learner (lib/flowx.ts) scores every flow exit variant on the latest paper trips of all books. Its picks (or our
+// suggestion until the record has enough trips) run for real on twins of the strongest books: the same entries, the
+// same exits, plus the flow exit. A twin is a strategy like any other: its own record, its own exam; the desk follows
+// one only if it passes. When the learner's picks change, new twins start; a twin of a dropped pick with under 10
+// trips makes room.
+export const FLOW_MAX = 8;
+const FLOW_PARENTS = 4;
+export function seedFlow(now: number) {
+  const table = learnTable(FLOWX);
+  const prev = FLOW_PICKS.picks.join(",");
+  FLOW_PICKS = { ...chooseVariants(table), at: now };
+  const changed = FLOW_PICKS.picks.join(",") !== prev;
+  // twins of a variant the learner no longer picks, still young: they make room
+  const stale = BOOKS.filter((b) => b.fv && !FLOW_PICKS.picks.includes(b.fv) && TRIPS.filter((t) => t.k === b.key).length < 10);
+  if (stale.length) BOOKS = BOOKS.filter((b) => !stale.includes(b));
+  const parents = BOOKS.filter((b) => !b.fv && !b.parent)
+    .map((b) => ({ b, s: statOf(b.key) }))
+    .filter((x) => x.b.key === LEADER || x.s.n >= 10)
+    .sort((a, z) => Number(z.b.key === LEADER) - Number(a.b.key === LEADER) || z.s.pnl - a.s.pnl)
+    .slice(0, FLOW_PARENTS);
+  const out: LBook[] = [];
+  let room = FLOW_MAX - BOOKS.filter((b) => b.fv).length;
+  for (const v of FLOW_PICKS.picks)
+    for (const { b } of parents) {
+      if (room <= 0) break;
+      const key = `${b.key}~fx:${v}`;
+      if (BOOKS.some((x) => x.key === key)) continue;
+      if (dropReason(statOf(key))) continue;
+      out.push({ ...b, key, label: `${b.label} + ${variantText(v)}`, fv: v, fxOf: b.key, parent: undefined, back: undefined, since: now });
+      room--;
+    }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return { added: out, dropped: stale, changed, table: table.slice(0, 5) };
+}
+
 export function hotBook(): LBook | null {
-  const c = BOOKS.filter((b) => !b.parent && !b.any && !isRunner(b.exit)) // v0.1.89: runners have no exit family
+  const c = BOOKS.filter((b) => !b.parent && !b.fv && !b.any && !isRunner(b.exit)) // v0.1.89: runners have no exit family
     .map((b) => ({ b, s: statOf(b.key) }))
     .filter((x) => x.s.n >= 12 && x.s.pnl > 0 && x.s.pfLessBest >= 1.2 && x.s.avgPct >= 5)
     .sort((a, z) => z.s.pnl - a.s.pnl);
@@ -769,6 +837,10 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const wals = seedWallets(now);
   // v0.1.102: the SEER family: coins on the watchlist before they were launched, bought in their first seconds
   const seers = seedSeer(now);
+  // v0.1.108: the FLOW EXIT twins follow the learner's picks
+  const fl = seedFlow(now);
+  if ((fl.added.length || fl.changed) && send)
+    await send(`🌊 <b>GRID LIVE: flow exit</b>\n${FLOW_PICKS.learned ? "Learned from the record" : "Our starting suggestion (the record needs 30+ trips with the trigger firing 10+ times)"}: ${FLOW_PICKS.picks.map(variantText).join("; ")}\n${fl.table.slice(0, 3).map((s) => `• ${variantText(s.v)}: ${s.uplift >= 0 ? "+" : ""}${s.uplift} pts a trip over ${s.n} trips (fired ${s.fired}, better ${s.better})`).join("\n")}${fl.added.length ? `\n\nNew twins: ${fl.added.map((b) => b.label.replace(/[<>&]/g, " ")).join("; ")}` : ""}`).catch(() => null);
   if (seers.length && send) await send(`🔮 <b>GRID LIVE: SEER family</b>\n${seers.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nCoins SEER put on its watchlist before they existed (events, big posts, trends), bought in their first seconds. Paper on live coins. Probation exam: ${SEER_PROBATION} trips in profit, also without the 2 best, then the desk may follow at the minimum size.`).catch(() => null);
   if (wals.length && send) await send(`👛 <b>GRID LIVE: proven wallets on every launch</b>\n${wals.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nThe moment proven wallets buy a launch (from the firehose, any launch, no King call needed). Paper on live coins.`).catch(() => null);
   if (runners.length && send) await send(`🏃 <b>GRID LIVE: runner mode</b>\n${runners.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}\n  ${exitText(b.exit)}`).join("\n")}\n\nPaper on live coins. The runner exam: ${RUNNER_MIN}+ trips, in profit, and still in profit without its 2 best.`).catch(() => null);
@@ -789,7 +861,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || BOOKS.length !== before) await saveBooks();
+  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
@@ -849,7 +921,7 @@ export const RUNNER_SEEDS: string[] = [
 ];
 function seedRunners(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = RUNNER_MAX - BOOKS.filter((b) => b.by === "runner").length;
+  let room = RUNNER_MAX - BOOKS.filter((b) => b.by === "runner" && !b.fv).length;
   for (const k of RUNNER_SEEDS) {
     if (room <= 0) break;
     if (BOOKS.some((b) => b.key === k)) continue;
@@ -880,7 +952,7 @@ export const WALLET_SEEDS: string[] = [
 ];
 function seedWallets(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = WALLETS_MAX - BOOKS.filter((b) => b.by === "wallets").length;
+  let room = WALLETS_MAX - BOOKS.filter((b) => b.by === "wallets" && !b.fv).length;
   for (const k of WALLET_SEEDS) {
     if (room <= 0) break;
     if (BOOKS.some((b) => b.key === k)) continue;
@@ -908,7 +980,7 @@ function refreshCheck() {
 // ---------------------------------------------------------------- v0.1.82: RESEARCHER's books
 export const RESEARCH_MAX = 4;
 /** Books RESEARCHER may still add, and whether a key may be added (not trading now, not ruled out by its record). */
-export const researchRoom = () => Math.max(0, RESEARCH_MAX - BOOKS.filter((b) => b.by === "researcher").length);
+export const researchRoom = () => Math.max(0, RESEARCH_MAX - BOOKS.filter((b) => b.by === "researcher" && !b.fv).length);
 export function researchOk(key: string) {
   if (BOOKS.some((b) => b.key === key)) return "already trading";
   const ts = TRIPS.filter((t) => t.k === key);
@@ -949,6 +1021,8 @@ export function gridLiveReset() {
   QUEUE.length = 0;
   SPAWNED = [];
   LEADER = null;
+  FLOWX = [];
+  FLOW_PICKS = { picks: [FLOW_SEED], learned: false, at: 0 };
   loaded = true;
   booksOk = true;
 }

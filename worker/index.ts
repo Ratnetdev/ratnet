@@ -1025,10 +1025,13 @@ async function main() {
         .catch(() => null);
     loadKols();
     setInterval(loadKols, 30 * 60_000);
-    setFlowFeatures((m: string) => {
+    const flowOf = (m: string) => {
       const fl = flowFeatures(m);
-      return { kx: kolCount() > 0 ? fl.kx ?? 0 : 0, e20: fl.e20 };
-    });
+      return { kx: kolCount() > 0 ? fl.kx : null, e20: fl.e20 };
+    };
+    setFlowFeatures(flowOf);
+    // v0.1.108: the desk runs a followed strategy's flow exit on live money with the same read
+    import("../src/lib/desk").then((d) => d.setDeskFlow(flowOf)).catch(() => null);
     // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
     // while PumpPortal is connected, so they are pruned here too (old launch logs, quotes older than 2 minutes)
     setInterval(() => pruneStream(new Set()), 30_000);

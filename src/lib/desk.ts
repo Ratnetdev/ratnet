@@ -10,6 +10,7 @@
 // - Early entries: the minute-1 model's calls are shadowed until its record matches the minute-5 King.
 // - COACH: watches every coin after the desk sold it and retunes the trail from what really happened.
 
+import { fired, parseVariant, variantText } from "./flowx";
 import { paperPriority, noteLiveFee } from "./livecost";
 import { sizePlan, KELLY_MIN_TRIPS, type SizeCfg } from "./sizing";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
@@ -114,6 +115,7 @@ export type Pos = {
   pv?: string; // v0.1.66: the promoted ARENA variant the desk followed into this trade
   gk?: string; // v0.1.75: the GRID LIVE strategy (key) the desk followed into this trade
   gx?: GExit; // v0.1.75: that strategy's exits (exactly as GRID tested them; lib/grid.ts)
+  gf?: { v: string; f0: { kx: number | null; e20: number | null } | null; done?: boolean }; // v0.1.108: its flow exit
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
   watch?: Watch[]; // insider token accounts and their balance at entry
@@ -1752,7 +1754,15 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           const lastS = p.series[p.series.length - 1];
           if (!lastS || now - lastS[0] >= 10_000) p.series.push([now, q.px, q.real]);
           if (p.series.length > 360) p.series = p.series.slice(-360);
-          const g = gridExit(p, { px: q.px, grad: !!q.grad && q.src !== "dex" }, now);
+          let g = gridExit(p, { px: q.px, grad: !!q.grad && q.src !== "dex" }, now);
+          // v0.1.108: its flow exit (sell half or all once, when the trigger fires after the buy)
+          if (!g.frac && p.gf && !p.gf.done) {
+            const fv = parseVariant(p.gf.v);
+            if (fv && fired(fv.trig, p.gf.f0, deskFlow(p.mint))) {
+              p.gf.done = true;
+              g = { frac: fv.share, why: `GRID: FLOW EXIT, ${variantText(p.gf.v)}` };
+            }
+          }
           if (g.frac > 0 && q.grad) p.gradSeen = true;
           return { sellFrac: g.frac, reason: g.why, tunable: false, lv: p.msHi ?? -1 };
         }
@@ -2818,7 +2828,18 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
 
 // v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
 // the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
-export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean };
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string };
+// v0.1.108 FLOW EXIT: the worker hands the desk the coin's flow (KOLs that sold, first 20 buyers that sold), so a
+// strategy with a flow exit runs it on live money exactly as its twin ran it on paper
+let DESK_FLOW: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
+export const setDeskFlow = (f: typeof DESK_FLOW) => (DESK_FLOW = f);
+const deskFlow = (mint: string) => {
+  try {
+    return DESK_FLOW ? DESK_FLOW(mint) : null;
+  } catch {
+    return null;
+  }
+};
 const GRID_ORDERS: GridOrder[] = [];
 export function queueGridOrder(o: GridOrder) {
   GRID_ORDERS.push(o);
@@ -2861,6 +2882,7 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     if (!pos) return;
     pos.gk = o.key;
     pos.gx = o.exit;
+    if (o.fv) pos.gf = { v: o.fv, f0: deskFlow(o.mint) };
     await savePos(K.deskPos, pos, true);
     log(b, "REGIME", `$${o.symbol}: following GRID LIVE's "${o.label}" (${size.toFixed(3)} SOL), its exits run the position`, "ok", coin);
   } finally {
