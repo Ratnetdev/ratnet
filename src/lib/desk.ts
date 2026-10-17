@@ -2830,7 +2830,7 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
 
 // v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
 // the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
-export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string };
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number };
 // v0.1.108 FLOW EXIT: the worker hands the desk the coin's flow (KOLs that sold, first 20 buyers that sold), so a
 // strategy with a flow exit runs it on live money exactly as its twin ran it on paper
 let DESK_FLOW: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
@@ -2867,7 +2867,9 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     const liqCap = fresh.grad ? cfg.maxSol : vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
     // v0.1.95 COMPOUNDING SIZE: the leader passed its exam, so its own record sets its share of the bank
     const plan = o.probation ? null : sizePlan(o.pcts, cfg as SizeCfg);
-    const pct = plan ? plan.pct : cfg.sizePct;
+    // v0.1.120: a TICK order carries how strong its prediction was (0.5x to 2x the planned size, the caps below still apply)
+    const mult = o.mult && Number.isFinite(o.mult) ? Math.max(0.5, Math.min(2, o.mult)) : 1;
+    const pct = (plan ? plan.pct : cfg.sizePct) * mult;
     // v0.1.102: a SEER book on probation (passed on 15+ trips, not yet the full exam) trades the minimum size only
     const size = o.probation ? Math.min(cfg.minSol, liqCap, avail * 0.95) : Math.min(cfg.maxSol, Math.max(cfg.minSol, (eqValue * pct) / 100), liqCap, avail * 0.95);
     if (size < cfg.minSol * 0.99) return log(b, "SIZE", `no room for $${o.symbol}: ${avail.toFixed(3)} SOL free`, "info", coin);

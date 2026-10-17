@@ -8,7 +8,7 @@ import CoinImg from "./CoinImg";
 
 type L = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; runner?: boolean; total?: number; totalPnl?: number; lessTop2?: number };
 type Fills = { buyN: number; buyGap: number; sellN: number; sellGap: number; noRoute: number; blocked: boolean };
-type Book = { key: string; label: string; exitLabel: string; since: number; total?: number; any?: boolean; parent?: string; by?: string; why?: string; fills?: Fills | null; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean }; open: { mint: string; symbol: string; openedAt?: number; pnlPct: number }[]; watching: number; live: L };
+type Book = { key: string; label: string; exitLabel: string; since: number; total?: number; any?: boolean; parent?: string; by?: string; why?: string; cold?: { at: number; why: string } | null; fills?: Fills | null; grid: { testN: number; testAvg: number; pass: boolean; explore?: boolean }; open: { mint: string; symbol: string; openedAt?: number; pnlPct: number }[]; watching: number; live: L };
 type Trip = { k: string; mint: string; symbol: string; openedAt?: number; closedAt: number; pnlPct: number; why: string };
 export type GridLiveView = { at: number | null; books?: Book[]; recent?: Trip[]; trips?: number; follow?: { key: string; label: string; exitLabel: string } | null; hot?: string | null };
 
@@ -90,6 +90,7 @@ export default function GridLiveBoard({ embedded = false, show = "all" }: { embe
                     {b.any ? <span className="tag" style={{ color: "var(--rat)", marginRight: 6 }}>EVERY LAUNCH</span> : b.parent ? <span className="tag" style={{ marginRight: 6 }}>VARIANT</span> : null}
                     {b.live.runner ? <span className="tag" style={{ color: "var(--gold, #ffb547)", marginRight: 6 }}>RUNNER</span> : null}
                     {b.by === "wallets" ? <span className="tag" style={{ color: "var(--rat)", marginRight: 6 }}>WALLETS</span> : null}
+                    {b.cold ? <span className="tag" title={`cold since ${new Date(b.cold.at).toISOString().slice(0, 16)}: ${b.cold.why}. Keeps trading on paper until it is 7 days old`} style={{ color: "var(--dim)", marginRight: 6 }}>COLD</span> : null}
                     {b.by === "researcher" ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>RESEARCHER</span> : !b.live.passed && b.grid.explore && !b.parent && d.hot !== b.key ? <span className="tag" style={{ color: "var(--watch)", marginRight: 6 }}>EXPLORING</span> : null}
                     <b>{b.label}</b>
                     {b.why ? <div className="tiny mute2" style={{ fontStyle: "italic" }}>{b.why}</div> : null}
@@ -106,7 +107,7 @@ export default function GridLiveBoard({ embedded = false, show = "all" }: { embe
                   <td style={{ color: col(b.live.avgPct) }}>{b.live.n ? `${sgn(b.live.avgPct)}%` : "–"}</td>
                   <td>{b.live.n ? pf(b.live.pfLessBest) : "–"}</td>
                   <td>{b.open.length ? b.open.map((o) => <div key={o.mint} className="tiny" style={{ color: col(o.pnlPct) }}>{o.symbol} {sgn(o.pnlPct)}%</div>) : "–"}</td>
-                  <td className="tiny">{b.by === "runner" ? "runner mode" : b.by === "wallets" ? "proven wallets, every launch" : b.by === "score" ? "GRID SCORE, every signal combined" : b.by === "signals" ? "SIGNALS: a new rule with lift" : b.by === "seer" ? "SEER, foreseen" : b.by ? "proposed by RESEARCHER" : !b.grid.testN && !b.grid.pass ? "not in the latest GRID run" : <>{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : b.grid.explore ? " · exploring" : ""}</>}</td>
+                  <td className="tiny">{b.by === "runner" ? "runner mode" : b.by === "wallets" ? "proven wallets, every launch" : b.by === "tick" ? "TICK MODEL, every live coin" : b.by === "early" ? "EARLY read" : b.by === "score" ? "GRID SCORE, every signal combined" : b.by === "signals" ? "SIGNALS: a new rule with lift" : b.by === "seer" ? "SEER, foreseen" : b.by ? "proposed by RESEARCHER" : !b.grid.testN && !b.grid.pass ? "not in the latest GRID run" : <>{b.grid.testN} trips, <span style={{ color: col(b.grid.testAvg) }}>{sgn(b.grid.testAvg)}%</span>{b.grid.pass ? " · passed" : b.grid.explore ? " · exploring" : ""}</>}</td>
                 </tr>
               ))}
             </tbody>

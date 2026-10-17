@@ -10,6 +10,7 @@
 // trade) is announced on Telegram: the next step is putting the desk on it.
 import { chooseVariants, fired, FLOW_SEED, flowxStats, learnTable, parseVariant, TRIGS, variantText, type FlowX, type Trig } from "./flowx";
 import { paperPriority } from "./livecost";
+import { HORIZONS, tickReady } from "./tick";
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
@@ -22,6 +23,7 @@ export const LIVE_MAX_BOOKS = 16; // v0.1.73: 8 to 16 (paper costs nothing; more
 const MAX_OPEN = 10; // per book
 const MAX_OPEN_ANY = 25; // v0.1.78: a twin on every launch sees many more entries (and holds up to 6h)
 const MAX_OPEN_RUN = 40; // v0.1.89: runners hold up to 24h (most coins hit the stop within the hour)
+const MAX_OPEN_TICK = 40; // v0.1.120: TICK books make many small bets
 export const SPAWN_MAX = 8; // v0.1.78: variants and twins of the hot strategy, on top of GRID's 16
 const SPAWNED_KEY = "rn:gridlive:spawned";
 const FILLS_KEY = "rn:gridlive:fills";
@@ -68,11 +70,15 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick";
   /** v0.1.115: an EARLY book: trades the 2-minute read of every launch (lib/early.ts), never a King call */
   early?: boolean;
   /** v0.1.117: the reading age it trades (seconds; 120 when not set) */
   earlySec?: number;
+  /** v0.1.120 NO QUICK KILLS: its record says drop, but it is younger than BOOK_KEEP_DAYS: it keeps trading on paper (outside the slot counts) until then */
+  cold?: { at: number; why: string } | null;
+  /** v0.1.120 TICK: a TICK MODEL book (horizon minutes, margin over cost) */
+  tick?: { h: number; m: number };
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -80,7 +86,7 @@ export type LBook = {
   fv?: string;
   fxOf?: string;
 };
-type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
+type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null; mult?: number };
 export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean };
 export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string };
 
@@ -91,7 +97,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -204,20 +210,49 @@ export function dropReason(l: LStat): string | null {
   return null;
 }
 export const EXTEND_MAX = 60;
+/**
+ * v0.1.120 NO QUICK KILLS (Stan, 17 Oct): a strategy is not thrown out after an hour or a day of bad trips; narratives
+ * fade, strategies need time. A book whose record says drop but that is younger than BOOK_KEEP_DAYS (default 7) turns
+ * COLD: it keeps trading on paper, outside every family's slot count (new candidates still get their slots), and turns
+ * warm again the moment its record recovers. Only after BOOK_KEEP_DAYS is it removed (its trips stay, a revive can bring
+ * it back). Live money was never the question: the desk only follows strategies that pass the exam.
+ */
+export const KEEP_MS = () => Math.max(0, Number(process.env.BOOK_KEEP_DAYS ?? 7) || 0) * 86400_000;
+export const COLD_MAX = () => Math.max(0, Number(process.env.COLD_MAX ?? 250) || 0);
+const young = (b: Pick<LBook, "since">, now: number) => now - (Number(b.since) || 0) < KEEP_MS();
+/** Sort the books: what to drop (old and ruled out), what goes cold (young and ruled out), what warms up again. */
+function coolOff(now: number) {
+  const out: LBook[] = [];
+  for (const b of BOOKS) {
+    const why = dropReason(statOf(b.key));
+    if (!why) {
+      if (b.cold) b.cold = null;
+      continue;
+    }
+    if (young(b, now)) {
+      if (!b.cold) b.cold = { at: now, why };
+    } else out.push(b);
+  }
+  // past COLD_MAX cold books, the ones cold the longest go first
+  const cold = BOOKS.filter((b) => b.cold && !out.includes(b)).sort((a, z) => a.cold!.at - z.cold!.at);
+  for (const b of cold.slice(0, Math.max(0, cold.length - COLD_MAX()))) out.push(b);
+  return out;
+}
 /** v0.1.82: near the exam on its last 30 trips: worth more trips (a rolling window, the next trades can pass it). */
 export const closeToPass = (l: LStat) => l.winRate >= 40 && l.pnl > 0 && l.pfLessBest >= 1.0;
 const statOf = (key: string) => bookStat(BOOKS.find((b) => b.key === key) ?? { grid: { testN: 0, testAvg: 0, pass: false } }, TRIPS.filter((t) => t.k === key));
 
 export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
   if (!booksOk) await gridLiveLoad(1, 0).catch(() => false); // v0.1.85: never decide on a list that was not read
-  const keep = BOOKS.filter((b) => !dropReason(statOf(b.key)));
-  const dropped = BOOKS.filter((b) => !keep.includes(b)).map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) }));
+  const out = coolOff(now); // v0.1.120: young ruled-out books go cold, they are not dropped
+  const keep = BOOKS.filter((b) => !out.includes(b));
+  const dropped = out.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) }));
   const fresh = rows
     .filter((r) => !keep.some((b) => b.key === r.key))
     // never bring back a strategy its own live record already ruled out
     .filter((r) => !dropReason(statOf(r.key)))
     // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16 (v0.1.82: RESEARCHER's too)
-    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.parent && !b.by && !b.back && !b.fv).length))
+    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.cold && !b.parent && !b.by && !b.back && !b.fv).length))
     .map((r) => ({
       key: r.key,
       label: `${r.filterLabel}, buy ${r.modeLabel}`,
@@ -239,7 +274,10 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
 }
 
 const curveOnly = (filter: string) => filter !== "all" && filter.split("+").every((x) => CURVE_ONLY.has(x));
-const filterOk = (filter: string, c: GCoin) => filter === "all" || filter.split("+").every((id) => PREDS.find((p) => p.id === id)?.ok(c) ?? false);
+// v0.1.120: rules by id (cold books keep trading, so more books read every curve update: no linear search per rule)
+let PRED_BY: Map<string, (typeof PREDS)[number]> | null = null;
+const predOf = (id: string) => (PRED_BY ??= new Map(PREDS.map((p) => [p.id, p]))).get(id);
+const filterOk = (filter: string, c: GCoin) => filter === "all" || filter.split("+").every((id) => predOf(id)?.ok(c) ?? false);
 const id = (key: string, mint: string) => `${key}#${mint}`;
 
 /** A King call was made (digger). Every book whose filter takes it starts watching for its entry. */
@@ -297,7 +335,7 @@ export function gridLiveCall(call: any, now = Date.now()) {
     if (CALLS.size > 500) CALLS.delete(CALLS.keys().next().value as string);
   }
   for (const b of BOOKS) {
-    if (b.any || b.early) continue; // twins trigger on the curve itself (gridLiveCurve); EARLY books on the 2-minute read
+    if (b.any || b.early || b.tick) continue; // twins trigger on the curve itself (gridLiveCurve); EARLY books on the 2-minute read; TICK books on the model
     if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;
     if (!filterOk(b.filter, c)) continue;
     const m = MODES.find((x) => x.id === b.mode);
@@ -360,7 +398,7 @@ export const SEER_SEEDS: string[] = [
 ];
 function seedSeer(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = SEER_MAX - BOOKS.filter((b) => b.by === "seer" && !b.fv).length;
+  let room = SEER_MAX - BOOKS.filter((b) => !b.cold && b.by === "seer" && !b.fv).length;
   for (const k of SEER_SEEDS) {
     if (room <= 0) break;
     if (BOOKS.some((b) => b.key === k)) continue;
@@ -455,7 +493,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (now < pe.fillAfter) return;
   PEND.delete(k);
   const open = [...POS.values()].filter((p) => p.key === b.key).length;
-  if (open >= (b.any || b.early ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN)) return;
+  if (open >= (b.tick ? MAX_OPEN_TICK : b.any || b.early ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN)) return;
   const px0 = last.px / 1e9;
   if (!(px0 > 0)) return;
   const sol = GRID_SOL;
@@ -469,7 +507,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
       const mine = TRIPS.filter((t) => t.k === b.key);
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv });
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv, ...(pe.mult ? { mult: pe.mult } : {}) });
     } catch {}
   }
 }
@@ -846,7 +884,7 @@ export function seedFlow(now: number) {
     .sort((a, z) => Number(z.b.key === LEADER) - Number(a.b.key === LEADER) || z.s.pnl - a.s.pnl)
     .slice(0, FLOW_PARENTS);
   const out: LBook[] = [];
-  let room = FLOW_MAX - BOOKS.filter((b) => b.fv).length;
+  let room = FLOW_MAX - BOOKS.filter((b) => !b.cold && b.fv).length;
   for (const v of FLOW_PICKS.picks)
     for (const { b } of parents) {
       if (room <= 0) break;
@@ -891,7 +929,7 @@ function spawnOf(hot: LBook, now: number): LBook[] {
 export async function gridLiveTend(send?: (text: string) => Promise<unknown>, now = Date.now()) {
   if (!booksOk && !(await gridLiveLoad(1, 0).catch(() => false))) return { dropped: [], added: [], revived: [], hot: null, wait: "books not read from Redis yet" };
   const before = BOOKS.length;
-  const dropped = BOOKS.filter((b) => dropReason(statOf(b.key)));
+  const dropped = coolOff(now); // v0.1.120: young ruled-out books go cold instead
   BOOKS = BOOKS.filter((b) => !dropped.includes(b));
   const revived = reviveBooks(now);
   // v0.1.89: the RUNNER family trades on live coins from the first tend (its own slots)
@@ -902,6 +940,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const seers = seedSeer(now);
   // v0.1.110: the SIGNALS family follows GRID's lift table
   const sigs = seedSignals(now);
+  // v0.1.120: the TICK family, once a horizon's model is warm
+  const tks = seedTick(now, tickReady, HORIZONS);
+  if (tks.length && send) await send(`📈 <b>GRID LIVE: TICK MODEL books</b>\n${tks.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nThe model learns from every moment of every live coin and buys when its prediction beats the coin's costs. Paper on live coins; the exam decides.`).catch(() => null);
   // v0.1.112: the SCORE family, once GRID has fitted a score
   const scs = seedScore(now);
   if (scs.length && send) await send(`🧮 <b>GRID LIVE: GRID SCORE on live calls</b>\n${scs.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nEvery signal combined into one score (each weighted by what it adds that the others do not), fitted on the older calls. Paper on live coins; the exam decides.`).catch(() => null);
@@ -917,7 +958,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const hot = hotBook();
   let added: LBook[] = [];
   if (hot && !SPAWNED.includes(hot.key)) {
-    const room = SPAWN_MAX - BOOKS.filter((b) => b.parent).length;
+    const room = SPAWN_MAX - BOOKS.filter((b) => !b.cold && b.parent).length;
     added = spawnOf(hot, now)
       .filter((b) => !BOOKS.some((x) => x.key === b.key) && !dropReason(statOf(b.key)))
       .slice(0, Math.max(0, room));
@@ -943,7 +984,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (eAdded.length || dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || sigs.length || scs.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
+  if (tks.length || eAdded.length || dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || sigs.length || scs.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
@@ -972,7 +1013,7 @@ function reviveBooks(now: number): LBook[] {
   const byKey = new Map<string, LTrip[]>();
   for (const t of TRIPS) (byKey.get(t.k) || byKey.set(t.k, []).get(t.k)!).push(t);
   const out: LBook[] = [];
-  let room = REVIVE_MAX - BOOKS.filter((b) => b.back).length;
+  let room = REVIVE_MAX - BOOKS.filter((b) => !b.cold && b.back).length;
   // the best records first (the cap keeps the strongest)
   const cands = [...byKey]
     .filter(([k]) => !BOOKS.some((b) => b.key === k))
@@ -1019,7 +1060,7 @@ let ANY_SX: ((mint: string, now: number) => { sx: Record<string, unknown>; kf?: 
 export const setAnySignals = (f: typeof ANY_SX) => (ANY_SX = f);
 export function seedSignals(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = SIGNAL_MAX - BOOKS.filter((b) => b.by === "signals" && !b.fv).length;
+  let room = SIGNAL_MAX - BOOKS.filter((b) => !b.cold && b.by === "signals" && !b.fv).length;
   const rules = SIG_LIFTS.filter((l) => l.calls >= 30 && l.lift >= 1.5).sort((a, z) => z.lift - a.lift);
   for (const r of rules) {
     const keys = [keyOf(r.id, "now", RUNNER_EXITS[0]), ...(SIGNAL_ANY.has(r.id) ? [`any:${keyOf(r.id, "now", RUNNER_EXITS[0])}`] : [])];
@@ -1056,7 +1097,7 @@ const scoreWorthy = (k: string) => {
 export const SCORE_MIN_AUC = 0.55;
 export function seedScore(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = SCORE_MAX - BOOKS.filter((b) => b.by === "score" && !b.fv).length;
+  let room = SCORE_MAX - BOOKS.filter((b) => !b.cold && b.by === "score" && !b.fv).length;
   for (const k of SCORE_SEEDS) {
     if (room <= 0) break;
     if (!scoreWorthy(k)) continue;
@@ -1092,7 +1133,7 @@ export async function gridLiveEarlyBooks(rows: GRow[], explore: GRow[] = [], now
   if (!booksOk) await gridLiveLoad(1, 0).catch(() => false);
   if (!booksOk) return [];
   const pre = earlyPrefix(sec);
-  const mine = BOOKS.filter((b) => b.early && !b.fv && !b.parent && secOf(b) === sec);
+  const mine = BOOKS.filter((b) => !b.cold && b.early && !b.fv && !b.parent && secOf(b) === sec);
   // a kept EARLY book gets its newest numbers
   for (const b of mine) {
     const r = [...rows, ...explore].find((x) => `${pre}${x.key}` === b.key);
@@ -1145,16 +1186,55 @@ export function earlyHot(): LBook | null {
 }
 function spawnEarly(hot: LBook, now: number): LBook[] {
   const pre = earlyPrefix(secOf(hot));
-  const room = EARLY_SPAWN_MAX - BOOKS.filter((b) => b.early && b.parent).length;
+  const room = EARLY_SPAWN_MAX - BOOKS.filter((b) => !b.cold && b.early && b.parent).length;
   return neighborExits(hot.exit)
     .map((e) => ({ ...hot, key: `${pre}${keyOf(hot.filter, "now", e)}`, exit: e, since: now, parent: hot.key, grid: { ...hot.grid, explore: true } }) as LBook)
     .filter((b) => !BOOKS.some((x) => x.key === b.key) && !dropReason(statOf(b.key)))
     .slice(0, Math.max(0, room));
 }
 
+// ---------------------------------------------------------------- v0.1.120 TICK family
+// The TICK MODEL (lib/tick.ts) predicts every live coin's next 2, 5 and 15 minutes. Its books buy when the prediction
+// beats the coin's round-trip cost (by 0 or 5 points), hold up to the horizon (sooner on a 2x target, the trail or the
+// stop), on paper. Two books per horizon. The desk follows one only through the exams.
+export const TICK_MARGINS = [0, 0.05];
+export const tickExit = (h: number): GExit => ({ initials: 2, trail: 0.25, stop: 0.3, timeMin: h, mig: "sell" });
+export const tickKey = (h: number, m: number) => `tick:h${h}m${Math.round(m * 100)}|now|${keyOf("all", "now", tickExit(h)).split("|")[2]}`;
+export function seedTick(now: number, ready: (h: number) => boolean, horizons: number[]): LBook[] {
+  const out: LBook[] = [];
+  for (const h of horizons) {
+    if (!ready(h)) continue;
+    for (const m of TICK_MARGINS) {
+      const key = tickKey(h, m);
+      if (BOOKS.some((b) => b.key === key)) continue;
+      const b: LBook = { key, label: `TICK MODEL: predicted ${h}-minute return beats the coin's costs${m ? ` by ${Math.round(m * 100)}+ points` : ""}`, filter: "all", mode: "now", exit: tickExit(h), since: now, grid: { testN: 0, testAvg: 0, pass: false, explore: true }, by: "tick", tick: { h, m } };
+      const ts = TRIPS.filter((t) => t.k === key);
+      if (ts.length && dropReason(bookStat(b, ts)) && !young(b, now)) continue;
+      out.push(b);
+    }
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+/** A TICK signal (worker): the books of that horizon whose margin it beats start their entry (2 seconds later). */
+export function gridLiveTick(mint: string, symbol: string, h: number, ev: number, now = Date.now()) {
+  const last = LAST.get(mint);
+  if (!last || last.done || !(last.px > 0)) return 0;
+  let n = 0;
+  for (const b of BOOKS) {
+    if (!b.tick || b.tick.h !== h || ev < b.tick.m) continue;
+    if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;
+    // sized by the prediction when the desk follows: 1x at the margin, up to 2x for a prediction 10 points above it
+    const mult = Math.round(Math.max(0.5, Math.min(2, 1 + (ev - b.tick.m) * 10)) * 100) / 100;
+    PEND.set(id(b.key, mint), { key: b.key, mint, symbol, callAt: now, p0: last.p, px0: last.px, until: now + 30_000, fillAfter: now + 2_000, mult });
+    n++;
+  }
+  return n;
+}
+
 function seedRunners(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = RUNNER_MAX - BOOKS.filter((b) => b.by === "runner" && !b.fv).length;
+  let room = RUNNER_MAX - BOOKS.filter((b) => !b.cold && b.by === "runner" && !b.fv).length;
   for (const k of RUNNER_SEEDS) {
     if (room <= 0) break;
     if (BOOKS.some((b) => b.key === k)) continue;
@@ -1185,7 +1265,7 @@ export const WALLET_SEEDS: string[] = [
 ];
 function seedWallets(now: number): LBook[] {
   const out: LBook[] = [];
-  let room = WALLETS_MAX - BOOKS.filter((b) => b.by === "wallets" && !b.fv).length;
+  let room = WALLETS_MAX - BOOKS.filter((b) => !b.cold && b.by === "wallets" && !b.fv).length;
   for (const k of WALLET_SEEDS) {
     if (room <= 0) break;
     if (BOOKS.some((b) => b.key === k)) continue;
@@ -1213,7 +1293,7 @@ function refreshCheck() {
 // ---------------------------------------------------------------- v0.1.82: RESEARCHER's books
 export const RESEARCH_MAX = 4;
 /** Books RESEARCHER may still add, and whether a key may be added (not trading now, not ruled out by its record). */
-export const researchRoom = () => Math.max(0, RESEARCH_MAX - BOOKS.filter((b) => b.by === "researcher" && !b.fv).length);
+export const researchRoom = () => Math.max(0, RESEARCH_MAX - BOOKS.filter((b) => !b.cold && b.by === "researcher" && !b.fv).length);
 export function researchOk(key: string) {
   if (BOOKS.some((b) => b.key === key)) return "already trading";
   const ts = TRIPS.filter((t) => t.k === key);

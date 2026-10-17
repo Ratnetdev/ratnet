@@ -784,9 +784,26 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
   };
   mk("all", "every call", () => true);
   for (let a = 0; a < PREDS.length; a++) mk(PREDS[a].id, PREDS[a].label, (i) => hit[a][i]);
+  // v0.1.120 QUALITY FIRST: pairs only of rules that are each better than buying every call on their own (the reference
+  // trade's average on the OLDER calls only, 20+ trades), instead of every pair of ~80 rules. Fewer, sensible tests:
+  // less luck to beat. GRID_PAIRS=all brings back every pair
+  const trMean = (h: boolean[] | null) => {
+    let s = 0, n = 0;
+    for (let i = 0; i < cut; i++) if ((!h || h[i]) && ref[i] === ref[i]) (s += ref[i]), n++;
+    return n >= 20 ? s / n : null;
+  };
+  const baseMean = trMean(null) ?? 0;
+  const good = PREDS.map((_, k) => {
+    const m = trMean(hit[k]);
+    return m != null && m > baseMean;
+  });
+  const allPairs = process.env.GRID_PAIRS === "all";
+  let pairsKept = 0;
   for (let a = 0; a < PREDS.length; a++) for (let b = a + 1; b < PREDS.length; b++) {
     // the two score bands are one idea: top 10% is inside top 20%
     if (SCORE_RULES.has(PREDS[a].id) && SCORE_RULES.has(PREDS[b].id)) continue;
+    if (!allPairs && !(good[a] && good[b])) continue;
+    pairsKept++;
     mk(`${PREDS[a].id}+${PREDS[b].id}`, `${PREDS[a].label} + ${PREDS[b].label}`, (i) => hit[a][i] && hit[b][i]);
   }
 
@@ -959,6 +976,8 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     explore,
     base,
     passed: passed.length,
+    // v0.1.120: the rules good enough on their own to be paired, and the pairs tested
+    quality: { rules: good.filter(Boolean).length, of: PREDS.length, pairs: pairsKept, filters: filters.length },
     // v0.1.112: how many would have passed on the old bar (the test alone), before the plateau, the newest slice and the luck bar
     passedBasic: rows.filter((r) => r.checks?.basic).length,
     senders: sendersStudy(cs, hit),

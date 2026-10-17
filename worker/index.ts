@@ -48,9 +48,10 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { trendAt, trendLoad, trendStats, trendTick } from "../src/lib/trend";
+import { tickCreate, tickCurve, tickLoad, tickRun, tickSave, tickStats, tickView } from "../src/lib/tick";
 import { originAt, originCreated, originLoad, originMc, originSee, originStats } from "../src/lib/origin";
 import { dxDrain, dxLive, dxPoll, dxStats } from "../src/lib/attention";
 import { setOnLabel, themeAt, themeBond, themeDrain, themeLoad, themeStats } from "../src/lib/theme";
@@ -1007,6 +1008,7 @@ async function main() {
         if (c.solQuote !== false && c.mint) seerOn(c.mint, String(c.name || ""), String(c.symbol || ""), c.at);
         if (c.solQuote !== false && c.mint) originSee(c.mint, String(c.name || ""), String(c.symbol || ""), String(c.creator || ""), c.at); // v0.1.103
         if (c.solQuote !== false && c.mint) earlyCreate(c.mint, c.at, String(c.symbol || ""), String(c.name || "")); // v0.1.115 EARLY
+        if (c.solQuote !== false && c.mint) tickCreate(c.mint, c.at, String(c.symbol || ""), String(c.name || "")); // v0.1.120 TICK
         if (c.solQuote !== false && c.mint && c.sig) {
           if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
           INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });
@@ -1034,6 +1036,7 @@ async function main() {
       curve: (mint, v) => {
         gridLiveCurve(mint, v as any);
         earlyCurve(mint, v as any); // v0.1.115
+        tickCurve(mint, v as any); // v0.1.120
         archiveRunTick(mint, { mcSol: v.mcapSol, real: v.realSol, progress: v.progress, pool: false, complete: v.complete });
       },
       pool: (mint, q) => {
@@ -1103,6 +1106,37 @@ async function main() {
         console.log("early sweep error", e?.message || e);
       }
     }, 5_000);
+    // v0.1.120 TICK MODEL: every coin trading on its curve, every 20 seconds: grade, learn, predict; signals to the TICK books
+    await tickLoad().catch(() => null);
+    let tickBusy = false;
+    setInterval(() => {
+      if (!fireLive() || tickBusy) return;
+      tickBusy = true;
+      try {
+        const t0 = Date.now();
+        const sigs = tickRun((m: string, now: number, name: string, sym: string) => {
+          const x = fx(m);
+          if (!x) return null;
+          const tf = tapeFeatures(m);
+          const created = originCreated(m);
+          const og = originAt(m, null, now);
+          const dx = created ? dxLive(m, created, now) : null;
+          return { u60: x.u60, bs60: x.bs60, wh: x.wh, pw: x.pw, n60: tf.n60 ?? null, kf: x.kf, kx: x.kx, e20: x.e20, ds: tf.ds, og: og ? { rank: og.rank, cr: og.cr } : null, dx: dx ? { paid: dx.paid } : null, tr: trendAt(name, sym) };
+        });
+        for (const g of sigs) gridLiveTick(g.mint, g.sym, g.h, g.ev);
+        const ms = Date.now() - t0;
+        if (ms > 2000) console.log(`tick: a pass took ${ms}ms (${tickStats.coins} coins)`);
+      } catch (e: any) {
+        console.log("tick error", e?.message || e);
+      } finally {
+        tickBusy = false;
+      }
+    }, 5_000);
+    setInterval(() => {
+      tickSave().catch(() => null);
+      const v = tickView();
+      markAlive("tick", { coins: tickStats.coins, graded: tickStats.graded, pending: tickStats.pending, ...Object.fromEntries(v.models.map((m) => [`h${m.h}`, `${m.n}${m.ready ? "" : " warming"} ic ${m.ic ?? "-"}`])) }).catch(() => null);
+    }, 5 * 60_000);
     // v0.1.108: the desk runs a followed strategy's flow exit on live money with the same read
     import("../src/lib/desk").then((d) => d.setDeskFlow(flowOf)).catch(() => null);
     // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
@@ -1232,7 +1266,7 @@ async function main() {
           gridLiveSignals(res.senders?.lifts); // v0.1.110: the SIGNALS family reads the lift table
           console.log(`grid live: ${books.length} strategies trading on live coins (${(books as any).kept} kept, ${(books as any).added} new, ${(books as any).dropped?.length ?? 0} dropped)`);
           await redis().set("rn:grid:view", res, { ex: 3 * 86400 }).catch(() => null);
-          console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed every check (${res.passedBasic} the test alone; luck bar t ${res.nullRun.bar}, ${res.nullRun.lucky}/${res.nullRun.kept} null runs lucky; score AUC ${res.score.test?.auc ?? "-"}, profit score AUC ${res.pscore.test?.auc ?? "-"}, win score edge ${res.wscore.test?.edge ?? "-"} pts, effective N ${res.score.effN}) (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
+          console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed every check (quality: ${res.quality.rules}/${res.quality.of} rules good alone, ${res.quality.pairs} pairs; ${res.passedBasic} the test alone; luck bar t ${res.nullRun.bar}, ${res.nullRun.lucky}/${res.nullRun.kept} null runs lucky; score AUC ${res.score.test?.auc ?? "-"}, profit score AUC ${res.pscore.test?.auc ?? "-"}, win score edge ${res.wscore.test?.edge ?? "-"} pts, effective N ${res.score.effN}) (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
           await gridAlert(res).catch(() => null);
         }
         // v0.1.115 the EARLY search: every launch read at 2 minutes, its own scores, checks and luck bar

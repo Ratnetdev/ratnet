@@ -108,7 +108,7 @@ const ok = (c: boolean, m: string) => {
   const dk = fs.readFileSync("src/lib/desk.ts", "utf8");
   ok(/if \(o\.fv\) pos\.gf = \{ v: o\.fv, f0: deskFlow\(o\.mint\) \}/.test(dk) && /if \(!g\.frac && p\.gf && !p\.gf\.done\)/.test(dk) && /g = \{ frac: fv\.share, why: `GRID: FLOW EXIT/.test(dk), "a followed twin's flow exit runs on live money (once, half or all)");
   const gl = fs.readFileSync("src/lib/gridlive.ts", "utf8");
-  ok(/fv: b\.fv \}\);/.test(gl) && /!b\.parent && !b\.by && !b\.back && !b\.fv/.test(gl), "the follow order carries the variant; twins have their own slots (not GRID's 16)");
+  ok(/fv: b\.fv[, }]/.test(gl) && /!b\.cold && !b\.parent && !b\.by && !b\.back && !b\.fv/.test(gl), "the follow order carries the variant; twins have their own slots (not GRID's 16)");
   const wk = fs.readFileSync("worker/index.ts", "utf8");
   ok(/d\.setDeskFlow\(flowOf\)/.test(wk) && /setFlowFeatures\(flowOf\)/.test(wk), "GRID LIVE and the desk read the same flow");
   const rv = await import("../src/lib/review");

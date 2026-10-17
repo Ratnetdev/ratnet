@@ -1,4 +1,5 @@
 // v0.1.73: GRID runs every hour even when REPLAY's timer fires at the same moment; GRID LIVE keeps books until their record decides. Run: npx tsx sim/v073test.ts
+process.env.BOOK_KEEP_DAYS = "0"; // v0.1.120 keeps young books cold for 7 days (v120test); this test is about the drop itself
 let fail = 0;
 const ok = (c: boolean, m: string) => {
   console.log(c ? "ok  " : "FAIL", m);
