@@ -27,7 +27,7 @@ const model = () => process.env.SEER_MODEL || "claude-haiku-4-5-20251001";
 
 export type Item = { id: string; src: string; title: string; at: number | null; weight: number };
 export type Armed = { id: string; title: string; src: string; names: string[]; tickers: string[]; tier: 1 | 2 | 3; at: number | null; until: number; armedAt: number; why: string; hits: number; first: string | null };
-export type SeerMatch = { id: string; title: string; tier: 1 | 2 | 3; rank: number; at: number | null; by: "ticker" | "name" | "text"; lagMs: number };
+export type SeerMatch = { id: string; title: string; tier: 1 | 2 | 3; rank: number; at: number | null; by: "ticker" | "name" | "text"; lagMs: number; on?: string };
 
 // the accounts whose posts most often become coins (WIRE streams their posts already)
 export const VIPS = ["elonmusk", "tesla", "spacex", "xai", "grok", "realdonaldtrump", "cz_binance", "openai", "sama", "nvidia", "whitehouse", "potus", "kanyewest", "mrbeast"];
@@ -95,24 +95,25 @@ export function seerSee(mint: string, name: string, symbol: string, createdAt: n
   if (had) return had;
   let a: Armed | null = null;
   let by: SeerMatch["by"] = "ticker";
+  let on = "";
   const t = norm(symbol);
-  if (t.length >= 3 && TICKS.has(t)) a = pick(TICKS.get(t)!, now);
+  if (t.length >= 3 && TICKS.has(t)) (a = pick(TICKS.get(t)!, now)), (on = t);
   if (!a) {
     const n = norm(name);
     if (n.length >= 4) {
       const hit = NAMES.find((x) => n.includes(x.p) || (n.length >= 6 && x.p.includes(n)));
-      if (hit) (a = pick([hit.id], now)), (by = "name");
+      if (hit) (a = pick([hit.id], now)), (by = "name"), (on = hit.p);
     }
   }
   if (!a && text) {
     const tx = norm(text);
     const hit = NAMES.find((x) => x.p.length >= 6 && tx.includes(x.p));
-    if (hit) (a = pick([hit.id], now)), (by = "text");
+    if (hit) (a = pick([hit.id], now)), (by = "text"), (on = hit.p);
   }
   if (!a) return null;
   a.hits += 1;
   if (!a.first) a.first = mint;
-  const m: SeerMatch = { id: a.id, title: a.title, tier: a.tier, rank: a.hits, at: a.at, by, lagMs: Math.max(0, now - createdAt) };
+  const m: SeerMatch = { id: a.id, title: a.title, tier: a.tier, rank: a.hits, at: a.at, by, lagMs: Math.max(0, now - createdAt), on }; // v0.1.103: which watched name or ticker it matched
   MATCHED.set(mint, m);
   if (MATCHED.size > 20_000) MATCHED.delete(MATCHED.keys().next().value as string);
   const r = redis();

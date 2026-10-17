@@ -48,6 +48,7 @@ import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
 import { setLiveFeatures, gridLiveSeer } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
+import { originLoad, originMc, originSee, originStats } from "../src/lib/origin";
 
 // v0.1.102 SEER: a launch whose name or ticker matches a coin SEER saw coming (an event, a trend, a big post) goes to the
 // SEER GRID LIVE books at once. Both launch feeds call this; each coin fires once.
@@ -194,7 +195,7 @@ async function beat() {
   // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
   const lag = loopLag();
-  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats, exec: { sender: senderStats, liveFee: LIVE_FEE } }, { ex: 120 }).catch(() => {});
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats, exec: { sender: senderStats, liveFee: LIVE_FEE }, origin: originStats }, { ex: 120 }).catch(() => {});
   if (lag && lag.p99 > 250 && Date.now() - lagLogAt > 60_000) (lagLogAt = Date.now()), console.log(`event loop late: p50 ${lag.p50}ms, p99 ${lag.p99}ms, worst ${lag.max}ms (last minute)`);
   flushRpcDay().catch(() => {});
   bwFlush()
@@ -602,6 +603,7 @@ function pumpportal() {
         const mint = String(msg.mint);
         gridLiveSymbol(mint, String(msg.symbol || "").slice(0, 16)); // v0.1.78: names for the every-launch twins
         seerOn(mint, String(msg.name || ""), String(msg.symbol || ""), now);
+        originSee(mint, String(msg.name || ""), String(msg.symbol || ""), String(msg.traderPublicKey || ""), now); // v0.1.103
         INTAKE.push({ mint, sig: String(msg.signature || msg.sig || msg.txSignature || ""), creator: String(msg.traderPublicKey || ""), name: String(msg.name || "").slice(0, 64), symbol: String(msg.symbol || "").slice(0, 16), uri: String(msg.uri || ""), devBuySol: Math.round((Number(msg.solAmount) || 0) * 100) / 100, createdAt: now });
         logCreate(mint, String(msg.traderPublicKey || ""), now, Number(msg.solAmount) || 0, Number(msg.initialBuy ?? msg.tokenAmount) || 0);
         if (!FLW.has(mint)) FLW.set(mint, { t0: now, mint, sym: String(msg.symbol || ""), creator: String(msg.traderPublicKey || ""), devSol: Number(msg.solAmount) || 0, vSol: Number(msg.vSolInBondingCurve) || 30, vTok: Number(msg.vTokensInBondingCurve) || 0, mcSol: Number(msg.marketCapSol) || 0, trades: [], done: [] });
@@ -961,6 +963,7 @@ async function main() {
         // v0.1.85: every launch goes to the rats from here too (PumpPortal misses many: the chain backfill then read each
         // one with getTransaction, ~3,000 an hour). The rats keep the first copy of a launch, from either source.
         if (c.solQuote !== false && c.mint) seerOn(c.mint, String(c.name || ""), String(c.symbol || ""), c.at);
+        if (c.solQuote !== false && c.mint) originSee(c.mint, String(c.name || ""), String(c.symbol || ""), String(c.creator || ""), c.at); // v0.1.103
         if (c.solQuote !== false && c.mint && c.sig) {
           if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
           INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });
@@ -968,6 +971,7 @@ async function main() {
       },
       trade: (t) => {
         tapeTrade(t);
+        originMc(t.mint, t.mcSol); // v0.1.103 ORIGIN: market caps for alpha/beta
         // v0.1.87: the live tape for the watch list (CATCH bursts, SHIELD), in PumpPortal's message shape
         const fl = t.venue === "curve" ? FLW.get(t.mint) : undefined;
         if (fl) {
@@ -1065,6 +1069,10 @@ async function main() {
       return;
     }
     console.log("archive: connected, tables ready");
+    // v0.1.103 ORIGIN: 21 days of launches in time order (the live 7-day index, and the origin of GRID's older calls)
+    originLoad(archivePool())
+      .then((n) => console.log(`origin: ${n} launches read, ${originStats.hist} older calls, ${originStats.index} in the live index, ${Math.round(originStats.loadMs / 1000)}s${originStats.error ? `, error: ${originStats.error}` : ""}`))
+      .catch((e) => console.log("origin load error", e?.message || e));
     // v0.1.81: WALLETS' scores live in the archive
     walletsLoad(archivePool())
       .then((n) => {

@@ -13,6 +13,7 @@
 //   - ranked only if train has 40+ trades, profit factor 1.1+ without the best trade, and BOTH halves of train positive
 //   - "passes" = the test meets PROMOTE's bar: 20+ trips, 35%+ won, avg +2%+, PF 1.1+ without the best trade
 // A pass is a candidate, not a strategy: it goes into ARENA next and must prove itself on live coins.
+import { originHist } from "./origin";
 import { loadLiveFees, paperPriority } from "./livecost";
 import { SITE } from "@/config/site";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
@@ -64,7 +65,7 @@ export type GCoin = {
  * the dig, also in the archive for older calls); lens/xf/tg (LENS), kol/ftop (HOUND) and mind (MIND) only exist on
  * calls from this build on, and only when that agent had read the coin by minute 5 (never looked ahead).
  */
-export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null };
+export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null };
 export type Pred = { id: string; label: string; ok: (c: GCoin) => boolean };
 export const PREDS: Pred[] = [
   { id: "bond", label: "King BOND", ok: (c) => c.verdict === "BOND" },
@@ -108,15 +109,25 @@ export const PREDS: Pred[] = [
   { id: "seer", label: "SEER foresaw it (on the watchlist before launch)", ok: (c) => !!c.sx?.seer },
   { id: "seertop", label: "SEER foresaw it, a tier-1 event or person", ok: (c) => c.sx?.seer?.tier === 1 },
   { id: "seerfirst", label: "the first coin for a SEER watchlist entry", ok: (c) => c.sx?.seer?.rank === 1 },
+  // v0.1.103 ORIGIN (lib/origin.ts): first of its name, ticker and image in 7 days, or a copy; the biggest of its
+  // name group or a beta under 10% of it; the creator's launches in the 7 days before. Unknown never passes
+  { id: "first", label: "the first coin of its name, ticker and image (7 days)", ok: (c) => c.sx?.og?.rank === 1 },
+  { id: "copy", label: "a copy (an earlier coin had its name, ticker or image)", ok: (c) => (c.sx?.og?.rank ?? 0) >= 2 },
+  { id: "alpha", label: "the biggest coin of its name group right now", ok: (c) => c.sx?.og?.alpha === 1 },
+  { id: "beta", label: "under 10% of its name group's biggest coin", ok: (c) => c.sx?.og?.beta === 1 },
+  { id: "lowauto", label: "the creator's first launch in 7 days", ok: (c) => c.sx?.og?.cr === 0 },
+  { id: "serial", label: "a launch factory (10+ launches in 7 days)", ok: (c) => (c.sx?.og?.cr ?? -1) >= 10 },
 ];
 
 /** v0.1.101: the call's social read for GRID, from call.sx, or for calls before this build from the archived launch. */
-export function sxOf(call: any, wire?: any, pulse?: any): Sx | null {
-  if (call?.sx) return call.sx as Sx;
-  if (wire === undefined && pulse === undefined) return null;
+export function sxOf(call: any, wire?: any, pulse?: any, og?: { rank: number; cr: number } | null): Sx | null {
+  // v0.1.103: older calls get their origin from the archive (as of their creation; alpha/beta need live prices: unknown)
+  const ogH = og ? { rank: og.rank, cr: og.cr, alpha: null, beta: null } : null;
+  if (call?.sx) return call.sx.og || !ogH ? (call.sx as Sx) : { ...(call.sx as Sx), og: ogH };
+  if (wire === undefined && pulse === undefined && !ogH) return null;
   // a CA posted can come long after the call (a later post): not counted for older calls, never a look ahead
   const w = wire && !/\bCA\b|posted the ca/i.test(String(wire.how || "")) ? wire : null;
-  return { post: w ? 1 : 0, bigpost: w ? (Number(w.f) >= 100_000 ? 1 : 0) : 0, pulse: pulse ? 1 : 0, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null };
+  return { post: w ? 1 : 0, bigpost: w ? (Number(w.f) >= 100_000 ? 1 : 0) : 0, pulse: pulse ? 1 : 0, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null, og: ogH };
 }
 
 export type Mode = { id: string; label: string; kind: "now" | "climb" | "dip" | "hold" | "mig"; a: number; win: number };
@@ -565,7 +576,7 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
       u60: num(tp.u60),
       bs60: num(tp.bs60),
       wh: num(tp.wh),
-      sx: sxOf(c, typeof r.wire === "string" ? JSON.parse(r.wire) : r.wire, typeof r.pulse === "string" ? JSON.parse(r.pulse) : r.pulse),
+      sx: sxOf(c, typeof r.wire === "string" ? JSON.parse(r.wire) : r.wire, typeof r.pulse === "string" ? JSON.parse(r.pulse) : r.pulse, originHist(r.mint)),
       bonded: r.outcome === "BONDED",
       bondSecs: num(r.bond_secs),
       t: new Int32Array(0),

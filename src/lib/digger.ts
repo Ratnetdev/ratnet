@@ -1,4 +1,5 @@
 import { seerSee } from "./seer";
+import { originAt, originImage, originSee } from "./origin";
 import { PublicKey } from "@solana/web3.js";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { radarTop } from "./lcache";
@@ -850,6 +851,9 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
     };
     if (l.creator) p.hincrby(K.devN, l.creator, 1);
     metaLaunch(p, l.name, l.symbol);
+    // v0.1.103 ORIGIN: the create already put it in the index (both feeds); the dig adds its picture (IPFS content id)
+    originSee(l.mint, l.name, l.symbol, l.creator, l.createdAt);
+    originImage(l.mint, rec.image);
     // WIRE: was this coin born from a tracked post?
     const wm = posts.length ? matchOne({ ...l, description: rec.description, twitter: rec.twitter }, posts) : null;
     const pm = !wm && rising.length ? pulseMatch(l, rising) : null;
@@ -1437,6 +1441,7 @@ export function sxAt(rec: Launch, read: Awaited<ReturnType<typeof socialRead>> |
     ftop: read ? read.ftop : null,
     mind: read?.mind ?? null,
     seer: rec.seer ? { tier: rec.seer.tier, rank: rec.seer.rank } : null, // v0.1.102
+    og: originAt(rec.mint, rec.creator), // v0.1.103 ORIGIN: first or copy, alpha or beta, the creator's last 7 days
   };
 }
 

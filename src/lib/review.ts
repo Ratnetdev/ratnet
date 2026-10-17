@@ -45,9 +45,10 @@ export async function reviewView(now = Date.now()) {
       armed: seer?.stats?.armed ?? (seer?.armed?.length || 0),
       runs: seer?.stats?.runs ?? 0,
       error: seer?.stats?.lastErr || null,
-      top: ((seer?.armed || []) as any[]).filter((a) => a.tier === 1).slice(0, 5).map((a) => ({ title: String(a.title).slice(0, 90), tickers: a.tickers, at: a.at })),
-      matches: ((seerHits || []) as any[]).filter((m) => m && now - (m.at0 || 0) < DAY).slice(0, 10).map((m) => ({ mint: m.mint, sym: m.sym, title: String(m.title).slice(0, 90), tier: m.tier, rank: m.rank, by: m.by })),
+      top: ((seer?.armed || []) as any[]).filter((a) => a.tier === 1).slice(0, 5).map((a) => ({ title: String(a.title).slice(0, 90), names: a.names, tickers: a.tickers, at: a.at })),
+      matches: ((seerHits || []) as any[]).filter((m) => m && now - (m.at0 || 0) < DAY).slice(0, 10).map((m) => ({ mint: m.mint, sym: m.sym, title: String(m.title).slice(0, 90), tier: m.tier, rank: m.rank, by: m.by, on: m.on ?? null })),
     },
+    origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
     health: { chainUsed: rpc?.day?.used ?? null, chainPace: rpc?.day?.pace ?? null, chainBudget: rpc?.day?.budget ?? null, loopP99: rpc?.loop?.p99 ?? null },
   };
 }
