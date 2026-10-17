@@ -28,7 +28,7 @@ import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
 import { gridHistory, gridMessage, liveCandidates, setProfitModel, setScoreModel, setWinModel, withSeen, type GCoin, type GHist, type GridView } from "../src/lib/grid";
-import { earlyCoin, earlyCreate, earlyCurve, earlyPool, earlyStats, earlySweep } from "../src/lib/early";
+import { EARLY_CHECKS, earlyCoin, earlyCreate, earlyCurve, earlyPool, earlyStats, earlySweep } from "../src/lib/early";
 import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep, gridLiveSymbol, gridLiveTend, setGridFollow } from "../src/lib/gridlive";
 import { poolFire, readPools } from "../src/lib/pool";
 import { afterLoad, afterNoteMigration, afterResolve, afterStats, afterWant, migratedAt } from "../src/lib/after";
@@ -916,10 +916,12 @@ async function main() {
     .then((v) => (setScoreModel(v?.score?.model), setProfitModel(v?.pscore?.model), setWinModel(v?.wscore?.model)))
     .catch(() => null);
   // v0.1.115: the EARLY search's scores for the EARLY books
-  await redis()
-    .get<any>("rn:grid:early")
-    .then((v) => setEarlyModels({ mig: v?.score?.model, pft: v?.pscore?.model, win: v?.wscore?.model }))
-    .catch(() => null);
+  // v0.1.117: one EARLY search per reading age (rn:grid:early is the 2-minute one, rn:grid:early:<sec> the others)
+  for (const sec of EARLY_CHECKS())
+    await redis()
+      .get<any>(sec === 120 ? "rn:grid:early" : `rn:grid:early:${sec}`)
+      .then((v) => setEarlyModels({ mig: v?.score?.model, pft: v?.pscore?.model, win: v?.wscore?.model }, sec))
+      .catch(() => null);
   await seerLoad().catch((e) => console.log("seer load error", e?.message || e));
   // v0.1.109 IMAGE and THEME: Claude's labels, one every 6s within the daily cap; a new label re-reads its call
   await themeLoad().catch(() => 0);
@@ -1082,7 +1084,7 @@ async function main() {
           const created = originCreated(m);
           return { ...x, ds: tapeFeatures(m).ds, og: originAt(m, null, now), dx: created ? dxLive(m, created, now) : null };
         });
-        for (const r of reads) gridLiveEarly(r.mint, earlyCoin(r.mint, r.at, r.createdAt, r.f) as unknown as GCoin, r.at);
+        for (const r of reads) gridLiveEarly(r.mint, earlyCoin(r.mint, r.at, r.createdAt, r.f) as unknown as GCoin, r.at, r.sec);
       } catch (e: any) {
         console.log("early sweep error", e?.message || e);
       }
@@ -1096,7 +1098,7 @@ async function main() {
     setInterval(() => walletsSave(archivePool()).catch(() => 0), 10 * 60_000);
     setInterval(() => {
       if (!on) return void markAlive("firehose", { status: "off until SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN are set" }).catch(() => null);
-      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, otherQuote: fireStats.otherQuoteCreates, runners: runTracked(), early: `${earlyStats.read}/${earlyStats.seen}`, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
+      markAlive("firehose", { up: fireLive(), msgs: fireStats.msgs, trades: fireStats.trades, pool: fireStats.poolTrades, reconnects: fireStats.reconnects, otherQuote: fireStats.otherQuoteCreates, runners: runTracked(), early: `${earlyStats.coins}/${earlyStats.seen} (${EARLY_CHECKS().map((x) => `${x}s:${earlyStats.bySec[x] || 0}`).join(" ")})`, ...(fireLive() ? {} : { error: fireStats.lastErr || "no messages" }) }).catch(() => null);
       // v0.1.82: what the firehose saved (curve and pool reads answered from it) and the Dune backfill's progress
       const pctOf = (h: number, r: number) => (h + r ? Math.round((h / (h + r)) * 100) : 0);
       // v0.1.86: coins read with no curve (remembered 30s); a few examples in the log so the cause can be checked
@@ -1220,17 +1222,21 @@ async function main() {
           await gridAlert(res).catch(() => null);
         }
         // v0.1.115 the EARLY search: every launch read at 2 minutes, its own scores, checks and luck bar
-        const eHist = ((await redis().get<number[]>("rn:grid:enull").catch(() => null)) || []) as number[];
-        const er: any = await archiveEarlyGrid(10, { nulls: 2, nullHist: Array.isArray(eHist) ? eHist : [] }).catch((e: any) => ({ early: true, error: String(e?.message || e).slice(0, 200) }));
-        if (er) {
-          if (er.nullHist) await redis().set("rn:grid:enull", er.nullHist).catch(() => null);
+        // v0.1.117: one search per reading age (60s, 2, 3 and 5 minutes), each with its own scores, luck bar and books
+        for (const sec of EARLY_CHECKS()) {
+          const vk = sec === 120 ? "rn:grid:early" : `rn:grid:early:${sec}`;
+          const nk = sec === 120 ? "rn:grid:enull" : `rn:grid:enull:${sec}`;
+          const eHist = ((await redis().get<number[]>(nk).catch(() => null)) || []) as number[];
+          const er: any = await archiveEarlyGrid(10, { nulls: sec === 120 ? 2 : 1, nullHist: Array.isArray(eHist) ? eHist : [] }, sec).catch((e: any) => ({ early: true, sec, error: String(e?.message || e).slice(0, 200) }));
+          if (!er) continue;
+          if (er.nullHist) await redis().set(nk, er.nullHist).catch(() => null);
           if (er.rows) {
-            setEarlyModels({ mig: er.score?.model, pft: er.pscore?.model, win: er.wscore?.model });
-            const eb = await gridLiveEarlyBooks(er.rows, er.explore);
-            console.log(`grid early: ${er.coins} reads, ${er.passed} passed every check (${er.passedBasic} the test alone), win score edge ${er.wscore?.test?.edge ?? "-"} pts, ${eb.length} new EARLY books`);
-          } else console.log(`grid early: ${er.why || er.error || "no run"}`);
+            setEarlyModels({ mig: er.score?.model, pft: er.pscore?.model, win: er.wscore?.model }, sec);
+            const eb = await gridLiveEarlyBooks(er.rows, er.explore, Date.now(), sec);
+            console.log(`grid early ${sec}s: ${er.coins} reads, ${er.passed} passed every check (${er.passedBasic} the test alone), win score edge ${er.wscore?.test?.edge ?? "-"} pts, ${eb.length} new EARLY books`);
+          } else console.log(`grid early ${sec}s: ${er.why || er.error || "no run"}`);
           const { nullHist: _nh, ...ev } = er;
-          await redis().set("rn:grid:early", { ...ev, at: Date.now() }, { ex: 3 * 86400 }).catch(() => null);
+          await redis().set(vk, { ...ev, at: Date.now() }, { ex: 3 * 86400 }).catch(() => null);
         }
       } catch (e: any) {
         console.log("grid error", e?.message || e);

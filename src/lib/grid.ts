@@ -59,6 +59,7 @@ export type GCoin = {
   kmu?: number | null;
   kx?: number | null;
   e20?: number | null;
+  es?: number; // v0.1.117: an EARLY read's age (seconds); calls have none
   // v0.1.101 SIGNAL PIPE: what the social agents knew at the call (call.sx). Unknown (null) never passes
   sx?: Sx | null;
   bonded?: boolean; // migrated (the senders: every coin that did millions in volume is one of these)

@@ -15,6 +15,19 @@ import { RUN_MS } from "./grid";
 import { archiveEarly, archivePoolTick, archiveTick, runTrack } from "./archive";
 
 export const EARLY_SECS = () => Math.max(30, Number(process.env.EARLY_SECS ?? 120) || 120);
+/**
+ * v0.1.117 FAST TRACK: the launch is read at several ages, each its own search and its own books: 60s, 2 minutes (the
+ * first read, kept as it was), 3 and 5 minutes. On 17 Oct the 2-minute "+15 points in the last minute" books were the
+ * only ones in profit; when to buy is the open question.
+ */
+export const EARLY_CHECKS = () => {
+  const xs = String(process.env.EARLY_CHECKS ?? "60,120,180,300")
+    .split(",")
+    .map((x) => Math.round(Number(x)))
+    .filter((x) => x >= 30 && x <= 900);
+  const set = new Set([EARLY_SECS(), ...xs]);
+  return [...set].sort((a, b) => a - b);
+};
 const MIN_PROG = () => Math.max(0, Number(process.env.EARLY_MIN_PROG ?? 5) || 0);
 const PER_DAY = () => Math.max(0, Number(process.env.EARLY_PER_DAY ?? 10000) || 0);
 const TRACK_MS = 62 * 60_000; // then the RUN track takes over (a price a minute, for a day)
@@ -37,26 +50,31 @@ export type EarlyF = {
   og: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null;
   dx: { paid: 0 | 1 | null; boost: number | null } | null;
   sym?: string;
+  sec?: number; // v0.1.117: the age it was read at (seconds)
 };
 type Curve = { progress: number; mcapSol: number; realSol: number; complete?: boolean };
-type Pend = { at: number; sym: string; v?: Curve; p60?: number };
+type Pend = { at: number; sym: string; v?: Curve; h: { t: number; p: number }[]; done: Set<number> };
 const PEND = new Map<string, Pend>();
-const TRACK = new Map<string, number>(); // mint -> read time
-export const earlyStats = { seen: 0, read: 0, skipped: 0, capped: 0, tracked: 0, day: "", dayN: 0 };
+const TRACK = new Map<string, number>(); // mint -> first read time
+export const earlyStats = { seen: 0, read: 0, coins: 0, skipped: 0, capped: 0, tracked: 0, day: "", dayN: 0, bySec: {} as Record<number, number> };
 
 /** A launch (worker: the firehose create). */
 export function earlyCreate(mint: string, createdAt: number, sym = "") {
   if (!mint || PEND.has(mint)) return;
   if (PEND.size > 60_000) PEND.delete(PEND.keys().next().value as string);
-  PEND.set(mint, { at: createdAt, sym: sym.slice(0, 16) });
+  PEND.set(mint, { at: createdAt, sym: sym.slice(0, 16), h: [], done: new Set() });
   earlyStats.seen++;
 }
-/** Every curve update (worker: the firehose). Keeps the last one for the read, and the path of read coins for an hour. */
+/** Every curve update (worker: the firehose). Keeps the last one for the reads, and the path of read coins for an hour. */
 export function earlyCurve(mint: string, v: Curve, now = Date.now()) {
   const p = PEND.get(mint);
   if (p) {
     p.v = v;
-    if (p.p60 == null && now - p.at >= EARLY_SECS() * 1000 - 60_000) p.p60 = v.progress;
+    // the curve's history (one point per 5s), for each read's "points gained in the last minute"
+    const last = p.h[p.h.length - 1];
+    if (!last || now - last.t >= 5_000) p.h.push({ t: now, p: v.progress });
+    else last.p = v.progress;
+    if (p.h.length > 80) p.h.shift();
   }
   const t = TRACK.get(mint);
   if (t == null) return;
@@ -76,39 +94,59 @@ export function earlyPool(mint: string, q: { mcSol: number; real: number }, now 
   archivePoolTick(mint, q, MIG.get(mint)!, now);
 }
 
-/** Every 5 seconds (worker): the launches that just turned 2 minutes old are read. Returns the reads made. */
+/** The curve 60 seconds before `now` (the last point at or before), or null. */
+function pAgo(h: { t: number; p: number }[], now: number) {
+  let x: number | null = null;
+  for (const e of h) if (e.t <= now - 60_000) x = e.p;
+  return x;
+}
+
+/** Every 5 seconds (worker): the launches that just reached a reading age are read. Returns the reads made. */
 export function earlySweep(featuresOf: (mint: string, now: number) => Omit<EarlyF, "p" | "mc" | "real" | "r60"> | null, now = Date.now()) {
-  const out: { mint: string; at: number; createdAt: number; f: EarlyF }[] = [];
-  const due = EARLY_SECS() * 1000;
+  const out: { mint: string; at: number; createdAt: number; f: EarlyF; sec: number }[] = [];
+  const checks = EARLY_CHECKS();
+  const last = checks[checks.length - 1] * 1000;
   const day = new Date(now).toISOString().slice(0, 10);
   if (earlyStats.day !== day) (earlyStats.day = day), (earlyStats.dayN = 0);
   for (const [mint, p] of PEND) {
-    if (now - p.at < due) continue;
-    PEND.delete(mint);
-    const v = p.v;
-    if (!v || v.complete || !(v.progress >= MIN_PROG()) || now - p.at > due + 60_000) {
-      earlyStats.skipped++;
-      continue;
+    const age = now - p.at;
+    if (age < checks[0] * 1000) continue;
+    for (const sec of checks) {
+      if (p.done.has(sec) || age < sec * 1000) continue;
+      p.done.add(sec);
+      const v = p.v;
+      if (!v || v.complete || !(v.progress >= MIN_PROG()) || age > sec * 1000 + 60_000) {
+        earlyStats.skipped++;
+        continue;
+      }
+      const first = !TRACK.has(mint);
+      if (first && earlyStats.dayN >= PER_DAY()) {
+        earlyStats.capped++;
+        continue;
+      }
+      const x = featuresOf(mint, now);
+      if (!x) {
+        earlyStats.skipped++;
+        continue;
+      }
+      // a read younger than a minute of trading has no point a minute back: its gain since the first trade seen
+      const ago = pAgo(p.h, now) ?? (p.h.length ? p.h[0].p : null);
+      const f: EarlyF = { ...x, p: v.progress, mc: v.mcapSol, real: v.realSol, r60: ago != null ? Math.round((v.progress - ago) * 10) / 10 : null, sym: p.sym, sec };
+      earlyStats.read++;
+      earlyStats.bySec[sec] = (earlyStats.bySec[sec] || 0) + 1;
+      archiveEarly(mint, now, p.at, f, sec);
+      if (first) {
+        earlyStats.dayN++;
+        earlyStats.coins++;
+        TRACK.set(mint, now);
+        if (TRACK.size > 20_000) for (const [m, t] of TRACK) if (now - t > TRACK_MS) TRACK.delete(m);
+        runTrack(mint, now);
+      }
+      earlyStats.tracked = TRACK.size;
+      archiveTick(mint, { ...v, complete: !!v.complete }, now);
+      out.push({ mint, at: now, createdAt: p.at, f, sec });
     }
-    if (earlyStats.dayN >= PER_DAY()) {
-      earlyStats.capped++;
-      continue;
-    }
-    const x = featuresOf(mint, now);
-    if (!x) {
-      earlyStats.skipped++;
-      continue;
-    }
-    const f: EarlyF = { ...x, p: v.progress, mc: v.mcapSol, real: v.realSol, r60: p.p60 != null ? Math.round((v.progress - p.p60) * 10) / 10 : null, sym: p.sym };
-    earlyStats.dayN++;
-    earlyStats.read++;
-    archiveEarly(mint, now, p.at, f);
-    TRACK.set(mint, now);
-    if (TRACK.size > 20_000) for (const [m, t] of TRACK) if (now - t > TRACK_MS) TRACK.delete(m);
-    earlyStats.tracked = TRACK.size;
-    runTrack(mint, now);
-    archiveTick(mint, { ...v, complete: !!v.complete }, now);
-    out.push({ mint, at: now, createdAt: p.at, f });
+    if (age > last + 60_000 || p.done.size >= checks.length) PEND.delete(mint);
   }
   return out;
 }
@@ -121,6 +159,7 @@ export function earlyCoin(mint: string, at: number, createdAt: number, f: EarlyF
     at,
     createdAt,
     verdict: "EARLY", // no King call: the call rules never pass
+    es: f.sec ?? 120,
     score: 0,
     nano: null,
     progress: Number(f.p) || 0,
@@ -145,11 +184,18 @@ export function earlyCoin(mint: string, at: number, createdAt: number, f: EarlyF
 }
 
 /** The EARLY search's coins: reads older than 70 minutes (their first hour is known), with their paths from the read on. */
-export async function loadEarly(pool: any, days = 10, max = 12_000): Promise<GCoin[]> {
+export async function loadEarly(pool: any, days = 10, max = 12_000, sec = 120): Promise<GCoin[]> {
+  // v0.1.117: the reads at this age (early_reads2); the 2-minute reads from before it are in early_reads
   const rs = await pool.query(
-    `select e.mint, e.at, e.created_at, e.f, l.outcome, l.bond_secs from early_reads e left join launches l on l.mint = e.mint
-     where e.at > now() - ($1 || ' days')::interval and e.at < now() - interval '70 minutes' order by e.at desc limit $2`,
-    [String(days), max],
+    `select * from (
+       select e.mint, e.at, e.created_at, e.f, l.outcome, l.bond_secs from early_reads2 e left join launches l on l.mint = e.mint
+       where e.sec = $3 and e.at > now() - ($1 || ' days')::interval and e.at < now() - interval '70 minutes'
+       union all
+       select e.mint, e.at, e.created_at, e.f, l.outcome, l.bond_secs from early_reads e left join launches l on l.mint = e.mint
+       where $3 = 120 and e.at > now() - ($1 || ' days')::interval and e.at < now() - interval '70 minutes'
+         and not exists (select 1 from early_reads2 x where x.mint = e.mint and x.sec = 120)
+     ) q order by at desc limit $2`,
+    [String(days), max, sec],
   );
   const by = new Map<string, { c: ReturnType<typeof earlyCoin> & { bonded: boolean; bondSecs: number | null }; f: EarlyF; tk: { t: number; mc: number; r: number; p: number; d: number }[] }>();
   for (const r of rs.rows) {
@@ -202,5 +248,5 @@ export function _earlyReset() {
   PEND.clear();
   TRACK.clear();
   MIG.clear();
-  Object.assign(earlyStats, { seen: 0, read: 0, skipped: 0, capped: 0, tracked: 0, day: "", dayN: 0 });
+  Object.assign(earlyStats, { seen: 0, read: 0, coins: 0, skipped: 0, capped: 0, tracked: 0, day: "", dayN: 0, bySec: {} });
 }

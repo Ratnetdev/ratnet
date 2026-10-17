@@ -71,6 +71,8 @@ export type LBook = {
   by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early";
   /** v0.1.115: an EARLY book: trades the 2-minute read of every launch (lib/early.ts), never a King call */
   early?: boolean;
+  /** v0.1.117: the reading age it trades (seconds; 120 when not set) */
+  earlySec?: number;
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -643,7 +645,8 @@ export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }
   const st = bookStat0(b, trips);
   // v0.1.112 FAST LANE: a book GRID proved offline (the test, the plateau, the newest slice and the luck bar) gets the
   // same probation: live at the minimum size after 15 good trips instead of 30
-  if (st.passed || !b.key || !(/^any:[^|]*\bseer/.test(b.key) || fastLane(b))) return st;
+  // v0.1.117: an EARLY book too (its 2-minute momentum books were the only ones in profit on 17 Oct)
+  if (st.passed || !b.key || !(/^any:[^|]*\bseer/.test(b.key) || fastLane(b) || /^early\d*:/.test(b.key))) return st;
   const total = trips.reduce((a, t) => a + t.pnl, 0);
   const top = trips.map((t) => t.pnl).sort((a, z) => z - a);
   const lessTop2 = total - Math.max(0, top[0] ?? 0) - Math.max(0, top[1] ?? 0);
@@ -652,6 +655,7 @@ export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }
 export const SEER_PROBATION = 15;
 /** v0.1.112: GRID-proven (passed every GRID check), not an explore row. */
 export const fastLane = (b: Pick<LBook, "grid">) => !!b.grid?.pass && !b.grid?.explore;
+export const earlyLane = (b: { key?: string }) => /^early\d*:/.test(String(b.key || ""));
 function bookStat0(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips: LTrip[]): LStat {
   // v0.1.89: a runner is judged on its whole record (few wins, big ones), not on 40% won over its last 30
   const x = b.exit ?? (b.key ? exitOfKey(b.key) : null);
@@ -697,7 +701,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
     const fresh = await redis().hsetnx(PASSED_KEY, b.live.probation ? `${b.key}#probation` : b.key, { at: now, ...b.live }).catch(() => 0);
     const tp = b.live.totalPnl ?? 0;
     const l2 = b.live.lessTop2 ?? 0;
-    if (fresh && b.live.probation) await send(`${fastLane(b) ? "⚡ <b>GRID LIVE: a GRID-proven strategy passed its probation (FAST LANE)</b>" : "🔮 <b>GRID LIVE: a SEER strategy passed its probation</b>"}\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.total} trips, ${tp >= 0 ? "+" : ""}${tp} SOL on 0.05 SOL trades, ${l2 >= 0 ? "+" : ""}${l2} SOL without the 2 best.\n\nNext: the desk may follow it at the minimum size until it passes the full exam.`).catch(() => null);
+    if (fresh && b.live.probation) await send(`${fastLane(b) ? "⚡ <b>GRID LIVE: a GRID-proven strategy passed its probation (FAST LANE)</b>" : earlyLane(b) ? "⏱ <b>GRID LIVE: an EARLY strategy passed its probation</b>" : "🔮 <b>GRID LIVE: a SEER strategy passed its probation</b>"}\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.total} trips, ${tp >= 0 ? "+" : ""}${tp} SOL on 0.05 SOL trades, ${l2 >= 0 ? "+" : ""}${l2} SOL without the 2 best.\n\nNext: the desk may follow it at the minimum size until it passes the full exam.`).catch(() => null);
     else if (fresh) await send(`🏁 <b>GRID LIVE: a strategy passed the exam on live coins</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.n} trips, ${b.live.winRate}% won, ${b.live.pnl >= 0 ? "+" : ""}${b.live.pnl} SOL on 0.05 SOL trades, PF ${b.live.pfLessBest} without the best.\n\nNext: the desk trades it.`).catch(() => null);
   }
   // v0.1.78: a strategy that passed but whose real fills are too far from paper is not followed, and says so once
@@ -896,8 +900,21 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
       if (send) await send(`🧬 <b>GRID LIVE: the hot strategy got its family</b>\n${hot.label.replace(/[<>&]/g, " ")}\n${st.n} trips, ${st.winRate}% won, ${st.pnl >= 0 ? "+" : ""}${st.pnl} SOL, PF ${st.pfLessBest}\n\n${added.map((b) => `• ${b.any ? "same rule on every launch" : exitText(b.exit)}`).join("\n")}\n\nThey race to the exam; the desk follows the first that passes.`).catch(() => null);
     }
   }
+  // v0.1.117: the EARLY family (exit one step each way for the best EARLY book)
+  const eh = earlyHot();
+  let eAdded: LBook[] = [];
+  if (eh) {
+    eAdded = spawnEarly(eh, now);
+    SPAWNED = [...SPAWNED, eh.key].slice(-50);
+    await redis().set(SPAWNED_KEY, SPAWNED).catch(() => null);
+    if (eAdded.length) {
+      BOOKS = [...BOOKS, ...eAdded];
+      const st = statOf(eh.key);
+      if (send) await send(`⏱ <b>GRID LIVE: the best EARLY strategy got its family</b>\n${eh.label.replace(/[<>&]/g, " ")}\n${st.n} trips, ${st.winRate}% won, ${st.pnl >= 0 ? "+" : ""}${st.pnl} SOL, PF ${st.pfLessBest}\n\n${eAdded.map((b) => `• ${exitText(b.exit)}`).join("\n")}\n\nThey race to the exam; the desk follows the first that passes.`).catch(() => null);
+    }
+  }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || sigs.length || scs.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
+  if (eAdded.length || dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || sigs.length || scs.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
@@ -1030,29 +1047,38 @@ export function seedScore(now: number): LBook[] {
 // ---------------------------------------------------------------- v0.1.115 EARLY family
 // The EARLY search (GRID on every launch read at 2 minutes, lib/early.ts) has its own scores and its own candidates.
 // Its best strategies trade the same 2-minute read on live launches, in their own slots (paper; the exam decides).
-export const EARLY_MAX = 6;
-let EARLY_MODELS: Models = { mig: null, pft: null, win: null };
-export const setEarlyModels = (m: Partial<Record<keyof Models, any>> | null | undefined) => (EARLY_MODELS = asModels(m));
-export const earlyModels = () => EARLY_MODELS;
-/** After each EARLY search (worker): passed rows first, then the ones still in profit on the test, then the explore rows. */
-export async function gridLiveEarlyBooks(rows: GRow[], explore: GRow[] = [], now = Date.now()) {
+export const EARLY_MAX = 6; // the 2-minute read
+export const EARLY_MAX_OTHER = 3; // v0.1.117: each other reading age
+export const earlyPrefix = (sec = 120) => (sec === 120 ? "early:" : `early${sec}:`);
+const secOf = (b: Pick<LBook, "earlySec">) => b.earlySec ?? 120;
+const EARLY_MODELS = new Map<number, Models>();
+export const setEarlyModels = (m: Partial<Record<keyof Models, any>> | null | undefined, sec = 120) => {
+  const x = asModels(m);
+  EARLY_MODELS.set(sec, x);
+  return x;
+};
+export const earlyModels = (sec = 120) => EARLY_MODELS.get(sec) ?? { mig: null, pft: null, win: null };
+/** After each EARLY search (worker, one per reading age): passed rows first, then the ones in profit on its test, then explore rows. */
+export async function gridLiveEarlyBooks(rows: GRow[], explore: GRow[] = [], now = Date.now(), sec = 120) {
   if (!booksOk) await gridLiveLoad(1, 0).catch(() => false);
   if (!booksOk) return [];
-  const mine = BOOKS.filter((b) => b.early && !b.fv);
+  const pre = earlyPrefix(sec);
+  const mine = BOOKS.filter((b) => b.early && !b.fv && !b.parent && secOf(b) === sec);
   // a kept EARLY book gets its newest numbers
   for (const b of mine) {
-    const r = [...rows, ...explore].find((x) => `early:${x.key}` === b.key);
+    const r = [...rows, ...explore].find((x) => `${pre}${x.key}` === b.key);
     if (r) b.grid = { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass, explore: !!r.explore };
   }
   const ranked = [...rows.filter((r) => r.pass), ...rows.filter((r) => !r.pass && r.test.n >= 10 && r.test.avgPct > 0), ...explore];
-  let room = EARLY_MAX - mine.length;
+  let room = (sec === 120 ? EARLY_MAX : EARLY_MAX_OTHER) - mine.length;
   const out: LBook[] = [];
   for (const r of ranked) {
     if (room <= 0) break;
-    const key = `early:${r.key}`;
+    const key = `${pre}${r.key}`;
     if (BOOKS.some((b) => b.key === key) || out.some((b) => b.key === key)) continue;
     const ts = TRIPS.filter((t) => t.k === key);
-    const b: LBook = { key, label: `2 minutes after launch: ${r.filterLabel}`, filter: r.filter, mode: "now", exit: r.exit, since: now, grid: { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass, explore: !!r.explore }, by: "early", early: true };
+    const age = sec % 60 === 0 ? `${sec / 60} minute${sec === 60 ? "" : "s"}` : `${sec} seconds`;
+    const b: LBook = { key, label: `${age} after launch: ${r.filterLabel}`, filter: r.filter, mode: "now", exit: r.exit, since: now, grid: { testN: r.test.n, testAvg: r.test.avgPct, pass: r.pass, explore: !!r.explore }, by: "early", early: true, ...(sec !== 120 ? { earlySec: sec } : {}) };
     if (ts.length && dropReason(bookStat(b, ts))) continue;
     out.push(b);
     room--;
@@ -1061,19 +1087,40 @@ export async function gridLiveEarlyBooks(rows: GRow[], explore: GRow[] = [], now
   if (out.length || mine.length) await saveBooks();
   return out;
 }
-/** A launch was read at 2 minutes (worker, lib/early.ts): the EARLY books whose filter takes it start their entry. */
-export function gridLiveEarly(mint: string, c: GCoin, now = Date.now()) {
+/** A launch was read (worker, lib/early.ts): the EARLY books of that reading age whose filter takes it start their entry. */
+export function gridLiveEarly(mint: string, c: GCoin, now = Date.now(), sec = 120) {
   const last = LAST.get(mint);
   if (!last || last.done || !(last.px > 0)) return 0;
   let n = 0;
+  const ms = earlyModels(sec);
   for (const b of BOOKS) {
-    if (!b.early) continue;
+    if (!b.early || secOf(b) !== sec) continue;
     if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;
-    if (!withScoreModels(EARLY_MODELS, () => filterOk(b.filter, c))) continue;
+    if (!withScoreModels(ms, () => filterOk(b.filter, c))) continue;
     PEND.set(id(b.key, mint), { key: b.key, mint, symbol: c.symbol, callAt: now, p0: last.p, px0: last.px, until: now + 30_000, fillAfter: now + 2_000 });
     n++;
   }
   return n;
+}
+/**
+ * v0.1.117 EARLY FAMILY: the EARLY book doing best (12+ trips, in profit, PF 1.2+ without the best, +5% a trip) gets
+ * its exit one step each way, same filter and reading age, in their own slots. They race to the exam like GRID's family.
+ */
+export const EARLY_SPAWN_MAX = 8;
+export function earlyHot(): LBook | null {
+  const c = BOOKS.filter((b) => b.early && !b.parent && !b.fv && !isRunner(b.exit))
+    .map((b) => ({ b, s: statOf(b.key) }))
+    .filter((x) => x.s.n >= 12 && x.s.pnl > 0 && x.s.pfLessBest >= 1.2 && x.s.avgPct >= 5)
+    .sort((a, z) => z.s.pnl - a.s.pnl);
+  return c.find((x) => !SPAWNED.includes(x.b.key))?.b ?? null;
+}
+function spawnEarly(hot: LBook, now: number): LBook[] {
+  const pre = earlyPrefix(secOf(hot));
+  const room = EARLY_SPAWN_MAX - BOOKS.filter((b) => b.early && b.parent).length;
+  return neighborExits(hot.exit)
+    .map((e) => ({ ...hot, key: `${pre}${keyOf(hot.filter, "now", e)}`, exit: e, since: now, parent: hot.key, grid: { ...hot.grid, explore: true } }) as LBook)
+    .filter((b) => !BOOKS.some((x) => x.key === b.key) && !dropReason(statOf(b.key)))
+    .slice(0, Math.max(0, room));
 }
 
 function seedRunners(now: number): LBook[] {

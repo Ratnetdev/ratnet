@@ -49,6 +49,8 @@ create index if not exists trips_closed on trips (closed_at);
 create index if not exists trips_build on trips (build);
 create table if not exists early_reads (mint text primary key, at timestamptz not null, created_at timestamptz, f jsonb);
 create index if not exists early_reads_at on early_reads (at);
+create table if not exists early_reads2 (mint text not null, sec integer not null, at timestamptz not null, created_at timestamptz, f jsonb, primary key (mint, sec));
+create index if not exists early_reads2_at on early_reads2 (sec, at);
 `;
 
 /** Connect and create the tables (worker boot). Safe to call when DATABASE_URL is missing: it does nothing. */
@@ -117,10 +119,11 @@ export function archiveLaunch(rec: any) {
 }
 
 // ---- v0.1.115 EARLY: every launch read at 2 minutes old (lib/early.ts), before any call
-const EARLY_COLS = ["mint", "at", "created_at", "f"];
-export function archiveEarly(mint: string, at: number, createdAt: number, f: unknown) {
+const EARLY_COLS = ["mint", "sec", "at", "created_at", "f"];
+/** v0.1.117: one row per launch and reading age (early_reads2). */
+export function archiveEarly(mint: string, at: number, createdAt: number, f: unknown, sec = 120) {
   if (!on() || !mint) return;
-  push(Q.early, { mint, at: ts(at), created_at: ts(createdAt), f: safeJson(f) }, CAP.early);
+  push(Q.early, { mint, sec, at: ts(at), created_at: ts(createdAt), f: safeJson(f) }, CAP.early);
 }
 
 // ---- curve ticks: at most one per coin every 10 seconds (a change is kept, the next one waits)
@@ -275,12 +278,12 @@ export async function archiveFlush() {
       ["trades", Q.trades, TRADE_COLS, "on conflict (id) do nothing"],
       ["trips", Q.trips, TRIP_COLS, "on conflict (book, mint, opened_at) do nothing"],
       ["ticks", Q.ticks, TICK_COLS, ""],
-      ["early", Q.early, EARLY_COLS, "on conflict (mint) do nothing"],
+      ["early", Q.early, EARLY_COLS, "on conflict (mint, sec) do nothing"],
     ] as [keyof typeof archiveStats.written, Row[], string[], string][]) {
       const rows = take(q, 500);
       if (!rows.length) continue;
       try {
-        const res = await insertSafe(name === "early" ? "early_reads" : name, cols, rows, conflict);
+        const res = await insertSafe(name === "early" ? "early_reads2" : name, cols, rows, conflict);
         archiveStats.written[name] += res.ok;
         archiveStats.dropped = (archiveStats.dropped || 0) + res.dropped;
       } catch (e) {
@@ -313,6 +316,7 @@ export async function archivePrune() {
   if (!ready) return;
   await pool.query(`delete from ticks where at < now() - interval '10 days'`).catch(() => null);
   await pool.query(`delete from early_reads where at < now() - interval '21 days'`).catch(() => null); // v0.1.115
+  await pool.query(`delete from early_reads2 where at < now() - interval '21 days'`).catch(() => null); // v0.1.117
 }
 
 export function archiveView() {
@@ -331,15 +335,15 @@ export async function archiveGrid(days = 14, opts: { nulls?: number; nullHist?: 
 }
 
 /** v0.1.115: the EARLY search (every launch read at 2 minutes, lib/early.ts): its own scores, its own checks. */
-export async function archiveEarlyGrid(days = 10, opts: { nulls?: number; nullHist?: number[] } = {}) {
+export async function archiveEarlyGrid(days = 10, opts: { nulls?: number; nullHist?: number[] } = {}, sec = 120) {
   if (!ready) return null;
   const { runGrid } = await import("./grid");
   const { loadEarly } = await import("./early");
   const t0 = Date.now();
-  const coins = await loadEarly(pool, days);
+  const coins = await loadEarly(pool, days, 12_000, sec);
   const loadMs = Date.now() - t0;
-  if (coins.length < 300) return { early: true, coins: coins.length, loadMs, why: `${coins.length} early reads with a path so far (300 needed)` } as any;
-  return { early: true, ...(await runGrid(coins, { ...opts, fitScore: false })), loadMs };
+  if (coins.length < 300) return { early: true, sec, coins: coins.length, loadMs, why: `${coins.length} reads at ${sec}s with a path so far (300 needed)` } as any;
+  return { early: true, sec, ...(await runGrid(coins, { ...opts, fitScore: false })), loadMs };
 }
 
 export async function archiveReplay(days = 14) {

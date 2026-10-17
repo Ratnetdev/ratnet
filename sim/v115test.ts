@@ -53,6 +53,7 @@ const moon = () => [...Array.from({ length: 30 }, () => 0.09 + rnd() * 0.04), ..
 
   // ---- 2. the 2-minute read
   const E = await import("../src/lib/early");
+  process.env.EARLY_CHECKS = "120"; // v0.1.117 reads at several ages (v117test); this test is about the 2-minute one
   E._earlyReset();
   const t0 = 1_790_000_000_000;
   E.earlyCreate("LIVE", t0, "LIV");
@@ -121,7 +122,7 @@ const moon = () => [...Array.from({ length: 30 }, () => 0.09 + rnd() * 0.04), ..
   // ---- 6. wiring
   const wk = fs.readFileSync("worker/index.ts", "utf8");
   ok(/earlyCreate\(c\.mint/.test(wk) && /earlyCurve\(mint/.test(wk) && /earlyPool\(mint/.test(wk) && /earlySweep\(/.test(wk) && /gridLiveEarly\(r\.mint/.test(wk), "the worker reads every launch at 2 minutes from the firehose and hands the reads to the EARLY books");
-  ok(/archiveEarlyGrid\(10/.test(wk) && /rn:grid:early/.test(wk) && /gridLiveEarlyBooks\(er\.rows, er\.explore\)/.test(wk) && /setEarlyModels\(\{ mig: v\?\.score\?\.model/.test(wk), "the EARLY search runs with GRID (hourly), its books and scores follow it, the scores load at boot");
+  ok(/archiveEarlyGrid\(10/.test(wk) && /rn:grid:early/.test(wk) && /gridLiveEarlyBooks\(er\.rows, er\.explore/.test(wk) && /setEarlyModels\(\{ mig: v\?\.score\?\.model/.test(wk), "the EARLY search runs with GRID (hourly), its books and scores follow it, the scores load at boot");
   ok(/early_reads/.test(fs.readFileSync("src/lib/archive.ts", "utf8")) && fs.existsSync("src/app/api/desk/gridearly/route.ts"), "the reads are archived (early_reads, 21 days) and the search is on /api/desk/gridearly");
   ok(/EARLY/.test(fs.readFileSync("src/lib/review.ts", "utf8")) && /WIN SCORE/.test(fs.readFileSync("src/lib/review.ts", "utf8")), "the daily review shows both");
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
