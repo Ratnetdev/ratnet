@@ -165,7 +165,7 @@ export const PREDS: Pred[] = [
 // with a ridge (rules that say the same thing share their weight instead of doubling it). Fitted on GRID's older 70%
 // only; the newer 30% judges it like every other rule. Effective N = how many independent rules the menu really holds.
 export const SCORE_RULES = new Set(["score10", "score20"]);
-export type ScoreModel = { ids: string[]; w: number[]; b: number; thr10: number; thr20: number; at: number };
+export type ScoreModel = { ids: string[]; w: number[]; b: number; thr10: number; thr20: number; at: number; auc?: number | null };
 let SCORE: ScoreModel | null = null;
 export const scoreModel = () => SCORE;
 export function setScoreModel(m: ScoreModel | null | undefined) {
@@ -187,7 +187,7 @@ function scoreTop(c: GCoin, thr: "thr10" | "thr20") {
 }
 
 /** Ridge logistic regression on 0/1 columns (Newton steps). cols[k][i] = rule k on coin i (i < n). */
-export function fitLogit(cols: Uint8Array[], y: Uint8Array, n: number, lambda = 2, iters = 12) {
+export function fitLogit(cols: Uint8Array[], y: Uint8Array, n: number, lambda = 2, iters = 40) {
   const p = cols.length;
   const D = p + 1; // the intercept last
   const act: Int32Array[] = [];
@@ -223,11 +223,36 @@ export function fitLogit(cols: Uint8Array[], y: Uint8Array, n: number, lambda = 
     for (let k = 0; k < p; k++) (g[k] -= lambda * w[k]), (H[k][k] += lambda);
     const step = solve(H, g);
     if (!step) break;
+    // v0.1.112 fix (first live run, 17 Oct): a full Newton step overshoots when a rule (almost) separates the coins and
+    // the fit swung between +15 and 0 on that rule, never settling. Damped: halve the step until the penalised
+    // likelihood improves
+    const f0 = objective(w);
+    let t = 1;
+    let moved = false;
+    for (let h = 0; h < 30; h++, t /= 2) {
+      const tw = Float64Array.from(w, (v, k) => v + t * step[k]);
+      if (objective(tw) >= f0 - 1e-9) {
+        w.set(tw);
+        moved = true;
+        break;
+      }
+    }
     let mx = 0;
-    for (let k = 0; k < D; k++) (w[k] += step[k]), (mx = Math.max(mx, Math.abs(step[k])));
-    if (mx < 1e-6) break;
+    for (let k = 0; k < D; k++) mx = Math.max(mx, Math.abs(t * step[k]));
+    if (!moved || mx < 1e-6) break;
   }
   return { w: Array.from(w.slice(0, p)), b: w[p] };
+  function objective(v: Float64Array) {
+    let f = 0;
+    for (let i = 0; i < n; i++) {
+      let z = v[p];
+      for (const k of act[i]) z += v[k];
+      // log(1 + e^z), without overflow
+      f += y[i] * z - (z > 0 ? z + Math.log1p(Math.exp(-z)) : Math.log1p(Math.exp(z)));
+    }
+    for (let k = 0; k < p; k++) f -= (lambda / 2) * v[k] * v[k];
+    return f;
+  }
 }
 /** Gaussian elimination with partial pivoting (A x = b), null if singular. */
 function solve(A: Float64Array[], b: Float64Array): Float64Array | null {
@@ -312,6 +337,7 @@ export function fitScore(cs: GCoin[], hit: (boolean[] | undefined)[], cut: numbe
   for (let i = 0; i < cut; i++) ytr += y[i];
   if (!ids.length || ytr < 10 || cut - ytr < 10) return { model: null, used: ids.length, effN: 0, top: [], test: null, why: !ids.length ? "no rule fires often enough" : "too few migrations in the older calls" };
   const { w, b } = fitLogit(cols, y, cut);
+  if (![...w, b].every(Number.isFinite)) return { model: null, used: ids.length, effN: 0, top: [], test: null, why: "the fit did not settle" };
   const sc = (i: number) => {
     let s = b;
     for (let k = 0; k < ids.length; k++) if (cols[k][i]) s += w[k];
@@ -331,8 +357,9 @@ export function fitScore(cs: GCoin[], hit: (boolean[] | undefined)[], cut: numbe
     te.forEach((v, i) => v >= thr && (n++, (s += yte[i])));
     return { n, rate: n ? Math.round((s / n) * 1000) / 10 : 0, lift: n && base > 0 ? Math.round((s / n / base) * 100) / 100 : 0 };
   };
+  model.auc = aucOf(te, yte);
   const top = ids.map((id, k) => ({ id, odds: Math.round(Math.exp(w[k]) * 100) / 100 })).sort((a, z) => Math.abs(Math.log(z.odds)) - Math.abs(Math.log(a.odds))).slice(0, 8);
-  return { model, used: ids.length, effN: effectiveN(cols, cut), top, test: { n: te.length, base: Math.round(base * 1000) / 10, auc: aucOf(te, yte), top10: band(thr10), top20: band(thr20) }, why: "" };
+  return { model, used: ids.length, effN: effectiveN(cols, cut), top, test: { n: te.length, base: Math.round(base * 1000) / 10, auc: model.auc, top10: band(thr10), top20: band(thr20) }, why: "" };
 }
 /** v0.1.112 PLATEAU: the exits one step away (one setting changed to the next value on the menu). Runners have none. */
 export function neighbourIdx(xi: number): number[] {

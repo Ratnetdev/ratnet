@@ -997,8 +997,10 @@ export function seedSignals(now: number): LBook[] {
 // like any rule; this family gathers the live record at the same time instead of after.
 export const SCORE_MAX = 2;
 export const SCORE_SEEDS = [keyOf("score10", "now", RUNNER_EXITS[0]), keyOf("score20", "now", RUNNER_EXITS[0])];
+/** A score worth trading: it ranks the newer calls it never saw better than a coin flip by a margin (AUC 0.55+). */
+export const SCORE_MIN_AUC = 0.55;
 export function seedScore(now: number): LBook[] {
-  if (!scoreModel()) return [];
+  if ((scoreModel()?.auc ?? 0) < SCORE_MIN_AUC) return [];
   const out: LBook[] = [];
   let room = SCORE_MAX - BOOKS.filter((b) => b.by === "score" && !b.fv).length;
   for (const k of SCORE_SEEDS) {

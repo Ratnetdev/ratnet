@@ -57,6 +57,10 @@ const dump = () => Array.from({ length: 60 }, () => -0.02 + (rnd() - 0.55) * 0.0
   ok(p10.ok({ ...w1[0], sm: 1, uniq: 60, soc: 1 }) && !p10.ok({ ...w1[0], sm: 0, uniq: 10, soc: 0 }), "score10 / score20 are rules on GRID's menu (appended)");
   g.setScoreModel(null);
   ok(!p10.ok({ ...w1[0], sm: 1, uniq: 60, soc: 1 }), "no model: the score rules never pass");
+  // the first live run (17 Oct): a rule that (almost) separates the coins made the plain Newton fit swing and never settle
+  const ys = Uint8Array.from({ length: 2000 }, () => (rnd() < 0.03 ? 1 : 0));
+  const runs = [1, 2, 3, 5, 12, 40].map((it) => g.fitLogit([Uint8Array.from(ys), Uint8Array.from({ length: 2000 }, () => (rnd() < 0.5 ? 1 : 0))], ys, 2000, 2, it).w[0]);
+  ok(runs.slice(3).every((w) => w > 3 && w < 10) && Math.abs(runs[4] - runs[5]) < 0.05, `a rule that separates the coins: the fit settles (${runs.map((w) => w.toFixed(2)).join(", ")})`);
   ok(g.aucOf([1, 2, 3, 4], [0, 0, 1, 1]) === 1 && g.aucOf([1, 1, 1, 1], [0, 1, 0, 1]) === 0.5, "AUC: 1 = perfect ranking, 0.5 = a coin flip");
 
   // ---- 2. PLATEAU: the neighbours of an exit
@@ -99,6 +103,8 @@ const dump = () => Array.from({ length: 60 }, () => -0.02 + (rnd() - 0.55) * 0.0
   L.gridLiveReset();
   g.setScoreModel(null);
   ok(L.seedScore(Date.now()).length === 0, "no score yet: no SCORE books");
+  g.setScoreModel({ ...sc.model!, auc: 0.5 });
+  ok(L.seedScore(Date.now()).length === 0, "a score that ranks no better than a coin flip on the newer calls (AUC under 0.55): not traded");
   g.setScoreModel(sc.model);
   const s1 = L.seedScore(Date.now());
   ok(s1.length === 2 && s1.every((b) => b.by === "score") && s1[0].key === g.keyOf("score10", "now", g.RUNNER_EXITS[0]), `a score exists: top 10% and top 20% trade on live calls (${s1.map((b) => b.key).join(", ")})`);
