@@ -68,7 +68,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals";
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -396,7 +396,10 @@ function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: numb
   if (!old || !(px > 0)) return;
   const fx = LIVE_FX ? LIVE_FX(mint) : null;
   const sl = SEER_LIVE.get(mint);
-  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null, sx: sl ? { seer: { tier: sl.tier, rank: sl.rank } } : null } as unknown as GCoin;
+  // v0.1.110: origin, DexScreener and the flow, for every-launch books on the new rules
+  const ax = ANY_SX ? (() => { try { return ANY_SX!(mint, now); } catch { return null; } })() : null;
+  const sx = ax || sl ? { ...(ax?.sx || {}), ...(sl ? { seer: { tier: sl.tier, rank: sl.rank } } : {}) } : null;
+  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: p - old.p, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null, kf: ax?.kf ?? null, kmu: ax?.kmu ?? null, kx: ax?.kx ?? null, e20: ax?.e20 ?? null, sx } as unknown as GCoin;
   for (const b of BOOKS) {
     if (!b.any) continue;
     const k = id(b.key, mint);
@@ -858,6 +861,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const wals = seedWallets(now);
   // v0.1.102: the SEER family: coins on the watchlist before they were launched, bought in their first seconds
   const seers = seedSeer(now);
+  // v0.1.110: the SIGNALS family follows GRID's lift table
+  const sigs = seedSignals(now);
+  if (sigs.length && send) await send(`📡 <b>GRID LIVE: new signals on live coins</b>\n${sigs.map((b) => `• ${b.label.replace(/[<>&]/g, " ")} (${b.why})`).join("\n")}\n\nThe new rules with the best lift in GRID, too young for its top list, now collect their own live record (paper).`).catch(() => null);
   // v0.1.108: the FLOW EXIT twins follow the learner's picks
   const fl = seedFlow(now);
   if ((fl.added.length || fl.changed) && send)
@@ -882,7 +888,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
+  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || sigs.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
@@ -940,6 +946,44 @@ export const RUNNER_SEEDS: string[] = [
   keyOf("p70+r5", "now", RUNNER_EXITS[0]),
   keyOf("s60", "now", RUNNER_EXITS[2]),
 ];
+// ---------------------------------------------------------------- v0.1.110 SIGNALS family (EVIDENCE SPEED)
+// The new rules (origin, attention, SEER, KOL flows, events, themes) have too few calls to make GRID's top list, so
+// they would never trade live. Their own slots: after each GRID run, the rules with the best lift (30+ calls, 1.5x+)
+// trade on paper, each with a runner exit; rules that need no King call also run on every launch (the moment the coin
+// shows the signal), so they collect trips from every launch, not only calls. When one is dropped by its record, the
+// next best rule takes the slot. The lift table is read again every GRID run: the family follows the evidence.
+export const SIGNAL_MAX = 8;
+export const SIGNAL_RULES = ["seer", "seertop", "seerfirst", "first", "alpha", "lowauto", "dexpaid", "boosted", "kol3", "kolsmall", "hold20", "firstpost", "bigfirst", "mediapost", "repeatpost", "meme70", "thanimal", "thpolitical", "thai", "thcelebrity", "thculture", "themehot"];
+/** Rules that need no King call (known from the firehose, the indexes and DexScreener on any launch). */
+export const SIGNAL_ANY = new Set(["seer", "seertop", "seerfirst", "first", "alpha", "lowauto", "dexpaid", "boosted", "kol3", "kolsmall", "hold20"]);
+let SIG_LIFTS: { id: string; calls: number; lift: number }[] = [];
+/** After each GRID run (worker): its lift table. */
+export const gridLiveSignals = (lifts: { id: string; calls: number; lift: number }[] | null | undefined) => (SIG_LIFTS = (lifts || []).filter((l) => SIGNAL_RULES.includes(l.id)));
+let ANY_SX: ((mint: string, now: number) => { sx: Record<string, unknown>; kf?: number | null; kmu?: number | null; kx?: number | null; e20?: number | null } | null) | null = null;
+/** v0.1.110: what every-launch books know about a coin without a call (worker: origin, DexScreener, flow). */
+export const setAnySignals = (f: typeof ANY_SX) => (ANY_SX = f);
+export function seedSignals(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = SIGNAL_MAX - BOOKS.filter((b) => b.by === "signals" && !b.fv).length;
+  const rules = SIG_LIFTS.filter((l) => l.calls >= 30 && l.lift >= 1.5).sort((a, z) => z.lift - a.lift);
+  for (const r of rules) {
+    const keys = [keyOf(r.id, "now", RUNNER_EXITS[0]), ...(SIGNAL_ANY.has(r.id) ? [`any:${keyOf(r.id, "now", RUNNER_EXITS[0])}`] : [])];
+    for (const k of keys) {
+      if (room <= 0) break;
+      if (BOOKS.some((b) => b.key === k)) continue;
+      const ts = TRIPS.filter((t) => t.k === k);
+      const inner = bookFromKey(k.replace(/^any:/, ""), now);
+      if (!inner) continue;
+      const b: LBook = k.startsWith("any:") ? { ...inner, key: k, label: `every launch: ${inner.label}`, any: true, by: "signals", why: `lift ${r.lift}x on ${r.calls} calls` } : { ...inner, by: "signals", why: `lift ${r.lift}x on ${r.calls} calls` };
+      if (ts.length && dropReason(bookStat(b, ts))) continue; // its own record ruled it out
+      out.push(b);
+      room--;
+    }
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+
 function seedRunners(now: number): LBook[] {
   const out: LBook[] = [];
   let room = RUNNER_MAX - BOOKS.filter((b) => b.by === "runner" && !b.fv).length;

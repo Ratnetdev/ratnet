@@ -19,7 +19,7 @@ const RECENT = 48 * 3600_000; // alpha/beta compare a coin with its group's coin
 type Ent = { m: string; t: number };
 const GROUPS = new Map<string, Ent[]>(); // "n:name" | "t:ticker" | "i:image" -> coins, in creation order
 const CREATORS = new Map<string, number[]>(); // creator -> creation times
-const KEYS = new Map<string, { t: number; k: string[] }>(); // mint -> its creation time and group keys
+const KEYS = new Map<string, { t: number; k: string[]; c?: string }>(); // mint -> its creation time, group keys, creator
 const MC = new Map<string, number>(); // mint -> last market cap (SOL) seen on the firehose
 const HIST = new Map<string, { rank: number; cr: number }>(); // archive calls: their origin as of their creation
 let loaded = false;
@@ -67,7 +67,7 @@ function crBefore(creator: string, t: number) {
 function add(mint: string, name: string, symbol: string, creator: string, t: number) {
   if (KEYS.has(mint)) return false;
   const k = keysOf(name, symbol);
-  KEYS.set(mint, { t, k });
+  KEYS.set(mint, { t, k, c: creator || undefined });
   for (const key of k) {
     const a = GROUPS.get(key);
     if (a) insert(a, { m: mint, t });
@@ -121,7 +121,7 @@ export function originMc(mint: string, mcSol: number | undefined) {
 }
 
 /** The origin read at the King's call (worker). null until the index is loaded or for a coin it never saw. */
-export function originAt(mint: string, creator: string, now = Date.now()): Og | null {
+export function originAt(mint: string, creator?: string | null, now = Date.now()): Og | null {
   const v = KEYS.get(mint);
   if (!loaded || !v) return null;
   const rank = before(v.k, mint, v.t) + 1;
@@ -138,11 +138,13 @@ export function originAt(mint: string, creator: string, now = Date.now()): Og | 
   }
   const mine = MC.get(mint) || 0;
   const known = n > 0 && mx > 0 && mine > 0;
-  return { rank, cr: crBefore(creator, v.t), alpha: known ? (mine >= mx ? 1 : 0) : null, beta: known ? (mine < mx * 0.1 ? 1 : 0) : null };
+  return { rank, cr: crBefore(creator || v.c || "", v.t), alpha: known ? (mine >= mx ? 1 : 0) : null, beta: known ? (mine < mx * 0.1 ? 1 : 0) : null };
 }
 /** Older calls (GRID): their rank and creator count, as of their creation. */
 export const originHist = (mint: string) => HIST.get(mint) || null;
 export const originLoaded = () => loaded;
+/** v0.1.110: a coin's creation time, if the index has it (every-launch books need it for the DexScreener read). */
+export const originCreated = (mint: string) => KEYS.get(mint)?.t ?? null;
 
 /**
  * Worker boot: read 21 days of launches from the archive in time order (pages of 20K). Calls from the 14 days GRID

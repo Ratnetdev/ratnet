@@ -47,10 +47,10 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
-import { originLoad, originMc, originSee, originStats } from "../src/lib/origin";
-import { dxDrain, dxPoll, dxStats } from "../src/lib/attention";
+import { originAt, originCreated, originLoad, originMc, originSee, originStats } from "../src/lib/origin";
+import { dxDrain, dxLive, dxPoll, dxStats } from "../src/lib/attention";
 import { setOnLabel, themeAt, themeBond, themeDrain, themeLoad, themeStats } from "../src/lib/theme";
 
 // v0.1.102 SEER: a launch whose name or ticker matches a coin SEER saw coming (an event, a trend, a big post) goes to the
@@ -1043,6 +1043,20 @@ async function main() {
       return { kx: kolCount() > 0 ? fl.kx : null, e20: fl.e20 };
     };
     setFlowFeatures(flowOf);
+    // v0.1.110: every-launch books on the new rules know the coin's origin, DexScreener orders and flow without a call
+    setAnySignals((m: string, now: number) => {
+      const created = originCreated(m);
+      const fl = flowFeatures(m);
+      const usd = solUsdNow();
+      const kols = kolCount() > 0;
+      return {
+        sx: { og: originAt(m, null, now), dx: created ? dxLive(m, created, now) : null },
+        kf: kols ? fl.kf : null,
+        kmu: kols && fl.kmc != null && usd > 0 ? Math.round(fl.kmc * usd) : null,
+        kx: kols ? fl.kx : null,
+        e20: fl.e20,
+      };
+    });
     // v0.1.108: the desk runs a followed strategy's flow exit on live money with the same read
     import("../src/lib/desk").then((d) => d.setDeskFlow(flowOf)).catch(() => null);
     // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
@@ -1166,6 +1180,7 @@ async function main() {
           withSeen(res, hist);
           await redis().set("rn:grid:hist", hist).catch(() => null);
           const books = await gridLiveSetBooks(liveCandidates(res, 16));
+          gridLiveSignals(res.senders?.lifts); // v0.1.110: the SIGNALS family reads the lift table
           console.log(`grid live: ${books.length} strategies trading on live coins (${(books as any).kept} kept, ${(books as any).added} new, ${(books as any).dropped?.length ?? 0} dropped)`);
           await redis().set("rn:grid:view", res, { ex: 3 * 86400 }).catch(() => null);
           console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed the test (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
