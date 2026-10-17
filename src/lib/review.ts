@@ -12,7 +12,7 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
-  const [trades, live, rpc, seer, seerHits, flowx, xposts] = await Promise.all([
+  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     r.get<any>("rn:rpc").catch(() => null),
@@ -20,6 +20,7 @@ export async function reviewView(now = Date.now()) {
     r.lrange<any>("rn:seer:matches", 0, 49).catch(() => [] as any[]),
     r.lrange<any>("rn:gridlive:flowx", 0, 1999).catch(() => [] as any[]),
     r.lrange<any>("rn:x:tw", 0, 199).catch(() => [] as any[]),
+    r.get<any>("rn:grid:view").catch(() => null),
   ]);
   // v0.1.107: the media read on WIRE's latest posts (posts from before this build carry none)
   const xs = ((xposts || []) as any[]).filter((t) => t && t.md !== undefined);
@@ -62,6 +63,13 @@ export async function reviewView(now = Date.now()) {
       const ch = chooseVariants(table);
       return { learned: ch.learned, picks: ch.picks.map((v) => ({ v, text: variantText(v) })), top: table.slice(0, 5) };
     })(),
+    // v0.1.112: GRID SCORE (judged on the newer calls), the NULL RUN's luck bar, and passes on the old bar vs every check
+    gridChecks: {
+      passed: gv?.passed ?? null,
+      passedBasic: gv?.passedBasic ?? null,
+      score: gv?.score ? { used: gv.score.used, effN: gv.score.effN, auc: gv.score.test?.auc ?? null, base: gv.score.test?.base ?? null, top10: gv.score.test?.top10 ?? null, top20: gv.score.test?.top20 ?? null, why: gv.score.why || "" } : null,
+      nullRun: gv?.nullRun ?? null,
+    },
     attention: rpc?.dx ?? null,
     theme: rpc?.theme ?? null, // v0.1.109: Claude's labels (asked, made, capped, queue) // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
     origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
@@ -90,6 +98,9 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `<b>GRID LIVE</b>: ${g.books} books, ${g.passed.length} passed${g.leader ? `, desk follows "${esc(g.leader)}"` : ", nothing to follow yet"}`,
     ...g.closest.map((b) => `• close: ${esc(b.label)} (${b.trips} trips, ${sign(r4(b.pnl))} SOL, ${b.won}% won)`),
     `Runners: ${g.runners.books} books, ${g.runners.inProfit} in profit${g.runners.best ? `; best ${esc(g.runners.best.label)} ${sign(r4(g.runners.best.pnl))} SOL over ${g.runners.best.trips}` : ""}`,
+    "",
+    `<b>GRID checks</b>: ${v.gridChecks.passed ?? 0} passed every check (${v.gridChecks.passedBasic ?? 0} on the test alone). Luck bar t ${v.gridChecks.nullRun?.bar ?? 0}; ${v.gridChecks.nullRun ? `${v.gridChecks.nullRun.lucky}/${v.gridChecks.nullRun.kept} shuffled runs found a "pass"` : "no null runs yet"}`,
+    v.gridChecks.score ? `GRID SCORE: ${v.gridChecks.score.used} rules, ${v.gridChecks.score.effN} independent. On newer calls: AUC ${v.gridChecks.score.auc ?? "-"}, top 10% migrate ${v.gridChecks.score.top10?.rate ?? 0}% (${v.gridChecks.score.top10?.lift ?? 0}x the ${v.gridChecks.score.base}% average), top 20% ${v.gridChecks.score.top20?.lift ?? 0}x${v.gridChecks.score.why ? ` (${esc(v.gridChecks.score.why)})` : ""}` : "GRID SCORE: not fitted yet",
     "",
     `<b>Exit flows</b> (paper, measured only): ${v.flowExit.n ? `on ${v.flowExit.n} trips the flow turned; actual ${sign(v.flowExit.actAvg ?? 0)}% a trip, selling then ${sign(v.flowExit.flagAvg ?? 0)}% (better on ${v.flowExit.flagBetter})` : "no trip has seen the flow turn yet"}`,
     "",

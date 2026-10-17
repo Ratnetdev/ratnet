@@ -13,7 +13,7 @@ import { paperPriority } from "./livecost";
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
-import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
+import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
 
 const D = (SITE as any).desk || {};
 // v0.1.96: the priority fee paper pays is what live transactions paid (lib/livecost.ts), the setting until there are 10
@@ -68,7 +68,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer" | "signals";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score";
   why?: string;
   /** v0.1.85: brought back by its own live record (reviveBooks); its own slots, outside GRID's 16 */
   back?: boolean;
@@ -639,13 +639,17 @@ export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }
   // v0.1.102 SEER: event trips are rare (a few to 20 a day), so its books may trade live at the minimum size on a
   // probation exam: 15+ trips, in profit, and still in profit without the 2 best. Full size only through the normal exam
   const st = bookStat0(b, trips);
-  if (st.passed || !b.key || !/^any:[^|]*\bseer/.test(b.key)) return st;
+  // v0.1.112 FAST LANE: a book GRID proved offline (the test, the plateau, the newest slice and the luck bar) gets the
+  // same probation: live at the minimum size after 15 good trips instead of 30
+  if (st.passed || !b.key || !(/^any:[^|]*\bseer/.test(b.key) || fastLane(b))) return st;
   const total = trips.reduce((a, t) => a + t.pnl, 0);
   const top = trips.map((t) => t.pnl).sort((a, z) => z - a);
   const lessTop2 = total - Math.max(0, top[0] ?? 0) - Math.max(0, top[1] ?? 0);
   return trips.length >= SEER_PROBATION && total > 0 && lessTop2 > 0 ? { ...st, passed: true, probation: true, total: trips.length, totalPnl: Math.round(total * 1e4) / 1e4, lessTop2: Math.round(lessTop2 * 1e4) / 1e4 } : st;
 }
 export const SEER_PROBATION = 15;
+/** v0.1.112: GRID-proven (passed every GRID check), not an explore row. */
+export const fastLane = (b: Pick<LBook, "grid">) => !!b.grid?.pass && !b.grid?.explore;
 function bookStat0(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips: LTrip[]): LStat {
   // v0.1.89: a runner is judged on its whole record (few wins, big ones), not on 40% won over its last 30
   const x = b.exit ?? (b.key ? exitOfKey(b.key) : null);
@@ -691,7 +695,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
     const fresh = await redis().hsetnx(PASSED_KEY, b.live.probation ? `${b.key}#probation` : b.key, { at: now, ...b.live }).catch(() => 0);
     const tp = b.live.totalPnl ?? 0;
     const l2 = b.live.lessTop2 ?? 0;
-    if (fresh && b.live.probation) await send(`🔮 <b>GRID LIVE: a SEER strategy passed its probation</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.total} trips, ${tp >= 0 ? "+" : ""}${tp} SOL on 0.05 SOL trades, ${l2 >= 0 ? "+" : ""}${l2} SOL without the 2 best.\n\nNext: the desk may follow it at the minimum size until it passes the full exam.`).catch(() => null);
+    if (fresh && b.live.probation) await send(`${fastLane(b) ? "⚡ <b>GRID LIVE: a GRID-proven strategy passed its probation (FAST LANE)</b>" : "🔮 <b>GRID LIVE: a SEER strategy passed its probation</b>"}\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.total} trips, ${tp >= 0 ? "+" : ""}${tp} SOL on 0.05 SOL trades, ${l2 >= 0 ? "+" : ""}${l2} SOL without the 2 best.\n\nNext: the desk may follow it at the minimum size until it passes the full exam.`).catch(() => null);
     else if (fresh) await send(`🏁 <b>GRID LIVE: a strategy passed the exam on live coins</b>\n${b.label.replace(/[<>&]/g, " ")}\n${b.exitLabel}\n${b.live.n} trips, ${b.live.winRate}% won, ${b.live.pnl >= 0 ? "+" : ""}${b.live.pnl} SOL on 0.05 SOL trades, PF ${b.live.pfLessBest} without the best.\n\nNext: the desk trades it.`).catch(() => null);
   }
   // v0.1.78: a strategy that passed but whose real fills are too far from paper is not followed, and says so once
@@ -863,6 +867,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const seers = seedSeer(now);
   // v0.1.110: the SIGNALS family follows GRID's lift table
   const sigs = seedSignals(now);
+  // v0.1.112: the SCORE family, once GRID has fitted a score
+  const scs = seedScore(now);
+  if (scs.length && send) await send(`🧮 <b>GRID LIVE: GRID SCORE on live calls</b>\n${scs.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nEvery signal combined into one score (each weighted by what it adds that the others do not), fitted on the older calls. Paper on live coins; the exam decides.`).catch(() => null);
   if (sigs.length && send) await send(`📡 <b>GRID LIVE: new signals on live coins</b>\n${sigs.map((b) => `• ${b.label.replace(/[<>&]/g, " ")} (${b.why})`).join("\n")}\n\nThe new rules with the best lift in GRID, too young for its top list, now collect their own live record (paper).`).catch(() => null);
   // v0.1.108: the FLOW EXIT twins follow the learner's picks
   const fl = seedFlow(now);
@@ -888,7 +895,7 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
     }
   }
   refreshCheck();
-  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || sigs.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
+  if (dropped.length || added.length || revived.length || runners.length || wals.length || seers.length || sigs.length || scs.length || fl.added.length || fl.dropped.length || BOOKS.length !== before) await saveBooks();
   return { dropped: dropped.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) })), added: added.map((b) => b.key), revived: revived.map((b) => b.key), hot: hot?.key ?? null };
 }
 /**
@@ -979,6 +986,31 @@ export function seedSignals(now: number): LBook[] {
       out.push(b);
       room--;
     }
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+
+// ---------------------------------------------------------------- v0.1.112 SCORE family
+// The GRID SCORE (every signal combined, lib/grid.ts) trades on live calls from the moment a model exists: its top
+// 10% and top 20% with the runner exit, in their own slots, paper like every family. GRID judges the score on its test
+// like any rule; this family gathers the live record at the same time instead of after.
+export const SCORE_MAX = 2;
+export const SCORE_SEEDS = [keyOf("score10", "now", RUNNER_EXITS[0]), keyOf("score20", "now", RUNNER_EXITS[0])];
+export function seedScore(now: number): LBook[] {
+  if (!scoreModel()) return [];
+  const out: LBook[] = [];
+  let room = SCORE_MAX - BOOKS.filter((b) => b.by === "score" && !b.fv).length;
+  for (const k of SCORE_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const ts = TRIPS.filter((t) => t.k === k);
+    const b = bookFromKey(k, now);
+    if (!b) continue;
+    if (ts.length && dropReason(bookStat(b, ts))) continue; // its own record ruled it out
+    b.by = "score";
+    out.push(b);
+    room--;
   }
   if (out.length) BOOKS = [...BOOKS, ...out];
   return out;

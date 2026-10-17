@@ -141,7 +141,7 @@ const pump = () => [...Array.from({ length: 12 }, () => 0.06 + rnd() * 0.04), ..
   // ---- wiring
   const fs = await import("fs");
   const wk = fs.readFileSync(new URL("../worker/index.ts", import.meta.url), "utf8");
-  ok(/archiveGrid\(\)/.test(wk) && /3 \* 3600_000/.test(wk) && /if \(gridding \|\| replaying\) return/.test(wk), "the worker runs GRID every 3 hours, never next to REPLAY");
+  ok(/archiveGrid\(/.test(wk) && /3 \* 3600_000/.test(wk) && /if \(gridding \|\| replaying\) return/.test(wk), "the worker runs GRID every 3 hours, never next to REPLAY");
   const ar = fs.readFileSync(new URL("../src/lib/archive.ts", import.meta.url), "utf8");
   ok(/export async function archiveGrid/.test(ar), "GRID reads the archive");
   const rp = fs.readFileSync(new URL("../src/lib/replay.ts", import.meta.url), "utf8");

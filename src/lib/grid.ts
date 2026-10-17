@@ -12,6 +12,9 @@
 //   - calls split by time: settings ranked on the older 70% (train), judged only on the newest 30% (test)
 //   - ranked only if train has 40+ trades, profit factor 1.1+ without the best trade, and BOTH halves of train positive
 //   - "passes" = the test meets PROMOTE's bar: 20+ trips, 35%+ won, avg +2%+, PF 1.1+ without the best trade
+//   - v0.1.112, and also: the exits one step away mostly in profit on the test (PLATEAU), the newest third of the test
+//     in profit on its own (NEWEST SLICE), and a test t-stat above the luck bar the same search sets on shuffled
+//     outcomes (NULL RUN)
 // A pass is a candidate, not a strategy: it goes into ARENA next and must prove itself on live coins.
 import { originHist } from "./origin";
 import { dxAt, dxHistAll, dxQueue } from "./attention";
@@ -150,7 +153,203 @@ export const PREDS: Pred[] = [
   { id: "thcelebrity", label: "theme: celebrity", ok: (c) => c.sx?.th?.t === "celebrity" },
   { id: "thculture", label: "theme: culture", ok: (c) => c.sx?.th?.t === "culture" },
   { id: "themehot", label: "2+ coins of its theme migrated in the last 6 hours", ok: (c) => (c.sx?.th?.heat ?? 0) >= 2 },
+  // v0.1.112 GRID SCORE: every rule above combined into one score (lib: fitScore), fitted on the older calls only.
+  // No model yet: never passes
+  { id: "score10", label: "GRID SCORE top 10% (every signal combined)", ok: (c) => scoreTop(c, "thr10") },
+  { id: "score20", label: "GRID SCORE top 20% (every signal combined)", ok: (c) => scoreTop(c, "thr20") },
 ];
+
+// ---------------------------------------------------------------- v0.1.112 GRID SCORE
+// Roan's point (Grinold's Fundamental Law): many weak signals, combined, beat one strong one, but only the INDEPENDENT
+// ones count (IR = IC x sqrt(N effective)). One logistic model over every rule, its target "the coin migrated", fitted
+// with a ridge (rules that say the same thing share their weight instead of doubling it). Fitted on GRID's older 70%
+// only; the newer 30% judges it like every other rule. Effective N = how many independent rules the menu really holds.
+export const SCORE_RULES = new Set(["score10", "score20"]);
+export type ScoreModel = { ids: string[]; w: number[]; b: number; thr10: number; thr20: number; at: number };
+let SCORE: ScoreModel | null = null;
+export const scoreModel = () => SCORE;
+export function setScoreModel(m: ScoreModel | null | undefined) {
+  SCORE = m && Array.isArray(m.ids) && Array.isArray(m.w) && m.ids.length === m.w.length && m.ids.length > 0 && Number.isFinite(m.thr10) && Number.isFinite(m.thr20) ? m : null;
+  return SCORE;
+}
+let PBY: Map<string, Pred> | null = null;
+const predById = (id: string) => (PBY ??= new Map(PREDS.map((p) => [p.id, p]))).get(id);
+/** The call's GRID SCORE (log-odds of migrating), or null without a model. */
+export function scoreOf(c: GCoin, m: ScoreModel | null = SCORE): number | null {
+  if (!m) return null;
+  let s = m.b;
+  for (let k = 0; k < m.ids.length; k++) if (predById(m.ids[k])?.ok(c)) s += m.w[k];
+  return s;
+}
+function scoreTop(c: GCoin, thr: "thr10" | "thr20") {
+  const s = scoreOf(c);
+  return s != null && !!SCORE && s >= SCORE[thr];
+}
+
+/** Ridge logistic regression on 0/1 columns (Newton steps). cols[k][i] = rule k on coin i (i < n). */
+export function fitLogit(cols: Uint8Array[], y: Uint8Array, n: number, lambda = 2, iters = 12) {
+  const p = cols.length;
+  const D = p + 1; // the intercept last
+  const act: Int32Array[] = [];
+  for (let i = 0; i < n; i++) {
+    const a: number[] = [];
+    for (let k = 0; k < p; k++) if (cols[k][i]) a.push(k);
+    act.push(Int32Array.from(a));
+  }
+  let ys = 0;
+  for (let i = 0; i < n; i++) ys += y[i];
+  const base = Math.min(0.999, Math.max(0.001, ys / Math.max(1, n)));
+  const w = new Float64Array(D);
+  w[p] = Math.log(base / (1 - base));
+  for (let it = 0; it < iters; it++) {
+    const H = Array.from({ length: D }, () => new Float64Array(D));
+    const g = new Float64Array(D);
+    for (let i = 0; i < n; i++) {
+      let z = w[p];
+      for (const k of act[i]) z += w[k];
+      const q = 1 / (1 + Math.exp(-z));
+      const e = y[i] - q;
+      const v = Math.max(1e-6, q * (1 - q));
+      const a = act[i];
+      for (const k of a) {
+        g[k] += e;
+        for (const j of a) H[k][j] += v;
+        H[k][p] += v;
+        H[p][k] += v;
+      }
+      g[p] += e;
+      H[p][p] += v;
+    }
+    for (let k = 0; k < p; k++) (g[k] -= lambda * w[k]), (H[k][k] += lambda);
+    const step = solve(H, g);
+    if (!step) break;
+    let mx = 0;
+    for (let k = 0; k < D; k++) (w[k] += step[k]), (mx = Math.max(mx, Math.abs(step[k])));
+    if (mx < 1e-6) break;
+  }
+  return { w: Array.from(w.slice(0, p)), b: w[p] };
+}
+/** Gaussian elimination with partial pivoting (A x = b), null if singular. */
+function solve(A: Float64Array[], b: Float64Array): Float64Array | null {
+  const n = b.length;
+  const M = A.map((r, i) => {
+    const x = new Float64Array(n + 1);
+    x.set(r);
+    x[n] = b[i];
+    return x;
+  });
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-12) return null;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      if (!f) continue;
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return Float64Array.from(M.map((r, i) => r[n] / r[i]));
+}
+/** How many independent rules a set of 0/1 columns holds: p^2 / sum of squared correlations (p if all independent, 1 if all the same). */
+export function effectiveN(cols: Uint8Array[], n: number) {
+  const p = cols.length;
+  if (!p || n < 2) return 0;
+  const m = cols.map((c) => {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += c[i];
+    return s / n;
+  });
+  let sum = 0;
+  for (let a = 0; a < p; a++)
+    for (let b = 0; b < p; b++) {
+      if (a === b) {
+        sum += 1;
+        continue;
+      }
+      let co = 0;
+      for (let i = 0; i < n; i++) if (cols[a][i] && cols[b][i]) co++;
+      const den = Math.sqrt(m[a] * (1 - m[a]) * m[b] * (1 - m[b]));
+      const r = den > 0 ? (co / n - m[a] * m[b]) / den : 0;
+      sum += r * r;
+    }
+  return Math.round(((p * p) / sum) * 10) / 10;
+}
+/** Area under the ROC curve: how often a migrated coin scores above one that did not (0.5 = no better than a coin flip). */
+export function aucOf(s: number[], y: number[]) {
+  const idx = s.map((_, i) => i).sort((a, b) => s[a] - s[b]);
+  let pos = 0, neg = 0, rankSum = 0;
+  for (let k = 0; k < idx.length; ) {
+    let j = k;
+    while (j + 1 < idx.length && s[idx[j + 1]] === s[idx[k]]) j++;
+    const r = (k + j) / 2 + 1; // average rank of the ties
+    for (let t = k; t <= j; t++) if (y[idx[t]]) (pos++, (rankSum += r));
+    k = j + 1;
+  }
+  neg = idx.length - pos;
+  return pos && neg ? Math.round(((rankSum - (pos * (pos + 1)) / 2) / (pos * neg)) * 1000) / 1000 : null;
+}
+/**
+ * Fit the GRID SCORE on the older calls (index < cut) and judge it on the newer ones. Only rules that fire on 30+ and
+ * miss 30+ of the older calls take part (a rule that never or always fires says nothing).
+ */
+export function fitScore(cs: GCoin[], hit: (boolean[] | undefined)[], cut: number, now = Date.now()) {
+  const N = cs.length;
+  const y = Uint8Array.from(cs.map((c) => (c.bonded ? 1 : 0)));
+  const ids: string[] = [];
+  const cols: Uint8Array[] = [];
+  PREDS.forEach((p, k) => {
+    const h = hit[k];
+    if (!h || SCORE_RULES.has(p.id)) return;
+    let n = 0;
+    for (let i = 0; i < cut; i++) if (h[i]) n++;
+    if (n < 30 || cut - n < 30) return;
+    ids.push(p.id);
+    cols.push(Uint8Array.from(h, (v) => (v ? 1 : 0)));
+  });
+  let ytr = 0;
+  for (let i = 0; i < cut; i++) ytr += y[i];
+  if (!ids.length || ytr < 10 || cut - ytr < 10) return { model: null, used: ids.length, effN: 0, top: [], test: null, why: !ids.length ? "no rule fires often enough" : "too few migrations in the older calls" };
+  const { w, b } = fitLogit(cols, y, cut);
+  const sc = (i: number) => {
+    let s = b;
+    for (let k = 0; k < ids.length; k++) if (cols[k][i]) s += w[k];
+    return s;
+  };
+  const all = Array.from({ length: N }, (_, i) => sc(i));
+  const tr = all.slice(0, cut).sort((a, z) => z - a);
+  const thr10 = tr[Math.max(0, Math.floor(cut * 0.1) - 1)];
+  const thr20 = tr[Math.max(0, Math.floor(cut * 0.2) - 1)];
+  const model: ScoreModel = { ids, w: w.map((v) => Math.round(v * 1000) / 1000), b: Math.round(b * 1000) / 1000, thr10, thr20, at: now };
+  // judged on the newer calls only
+  const te = all.slice(cut);
+  const yte = Array.from(y.slice(cut));
+  const base = yte.length ? yte.reduce((a, v) => a + v, 0) / yte.length : 0;
+  const band = (thr: number) => {
+    let n = 0, s = 0;
+    te.forEach((v, i) => v >= thr && (n++, (s += yte[i])));
+    return { n, rate: n ? Math.round((s / n) * 1000) / 10 : 0, lift: n && base > 0 ? Math.round((s / n / base) * 100) / 100 : 0 };
+  };
+  const top = ids.map((id, k) => ({ id, odds: Math.round(Math.exp(w[k]) * 100) / 100 })).sort((a, z) => Math.abs(Math.log(z.odds)) - Math.abs(Math.log(a.odds))).slice(0, 8);
+  return { model, used: ids.length, effN: effectiveN(cols, cut), top, test: { n: te.length, base: Math.round(base * 1000) / 10, auc: aucOf(te, yte), top10: band(thr10), top20: band(thr20) }, why: "" };
+}
+/** v0.1.112 PLATEAU: the exits one step away (one setting changed to the next value on the menu). Runners have none. */
+export function neighbourIdx(xi: number): number[] {
+  const x = GEXITS[xi];
+  if (!x || isRunner(x)) return [];
+  const out: number[] = [];
+  GEXITS.forEach((e, j) => {
+    if (j === xi || isRunner(e)) return;
+    const diff = [e.initials !== x.initials, e.trail !== x.trail, e.stop !== x.stop, e.timeMin !== x.timeMin, e.mig !== x.mig].filter(Boolean).length;
+    if (diff !== 1) return;
+    // initials has 3 values: only the next one up or down is a neighbour (1.5 and 3 are two steps apart)
+    if (e.initials !== x.initials && Math.abs(INIT.indexOf(e.initials) - INIT.indexOf(x.initials)) !== 1) return;
+    out.push(j);
+  });
+  return out;
+}
+const INIT = [1.5, 2, 3];
 
 /** v0.1.101: the call's social read for GRID, from call.sx, or for calls before this build from the archived launch. */
 export function sxOf(call: any, wire?: any, pulse?: any, og?: { rank: number; cr: number } | null, dx?: { paid: 0 | 1 | null; boost: number | null } | null, postRank?: number | null): Sx | null {
@@ -364,6 +563,9 @@ export type GRow = {
   senders: number; // migrated coins among its trades
   explore?: boolean; // v0.1.74: best on all calls, not ranked on train/test (only GRID LIVE judges it)
   seen?: { runs: number; ranked: number; passed: number }; // across earlier runs (gridHistory)
+  // v0.1.112: the checks after the test. basic = the old pass (test meets PROMOTE's bar); t = the test's t-stat; bar =
+  // the NULL RUN's luck bar it must beat; plateau = neighbouring exits in profit on the test; recent = the newest third
+  checks?: { basic: boolean; t: number; bar: number; plateau: { n: number; up: number; ok: boolean }; recent: { n: number; pnl: number; ok: boolean } };
 };
 export const keyOf = (filter: string, mode: string, x: GExit) => `${filter}|${mode}|${x.initials}/${x.trail}/${x.stop}/${x.timeMin}/${x.mig}${isRunner(x) ? `/k${x.keep ?? 0.5}h${x.hours}` : ""}`;
 
@@ -383,7 +585,9 @@ export function sendersStudy(cs: GCoin[], hit: boolean[][]) {
   const verdicts: Record<string, number> = {};
   for (const i of sIdx) verdicts[cs[i].verdict] = (verdicts[cs[i].verdict] || 0) + 1;
   const base = N ? S / N : 0;
-  const lifts = PREDS.map((p, k) => {
+  // v0.1.112: the score rules are left out (fitted on these same calls, their lift here would be in-sample; GRID SCORE
+  // reports its own lift on the newer calls only)
+  const lifts = PREDS.map((p, k) => ({ p, k })).filter(({ p }) => !SCORE_RULES.has(p.id)).map(({ p, k }) => {
     let n = 0, sn = 0;
     for (let i = 0; i < N; i++) if (hit[k][i]) (n++, cs[i].bonded && sn++);
     const rate = n ? sn / n : 0;
@@ -407,7 +611,7 @@ export function sendersStudy(cs: GCoin[], hit: boolean[][]) {
 }
 
 /** The whole search. Coins: calls with their paths (any order). */
-export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number } = {}) {
+export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number; nulls?: number; nullHist?: number[]; fitScore?: boolean } = {}) {
   // the worker's desk shares this thread: hand it the event loop between chunks of work
   const breathe = () => new Promise<void>((res) => setImmediate(res));
   await loadLiveFees().catch(() => null); // v0.1.96: costs as live pays them
@@ -443,8 +647,19 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
       out.push(a);
     }
   }
+  // v0.1.112 GRID SCORE: every rule on the menu first, the score fitted on the older 70% (train) from them, then the
+  // score's own rules (top 10% / top 20%) on every call. The newer 30% never reaches the fit
+  const hit: boolean[][] = new Array(PREDS.length);
+  PREDS.forEach((p, k) => {
+    if (!SCORE_RULES.has(p.id)) hit[k] = cs.map((c) => p.ok(c));
+  });
+  await breathe();
+  const score = fitScore(cs, hit, cut);
+  if (opts.fitScore !== false) setScoreModel(score.model);
+  PREDS.forEach((p, k) => {
+    if (SCORE_RULES.has(p.id)) hit[k] = cs.map((c) => p.ok(c));
+  });
   // filters: none, every rule, every pair of rules (as coin index lists)
-  const hit = PREDS.map((p) => cs.map((c) => p.ok(c)));
   const filters: { id: string; label: string; idx: Int32Array }[] = [];
   const mk = (id: string, label: string, ok: (i: number) => boolean) => {
     const idx: number[] = [];
@@ -453,7 +668,11 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
   };
   mk("all", "every call", () => true);
   for (let a = 0; a < PREDS.length; a++) mk(PREDS[a].id, PREDS[a].label, (i) => hit[a][i]);
-  for (let a = 0; a < PREDS.length; a++) for (let b = a + 1; b < PREDS.length; b++) mk(`${PREDS[a].id}+${PREDS[b].id}`, `${PREDS[a].label} + ${PREDS[b].label}`, (i) => hit[a][i] && hit[b][i]);
+  for (let a = 0; a < PREDS.length; a++) for (let b = a + 1; b < PREDS.length; b++) {
+    // the two score bands are one idea: top 10% is inside top 20%
+    if (SCORE_RULES.has(PREDS[a].id) && SCORE_RULES.has(PREDS[b].id)) continue;
+    mk(`${PREDS[a].id}+${PREDS[b].id}`, `${PREDS[a].label} + ${PREDS[b].label}`, (i) => hit[a][i] && hit[b][i]);
+  }
 
   const stat = (o: Float32Array, idx: Int32Array, from: number, to: number) => {
     const a = acc0();
@@ -473,22 +692,89 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     return finish(a, cost);
   };
   type Cand = { f: number; m: number; x: number; tr: ReturnType<typeof stat> };
-  const ranked: Cand[] = [];
   let tried = 0;
-  let best: Cand | null = null; // the best train result of all, ranked or not (for the summary)
-  for (let f = 0; f < filters.length; f++) {
-    await breathe();
-    for (let m = 0; m < M; m++) {
-      for (let x = 0; x < X; x++) {
-        tried++;
-        const tr = stat(out[m * X + x], filters[f].idx, 0, cut);
-        if (tr.n < RANK.minN) continue;
-        if (!best || tr.t > best.tr.t) best = { f, m, x, tr };
-        if (tr.avgPct > 0 && tr.pfLessBest >= RANK.minPf && tr.halvesUp) ranked.push({ f, m, x, tr });
+  /** Rank every strategy on train (outs: the outcomes; the NULL RUN passes shuffled ones). */
+  const search = async (outs: Float32Array[], count: boolean) => {
+    const ranked: Cand[] = [];
+    let best: Cand | null = null; // the best train result of all, ranked or not (for the summary)
+    for (let f = 0; f < filters.length; f++) {
+      if (f % 4 === 0) await breathe();
+      for (let m = 0; m < M; m++) {
+        for (let x = 0; x < X; x++) {
+          if (count) tried++;
+          const tr = stat(outs[m * X + x], filters[f].idx, 0, cut);
+          if (tr.n < RANK.minN) continue;
+          if (!best || tr.t > best.tr.t) best = { f, m, x, tr };
+          if (tr.avgPct > 0 && tr.pfLessBest >= RANK.minPf && tr.halvesUp) ranked.push({ f, m, x, tr });
+        }
       }
     }
+    ranked.sort((a, b) => b.tr.t - a.tr.t);
+    return { ranked, best };
+  };
+  /** One per filter + timing, and once per identical set of trades (the simpler one, ranked first on a tie, is kept). */
+  const pick = (ranked: Cand[]) => {
+    const seen = new Set<string>();
+    const out: Cand[] = [];
+    for (const c of ranked) {
+      const k = `${c.f}:${c.m}`;
+      const same = `${c.m}:${c.tr.n}:${c.tr.pnl}:${c.tr.wins}`;
+      if (seen.has(k) || seen.has(same)) continue;
+      seen.add(k);
+      seen.add(same);
+      out.push(c);
+      if (out.length >= (opts.top ?? 25)) break;
+    }
+    return out;
+  };
+  // v0.1.112 PLATEAU and NEWEST SLICE: a real edge holds when the exit moves one step, and still pays on the newest
+  // third of the test on its own
+  const NB = GEXITS.map((_, xi) => neighbourIdx(xi));
+  const recentFrom = cut + Math.floor(((N - cut) * 2) / 3);
+  const checkOf = (c: Cand, outs: Float32Array[]) => {
+    const idx = filters[c.f].idx;
+    const te = stat(outs[c.m * X + c.x], idx, cut, N);
+    let up = 0;
+    for (const nx of NB[c.x]) {
+      const s = stat(outs[c.m * X + nx], idx, cut, N);
+      if (s.n > 0 && s.pnl > 0) up++;
+    }
+    const rc = stat(outs[c.m * X + c.x], idx, recentFrom, N);
+    const n = NB[c.x].length;
+    return { te, basic: passes(te), t: Math.round(te.t * 100) / 100, plateau: { n, up, ok: !n || up * 2 >= n }, recent: { n: rc.n, pnl: rc.pnl, ok: rc.n >= 5 && rc.pnl > 0 } };
+  };
+  const fullPass = (k: ReturnType<typeof checkOf>) => k.basic && k.plateau.ok && k.recent.ok;
+
+  // v0.1.112 NULL RUN: the same search on shuffled outcomes (each call gets another call's trades), where no rule can
+  // have an edge. Whatever still passes there passed by luck. Each null run gives the best luck t-stat among its passes
+  // (0: nothing passed). The bar a real pass must beat is the 95th percentile of those over the last NULL_KEEP runs, so
+  // at most 1 run in 20 of pure luck would get through
+  const nullStats: number[] = [];
+  for (let r = 0; r < Math.max(0, opts.nulls ?? 0); r++) {
+    const perm = Int32Array.from({ length: N }, (_, i) => i);
+    for (let i = N - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [perm[i], perm[j]] = [perm[j], perm[i]];
+    }
+    const outsP = out.map((o) => {
+      const a = new Float32Array(N);
+      for (let i = 0; i < N; i++) a[i] = o[perm[i]];
+      return a;
+    });
+    await breathe();
+    const { ranked: rk } = await search(outsP, false);
+    let mx = 0;
+    for (const c of pick(rk)) {
+      const k = checkOf(c, outsP);
+      if (fullPass(k)) mx = Math.max(mx, k.t, 0.01);
+    }
+    nullStats.push(Math.round(mx * 100) / 100);
   }
-  ranked.sort((a, b) => b.tr.t - a.tr.t);
+  const nullHist = [...(opts.nullHist || []).filter((v) => Number.isFinite(v)), ...nullStats].slice(-NULL_KEEP);
+  const sortedNull = [...nullHist].sort((a, b) => a - b);
+  const bar = !sortedNull.length ? 0 : sortedNull.length >= 10 ? sortedNull[Math.floor(0.95 * (sortedNull.length - 1))] : sortedNull[sortedNull.length - 1];
+
+  const { ranked, best } = await search(out, true);
   // v0.1.74: EXPLORE. When nothing ranks (13-14 Oct: 0 of 56,448), GRID LIVE sat empty and no live evidence was
   // gathered at all. Explore rows are the best strategies on ALL calls (20+ trades, positive, PF 1+ without the best):
   // not proven by the train/test split, so they never count as passed here; GRID LIVE trades them in free slots and
@@ -504,29 +790,17 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     }
   }
   explorePool.sort((a, b) => b.tr.t - a.tr.t);
-  // one row per filter + timing (its best exit), so the list is not 24 copies of one idea
-  const seen = new Set<string>();
-  const rows: GRow[] = [];
   const toRow = (c: Cand): GRow => {
-    const te = stat(out[c.m * X + c.x], filters[c.f].idx, cut, N);
+    const k = checkOf(c, out);
     const { t: _t, halvesUp: _h, ...train } = c.tr;
-    const { t: _t2, halvesUp: _h2, ...test } = te;
+    const { t: _t2, halvesUp: _h2, ...test } = k.te;
     const o = out[c.m * X + c.x];
     let senders = 0;
     for (const i of filters[c.f].idx) if (o[i] === o[i] && cs[i].bonded) senders++;
-    return { key: keyOf(filters[c.f].id, MODES[c.m].id, GEXITS[c.x]), filter: filters[c.f].id, filterLabel: filters[c.f].label, mode: MODES[c.m].id, modeLabel: MODES[c.m].label, exit: GEXITS[c.x], exitLabel: exitText(GEXITS[c.x]), train, test, pass: passes(test), senders };
+    const pass = fullPass(k) && k.t > bar;
+    return { key: keyOf(filters[c.f].id, MODES[c.m].id, GEXITS[c.x]), filter: filters[c.f].id, filterLabel: filters[c.f].label, mode: MODES[c.m].id, modeLabel: MODES[c.m].label, exit: GEXITS[c.x], exitLabel: exitText(GEXITS[c.x]), train, test, pass, senders, checks: { basic: k.basic, t: k.t, bar, plateau: k.plateau, recent: k.recent } };
   };
-  for (const c of ranked) {
-    // once per filter + timing, and once per identical set of trades (a pair that picks the same coins as a single
-    // rule is the same strategy: the simpler one, ranked first on a tie, is kept)
-    const k = `${c.f}:${c.m}`;
-    const same = `${c.m}:${c.tr.n}:${c.tr.pnl}:${c.tr.wins}`;
-    if (seen.has(k) || seen.has(same)) continue;
-    seen.add(k);
-    seen.add(same);
-    rows.push(toRow(c));
-    if (rows.length >= (opts.top ?? 25)) break;
-  }
+  const rows: GRow[] = pick(ranked).map(toRow);
   const explore: GRow[] = [];
   const seenX = new Set<string>(rows.map((r) => `${r.filter}:${r.mode}`));
   for (const c of explorePool) {
@@ -569,10 +843,17 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     explore,
     base,
     passed: passed.length,
+    // v0.1.112: how many would have passed on the old bar (the test alone), before the plateau, the newest slice and the luck bar
+    passedBasic: rows.filter((r) => r.checks?.basic).length,
     senders: sendersStudy(cs, hit),
     rules: { rank: RANK, pass: PASS },
+    score: { used: score.used, effN: score.effN, top: score.top, test: score.test, why: score.why, model: score.model },
+    nullRun: { runs: nullStats.length, kept: nullHist.length, lucky: nullHist.filter((v) => v > 0).length, luckRate: nullHist.length ? Math.round((nullHist.filter((v) => v > 0).length / nullHist.length) * 1000) / 10 : null, bar, thisRun: nullStats },
+    nullHist,
   };
 }
+/** v0.1.112: null runs kept for the luck bar (3 a GRID run, hourly: about a day and a half). */
+export const NULL_KEEP = 100;
 export type GridView = Awaited<ReturnType<typeof runGrid>>;
 
 // ---- loading from the archive (worker)
