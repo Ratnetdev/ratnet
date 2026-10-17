@@ -256,3 +256,27 @@ export async function benchOnce098() {
   await redis().set(KEY, pm);
   return `flash benched from live money (16 Oct: 15 live sells, 1 won, -0.196 SOL). The ghost desk keeps trading it; it comes back when its last 20 ghost trips pass the exam`;
 }
+
+/**
+ * v0.1.111 LIVE ONLY ON PROOF (Stan, 17 Oct). Nothing on live money had passed an exam, and the families lost 0.18 SOL
+ * in 24 hours (21 sells, 4 won) while GRID LIVE searched. Once: every family without proof is benched; it keeps trading
+ * on the ghost desk (same signals, same costs) and comes back to live money the moment its last 20 ghost trips pass the
+ * exam (the LIVE BENCH rule). Proof = its last 20+ trips already pass the exam. GRID LIVE strategies reach live money
+ * only through their own exam (the leader) or the SEER probation, as before.
+ */
+export async function benchOnce111(now = Date.now()) {
+  if (!(await redis().set("rn:fix:0.1.111", now, { nx: true }))) return null;
+  const pm = await load();
+  const benched: string[] = [];
+  for (const k of SLEEVES) {
+    const s = pm[k];
+    if (s.bench) continue;
+    const e = examOf((s.lv && s.lv.length >= 20 ? s.lv : s.r).slice(-30));
+    if (e.n >= 20 && e.pass) continue; // it has proof: stays on live money
+    s.bench = { why: `live only on proof (v0.1.111): no passed exam yet${e.n ? ` (last ${e.n}: ${Math.round(e.winRate)}% won, ${e.avg.toFixed(1)}% a trip)` : ""}`, at: now };
+    s.gb = [];
+    benched.push(k);
+  }
+  await redis().set(KEY, pm);
+  return benched.length ? `LIVE ONLY ON PROOF: ${benched.join(", ")} moved to the ghost desk. Each comes back to live money when its last 20 ghost trips pass the exam; a GRID LIVE strategy goes live when it passes its own` : null;
+}

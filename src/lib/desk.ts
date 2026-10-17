@@ -42,7 +42,7 @@ import { agentLog, type AgentEv } from "./agents";
 import { coachStats, coachStep, follow, followsFor, tripId, type Check } from "./coach";
 import { filmStats, filmStep, logSkip } from "./film";
 import { gateFor, regimeSaved } from "./regimegate";
-import { exitProfiles, noteExit, benchOnce098, onClose as pmClose, onGhost as pmGhost, pmClearPauses, pmDropWicks, pmView, sleeveOf, sleeveWeight, type ExitProfile } from "./pm";
+import { exitProfiles, noteExit, benchOnce098, benchOnce111, onClose as pmClose, onGhost as pmGhost, pmClearPauses, pmDropWicks, pmView, sleeveOf, sleeveWeight, type ExitProfile } from "./pm";
 import { accountOf, notePnl, wireViewPublic } from "./wire";
 import { getHistory } from "./historian";
 import { enqueueLens, lensDossier } from "./lens";
@@ -1494,6 +1494,8 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await fixOnce061().catch(() => false);
     const benched = await benchOnce098().catch(() => null);
     if (benched) await redis().lpush(K.deskEv, { agent: "PM", at: Date.now(), text: benched, tone: "info" }).catch(() => 0);
+    const proof = await benchOnce111().catch(() => null); // v0.1.111 LIVE ONLY ON PROOF
+    if (proof) await redis().lpush(K.deskEv, { agent: "PM", at: Date.now(), text: proof, tone: "info" }).catch(() => 0);
     await autoOnce076().catch(() => false);
     await dropWicksOnce().catch(() => null);
     await slimTradesOnce().catch(() => null);
