@@ -72,7 +72,7 @@ export type GCoin = {
  * the dig, also in the archive for older calls); lens/xf/tg (LENS), kol/ftop (HOUND) and mind (MIND) only exist on
  * calls from this build on, and only when that agent had read the coin by minute 5 (never looked ahead).
  */
-export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null };
+export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null; ev?: { rank: number | null; md: 0 | 1 | null; rep: number | null; f: number } | null };
 export type Pred = { id: string; label: string; ok: (c: GCoin) => boolean };
 export const PREDS: Pred[] = [
   { id: "bond", label: "King BOND", ok: (c) => c.verdict === "BOND" },
@@ -133,22 +133,31 @@ export const PREDS: Pred[] = [
   { id: "kolout", label: "a KOL that bought has already sold", ok: (c) => (c.kx ?? -1) >= 1 },
   { id: "hold20", label: "the first 20 buyers mostly hold (20% or fewer sold)", ok: (c) => c.e20 != null && c.e20 <= 0.2 },
   { id: "exit20", label: "half or more of the first 20 buyers sold", ok: (c) => c.e20 != null && c.e20 >= 0.5 },
+  // v0.1.107 EVENT: the post a coin was born from (WIRE). Unknown never passes
+  { id: "firstpost", label: "the first coin for its post", ok: (c) => c.sx?.ev?.rank === 1 },
+  { id: "bigfirst", label: "the first coin for a 100K+ account's post", ok: (c) => c.sx?.ev?.rank === 1 && (c.sx?.ev?.f ?? 0) >= 100_000 },
+  { id: "mediapost", label: "its post had an image or video", ok: (c) => c.sx?.ev?.md === 1 },
+  { id: "repeatpost", label: "the author posted about it 2+ times in the hour", ok: (c) => (c.sx?.ev?.rep ?? 0) >= 2 },
 ];
 
 /** v0.1.101: the call's social read for GRID, from call.sx, or for calls before this build from the archived launch. */
-export function sxOf(call: any, wire?: any, pulse?: any, og?: { rank: number; cr: number } | null, dx?: { paid: 0 | 1 | null; boost: number | null } | null): Sx | null {
+export function sxOf(call: any, wire?: any, pulse?: any, og?: { rank: number; cr: number } | null, dx?: { paid: 0 | 1 | null; boost: number | null } | null, postRank?: number | null): Sx | null {
   // v0.1.103: older calls get their origin from the archive (as of their creation; alpha/beta need live prices: unknown)
   const ogH = og ? { rank: og.rank, cr: og.cr, alpha: null, beta: null } : null;
+  // a CA posted can come long after the call (a later post): not counted for older calls, never a look ahead
+  const w = wire && !/\bCA\b|posted the ca/i.test(String(wire.how || "")) ? wire : null;
+  // v0.1.107: older calls get the post rank from the archive (coins matched to the same post, in creation order); media
+  // and repeat posts exist from this build on
+  const ev = w ? { rank: w.rank ?? postRank ?? null, md: w.md === undefined ? null : w.md ? (1 as const) : (0 as const), rep: w.rep ?? null, f: Number(w.f) || 0 } : null;
   // v0.1.104: DexScreener's order history (payment times, read as of the call) is the truth; the call's live read is
   // the fallback while the history is not fetched yet
   if (call?.sx) {
-    const s = call.sx.og || !ogH ? (call.sx as Sx) : { ...(call.sx as Sx), og: ogH };
+    let s = call.sx.og || !ogH ? (call.sx as Sx) : { ...(call.sx as Sx), og: ogH };
+    if (s.ev === undefined && ev) s = { ...s, ev }; // calls from v0.1.101 to v0.1.106
     return dx ? { ...s, dx } : s;
   }
   if (wire === undefined && pulse === undefined && !ogH && !dx) return null;
-  // a CA posted can come long after the call (a later post): not counted for older calls, never a look ahead
-  const w = wire && !/\bCA\b|posted the ca/i.test(String(wire.how || "")) ? wire : null;
-  return { post: w ? 1 : 0, bigpost: w ? (Number(w.f) >= 100_000 ? 1 : 0) : 0, pulse: pulse ? 1 : 0, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null, og: ogH, dx: dx ?? null };
+  return { post: w ? 1 : 0, bigpost: w ? (Number(w.f) >= 100_000 ? 1 : 0) : 0, pulse: pulse ? 1 : 0, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null, og: ogH, dx: dx ?? null, ev };
 }
 
 export type Mode = { id: string; label: string; kind: "now" | "climb" | "dip" | "hold" | "mig"; a: number; win: number };
@@ -568,6 +577,18 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
     [new Date(from).toISOString(), max],
   );
   const dxh = await dxHistAll(); // v0.1.104
+  // v0.1.107: each archived coin's place among the coins matched to the same post (from a day before the window on)
+  const postRank = new Map<string, number>();
+  const pr = await pool
+    .query(`select mint, created_at, data->'wire'->>'tid' as tid from launches where created_at > $1 and data->'wire' is not null order by created_at`, [new Date(from - 86400_000).toISOString()])
+    .catch(() => ({ rows: [] as any[] }));
+  const perPost = new Map<string, number>();
+  for (const x of pr.rows) {
+    if (!x.tid) continue;
+    const n = (perPost.get(x.tid) || 0) + 1;
+    perPost.set(x.tid, n);
+    postRank.set(x.mint, n);
+  }
   const coins = new Map<string, GCoin & { pre: { t: number; p: number }[]; tk: { t: number; mc: number; r: number; p: number; d: number }[] }>();
   for (const r of ls.rows) {
     const c = typeof r.call === "string" ? JSON.parse(r.call) : r.call;
@@ -602,7 +623,7 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
       kmu: num(tp.kmu),
       kx: num(tp.kx),
       e20: num(tp.e20),
-      sx: sxOf(c, typeof r.wire === "string" ? JSON.parse(r.wire) : r.wire, typeof r.pulse === "string" ? JSON.parse(r.pulse) : r.pulse, originHist(r.mint), dxAt(dxh[r.mint], Number(c.at))),
+      sx: sxOf(c, typeof r.wire === "string" ? JSON.parse(r.wire) : r.wire, typeof r.pulse === "string" ? JSON.parse(r.pulse) : r.pulse, originHist(r.mint), dxAt(dxh[r.mint], Number(c.at)), postRank.get(r.mint) ?? null),
       bonded: r.outcome === "BONDED",
       bondSecs: num(r.bond_secs),
       t: new Int32Array(0),

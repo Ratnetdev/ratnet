@@ -19,8 +19,22 @@ import { notePulse } from "./pulse";
 import { j7Covered, j7State } from "./j7";
 import { pulseView } from "./pulse";
 
-export type XTweet = { id: string; h: string; name?: string; f: number; at: number; text: string; terms: string[]; url: string; kind: "post" | "reply" | "quote" | "rt"; inner?: string; ca?: string; src?: string };
-export type WireMatch = { tid: string; h: string; score: number; how: string; lagSec: number; text: string; pick?: boolean; f?: number; vamp?: boolean; trac?: { copies: number; sol: number } };
+export type XTweet = { id: string; h: string; name?: string; f: number; at: number; text: string; terms: string[]; url: string; kind: "post" | "reply" | "quote" | "rt"; inner?: string; ca?: string; src?: string; md?: "photo" | "video" | null };
+// v0.1.107 EVENT: rank = this coin's place among the coins matched to the same post (1 = the first coin for it),
+// md = the post had an image or video, rep = the author's posts in the last hour that match this coin
+export type WireMatch = { tid: string; h: string; score: number; how: string; lagSec: number; text: string; pick?: boolean; f?: number; vamp?: boolean; trac?: { copies: number; sol: number }; md?: "photo" | "video" | null; rank?: number; rep?: number };
+
+/** v0.1.107: a post's media, from whichever shape the payload uses (photo, or video/gif). */
+export function mediaOf(t: any): "photo" | "video" | null {
+  const lists = [t?.extendedEntities?.media, t?.extended_entities?.media, t?.entities?.media, t?.media, t?.retweeted_tweet?.extendedEntities?.media];
+  for (const l of lists) {
+    if (!Array.isArray(l) || !l.length) continue;
+    if (l.some((m: any) => /video|gif/i.test(String(m?.type || "")))) return "video";
+    return "photo";
+  }
+  return null;
+}
+export const wireStats = { posts: 0, withMedia: 0 }; // v0.1.107: how many incoming posts carried media (checks the parser live)
 type Acc = { h: string; cat: string; tier: "seed" | "found" | "j7" | "muted"; added: number; why?: string; f?: number };
 const CALLERS = new Set(["kol", "trader"]); // accounts whose CA posts are calls MIND looks at, and whose posts MIND studies
 
@@ -89,7 +103,10 @@ export function parseHook(body: any): XTweet[] {
     const inner = q?.text ? String(q.text) : undefined;
     const at = Date.parse(t.createdAt) || Date.now();
     const fol = Number(t.author.followers || 0);
-    out.push({ id: String(t.id), h: String(t.author.userName), name: String(t.author.name ?? "").slice(0, 50), f: Number.isFinite(fol) ? Math.max(0, Math.min(fol, 500_000_000)) : 0, at: Math.min(at, Date.now() + 60_000), text: text.slice(0, 400), terms: termsOf(`${text.slice(0, 2000)} ${(inner || "").slice(0, 1000)}`), url: `https://x.com/${t.author.userName}/status/${t.id}`, kind, inner: inner?.slice(0, 200), src: "tapi" });
+    const md = mediaOf(t);
+    wireStats.posts++;
+    if (md) wireStats.withMedia++;
+    out.push({ id: String(t.id), h: String(t.author.userName), name: String(t.author.name ?? "").slice(0, 50), f: Number.isFinite(fol) ? Math.max(0, Math.min(fol, 500_000_000)) : 0, at: Math.min(at, Date.now() + 60_000), text: text.slice(0, 400), terms: termsOf(`${text.slice(0, 2000)} ${(inner || "").slice(0, 1000)}`), url: `https://x.com/${t.author.userName}/status/${t.id}`, kind, inner: inner?.slice(0, 200), src: "tapi", md });
   }
   return out;
 }
@@ -227,7 +244,7 @@ export function matchOne(l: { mint: string; name: string; symbol: string; descri
     }
     // the sooner after the post, the likelier it is the coin about it
     if (score) score = Math.round(score * (lag <= 300 ? 1 : lag <= 900 ? 0.85 : 0.65) * 100) / 100;
-    if (score >= 0.5 && (!best || score > best.score)) best = { tid: t.id, h: t.h, score, how, lagSec: Math.max(0, lag), text: t.text.slice(0, 160), f: t.f };
+    if (score >= 0.5 && (!best || score > best.score)) best = { tid: t.id, h: t.h, score, how, lagSec: Math.max(0, lag), text: t.text.slice(0, 160), f: t.f, md: t.md ?? null };
   }
   return best;
 }

@@ -872,6 +872,14 @@ async function ingestNew(model: NanoModel, launches: NewLaunch[], via: "stream" 
     const tid = !wm ? tweetIdOf(rec.twitter, rec.description, rec.website) : null;
     if (tid) noteTweetLink(p, tid, l.mint, l.createdAt);
     if (wm) {
+      // v0.1.107 EVENT: the first coin for this post, or a later copy; and how many of the author's posts in the last
+      // hour match this coin (repeated attention: coins a big account keeps posting about did better in the research)
+      const seen = POST_COINS.get(wm.tid) || [];
+      if (!seen.some((x) => x.m === l.mint)) seen.push({ m: l.mint, t: l.createdAt }), seen.sort((a, z) => a.t - z.t);
+      POST_COINS.set(wm.tid, seen);
+      if (POST_COINS.size > 5_000) POST_COINS.delete(POST_COINS.keys().next().value as string);
+      wm.rank = seen.findIndex((x) => x.m === l.mint) + 1;
+      wm.rep = posts.filter((t) => t.h === wm.h && matchOne({ ...l, description: rec.description, twitter: rec.twitter }, [t])).length;
       rec.wire = wm;
       noteMatch(p, l.mint, l.createdAt, wm);
       agentLog(p, [{ agent: "WIRE", at: c.now, mint: l.mint, symbol: l.symbol, text: `$${l.symbol} launched ${wm.lagSec}s after @${wm.h} posted (${wm.how})`, tone: "info" }]);
@@ -1412,6 +1420,8 @@ function makeEarly(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
 
 // v0.1.101 SIGNAL PIPE: the social agents' reads at the call, for GRID (history) and GRID LIVE (live)
 const SX_IN = new Map<string, Awaited<ReturnType<typeof socialRead>> | null>();
+// v0.1.107: post id -> the coins matched to it, in creation order (this process; GRID's history uses the archive)
+const POST_COINS = new Map<string, { m: string; t: number }[]>();
 async function socialRead(mint: string) {
   const r = redis();
   const [dossier, buys, mind] = await Promise.all([
@@ -1445,6 +1455,7 @@ export function sxAt(rec: Launch, read: Awaited<ReturnType<typeof socialRead>> |
     mind: read?.mind ?? null,
     seer: rec.seer ? { tier: rec.seer.tier, rank: rec.seer.rank } : null, // v0.1.102
     og: originAt(rec.mint, rec.creator), // v0.1.103 ORIGIN: first or copy, alpha or beta, the creator's last 7 days
+    ev: w ? { rank: w.rank ?? null, md: w.md === undefined ? null : w.md ? 1 : 0, rep: w.rep ?? null, f: Number(w.f) || 0 } : null, // v0.1.107 EVENT
     dx: dxLive(rec.mint, rec.createdAt, Date.now()), // v0.1.104 ATTENTION: DexScreener profile and boosts seen live
   };
 }

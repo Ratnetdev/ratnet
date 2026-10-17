@@ -12,14 +12,17 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
-  const [trades, live, rpc, seer, seerHits, flowx] = await Promise.all([
+  const [trades, live, rpc, seer, seerHits, flowx, xposts] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     r.get<any>("rn:rpc").catch(() => null),
     r.get<any>("rn:seer:view").catch(() => null),
     r.lrange<any>("rn:seer:matches", 0, 49).catch(() => [] as any[]),
     r.lrange<any>("rn:gridlive:flowx", 0, 1999).catch(() => [] as any[]),
+    r.lrange<any>("rn:x:tw", 0, 199).catch(() => [] as any[]),
   ]);
+  // v0.1.107: the media read on WIRE's latest posts (posts from before this build carry none)
+  const xs = ((xposts || []) as any[]).filter((t) => t && t.md !== undefined);
   const day = ((trades || []) as any[]).filter((t) => t && t.live && now - t.at < DAY);
   const sells = day.filter((t) => t.side === "sell");
   const buys = day.filter((t) => t.side === "buy");
@@ -51,6 +54,7 @@ export async function reviewView(now = Date.now()) {
       matches: ((seerHits || []) as any[]).filter((m) => m && now - (m.at0 || 0) < DAY).slice(0, 10).map((m) => ({ mint: m.mint, sym: m.sym, title: String(m.title).slice(0, 90), tier: m.tier, rank: m.rank, by: m.by, on: m.on ?? null })),
     },
     // v0.1.105: GRID LIVE trips where the flow turned (early buyers or a KOL selling): actual result vs selling then
+    xMedia: { posts: xs.length, photo: xs.filter((t) => t.md === "photo").length, video: xs.filter((t) => t.md === "video").length },
     flowExit: flowxStats(((flowx || []) as any[]).filter(Boolean)),
     attention: rpc?.dx ?? null, // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
     origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
