@@ -16,7 +16,7 @@ import { archiveEarly, archivePoolTick, archiveTick, runTrack } from "./archive"
 
 export const EARLY_SECS = () => Math.max(30, Number(process.env.EARLY_SECS ?? 120) || 120);
 const MIN_PROG = () => Math.max(0, Number(process.env.EARLY_MIN_PROG ?? 5) || 0);
-const PER_DAY = () => Math.max(0, Number(process.env.EARLY_PER_DAY ?? 4000) || 0);
+const PER_DAY = () => Math.max(0, Number(process.env.EARLY_PER_DAY ?? 10000) || 0);
 const TRACK_MS = 62 * 60_000; // then the RUN track takes over (a price a minute, for a day)
 
 /** The read. Unknown stays null and never passes a rule. */

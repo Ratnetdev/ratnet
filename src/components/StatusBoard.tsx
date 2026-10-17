@@ -82,7 +82,10 @@ export default function StatusBoard() {
           const pp = /pp:([^,]+)/.exec((st as any)?.note || "")?.[1];
           const ppCoins = Number(/^(\d+) coins/.exec(pp || "")?.[1] || 0);
           const ppStuck = keyed && ppCoins > 0 && (tr === null || (tr ?? 0) > 120);
-          const tradeLine = keyed ? ` · trade stream (shortlist): ${pp || "starting"}${tr != null ? `, last trade ${tr}s ago` : ""}${ppStuck ? " · NO TRADES arriving" : ""}` : " · trade stream off (needs a PumpPortal key): tapes from the chain, FLASH paused";
+          // v0.1.116: with the firehose up (Shyft gRPC) every trade of every coin arrives from it, PumpPortal or not
+          const fh = parts.find((p) => p.name === "firehose");
+          const fireUp = /up:true/.test((fh as any)?.note || "");
+          const tradeLine = fireUp ? " · trades: every trade of every coin from the firehose (Shyft gRPC)" : keyed ? ` · trade stream (shortlist): ${pp || "starting"}${tr != null ? `, last trade ${tr}s ago` : ""}${ppStuck ? " · NO TRADES arriving" : ""}` : " · trade stream off (needs a PumpPortal key): tapes from the chain, FLASH paused";
           const feedLine = `${fd ? ` · Helius price feed ${fd.replace(/ accts /, " accounts (open positions), ").replace(/ px /, " prices, ")}` : ""}${cv && cv !== "off" ? ` · live curves ${cv.replace(/ coins /, " launches followed, ").replace(/ hit (\d+)%/, ", $1% of reads on followed coins answered from the stream")}` : ""}`;
           return { k: "Live stream", v: st?.age != null ? `${st.age}s` : nil(aliveIn), s: `PumpPortal: launches, migrations${feedLine}${tradeLine}${wk?.streamNote && Date.now() - wk.streamNote.at < 3600_000 && !/successfully subscribed/i.test(wk.streamNote.text) ? ` · PumpPortal says: ${wk.streamNote.text}` : ""}`, level: st?.age == null ? "idle" : ppStuck || (pp && / REACHED/.test(pp)) ? "warn" : (fd && /^down/.test(fd)) || (cv && /^down/.test(cv)) ? "warn" : lvl(st.age <= 30, st.age <= 90) } as Tile;
         })(),
