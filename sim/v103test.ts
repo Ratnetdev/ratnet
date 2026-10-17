@@ -117,7 +117,7 @@ const ok = (c: boolean, m: string) => {
   ok(g.sxOf({ at: 1, sx: live }, null, null, { rank: 9, cr: 9 })?.og?.rank === 1, "a call's own read wins over the archive");
   ok(g.sxOf({ at: 1, sx: { post: 1 } }, null, null, { rank: 2, cr: 0 })?.og?.rank === 2, "a call from before this build gets its origin added");
   const gs = fs.readFileSync("src/lib/grid.ts", "utf8");
-  ok(/originHist\(r\.mint\)\)/.test(gs), "GRID's loader adds the origin of every older call");
+  ok(/originHist\(r\.mint\)[,)]/.test(gs), "GRID's loader adds the origin of every older call");
 
   // ---- 8. live wiring
   const dg = await import("../src/lib/digger");

@@ -1,5 +1,6 @@
 import { seerSee } from "./seer";
 import { originAt, originImage, originSee } from "./origin";
+import { dxLive, dxQueue } from "./attention";
 import { PublicKey } from "@solana/web3.js";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { radarTop } from "./lcache";
@@ -1442,6 +1443,7 @@ export function sxAt(rec: Launch, read: Awaited<ReturnType<typeof socialRead>> |
     mind: read?.mind ?? null,
     seer: rec.seer ? { tier: rec.seer.tier, rank: rec.seer.rank } : null, // v0.1.102
     og: originAt(rec.mint, rec.creator), // v0.1.103 ORIGIN: first or copy, alpha or beta, the creator's last 7 days
+    dx: dxLive(rec.mint, rec.createdAt, Date.now()), // v0.1.104 ATTENTION: DexScreener profile and boosts seen live
   };
 }
 
@@ -1531,6 +1533,8 @@ function makeCall(c: Ctx, rec: Launch, curveNow: number, ex: Extra) {
   // any curve from 4%, or a BOND/WATCH from either King version
   const worth = curveNow >= 4 || sc.verdict !== "DUST" || (nano?.verdict && nano.verdict !== "DUST") || (v1c && v1c !== "DUST");
   if (counted && !farm && worth) followLonger(rec.mint, 60 * 60_000);
+  // v0.1.104: its DexScreener order history (payment times), fetched after the call so the call never waits
+  if (counted && !farm && worth) dxQueue(rec.mint);
   // v0.1.71: GRID LIVE books start watching the call for their entry (worker only; lib/gridlive.ts)
   if (counted && !farm) {
     try {

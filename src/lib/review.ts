@@ -48,6 +48,7 @@ export async function reviewView(now = Date.now()) {
       top: ((seer?.armed || []) as any[]).filter((a) => a.tier === 1).slice(0, 5).map((a) => ({ title: String(a.title).slice(0, 90), names: a.names, tickers: a.tickers, at: a.at })),
       matches: ((seerHits || []) as any[]).filter((m) => m && now - (m.at0 || 0) < DAY).slice(0, 10).map((m) => ({ mint: m.mint, sym: m.sym, title: String(m.title).slice(0, 90), tier: m.tier, rank: m.rank, by: m.by, on: m.on ?? null })),
     },
+    attention: rpc?.dx ?? null, // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
     origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
     health: { chainUsed: rpc?.day?.used ?? null, chainPace: rpc?.day?.pace ?? null, chainBudget: rpc?.day?.budget ?? null, loopP99: rpc?.loop?.p99 ?? null },
   };

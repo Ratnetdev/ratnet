@@ -49,6 +49,7 @@ import { fcPrice, fcSize } from "../src/lib/firecache";
 import { setLiveFeatures, gridLiveSeer } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { originLoad, originMc, originSee, originStats } from "../src/lib/origin";
+import { dxBackfill, dxDrain, dxPoll, dxStats } from "../src/lib/attention";
 
 // v0.1.102 SEER: a launch whose name or ticker matches a coin SEER saw coming (an event, a trend, a big post) goes to the
 // SEER GRID LIVE books at once. Both launch feeds call this; each coin fires once.
@@ -195,7 +196,7 @@ async function beat() {
   // the process is up: the minute ping stays out (it only takes over when the worker is gone, see /api/desk/run)
   await redis().set("rn:worker:at", Date.now(), { ex: 120 }).catch(() => {});
   const lag = loopLag();
-  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats, exec: { sender: senderStats, liveFee: LIVE_FEE }, origin: originStats }, { ex: 120 }).catch(() => {});
+  redis().set("rn:rpc", { at: Date.now(), ...rpcView(), loop: lag, tapes: tapeStats, exec: { sender: senderStats, liveFee: LIVE_FEE }, origin: originStats, dx: dxStats }, { ex: 120 }).catch(() => {});
   if (lag && lag.p99 > 250 && Date.now() - lagLogAt > 60_000) (lagLogAt = Date.now()), console.log(`event loop late: p50 ${lag.p50}ms, p99 ${lag.p99}ms, worst ${lag.max}ms (last minute)`);
   flushRpcDay().catch(() => {});
   bwFlush()
@@ -1069,6 +1070,16 @@ async function main() {
       return;
     }
     console.log("archive: connected, tables ready");
+    // v0.1.104 ATTENTION: DexScreener's paid profiles and boosts, live every 10s; order histories for calls (30 a
+    // minute, the calls of the last 14 days queued once at boot behind the new ones)
+    let dxBusy = false;
+    setInterval(() => dxPoll().catch(() => null), 10_000);
+    setInterval(() => {
+      if (dxBusy) return;
+      dxBusy = true;
+      dxDrain().catch(() => null).finally(() => (dxBusy = false));
+    }, 2_000);
+    setTimeout(() => dxBackfill(archivePool()).then((n) => console.log(`attention: ${n} older calls queued for their DexScreener orders`)).catch((e) => console.log("attention backfill error", e?.message || e)), 120_000);
     // v0.1.103 ORIGIN: 21 days of launches in time order (the live 7-day index, and the origin of GRID's older calls)
     originLoad(archivePool())
       .then((n) => console.log(`origin: ${n} launches read, ${originStats.hist} older calls, ${originStats.index} in the live index, ${Math.round(originStats.loadMs / 1000)}s${originStats.error ? `, error: ${originStats.error}` : ""}`))
