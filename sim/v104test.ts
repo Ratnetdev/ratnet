@@ -84,7 +84,7 @@ const ok = (c: boolean, m: string) => {
   const ds = fs.readFileSync("src/lib/digger.ts", "utf8");
   ok(/dx: dxLive\(rec\.mint, rec\.createdAt, Date\.now\(\)\)/.test(ds) && /if \(counted && !farm && worth\) dxQueue\(rec\.mint\)/.test(ds), "the call carries the live read and queues its history (never waits on it)");
   const wk = fs.readFileSync("worker/index.ts", "utf8");
-  ok(/setInterval\(\(\) => dxPoll\(\)\.catch\(\(\) => null\), 10_000\)/.test(wk) && /dxDrain\(\)/.test(wk) && /\}, 2_000\);/.test(wk) && /dxBackfill\(archivePool\(\)\)/.test(wk), "poll every 10s, one history every 2s, 14 days backfilled");
+  ok(/setInterval\(\(\) => dxPoll\(\)\.catch\(\(\) => null\), 10_000\)/.test(wk) && /dxDrain\(\)/.test(wk) && /\}, 2_000\);/.test(wk) && /if \(!dxh\[g\.mint\]\) dxQueue\(g\.mint, false\)/.test(fs.readFileSync("src/lib/grid.ts", "utf8")), "poll every 10s, one history every 2s; GRID queues its own coins without one (v0.1.106)");
   ok(/dx: dxStats/.test(wk) && /attention: rpc\?\.dx/.test(fs.readFileSync("src/lib/review.ts", "utf8")), "the counts show in the worker status and the review");
 
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));

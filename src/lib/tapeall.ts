@@ -9,8 +9,14 @@ const DEV = new Map<string, string>(); // mint -> creator
 const DEV_SOLD = new Set<string>();
 const KEEP_MS = 120_000;
 
-export function tapeCreate(mint: string, creator: string) {
+export function tapeCreate(mint: string, creator: string, at = Date.now()) {
   DEV.set(mint, creator);
+  // v0.1.106: a coin's flow is only tracked from its create (seen on this feed): after a restart, coins already trading
+  // would otherwise count their first buyers seen after the boot as their "first 20" (found live on v0.1.105)
+  if (!FLOW.has(mint)) {
+    FLOW.set(mint, { t0: at, first: new Map(), kol: new Map(), kmc: null, kx: new Set() });
+    if (FLOW.size > 60_000) FLOW.delete(FLOW.keys().next().value as string);
+  }
   if (DEV.size > 100_000) DEV.delete(DEV.keys().next().value as string);
 }
 export function tapeTrade(t: { mint: string; user: string; isBuy: boolean; sol: number; at: number; creator?: string; mcSol?: number }) {
@@ -72,12 +78,8 @@ let KOLS = new Set<string>();
 export const setKols = (ws: Iterable<string>) => (KOLS = new Set(ws));
 export const kolCount = () => KOLS.size;
 function flowTrade(t: { mint: string; user: string; isBuy: boolean; at: number; mcSol?: number }) {
-  let f = FLOW.get(t.mint);
-  if (!f) {
-    if (!t.isBuy) return;
-    FLOW.set(t.mint, (f = { t0: t.at, first: new Map(), kol: new Map(), kmc: null, kx: new Set() }));
-    if (FLOW.size > 60_000) FLOW.delete(FLOW.keys().next().value as string);
-  }
+  const f = FLOW.get(t.mint);
+  if (!f) return; // created before this process saw it: unknown
   const dev = DEV.get(t.mint);
   if (t.isBuy) {
     if (f.first.size < 20 && t.user !== dev && !f.first.has(t.user)) f.first.set(t.user, false);
@@ -90,10 +92,10 @@ function flowTrade(t: { mint: string; user: string; isBuy: boolean; at: number; 
     if (f.kol.has(t.user)) f.kx.add(t.user);
   }
 }
-export type FlowFeat = { kf: number; kmc: number | null; kx: number; e20: number | null };
+export type FlowFeat = { kf: number | null; kmc: number | null; kx: number | null; e20: number | null };
 export function flowFeatures(mint: string): FlowFeat {
   const f = FLOW.get(mint);
-  if (!f) return { kf: 0, kmc: null, kx: 0, e20: null };
+  if (!f) return { kf: null, kmc: null, kx: null, e20: null }; // not seen from its create: unknown
   const sold = [...f.first.values()].filter(Boolean).length;
   return { kf: f.kol.size, kmc: f.kmc, kx: f.kx.size, e20: f.first.size >= 10 ? Math.round((sold / f.first.size) * 100) / 100 : null };
 }

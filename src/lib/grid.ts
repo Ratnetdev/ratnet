@@ -14,7 +14,7 @@
 //   - "passes" = the test meets PROMOTE's bar: 20+ trips, 35%+ won, avg +2%+, PF 1.1+ without the best trade
 // A pass is a candidate, not a strategy: it goes into ARENA next and must prove itself on live coins.
 import { originHist } from "./origin";
-import { dxAt, dxHistAll } from "./attention";
+import { dxAt, dxHistAll, dxQueue } from "./attention";
 import { loadLiveFees, paperPriority } from "./livecost";
 import { SITE } from "@/config/site";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
@@ -647,6 +647,9 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
     delete (g as any).pre;
     delete (g as any).tk;
     res.push(g);
+    // v0.1.106: GRID's own coins are the ones that need their DexScreener history (v0.1.104/105 queued 35K-71K calls
+    // at boot, ~20 to 40 hours of fetching; these are ~3.4K)
+    if (!dxh[g.mint]) dxQueue(g.mint, false);
   }
   return res;
 }

@@ -32,12 +32,19 @@ const ok = (c: boolean, m: string) => {
   ok(f.e20 === 0.5, `10 of the first 20 buyers sold: 0.5 (the 22nd buyer and the dev do not count) (${f.e20})`);
   T.tapeTrade({ mint: "M", user: "KOL1", isBuy: false, sol: 2, at: t0 + 7000, mcSol: 55 });
   ok(T.flowFeatures("M").kx === 1, "a KOL that bought sold: counted");
+  T.tapeCreate("N", "DEVN", t0);
   T.tapeTrade({ mint: "N", user: "KOL3", isBuy: false, sol: 1, at: t0, mcSol: 30 });
   ok(T.flowFeatures("N").kf === 0 && T.flowFeatures("N").kx === 0, "a KOL selling a coin it never bought on our feed is not a KOL exit");
+  T.tapeCreate("S", "DEVS", t0);
   for (let i = 0; i < 5; i++) T.tapeTrade({ mint: "S", user: `s${i}`, isBuy: true, sol: 0.1, at: t0, mcSol: 30 });
-  ok(T.flowFeatures("S").e20 === null && T.flowFeatures("ZZ").kf === 0, "fewer than 10 buyers: the share is unknown");
+  ok(T.flowFeatures("S").e20 === null && T.flowFeatures("S").kf === 0, "fewer than 10 buyers: the share is unknown");
+  // v0.1.106 (found live on v0.1.105): a coin created before this process saw it has no true "first 20"
+  for (let i = 0; i < 25; i++) T.tapeTrade({ mint: "OLD", user: `o${i}`, isBuy: true, sol: 0.1, at: t0, mcSol: 30 });
+  T.tapeTrade({ mint: "OLD", user: "KOL1", isBuy: true, sol: 1, at: t0, mcSol: 30 });
+  const old = T.flowFeatures("OLD");
+  ok(old.kf === null && old.e20 === null && old.kx === null, "a coin not seen from its create (e.g. after a restart): everything unknown, never passes");
   T.flowSweep(t0 + 4 * 3600_000);
-  ok(T.flowFeatures("M").kf === 0, "coins older than 3 hours leave the book");
+  ok(T.flowFeatures("M").kf === null, "coins older than 3 hours leave the book (unknown again)");
 
   // ---- 2. GRID
   const ids = g.PREDS.map((p) => p.id);

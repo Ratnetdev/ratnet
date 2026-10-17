@@ -50,7 +50,7 @@ import { fcPrice, fcSize } from "../src/lib/firecache";
 import { setLiveFeatures, gridLiveSeer, setFlowFeatures } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { originLoad, originMc, originSee, originStats } from "../src/lib/origin";
-import { dxBackfill, dxDrain, dxPoll, dxStats } from "../src/lib/attention";
+import { dxDrain, dxPoll, dxStats } from "../src/lib/attention";
 
 // v0.1.102 SEER: a launch whose name or ticker matches a coin SEER saw coming (an event, a trend, a big post) goes to the
 // SEER GRID LIVE books at once. Both launch feeds call this; each coin fires once.
@@ -948,7 +948,7 @@ async function main() {
     const on = await startFirehose({
       create: (c) => {
         walletCreate(c.mint, c.creator, c.at);
-        tapeCreate(c.mint, c.creator);
+        tapeCreate(c.mint, c.creator, c.at);
         gridLiveSymbol(c.mint, c.symbol);
         // v0.1.82: every launch's log from birth (the dev's buy follows as the transaction's first trade): the rats'
         // minute-1 and minute-5 tapes are built from it instead of ~42 chain reads per coin
@@ -1027,7 +1027,7 @@ async function main() {
     setInterval(loadKols, 30 * 60_000);
     setFlowFeatures((m: string) => {
       const fl = flowFeatures(m);
-      return { kx: kolCount() > 0 ? fl.kx : 0, e20: fl.e20 };
+      return { kx: kolCount() > 0 ? fl.kx ?? 0 : 0, e20: fl.e20 };
     });
     // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
     // while PumpPortal is connected, so they are pruned here too (old launch logs, quotes older than 2 minutes)
@@ -1095,7 +1095,7 @@ async function main() {
       dxBusy = true;
       dxDrain().catch(() => null).finally(() => (dxBusy = false));
     }, 2_000);
-    setTimeout(() => dxBackfill(archivePool()).then((n) => console.log(`attention: ${n} older calls queued for their DexScreener orders`)).catch((e) => console.log("attention backfill error", e?.message || e)), 120_000);
+    // v0.1.106: no boot backfill; each GRID run queues its own coins that have no DexScreener history yet
     // v0.1.103 ORIGIN: 21 days of launches in time order (the live 7-day index, and the origin of GRID's older calls)
     originLoad(archivePool())
       .then((n) => console.log(`origin: ${n} launches read, ${originStats.hist} older calls, ${originStats.index} in the live index, ${Math.round(originStats.loadMs / 1000)}s${originStats.error ? `, error: ${originStats.error}` : ""}`))
