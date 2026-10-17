@@ -245,6 +245,8 @@ export const setCallHook = (f: ((call: any) => void) | null) => (CALL_HOOK = f);
 // v0.1.81: the worker hands the FIREHOSE's live features to every call (nothing on Vercel)
 let TAPE_EXTRA: ((mint: string) => Record<string, number | null> | null) | null = null;
 export const setTapeExtra = (f: typeof TAPE_EXTRA) => (TAPE_EXTRA = f);
+/** v0.1.105: the SOL price the rats last read (worker), for dollar features on the firehose. */
+export const solUsdNow = () => SOL_USD;
 export const EARLY_DEATH = { curve: 1, peak: 3 }; // at the 1h check: under 1% now and never above 3% = DIED
 
 type Pipe = ReturnType<ReturnType<typeof redis>["pipeline"]>;

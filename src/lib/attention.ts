@@ -121,7 +121,10 @@ export async function dxBackfill(pool: any, days = 14) {
   if (!pool) return 0;
   const have = new Set(Object.keys(((await redis().hgetall<Record<string, unknown>>(HIST_KEY).catch(() => null)) || {}) as object));
   const r = await pool.query(
-    `select mint, data->'call' as call from launches where created_at > now() - ($1 || ' days')::interval and data->'call' is not null order by created_at desc`,
+    // v0.1.105: only calls with a price path (the ones GRID can test). v0.1.104 queued every worth call (71K, ~40 hours
+    // at 30 a minute) when GRID tests ~3.4K
+    `select mint, data->'call' as call from launches l where created_at > now() - ($1 || ' days')::interval and data->'call' is not null
+     and exists (select 1 from ticks t where t.mint = l.mint) order by created_at desc`,
     [String(days)],
   );
   let n = 0;

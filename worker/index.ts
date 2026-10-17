@@ -40,13 +40,14 @@ import { drainXQueue, publishWireView } from "../src/lib/wire";
 import { publishSite } from "../src/lib/site";
 import { fireLive, fireStats, startFirehose } from "../src/lib/firehose";
 import { walletComplete, walletCreate, walletSweep, walletTrade, walletsLoad, walletsSave, walletsView } from "../src/lib/wallets";
-import { tapeCreate, tapeFeatures, tapeSize, tapeSweep, tapeTrade } from "../src/lib/tapeall";
-import { setTapeExtra } from "../src/lib/digger";
+import { flowFeatures, flowSweep, kolCount, setKols, tapeCreate, tapeFeatures, tapeSize, tapeSweep, tapeTrade } from "../src/lib/tapeall";
+import { book } from "../src/lib/hound";
+import { setTapeExtra, solUsdNow } from "../src/lib/digger";
 import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { originLoad, originMc, originSee, originStats } from "../src/lib/origin";
 import { dxBackfill, dxDrain, dxPoll, dxStats } from "../src/lib/attention";
@@ -1004,7 +1005,11 @@ async function main() {
     const fx = (mint: string) => {
       if (!fireLive()) return null;
       const f = tapeFeatures(mint);
-      return { pw: f.pw, u60: f.u60, bs60: f.bs60, wh: f.wh };
+      // v0.1.105: KOL flow and the first 20 buyers (KOL counts only once HOUND's roster is in memory)
+      const fl = flowFeatures(mint);
+      const usd = solUsdNow();
+      const kols = kolCount() > 0;
+      return { pw: f.pw, u60: f.u60, bs60: f.bs60, wh: f.wh, kf: kols ? fl.kf : null, kmu: kols && fl.kmc != null && usd > 0 ? Math.round(fl.kmc * usd) : null, kx: kols ? fl.kx : null, e20: fl.e20 };
     };
     setTapeExtra(fx);
     // v0.1.90: GRID LIVE's every-launch books also know whether the dev sold (the "dev has not sold" rule)
@@ -1012,7 +1017,18 @@ async function main() {
       const x = fx(m);
       return x ? { ...x, ds: tapeFeatures(m).ds } : null;
     });
-    setInterval(() => tapeSweep(), 30_000);
+    setInterval(() => (tapeSweep(), flowSweep()), 30_000);
+    // v0.1.105: HOUND's KOL wallets for the flow book (every 30 minutes: the roster hash is large, Redis bandwidth); GRID LIVE positions watch the flow
+    const loadKols = () =>
+      book()
+        .then((b) => setKols(Object.values(b || {}).filter((x: any) => x && x.cls === "kol" && !x.off).map((x: any) => x.w)))
+        .catch(() => null);
+    loadKols();
+    setInterval(loadKols, 30 * 60_000);
+    setFlowFeatures((m: string) => {
+      const fl = flowFeatures(m);
+      return { kx: kolCount() > 0 ? fl.kx : 0, e20: fl.e20 };
+    });
     // v0.1.82: the firehose logs every launch and quotes every trade; PumpPortal's resync (which pruned these) only runs
     // while PumpPortal is connected, so they are pruned here too (old launch logs, quotes older than 2 minutes)
     setInterval(() => pruneStream(new Set()), 30_000);

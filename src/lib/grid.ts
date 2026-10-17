@@ -49,6 +49,12 @@ export type GCoin = {
   u60?: number | null;
   bs60?: number | null;
   wh?: number | null;
+  // v0.1.105 (FIREHOSE flows at the call): tracked KOL wallets that bought, the market cap ($) at the first KOL buy,
+  // KOLs that already sold, and the share of the first 20 buyers that sold. From this build on; unknown never passes
+  kf?: number | null;
+  kmu?: number | null;
+  kx?: number | null;
+  e20?: number | null;
   // v0.1.101 SIGNAL PIPE: what the social agents knew at the call (call.sx). Unknown (null) never passes
   sx?: Sx | null;
   bonded?: boolean; // migrated (the senders: every coin that did millions in volume is one of these)
@@ -121,6 +127,12 @@ export const PREDS: Pred[] = [
   // v0.1.104 ATTENTION (lib/attention.ts): DexScreener orders paid before the call. Unknown never passes
   { id: "dexpaid", label: "a DexScreener profile was paid before the call", ok: (c) => c.sx?.dx?.paid === 1 },
   { id: "boosted", label: "DexScreener boosts were bought before the call", ok: (c) => (c.sx?.dx?.boost ?? 0) > 0 },
+  // v0.1.105 KOL and EXIT flows (lib/tapeall.ts, every trade on the firehose). Unknown never passes
+  { id: "kol3", label: "3+ tracked KOL wallets bought", ok: (c) => (c.kf ?? -1) >= 3 },
+  { id: "kolsmall", label: "the first KOL bought under $10K market cap", ok: (c) => c.kmu != null && c.kmu > 0 && c.kmu < 10_000 },
+  { id: "kolout", label: "a KOL that bought has already sold", ok: (c) => (c.kx ?? -1) >= 1 },
+  { id: "hold20", label: "the first 20 buyers mostly hold (20% or fewer sold)", ok: (c) => c.e20 != null && c.e20 <= 0.2 },
+  { id: "exit20", label: "half or more of the first 20 buyers sold", ok: (c) => c.e20 != null && c.e20 >= 0.5 },
 ];
 
 /** v0.1.101: the call's social read for GRID, from call.sx, or for calls before this build from the archived launch. */
@@ -586,6 +598,10 @@ export async function loadGrid(pool: any, days = 14, max = 25_000): Promise<GCoi
       u60: num(tp.u60),
       bs60: num(tp.bs60),
       wh: num(tp.wh),
+      kf: num(tp.kf),
+      kmu: num(tp.kmu),
+      kx: num(tp.kx),
+      e20: num(tp.e20),
       sx: sxOf(c, typeof r.wire === "string" ? JSON.parse(r.wire) : r.wire, typeof r.pulse === "string" ? JSON.parse(r.pulse) : r.pulse, originHist(r.mint), dxAt(dxh[r.mint], Number(c.at))),
       bonded: r.outcome === "BONDED",
       bondSecs: num(r.bond_secs),

@@ -8,6 +8,7 @@
 // first price 2+ seconds after the signal. Records are kept per strategy, so one that comes back later keeps its record.
 // A strategy that passes the desk's exam here (30 trips, 40%+ won, +10% on a 1 SOL desk, PF 1.2+ without the best
 // trade) is announced on Telegram: the next step is putting the desk on it.
+import { flowxStats, type FlowX } from "./flowx";
 import { paperPriority } from "./livecost";
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
@@ -30,6 +31,17 @@ const CURVE_ONLY = new Set(["p4", "p15", "p35", "p70", "r5", "r15", "pw1", "pw2"
 // v0.1.81: the FIREHOSE's live features for a coin (worker), so every-launch books can use WALLETS and TAPE ALL too
 let LIVE_FX: ((mint: string) => { pw: number; u60: number; bs60: number | null; wh: number; ds?: boolean } | null) | null = null;
 export const setLiveFeatures = (f: typeof LIVE_FX) => (LIVE_FX = f);
+// v0.1.105 EXIT FLOWS (measured, not traded): every open paper position watches its coin's flow. When the early buyers
+// turn sellers (half of the first 20 have sold, from under half at the buy) or a tracked KOL sells after the buy, the
+// position notes what selling right then would have made. At its real close the two are set side by side: on the same
+// trips, would the flow exit have done better? (Evidence elsewhere: surges were up an hour later 60% of the time, 6%
+// when the early buyers were exiting.) Nothing changes the trades until this record says so.
+let FLOW_FX: ((mint: string) => { kx: number; e20: number | null } | null) | null = null;
+export const setFlowFeatures = (f: typeof FLOW_FX) => (FLOW_FX = f);
+export const FLOWX_KEY = "rn:gridlive:flowx";
+let FLOWX: FlowX[] = [];
+export const flowxView = () => flowxStats(FLOWX);
+export { flowxStats, type FlowX };
 const PATH_MS = 62 * 60_000;
 const BOOKS_KEY = "rn:gridlive:books";
 const POS_KEY = "rn:gridlive:pos";
@@ -56,7 +68,7 @@ export type LBook = {
   back?: boolean;
 };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null };
-export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean };
+export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null };
 export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string };
 
 let BOOKS: LBook[] = [];
@@ -402,7 +414,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const sol = GRID_SOL;
   const inPool = !!last.pool;
   const fillPx = px0 * (1 + slipOf(sol, inPool, last.real));
-  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool };
+  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool, f0: flowNow(pe.mint) };
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
   if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens });
@@ -429,10 +441,35 @@ function close(k: string, pos: LPos, now: number, why: string) {
   POS.delete(k);
   const pnl = pos.back - pos.cost;
   const t: LTrip = { k: pos.key, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / pos.cost) * 1000) / 10, why };
+  if (pos.fx) {
+    // v0.1.105: the same trip, had it sold when the flow turned
+    const fx: FlowX = { k: pos.key, mint: pos.mint, at: now, act: t.pnlPct, flag: pos.fx.pct, why: pos.fx.why };
+    FLOWX = [fx, ...FLOWX].slice(0, 2000);
+    redis().lpush(FLOWX_KEY, fx).then(() => redis().ltrim(FLOWX_KEY, 0, 1999)).catch(() => null);
+  }
   TRIPS = [t, ...TRIPS].slice(0, 3000);
   const r = redis();
   r.hdel(POS_KEY, k).catch(() => null);
   r.lpush(LIVE_TRIPS, t).then(() => r.ltrim(LIVE_TRIPS, 0, 2999)).catch(() => null);
+}
+
+function flowNow(mint: string) {
+  if (!FLOW_FX) return undefined; // no flow feed (tests, Vercel): positions never note a flow exit
+  try {
+    return FLOW_FX(mint);
+  } catch {
+    return null;
+  }
+}
+function flowCheck(k: string, pos: LPos, px: number, now: number) {
+  const f = flowNow(pos.mint);
+  if (!f) return;
+  const f0 = pos.f0 || { kx: 0, e20: null };
+  const why = f.kx > f0.kx ? "kol" : f.e20 != null && f.e20 >= 0.5 && (f0.e20 == null || f0.e20 < 0.5) ? "e20" : null;
+  if (!why) return;
+  const back = pos.back + (pos.tokens > 1e-12 ? sellProceeds(pos.tokens, px, !!pos.pool, pos.lastReal, COST, true) : 0);
+  pos.fx = { at: now, pct: Math.round(((back - pos.cost) / pos.cost) * 1000) / 10, why };
+  redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
 }
 
 function stepPos(k: string, pos: LPos, now: number) {
@@ -454,6 +491,7 @@ function stepPos(k: string, pos: LPos, now: number) {
   if (!(px > 0)) return;
   pos.lastPx = px;
   pos.lastReal = last.real;
+  if (!pos.fx && pos.f0 !== undefined) flowCheck(k, pos, px, now);
   if (px > pos.peak) pos.peak = px;
   const xr = px / pos.fillPx;
   if (!pos.initials && xr >= x.initials) {
