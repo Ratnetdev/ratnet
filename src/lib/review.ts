@@ -69,6 +69,7 @@ export async function reviewView(now = Date.now()) {
       passedBasic: gv?.passedBasic ?? null,
       score: gv?.score ? { used: gv.score.used, effN: gv.score.effN, auc: gv.score.test?.auc ?? null, base: gv.score.test?.base ?? null, top10: gv.score.test?.top10 ?? null, top20: gv.score.test?.top20 ?? null, why: gv.score.why || "" } : null,
       nullRun: gv?.nullRun ?? null,
+      pscore: gv?.pscore ? { auc: gv.pscore.test?.auc ?? null, base: gv.pscore.test?.base ?? null, avgPct: gv.pscore.test?.avgPct ?? null, top10: gv.pscore.test?.top10 ?? null, top20: gv.pscore.test?.top20 ?? null, why: gv.pscore.why || "" } : null,
     },
     attention: rpc?.dx ?? null,
     theme: rpc?.theme ?? null, // v0.1.109: Claude's labels (asked, made, capped, queue) // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
@@ -101,6 +102,7 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     "",
     `<b>GRID checks</b>: ${v.gridChecks.passed ?? 0} passed every check (${v.gridChecks.passedBasic ?? 0} on the test alone). Luck bar t ${v.gridChecks.nullRun?.bar ?? 0}; ${v.gridChecks.nullRun ? `${v.gridChecks.nullRun.lucky}/${v.gridChecks.nullRun.kept} shuffled runs found a "pass"` : "no null runs yet"}`,
     v.gridChecks.score ? `GRID SCORE: ${v.gridChecks.score.used} rules, ${v.gridChecks.score.effN} independent. On newer calls: AUC ${v.gridChecks.score.auc ?? "-"}, top 10% migrate ${v.gridChecks.score.top10?.rate ?? 0}% (${v.gridChecks.score.top10?.lift ?? 0}x the ${v.gridChecks.score.base}% average), top 20% ${v.gridChecks.score.top20?.lift ?? 0}x${v.gridChecks.score.why ? ` (${esc(v.gridChecks.score.why)})` : ""}` : "GRID SCORE: not fitted yet",
+    v.gridChecks.pscore ? `PROFIT SCORE (buy at the call, runner exit): on newer calls AUC ${v.gridChecks.pscore.auc ?? "-"}; every call ${v.gridChecks.pscore.avgPct ?? "-"}% a trade, top 10% ${v.gridChecks.pscore.top10?.avgPct ?? "-"}% (${v.gridChecks.pscore.top10?.n ?? 0} trades, ${v.gridChecks.pscore.top10?.rate ?? 0}% paid), top 20% ${v.gridChecks.pscore.top20?.avgPct ?? "-"}%${v.gridChecks.pscore.why ? ` (${esc(v.gridChecks.pscore.why)})` : ""}` : "PROFIT SCORE: not fitted yet",
     "",
     `<b>Exit flows</b> (paper, measured only): ${v.flowExit.n ? `on ${v.flowExit.n} trips the flow turned; actual ${sign(v.flowExit.actAvg ?? 0)}% a trip, selling then ${sign(v.flowExit.flagAvg ?? 0)}% (better on ${v.flowExit.flagBetter})` : "no trip has seen the flow turn yet"}`,
     "",

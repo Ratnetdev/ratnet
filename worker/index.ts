@@ -27,7 +27,7 @@ import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
-import { gridHistory, gridMessage, liveCandidates, setScoreModel, withSeen, type GHist, type GridView } from "../src/lib/grid";
+import { gridHistory, gridMessage, liveCandidates, setProfitModel, setScoreModel, withSeen, type GHist, type GridView } from "../src/lib/grid";
 import { gridLiveCall, gridLiveCurve, gridLiveLoad, gridLivePublish, gridLiveQuote, gridLiveSetBooks, gridLiveSweep, gridLiveSymbol, gridLiveTend, setGridFollow } from "../src/lib/gridlive";
 import { poolFire, readPools } from "../src/lib/pool";
 import { afterLoad, afterNoteMigration, afterResolve, afterStats, afterWant, migratedAt } from "../src/lib/after";
@@ -912,7 +912,7 @@ async function main() {
   // v0.1.112 GRID SCORE: the last run's model scores live calls until the next GRID run fits a new one
   await redis()
     .get<any>("rn:grid:view")
-    .then((v) => setScoreModel(v?.score?.model))
+    .then((v) => (setScoreModel(v?.score?.model), setProfitModel(v?.pscore?.model)))
     .catch(() => null);
   await seerLoad().catch((e) => console.log("seer load error", e?.message || e));
   // v0.1.109 IMAGE and THEME: Claude's labels, one every 6s within the daily cap; a new label re-reads its call
@@ -1191,7 +1191,7 @@ async function main() {
           gridLiveSignals(res.senders?.lifts); // v0.1.110: the SIGNALS family reads the lift table
           console.log(`grid live: ${books.length} strategies trading on live coins (${(books as any).kept} kept, ${(books as any).added} new, ${(books as any).dropped?.length ?? 0} dropped)`);
           await redis().set("rn:grid:view", res, { ex: 3 * 86400 }).catch(() => null);
-          console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed every check (${res.passedBasic} the test alone; luck bar t ${res.nullRun.bar}, ${res.nullRun.lucky}/${res.nullRun.kept} null runs lucky; score AUC ${res.score.test?.auc ?? "-"}, effective N ${res.score.effN}) (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
+          console.log(`grid: ${res.coins} calls, ${res.tried} combinations, ${res.rankable} rankable, ${res.passed} passed every check (${res.passedBasic} the test alone; luck bar t ${res.nullRun.bar}, ${res.nullRun.lucky}/${res.nullRun.kept} null runs lucky; score AUC ${res.score.test?.auc ?? "-"}, profit score AUC ${res.pscore.test?.auc ?? "-"}, effective N ${res.score.effN}) (load ${Math.round(res.loadMs / 1000)}s, search ${Math.round(res.ms / 1000)}s)`);
           await gridAlert(res).catch(() => null);
         }
       } catch (e: any) {

@@ -157,6 +157,10 @@ export const PREDS: Pred[] = [
   // No model yet: never passes
   { id: "score10", label: "GRID SCORE top 10% (every signal combined)", ok: (c) => scoreTop(c, "thr10") },
   { id: "score20", label: "GRID SCORE top 20% (every signal combined)", ok: (c) => scoreTop(c, "thr20") },
+  // v0.1.114 PROFIT SCORE: the same combination, its target the trade itself (made money after every cost), not the
+  // migration (which the price had mostly paid for already: GRID SCORE's top calls migrated 7.8x more often and lost)
+  { id: "pscore10", label: "PROFIT SCORE top 10% (every signal, fitted on trades that paid)", ok: (c) => scoreTop(c, "thr10", PSCORE) },
+  { id: "pscore20", label: "PROFIT SCORE top 20% (every signal, fitted on trades that paid)", ok: (c) => scoreTop(c, "thr20", PSCORE) },
 ];
 
 // ---------------------------------------------------------------- v0.1.112 GRID SCORE
@@ -164,13 +168,18 @@ export const PREDS: Pred[] = [
 // ones count (IR = IC x sqrt(N effective)). One logistic model over every rule, its target "the coin migrated", fitted
 // with a ridge (rules that say the same thing share their weight instead of doubling it). Fitted on GRID's older 70%
 // only; the newer 30% judges it like every other rule. Effective N = how many independent rules the menu really holds.
-export const SCORE_RULES = new Set(["score10", "score20"]);
+export const SCORE_RULES = new Set(["score10", "score20", "pscore10", "pscore20"]);
 export type ScoreModel = { ids: string[]; w: number[]; b: number; thr10: number; thr20: number; at: number; auc?: number | null };
 let SCORE: ScoreModel | null = null;
+let PSCORE: ScoreModel | null = null;
 export const scoreModel = () => SCORE;
+export const profitModel = () => PSCORE;
+const validModel = (m: ScoreModel | null | undefined) => (m && Array.isArray(m.ids) && Array.isArray(m.w) && m.ids.length === m.w.length && m.ids.length > 0 && Number.isFinite(m.thr10) && Number.isFinite(m.thr20) ? m : null);
 export function setScoreModel(m: ScoreModel | null | undefined) {
-  SCORE = m && Array.isArray(m.ids) && Array.isArray(m.w) && m.ids.length === m.w.length && m.ids.length > 0 && Number.isFinite(m.thr10) && Number.isFinite(m.thr20) ? m : null;
-  return SCORE;
+  return (SCORE = validModel(m));
+}
+export function setProfitModel(m: ScoreModel | null | undefined) {
+  return (PSCORE = validModel(m));
 }
 let PBY: Map<string, Pred> | null = null;
 const predById = (id: string) => (PBY ??= new Map(PREDS.map((p) => [p.id, p]))).get(id);
@@ -181,9 +190,9 @@ export function scoreOf(c: GCoin, m: ScoreModel | null = SCORE): number | null {
   for (let k = 0; k < m.ids.length; k++) if (predById(m.ids[k])?.ok(c)) s += m.w[k];
   return s;
 }
-function scoreTop(c: GCoin, thr: "thr10" | "thr20") {
-  const s = scoreOf(c);
-  return s != null && !!SCORE && s >= SCORE[thr];
+function scoreTop(c: GCoin, thr: "thr10" | "thr20", m: ScoreModel | null = SCORE) {
+  const s = scoreOf(c, m);
+  return s != null && !!m && s >= m[thr];
 }
 
 /** Ridge logistic regression on 0/1 columns (Newton steps). cols[k][i] = rule k on coin i (i < n). */
@@ -318,48 +327,58 @@ export function aucOf(s: number[], y: number[]) {
 /**
  * Fit the GRID SCORE on the older calls (index < cut) and judge it on the newer ones. Only rules that fire on 30+ and
  * miss 30+ of the older calls take part (a rule that never or always fires says nothing).
+ * v0.1.114: lab = another target. The PROFIT SCORE uses "the reference trade made money after every cost" on the calls
+ * that trade (use), and reports the newer calls' average trade in each band (pnl, in SOL on `cost`).
  */
-export function fitScore(cs: GCoin[], hit: (boolean[] | undefined)[], cut: number, now = Date.now()) {
+export function fitScore(cs: GCoin[], hit: (boolean[] | undefined)[], cut: number, now = Date.now(), lab?: { y: Uint8Array; use: Uint8Array; pnl?: Float32Array; cost?: number; what?: string }) {
   const N = cs.length;
-  const y = Uint8Array.from(cs.map((c) => (c.bonded ? 1 : 0)));
+  const y = lab ? lab.y : Uint8Array.from(cs.map((c) => (c.bonded ? 1 : 0)));
+  const use = (i: number) => !lab || !!lab.use[i];
+  const trI: number[] = [];
+  const teI: number[] = [];
+  for (let i = 0; i < N; i++) if (use(i)) (i < cut ? trI : teI).push(i);
+  const what = lab?.what || "migrations";
   const ids: string[] = [];
   const cols: Uint8Array[] = [];
   PREDS.forEach((p, k) => {
     const h = hit[k];
     if (!h || SCORE_RULES.has(p.id)) return;
     let n = 0;
-    for (let i = 0; i < cut; i++) if (h[i]) n++;
-    if (n < 30 || cut - n < 30) return;
+    for (const i of trI) if (h[i]) n++;
+    if (n < 30 || trI.length - n < 30) return;
     ids.push(p.id);
     cols.push(Uint8Array.from(h, (v) => (v ? 1 : 0)));
   });
   let ytr = 0;
-  for (let i = 0; i < cut; i++) ytr += y[i];
-  if (!ids.length || ytr < 10 || cut - ytr < 10) return { model: null, used: ids.length, effN: 0, top: [], test: null, why: !ids.length ? "no rule fires often enough" : "too few migrations in the older calls" };
-  const { w, b } = fitLogit(cols, y, cut);
+  for (const i of trI) ytr += y[i];
+  if (!ids.length || ytr < 10 || trI.length - ytr < 10) return { model: null, used: ids.length, effN: 0, top: [], test: null, why: !ids.length ? "no rule fires often enough" : `too few ${what} in the older calls` };
+  const tcols = cols.map((c) => Uint8Array.from(trI, (i) => c[i]));
+  const { w, b } = fitLogit(tcols, Uint8Array.from(trI, (i) => y[i]), trI.length);
   if (![...w, b].every(Number.isFinite)) return { model: null, used: ids.length, effN: 0, top: [], test: null, why: "the fit did not settle" };
   const sc = (i: number) => {
     let s = b;
     for (let k = 0; k < ids.length; k++) if (cols[k][i]) s += w[k];
     return s;
   };
-  const all = Array.from({ length: N }, (_, i) => sc(i));
-  const tr = all.slice(0, cut).sort((a, z) => z - a);
-  const thr10 = tr[Math.max(0, Math.floor(cut * 0.1) - 1)];
-  const thr20 = tr[Math.max(0, Math.floor(cut * 0.2) - 1)];
+  const tr = trI.map(sc).sort((a, z) => z - a);
+  const thr10 = tr[Math.max(0, Math.floor(tr.length * 0.1) - 1)];
+  const thr20 = tr[Math.max(0, Math.floor(tr.length * 0.2) - 1)];
   const model: ScoreModel = { ids, w: w.map((v) => Math.round(v * 1000) / 1000), b: Math.round(b * 1000) / 1000, thr10, thr20, at: now };
   // judged on the newer calls only
-  const te = all.slice(cut);
-  const yte = Array.from(y.slice(cut));
+  const te = teI.map(sc);
+  const yte = teI.map((i) => y[i]);
   const base = yte.length ? yte.reduce((a, v) => a + v, 0) / yte.length : 0;
+  const cost = lab?.cost || 0;
+  const avgOf = (ix: number[]) => (lab?.pnl && cost && ix.length ? Math.round((ix.reduce((a, i) => a + lab.pnl![i], 0) / ix.length / cost) * 1000) / 10 : null);
   const band = (thr: number) => {
-    let n = 0, s = 0;
-    te.forEach((v, i) => v >= thr && (n++, (s += yte[i])));
-    return { n, rate: n ? Math.round((s / n) * 1000) / 10 : 0, lift: n && base > 0 ? Math.round((s / n / base) * 100) / 100 : 0 };
+    const ix = teI.filter((_, k) => te[k] >= thr);
+    const s = ix.reduce((a, i) => a + y[i], 0);
+    const n = ix.length;
+    return { n, rate: n ? Math.round((s / n) * 1000) / 10 : 0, lift: n && base > 0 ? Math.round((s / n / base) * 100) / 100 : 0, avgPct: avgOf(ix) };
   };
   model.auc = aucOf(te, yte);
   const top = ids.map((id, k) => ({ id, odds: Math.round(Math.exp(w[k]) * 100) / 100 })).sort((a, z) => Math.abs(Math.log(z.odds)) - Math.abs(Math.log(a.odds))).slice(0, 8);
-  return { model, used: ids.length, effN: effectiveN(cols, cut), top, test: { n: te.length, base: Math.round(base * 1000) / 10, auc: model.auc, top10: band(thr10), top20: band(thr20) }, why: "" };
+  return { model, used: ids.length, effN: effectiveN(tcols, trI.length), top, test: { n: te.length, base: Math.round(base * 1000) / 10, avgPct: avgOf(teI), auc: model.auc, top10: band(thr10), top20: band(thr20) }, why: "" };
 }
 /** v0.1.112 PLATEAU: the exits one step away (one setting changed to the next value on the menu). Runners have none. */
 export function neighbourIdx(xi: number): number[] {
@@ -683,6 +702,13 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
   await breathe();
   const score = fitScore(cs, hit, cut);
   if (opts.fitScore !== false) setScoreModel(score.model);
+  // v0.1.114 PROFIT SCORE: the reference trade = buy at the call, the first runner exit (the King's edge is in the right
+  // tail). Target: it made money after every cost. Only calls that trade take part
+  const refM = MODES.findIndex((m) => m.id === "now");
+  const refX = GEXITS.findIndex((x) => isRunner(x));
+  const ref = out[refM * X + refX];
+  const pscore = fitScore(cs, hit, cut, Date.now(), { y: Uint8Array.from(ref, (p) => (p > 0 ? 1 : 0)), use: Uint8Array.from(ref, (p) => (p === p ? 1 : 0)), pnl: ref, cost, what: "paying trades" });
+  if (opts.fitScore !== false) setProfitModel(pscore.model);
   PREDS.forEach((p, k) => {
     if (SCORE_RULES.has(p.id)) hit[k] = cs.map((c) => p.ok(c));
   });
@@ -875,6 +901,7 @@ export async function runGrid(coins: GCoin[], opts: { top?: number; sol?: number
     senders: sendersStudy(cs, hit),
     rules: { rank: RANK, pass: PASS },
     score: { used: score.used, effN: score.effN, top: score.top, test: score.test, why: score.why, model: score.model },
+    pscore: { ref: keyOf("all", "now", GEXITS[refX]), used: pscore.used, effN: pscore.effN, top: pscore.top, test: pscore.test, why: pscore.why, model: pscore.model },
     nullRun: { runs: nullStats.length, kept: nullHist.length, lucky: nullHist.filter((v) => v > 0).length, luckRate: nullHist.length ? Math.round((nullHist.filter((v) => v > 0).length / nullHist.length) * 1000) / 10 : null, bar, thisRun: nullStats },
     nullHist,
   };

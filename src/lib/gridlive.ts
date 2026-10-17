@@ -13,7 +13,7 @@ import { paperPriority } from "./livecost";
 import { redis } from "./redis";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
-import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
+import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, profitModel, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
 
 const D = (SITE as any).desk || {};
 // v0.1.96: the priority fee paper pays is what live transactions paid (lib/livecost.ts), the setting until there are 10
@@ -995,16 +995,18 @@ export function seedSignals(now: number): LBook[] {
 // The GRID SCORE (every signal combined, lib/grid.ts) trades on live calls from the moment a model exists: its top
 // 10% and top 20% with the runner exit, in their own slots, paper like every family. GRID judges the score on its test
 // like any rule; this family gathers the live record at the same time instead of after.
-export const SCORE_MAX = 2;
-export const SCORE_SEEDS = [keyOf("score10", "now", RUNNER_EXITS[0]), keyOf("score20", "now", RUNNER_EXITS[0])];
+export const SCORE_MAX = 4;
+// v0.1.114: the PROFIT SCORE's bands first (fitted on trades that paid), then the migration score's
+export const SCORE_SEEDS = [keyOf("pscore10", "now", RUNNER_EXITS[0]), keyOf("pscore20", "now", RUNNER_EXITS[0]), keyOf("score10", "now", RUNNER_EXITS[0]), keyOf("score20", "now", RUNNER_EXITS[0])];
 /** A score worth trading: it ranks the newer calls it never saw better than a coin flip by a margin (AUC 0.55+). */
 export const SCORE_MIN_AUC = 0.55;
 export function seedScore(now: number): LBook[] {
-  if ((scoreModel()?.auc ?? 0) < SCORE_MIN_AUC) return [];
   const out: LBook[] = [];
   let room = SCORE_MAX - BOOKS.filter((b) => b.by === "score" && !b.fv).length;
   for (const k of SCORE_SEEDS) {
     if (room <= 0) break;
+    const m = k.startsWith("pscore") ? profitModel() : scoreModel();
+    if ((m?.auc ?? 0) < SCORE_MIN_AUC) continue;
     if (BOOKS.some((b) => b.key === k)) continue;
     const ts = TRIPS.filter((t) => t.k === k);
     const b = bookFromKey(k, now);

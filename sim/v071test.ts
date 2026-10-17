@@ -59,7 +59,7 @@ const pump = () => [...Array.from({ length: 12 }, () => 0.06 + rnd() * 0.04), ..
   ok(v.coins === 3000 && v.trainN === 2100 && v.testN === 900, "70/30 split by call time");
   ok(v.tried >= 1000, `${v.tried} combinations tried`);
   const top = v.rows[0];
-  ok(!!top && /smart wallet|50\+ unique/.test(top.filterLabel), `the edge is found: "${top?.filterLabel}"`);
+  ok(!!top && /smart wallet|50\+ unique|PROFIT SCORE/.test(top.filterLabel), `the edge is found: "${top?.filterLabel}"`);
   ok(v.passed >= 1 && v.rows.some((r) => r.pass && /smart wallet/.test(r.filterLabel)), `and it passes on the unseen test calls (${v.passed} candidates)`);
   const sigs = v.rows.map((r) => `${r.mode}:${r.train.n}:${r.train.pnl}`);
   ok(new Set(sigs).size === sigs.length, "rules that pick the same trades are listed once (the simplest)");
