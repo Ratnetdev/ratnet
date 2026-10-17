@@ -1,3 +1,4 @@
+import { trendAt } from "./trend";
 import { seerSee } from "./seer";
 import { originAt, originImage, originSee } from "./origin";
 import { dxLive, dxQueue } from "./attention";
@@ -1459,6 +1460,7 @@ export function sxAt(rec: Launch, read: Awaited<ReturnType<typeof socialRead>> |
     ev: w ? { rank: w.rank ?? null, md: w.md === undefined ? null : w.md ? 1 : 0, rep: w.rep ?? null, f: Number(w.f) || 0 } : null, // v0.1.107 EVENT
     dx: dxLive(rec.mint, rec.createdAt, Date.now()), // v0.1.104 ATTENTION: DexScreener profile and boosts seen live
     th: themeAt(rec.mint, Date.now()), // v0.1.109: Claude's label, if made yet (it usually lands seconds after the call)
+    tr: trendAt(String(rec.name || ""), String(rec.symbol || "")), // v0.1.119 TREND: rising on TikTok / Instagram
   };
 }
 

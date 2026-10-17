@@ -1008,7 +1008,7 @@ export const RUNNER_SEEDS: string[] = [
 // shows the signal), so they collect trips from every launch, not only calls. When one is dropped by its record, the
 // next best rule takes the slot. The lift table is read again every GRID run: the family follows the evidence.
 export const SIGNAL_MAX = 8;
-export const SIGNAL_RULES = ["seer", "seertop", "seerfirst", "first", "alpha", "lowauto", "dexpaid", "boosted", "kol3", "kolsmall", "hold20", "firstpost", "bigfirst", "mediapost", "repeatpost", "meme70", "thanimal", "thpolitical", "thai", "thcelebrity", "thculture", "themehot"];
+export const SIGNAL_RULES = ["seer", "seertop", "seerfirst", "first", "alpha", "lowauto", "dexpaid", "boosted", "kol3", "kolsmall", "hold20", "firstpost", "bigfirst", "mediapost", "repeatpost", "meme70", "thanimal", "thpolitical", "thai", "thcelebrity", "thculture", "themehot", "tiktok", "insta", "social"];
 /** Rules that need no King call (known from the firehose, the indexes and DexScreener on any launch). */
 export const SIGNAL_ANY = new Set(["seer", "seertop", "seerfirst", "first", "alpha", "lowauto", "dexpaid", "boosted", "kol3", "kolsmall", "hold20"]);
 let SIG_LIFTS: { id: string; calls: number; lift: number }[] = [];

@@ -182,7 +182,7 @@ export async function fromPosts(): Promise<Item[]> {
 
 // ---------------------------------------------------------------- the forecaster
 const SYSTEM = `You are SEER, the watchlist writer of a pump.fun memecoin trading desk.
-You get items: events coming up, trending searches, rising X topics and posts from big accounts. For each item, decide whether people are likely to launch a memecoin about it on pump.fun in the next days (a famous person, product, event, animal, catchphrase, meme or news moment that crypto traders would recognise). Most items will not be. Be strict: only items a trader would actually make a coin of.
+You get items: events coming up, trending searches, rising X topics, posts from big accounts and terms rising on TikTok and Instagram. For each item, decide whether people are likely to launch a memecoin about it on pump.fun in the next days (a famous person, product, event, animal, catchphrase, meme or news moment that crypto traders would recognise). Most items will not be. Be strict: only items a trader would actually make a coin of.
 For each item that will be: the exact coin names and tickers people would launch it under (what they would type into pump.fun: short, catchy, literal; 2 to 6 names, 2 to 6 tickers of 3 to 10 letters), the tier (1 = a market mover like Elon Musk, Trump or a global event; 2 = a big story; 3 = a niche one), the moment it happens if known (ISO time) and how many hours to keep watching (6 to 72).
 Example: "Tesla: the new Roadster demo streams Thursday 7:55pm CST" -> names ["Flying Tesla Roadster","Tesla Roadster","Flying Roadster","Roadster"], tickers ["FTR","ROADSTER","FLYING","TROAD"], tier 1.
 Answer with JSON only: {"arm":[{"id":"<item id>","names":[...],"tickers":[...],"tier":1,"at":"<ISO or null>","hours":48,"why":"<one short line>"}]}`;
@@ -216,6 +216,7 @@ export async function seerTick(now = Date.now(), forecast = ask) {
     ["gtrends", fromGoogleTrends],
     ["pulse", fromPulse],
     ["post", fromPosts],
+    ["trend", async () => (await import("./trend")).fromTrend()], // v0.1.119: rising on TikTok and Instagram
     ...(slow ? ([["launch", fromLaunches], ["xtrends", fromXTrends]] as [string, () => Promise<Item[]>][]) : []),
   ];
   const got = await Promise.all(jobs.map(([k, f]) => f().then((x) => ((seerStats.src[k] = x.length), x)).catch((e) => ((seerStats.lastErr = `${k}: ${String(e?.message || e).slice(0, 60)}`), [] as Item[]))));

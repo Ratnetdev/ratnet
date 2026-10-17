@@ -50,6 +50,7 @@ import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
 import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
+import { trendAt, trendLoad, trendStats, trendTick } from "../src/lib/trend";
 import { originAt, originCreated, originLoad, originMc, originSee, originStats } from "../src/lib/origin";
 import { dxDrain, dxLive, dxPoll, dxStats } from "../src/lib/attention";
 import { setOnLabel, themeAt, themeBond, themeDrain, themeLoad, themeStats } from "../src/lib/theme";
@@ -923,6 +924,19 @@ async function main() {
       .then((v) => setEarlyModels({ mig: v?.score?.model, pft: v?.pscore?.model, win: v?.wscore?.model }, sec))
       .catch(() => null);
   await seerLoad().catch((e) => console.log("seer load error", e?.message || e));
+  // v0.1.119 TREND: TikTok and Instagram through Apify (APIFY_TOKEN), a run every TREND_EVERY_MIN (default 2 hours)
+  await trendLoad().catch(() => 0);
+  let trending = false;
+  const trend = () => {
+    if (trending) return;
+    trending = true;
+    trendTick()
+      .then((r) => markAlive("trend", { ...r, rising: trendStats.rising, ...(trendStats.lastErr ? { last: trendStats.lastErr } : {}) }))
+      .catch((e) => markAlive("trend", { error: String(e?.message || e) }))
+      .finally(() => (trending = false));
+  };
+  setTimeout(trend, 90_000);
+  setInterval(trend, 10 * 60_000);
   // v0.1.109 IMAGE and THEME: Claude's labels, one every 6s within the daily cap; a new label re-reads its call
   await themeLoad().catch(() => 0);
   setOnLabel((mint) => {
@@ -992,7 +1006,7 @@ async function main() {
         // one with getTransaction, ~3,000 an hour). The rats keep the first copy of a launch, from either source.
         if (c.solQuote !== false && c.mint) seerOn(c.mint, String(c.name || ""), String(c.symbol || ""), c.at);
         if (c.solQuote !== false && c.mint) originSee(c.mint, String(c.name || ""), String(c.symbol || ""), String(c.creator || ""), c.at); // v0.1.103
-        if (c.solQuote !== false && c.mint) earlyCreate(c.mint, c.at, String(c.symbol || "")); // v0.1.115 EARLY
+        if (c.solQuote !== false && c.mint) earlyCreate(c.mint, c.at, String(c.symbol || ""), String(c.name || "")); // v0.1.115 EARLY
         if (c.solQuote !== false && c.mint && c.sig) {
           if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
           INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });
@@ -1078,11 +1092,11 @@ async function main() {
     setInterval(() => {
       if (!fireLive()) return;
       try {
-        const reads = earlySweep((m: string, now: number) => {
+        const reads = earlySweep((m: string, now: number, name: string, sym: string) => {
           const x = fx(m);
           if (!x) return null;
           const created = originCreated(m);
-          return { ...x, ds: tapeFeatures(m).ds, og: originAt(m, null, now), dx: created ? dxLive(m, created, now) : null };
+          return { ...x, ds: tapeFeatures(m).ds, og: originAt(m, null, now), dx: created ? dxLive(m, created, now) : null, tr: trendAt(name, sym) };
         });
         for (const r of reads) gridLiveEarly(r.mint, earlyCoin(r.mint, r.at, r.createdAt, r.f) as unknown as GCoin, r.at, r.sec);
       } catch (e: any) {

@@ -12,7 +12,7 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
-  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge, ge60, ge180, ge300] = await Promise.all([
+  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge, ge60, ge180, ge300, tv] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     r.get<any>("rn:rpc").catch(() => null),
@@ -25,6 +25,7 @@ export async function reviewView(now = Date.now()) {
     r.get<any>("rn:grid:early:60").catch(() => null),
     r.get<any>("rn:grid:early:180").catch(() => null),
     r.get<any>("rn:grid:early:300").catch(() => null),
+    r.get<any>("rn:trend:view").catch(() => null),
   ]);
   // v0.1.107: the media read on WIRE's latest posts (posts from before this build carry none)
   const xs = ((xposts || []) as any[]).filter((t) => t && t.md !== undefined);
@@ -80,6 +81,8 @@ export async function reviewView(now = Date.now()) {
       earlyAges: ([[60, ge60], [180, ge180], [300, ge300]] as [number, any][]).map(([sec, x]) => ({ sec, coins: x?.coins ?? 0, why: x?.why || x?.error || (x ? "" : "no search yet"), passed: x?.passed ?? null, avgPct: x?.wscore?.test?.avgPct ?? null, best: (x?.rows || [])[0] ? { key: x.rows[0].key, testN: x.rows[0].test.n, testAvg: x.rows[0].test.avgPct } : null })),
       pscore: gv?.pscore ? { auc: gv.pscore.test?.auc ?? null, base: gv.pscore.test?.base ?? null, avgPct: gv.pscore.test?.avgPct ?? null, top10: gv.pscore.test?.top10 ?? null, top20: gv.pscore.test?.top20 ?? null, why: gv.pscore.why || "" } : null,
     },
+    // v0.1.119 TREND: TikTok and Instagram
+    trend: tv ? { at: tv.at, items: tv.stats?.items ?? 0, terms: tv.stats?.terms ?? 0, rising: (tv.terms || []).filter((t: any) => t.rising).slice(0, 8).map((t: any) => `${t.t} (${t.src.join("+")}, ${Math.round(t.views / 1000)}K views)`), err: tv.stats?.lastErr || "" } : null,
     attention: rpc?.dx ?? null,
     theme: rpc?.theme ?? null, // v0.1.109: Claude's labels (asked, made, capped, queue) // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
     origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
@@ -119,6 +122,8 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `<b>Exit flows</b> (paper, measured only): ${v.flowExit.n ? `on ${v.flowExit.n} trips the flow turned; actual ${sign(v.flowExit.actAvg ?? 0)}% a trip, selling then ${sign(v.flowExit.flagAvg ?? 0)}% (better on ${v.flowExit.flagBetter})` : "no trip has seen the flow turn yet"}`,
     "",
     `<b>Flow exit learner</b>: ${v.flowLearn.learned ? "learned" : "starting suggestion"}: ${v.flowLearn.picks.map((p) => p.text).join("; ")}${v.flowLearn.top[0]?.n ? `\n• best on record: ${variantText(v.flowLearn.top[0].v)}, ${v.flowLearn.top[0].uplift >= 0 ? "+" : ""}${v.flowLearn.top[0].uplift} pts a trip over ${v.flowLearn.top[0].n} trips (fired ${v.flowLearn.top[0].fired})` : ""}`,
+    "",
+    v.trend ? `<b>TREND</b> (TikTok, Instagram): ${v.trend.items} videos and posts last run, ${v.trend.terms} terms; rising: ${v.trend.rising.map(esc).join(", ") || "none"}${v.trend.err ? ` (last error: ${esc(v.trend.err)})` : ""}` : "<b>TREND</b>: off (set APIFY_TOKEN in Railway)",
     "",
     `<b>SEER</b>: watching for ${v.seer.armed} coins${v.seer.error ? ` (last error: ${esc(v.seer.error).slice(0, 60)})` : ""}; ${v.seer.matches.length} launches matched in 24h`,
     ...v.seer.matches.slice(0, 5).map((m) => `• ${esc(m.sym || "?")} for "${esc(m.title)}" (tier ${m.tier}, #${m.rank}, by ${m.by})`),

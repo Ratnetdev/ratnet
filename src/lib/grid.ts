@@ -79,7 +79,7 @@ export type GCoin = {
  * the dig, also in the archive for older calls); lens/xf/tg (LENS), kol/ftop (HOUND) and mind (MIND) only exist on
  * calls from this build on, and only when that agent had read the coin by minute 5 (never looked ahead).
  */
-export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null; ev?: { rank: number | null; md: 0 | 1 | null; rep: number | null; f: number } | null; th?: { m: number; t: string; heat: number } | null };
+export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null; ev?: { rank: number | null; md: 0 | 1 | null; rep: number | null; f: number } | null; th?: { m: number; t: string; heat: number } | null; tr?: { tt: 0 | 1; ig: 0 | 1; term: string | null } | null };
 export type Pred = { id: string; label: string; ok: (c: GCoin) => boolean };
 export const PREDS: Pred[] = [
   { id: "bond", label: "King BOND", ok: (c) => c.verdict === "BOND" },
@@ -154,6 +154,10 @@ export const PREDS: Pred[] = [
   { id: "thcelebrity", label: "theme: celebrity", ok: (c) => c.sx?.th?.t === "celebrity" },
   { id: "thculture", label: "theme: culture", ok: (c) => c.sx?.th?.t === "culture" },
   { id: "themehot", label: "2+ coins of its theme migrated in the last 6 hours", ok: (c) => (c.sx?.th?.heat ?? 0) >= 2 },
+  // v0.1.119 TREND (lib/trend.ts): the name or ticker matches a term rising on TikTok or Instagram. Unknown never passes
+  { id: "tiktok", label: "its name matches a term rising on TikTok", ok: (c) => c.sx?.tr?.tt === 1 },
+  { id: "insta", label: "its name matches a term rising on Instagram", ok: (c) => c.sx?.tr?.ig === 1 },
+  { id: "social", label: "its name matches a term rising on TikTok or Instagram", ok: (c) => c.sx?.tr?.tt === 1 || c.sx?.tr?.ig === 1 },
   // v0.1.112 GRID SCORE: every rule above combined into one score (lib: fitScore), fitted on the older calls only.
   // No model yet: never passes
   { id: "score10", label: "GRID SCORE top 10% (every signal combined)", ok: (c) => scoreTop(c, "thr10", "mig") },

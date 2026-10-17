@@ -49,20 +49,21 @@ export type EarlyF = {
   e20: number | null;
   og: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null;
   dx: { paid: 0 | 1 | null; boost: number | null } | null;
+  tr?: { tt: 0 | 1; ig: 0 | 1; term: string | null } | null; // v0.1.119 TREND
   sym?: string;
   sec?: number; // v0.1.117: the age it was read at (seconds)
 };
 type Curve = { progress: number; mcapSol: number; realSol: number; complete?: boolean };
-type Pend = { at: number; sym: string; v?: Curve; h: { t: number; p: number }[]; done: Set<number> };
+type Pend = { at: number; sym: string; name?: string; v?: Curve; h: { t: number; p: number }[]; done: Set<number> };
 const PEND = new Map<string, Pend>();
 const TRACK = new Map<string, number>(); // mint -> first read time
 export const earlyStats = { seen: 0, read: 0, coins: 0, skipped: 0, capped: 0, tracked: 0, day: "", dayN: 0, bySec: {} as Record<number, number> };
 
 /** A launch (worker: the firehose create). */
-export function earlyCreate(mint: string, createdAt: number, sym = "") {
+export function earlyCreate(mint: string, createdAt: number, sym = "", name = "") {
   if (!mint || PEND.has(mint)) return;
   if (PEND.size > 60_000) PEND.delete(PEND.keys().next().value as string);
-  PEND.set(mint, { at: createdAt, sym: sym.slice(0, 16), h: [], done: new Set() });
+  PEND.set(mint, { at: createdAt, sym: sym.slice(0, 16), name: name.slice(0, 64), h: [], done: new Set() });
   earlyStats.seen++;
 }
 /** Every curve update (worker: the firehose). Keeps the last one for the reads, and the path of read coins for an hour. */
@@ -102,7 +103,7 @@ function pAgo(h: { t: number; p: number }[], now: number) {
 }
 
 /** Every 5 seconds (worker): the launches that just reached a reading age are read. Returns the reads made. */
-export function earlySweep(featuresOf: (mint: string, now: number) => Omit<EarlyF, "p" | "mc" | "real" | "r60"> | null, now = Date.now()) {
+export function earlySweep(featuresOf: (mint: string, now: number, name: string, sym: string) => Omit<EarlyF, "p" | "mc" | "real" | "r60"> | null, now = Date.now()) {
   const out: { mint: string; at: number; createdAt: number; f: EarlyF; sec: number }[] = [];
   const checks = EARLY_CHECKS();
   const last = checks[checks.length - 1] * 1000;
@@ -124,7 +125,7 @@ export function earlySweep(featuresOf: (mint: string, now: number) => Omit<Early
         earlyStats.capped++;
         continue;
       }
-      const x = featuresOf(mint, now);
+      const x = featuresOf(mint, now, p.name || "", p.sym);
       if (!x) {
         earlyStats.skipped++;
         continue;
@@ -179,7 +180,7 @@ export function earlyCoin(mint: string, at: number, createdAt: number, f: EarlyF
     kmu: f.kmu ?? null,
     kx: f.kx ?? null,
     e20: f.e20 ?? null,
-    sx: { post: null, bigpost: null, pulse: null, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null, og: f.og ?? null, dx: f.dx ?? null },
+    sx: { post: null, bigpost: null, pulse: null, lens: null, xf: null, tg: null, kol: null, ftop: null, mind: null, og: f.og ?? null, dx: f.dx ?? null, tr: f.tr ?? null },
   };
 }
 
