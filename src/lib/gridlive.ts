@@ -144,7 +144,7 @@ export async function gridLiveLoad(tries = 5, waitMs = 2000) {
     const [b, pos, trips, fills, sp, fxs] = await Promise.all([
       tryRead(() => r.get<LBook[]>(BOOKS_KEY)),
       r.hgetall<Record<string, LPos>>(POS_KEY).catch(() => null),
-      tryRead(() => r.lrange<LTrip>(LIVE_TRIPS, 0, 2999)),
+      tryRead(() => r.lrange<LTrip>(LIVE_TRIPS, 0, TRIPS_MAX - 1)),
       r.hgetall<Record<string, Fill>>(FILLS_KEY).catch(() => null),
       r.get<string[]>(SPAWNED_KEY).catch(() => null),
       r.lrange<FlowX>(FLOWX_KEY, 0, 1999).catch(() => null), // v0.1.108: the learner's record survives a restart
@@ -166,7 +166,8 @@ export async function gridLiveLoad(tries = 5, waitMs = 2000) {
     BOOKS = [...saved, ...BOOKS.filter((x) => !saved.some((y) => y.key === x.key))];
     for (const [k, p] of Object.entries(pos || {})) if (p && typeof p === "object" && !POS.has(k)) POS.set(k, p as LPos);
     const got = ((trips || []) as LTrip[]).filter(Boolean);
-    TRIPS = [...TRIPS.filter((t) => !got.some((g) => g.k === t.k && g.mint === t.mint && g.closedAt === t.closedAt)), ...got];
+    const seen = new Set(got.map((g) => `${g.k}|${g.mint}|${g.closedAt}`));
+    TRIPS = keepTrips([...TRIPS.filter((t) => !seen.has(`${t.k}|${t.mint}|${t.closedAt}`)), ...got]);
     return true;
   }
   console.log("grid live: the books could not be read from Redis; they are not saved until they are");
@@ -534,10 +535,10 @@ function close(k: string, pos: LPos, now: number, why: string) {
     FLOWX = [fx, ...FLOWX].slice(0, 2000);
     redis().lpush(FLOWX_KEY, fx).then(() => redis().ltrim(FLOWX_KEY, 0, 1999)).catch(() => null);
   }
-  TRIPS = [t, ...TRIPS].slice(0, 3000);
+  TRIPS = keepTrips([t, ...TRIPS]);
   const r = redis();
   r.hdel(POS_KEY, k).catch(() => null);
-  r.lpush(LIVE_TRIPS, t).then(() => r.ltrim(LIVE_TRIPS, 0, 2999)).catch(() => null);
+  r.lpush(LIVE_TRIPS, t).then(() => r.ltrim(LIVE_TRIPS, 0, TRIPS_MAX - 1)).catch(() => null);
 }
 
 function flowNow(mint: string) {
@@ -696,9 +697,40 @@ export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }
   const total = trips.reduce((a, t) => a + t.pnl, 0);
   const top = trips.map((t) => t.pnl).sort((a, z) => z - a);
   const lessTop2 = total - Math.max(0, top[0] ?? 0) - Math.max(0, top[1] ?? 0);
-  return trips.length >= SEER_PROBATION && total > 0 && lessTop2 > 0 ? { ...st, passed: true, probation: true, total: trips.length, totalPnl: Math.round(total * 1e4) / 1e4, lessTop2: Math.round(lessTop2 * 1e4) / 1e4 } : st;
+  return trips.length >= PROBATION_MIN() && total > 0 && lessTop2 > 0 && tStat(trips) >= PROBATION_T() ? { ...st, passed: true, probation: true, total: trips.length, totalPnl: Math.round(total * 1e4) / 1e4, lessTop2: Math.round(lessTop2 * 1e4) / 1e4 } : st;
 }
-export const SEER_PROBATION = 15;
+export const SEER_PROBATION = 25;
+// v0.1.122 PROOF FIRST: a probation pass must also clear a luck bar. With 150+ books on paper, some show 15 good trips
+// by chance alone (18 Oct: the desk followed probation books for 29 live trades, 14 of 49 round trips won, -0.17 SOL).
+// Without its 2 best trips, the book's average trip must sit PROBATION_T standard errors above zero.
+export const PROBATION_T = () => {
+  const v = Number(process.env.PROBATION_T ?? 2);
+  return Number.isFinite(v) ? v : 2;
+};
+export const PROBATION_MIN = () => Math.max(5, Number(process.env.PROBATION_MIN ?? SEER_PROBATION) || SEER_PROBATION);
+export function tStat(trips: LTrip[]): number {
+  const p = trips.map((t) => t.pnlPct).sort((a, z) => z - a).slice(2);
+  if (p.length < 3) return 0;
+  const m = p.reduce((a, v) => a + v, 0) / p.length;
+  const sd = Math.sqrt(p.reduce((a, v) => a + (v - m) ** 2, 0) / (p.length - 1));
+  return sd > 0 ? m / (sd / Math.sqrt(p.length)) : m > 0 ? 99 : 0;
+}
+// v0.1.122: the trip record kept per book, so one busy family (TICK: 1,348 trips in 16 hours) can't push every other
+// book's record out of a shared buffer (it held 3,000, about 20 hours, and the exams read what was left)
+export const TRIPS_MAX = 20_000;
+export const TRIPS_PER_BOOK = 400;
+export function keepTrips(ts: LTrip[]): LTrip[] {
+  const per = new Map<string, number>();
+  const out: LTrip[] = [];
+  for (const t of ts) {
+    const n = per.get(t.k) || 0;
+    if (n >= TRIPS_PER_BOOK) continue;
+    per.set(t.k, n + 1);
+    out.push(t);
+    if (out.length >= TRIPS_MAX) break;
+  }
+  return out;
+}
 /** v0.1.112: GRID-proven (passed every GRID check), not an explore row. */
 export const fastLane = (b: Pick<LBook, "grid">) => !!b.grid?.pass && !b.grid?.explore;
 export const earlyLane = (b: { key?: string }) => /^early\d*:/.test(String(b.key || ""));

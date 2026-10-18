@@ -9,6 +9,9 @@ process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test";
 (globalThis as any).fetch = async () => {
   throw new Error("offline");
 };
+// the probation rule these checks were written for (v0.1.122 raised it: 25 trips and a luck bar, see v122test)
+process.env.PROBATION_MIN = "15";
+process.env.PROBATION_T = "-99";
 let fail = 0;
 const ok = (c: boolean, m: string) => {
   console.log(c ? "ok  " : "FAIL", m);

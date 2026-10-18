@@ -5,6 +5,9 @@ import type { GCoin } from "../src/lib/grid";
 import { MockRedis } from "./mockredis";
 const R = new MockRedis();
 (globalThis as any).__rnRedis = R;
+// the probation rule these checks were written for (v0.1.122 raised it: 25 trips and a luck bar, see v122test)
+process.env.PROBATION_MIN = "15";
+process.env.PROBATION_T = "-99";
 let fail = 0;
 const ok = (c: boolean, m: string) => {
   console.log(c ? "ok  " : "FAIL", m);

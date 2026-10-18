@@ -139,6 +139,14 @@ export function icOf(m: Model) {
   return vx > 0 && vy > 0 ? Math.round((cov / Math.sqrt(vx * vy)) * 1000) / 1000 : null;
 }
 export const tickReady = (h: number) => (MODELS[h]?.n ?? 0) >= TICK_WARM();
+// v0.1.122: a horizon trades only while acting on it has paid after costs, graded out of sample. On 18 Oct every
+// horizon lost 5 to 7% a trade on 16K+ acted predictions, and its books filled 1,348 paper trips in 16 hours. The model
+// keeps learning and keeps grading what acting would have done, so a horizon comes back by itself once it pays
+export const TICK_ACT_MIN = () => Math.max(100, Number(process.env.TICK_ACT_MIN ?? 2000) || 2000);
+export const tickActs = (h: number) => {
+  const a = MODELS[h]?.act;
+  return !a || a.n < TICK_ACT_MIN() || a.sum / a.n > 0;
+};
 
 /** The round-trip cost of a trade of the desk's size on this coin now, as a log return. */
 export const costOf = (pt: Pt, sol = GRID_SOL) => Math.log1p(roundTripCost(sol, pt.done, pt.real, pt.mc, COST));
@@ -179,7 +187,7 @@ export function tickRun(extraOf: (mint: string, now: number, name: string, sym: 
     for (const h of HORIZONS) {
       const q = PEND.get(h)!;
       if (q.length < 60_000) q.push({ mint, t: now, px: last.px, x, h, cost });
-      if (tickReady(h)) {
+      if (tickReady(h) && tickActs(h)) {
         const ev = predict(MODELS[h], x) - cost;
         if (ev >= 0.001) sig.push({ mint, sym: c.sym, h, ev: Math.round(ev * 1000) / 1000, cost: Math.round(cost * 1000) / 1000 });
       }
