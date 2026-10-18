@@ -82,6 +82,15 @@ export const DEFAULT_SETTINGS = {
     maxSol: 0.5, // safety cap per trade; raise it as the wallet grows (the liquidity cap below still applies)
     maxImpact: 6, // % price impact a buy may cause on the curve: caps size by the coin's liquidity, so a big desk never apes 10 SOL into a 5K coin
     maxOpen: 5,
+    // v0.1.121 DESK SCALE (lib/scale.ts): the limits above are the floor; as the bank grows the size cap, the open slots
+    // and the bags grow with it, under a total exposure cap and a cap per strategy. scale: false = fixed caps again
+    scale: true,
+    scaleBase: 2, // SOL: the bank the configured limits are set for
+    scaleSolPct: 10, // size cap per trade: this % of the bank (never under maxSol)...
+    scaleSolMax: 25, // ...and never over this many SOL (the coin's liquidity caps it lower on most coins)
+    scaleOpenMax: 100, // open slots grow with the square root of the bank, up to this
+    deployPct: 60, // at most this % of the bank at risk at once, all strategies together
+    bookPct: 25, // at most this % of the bank at risk in one strategy
     minCurve: 8, // only enter between these curve %
     maxCurve: 70,
     maxDevBuy: 5, // SOL

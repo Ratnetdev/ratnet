@@ -13,6 +13,7 @@
 import { fired, parseVariant, variantText } from "./flowx";
 import { paperPriority, noteLiveFee } from "./livecost";
 import { sizePlan, KELLY_MIN_TRIPS, type SizeCfg } from "./sizing";
+import { scaleOf, poolCap, roomLeft, atRisk, type ScaleCfg } from "./scale";
 import { getLaunch, getLaunches, putLaunch } from "./launches";
 import { memo, memoDrop } from "./memo";
 import { alertClose, alertOpen, alertsFlush } from "./tradealerts";
@@ -2142,7 +2143,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             // PRIOR: no socials is usually a rug. A tweet-linked coin or 2+ smart wallets early outweigh it. Not a hard cap: COACH can overrule it.
             socialsCheck(rec, learnS),
             { rule: "fresh_signal", ok: now - (rec.call?.at ?? rec.early!.at) < 3 * 60_000, v: `${Math.round((now - (rec.call?.at ?? rec.early!.at)) / 1000)}s old` },
-            { rule: "open_slots", ok: open < cfg.maxOpen && !posMap[m] && !stalks[m], v: `${open}/${cfg.maxOpen}` },
+            { rule: "open_slots", ok: open < scaleOf(eq.value, cfg as unknown as ScaleCfg).maxOpen && !posMap[m] && !stalks[m], v: `${open}/${scaleOf(eq.value, cfg as unknown as ScaleCfg).maxOpen}` },
             { rule: "daily_loss_ok", ok: pct(eq.value, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eq.value, state.dayStart)) },
           ];
           const fail = checks.find((c) => !c.ok);
@@ -2255,6 +2256,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             continue;
           }
           log(b, "FLOW", `$${sk.symbol} pulled back ${Math.round((1 - t.lo / t.hi) * 100)}% and bounced. entering ${fmtPct(pct(q.px, sk.px0))} vs the signal${mo ? " (MOMO)" : ""}`, "ok", coin);
+          poolMark(rec.mint, q);
           await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eq.value, walletSol, kp, cfg, mo ? "momo" : "stalk", null, true);
         } else await putStalk({ ...sk, hi: t.hi, lo: t.lo, armed: t.armed });
       }
@@ -2283,6 +2285,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         }
         log(b, "RISK", `$${re.symbol} reclaimed its entry ${Math.round((now - re.at) / 60_000)}m after the stop (${fmtPct(pct(q.px, re.entryPx))} vs entry). buying back once`, "ok", coin);
         REENTRY_NEXT.add(re.mint);
+        poolMark(rec.mint, q);
         await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eq.value, walletSol, kp, cfg, re.how || "momo", null);
         REENTRY_NEXT.delete(re.mint);
       }
@@ -2572,17 +2575,27 @@ function skipFalling(b: Batch, rec: Launch, how: string, k: { why: string; px: n
   if (!ghost) logSkip("falling_knife", k.why, rec.mint, rec.symbol, k.px).catch(() => {});
 }
 const ENTERING = new Set<string>();
+// v0.1.121: the pool SOL reserve of a migrated coin, handed from the momo/catch/mind lanes to the sizing in enterInner
+const POOL_SOL = new Map<string, number>();
+const poolMark = (m: string, q: Px) => {
+  if (q.grad) POOL_SOL.set(m, q.real > 0 ? q.real : 0);
+  if (POOL_SOL.size > 500) POOL_SOL.clear();
+};
 let ALERT_CFG: unknown = null; // v0.1.46: the session's desk settings, for the Telegram trade alerts (desk.tgTrades)
 /** v0.1.45: is there room for one more buy in this strategy's lane? null = yes, otherwise the reason. Stalk fills and
  *  re-entries skipped VET, so they used to buy past full slots and past the daily loss limit. */
 export async function roomFor(how: Pos["how"] | string, state: DeskState, eqValue: number, cfg: Cfg): Promise<string | null> {
   if (PROMO_WAIT && !state.live) return "the exam passed: no new paper buys until the desk goes live";
   if (pct(eqValue, state.dayStart) <= -cfg.dailyLoss) return "the daily loss limit is hit";
-  const c: any = cfg;
-  const pos = Object.values(await loadPositions(K.deskPos)).filter((p) => takesSlot(p));
-  if (how === "momo") return pos.filter((p) => p.how === "momo").length >= (c.momoMaxOpen ?? 3) ? "the MOMO slots are full" : null;
+  const held = Object.values(await loadPositions(K.deskPos));
+  const pos = held.filter((p) => takesSlot(p));
+  // v0.1.121 DESK SCALE: the slots and the exposure cap grow with the bank (lib/scale.ts)
+  const sc = scaleOf(eqValue, cfg as unknown as ScaleCfg);
+  const risk = held.reduce((a, p) => a + atRisk(p), 0);
+  if (sc.on && risk > sc.deployMax - cfg.minSol) return `${risk.toFixed(2)} SOL is already at risk (cap ${sc.deployMax.toFixed(2)} SOL at this bank)`;
+  if (how === "momo") return pos.filter((p) => p.how === "momo").length >= sc.momoMaxOpen ? "the MOMO slots are full" : null;
   if (OWN_LANE.has(String(how))) return null; // their own entries checked their own slots
-  return pos.filter((p) => !OWN_LANE.has(p.how || "")).length >= cfg.maxOpen ? `all ${cfg.maxOpen} King slots are full` : null;
+  return pos.filter((p) => !OWN_LANE.has(p.how || "")).length >= sc.maxOpen ? `all ${sc.maxOpen} King slots are full` : null;
 }
 async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, real: number, eqValue: number, walletSol: number | null, kp: Keypair | null, cfg: Cfg, how: "direct" | "stalk" | "early" | "wire" | "mind" | "momo" | "catch" | "flash", xm: number | null, r: ReturnType<typeof redis>, coin: { mint: string; symbol: string }) {
   enqueueLens(r, rec.mint, "buy");
@@ -2600,7 +2613,8 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   // v0.1.45: chosen here, sold only after the new buy went through (a buy refused later used to cost the bag for nothing)
   const held = Object.values(await loadPositions(K.deskPos));
   let capBag: Pos | null = null;
-  if (held.length >= ((cfg as any).maxBags ?? 12)) {
+  const sc = scaleOf(eqValue, cfg as unknown as ScaleCfg);
+  if (held.length >= sc.maxBags) {
     capBag = held.filter((p) => p.tp1Done && p.mint !== rec.mint).sort((a, z) => (a.peakAt || a.openedAt) - (z.peakAt || z.openedAt))[0] || null;
     if (!capBag) {
       log(b, "RISK", `$${rec.symbol}: ${held.length} positions held and none is house money yet. skipping`, "info", coin);
@@ -2611,7 +2625,11 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   const avail = state.live ? (walletSol == null ? 0 : liveCash(state)) - 0.02 : state.cash;
   // liquidity cap: on the curve, buying S SOL moves the price by ((vSol + S) / vSol)^2 - 1, vSol = 30 + real SOL
   const vSol = 30 + Math.max(0, real);
-  const liqCap = vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
+  // v0.1.121: a migrated coin is capped by its pool's SOL reserve (the momo, catch and mind lanes pass it here)
+  const poolSol = POOL_SOL.get(rec.mint);
+  POOL_SOL.delete(rec.mint);
+  const liqCap = poolSol != null ? (poolSol > 0 ? poolCap(poolSol, cfg.maxImpact ?? 6) : cfg.maxSol) : vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
+  const rl = roomLeft(held.filter((p) => p.mint !== capBag?.mint), `lane:${how}`, sc);
   // PM: each strategy sleeve is sized by its own record; a paused sleeve sits out
   const sl = sleeveOf(how, rec.wire?.vamp);
   const pmw: { w: number; paused: boolean; until: number; bench?: string } = await sleeveWeight(sl).catch(() => ({ w: 1, paused: false, until: 0 }));
@@ -2651,8 +2669,9 @@ async function enterInner(b: Batch, state: DeskState, rec: Launch, px: number, r
   const want = Math.max(cfg.minSol, (eqValue * cfg.sizePct * pmw.w * wmul * rgw.w) / 100);
   if (rgw.w < 1) log(b, "REGIME", `$${rec.symbol}: ${sl} at half size (${rgw.why})`, "info", coin);
   if (pmw.w !== 1) log(b, "PM", `$${rec.symbol}: ${sl} sleeve at ${pmw.w}x size`, "info", coin);
-  const size = Math.min(cfg.maxSol, want, liqCap, avail * 0.95);
-  if (want > liqCap && liqCap < cfg.maxSol) log(b, "SIZE", `$${rec.symbol}: liquidity caps the buy at ${liqCap.toFixed(2)} SOL (max ${cfg.maxImpact ?? 6}% price impact on a ${vSol.toFixed(0)} SOL curve)`, "info", coin);
+  const size = Math.min(sc.maxSol, want, liqCap, avail * 0.95, rl ? rl.room : Infinity);
+  if (want > liqCap && liqCap < sc.maxSol) log(b, "SIZE", `$${rec.symbol}: liquidity caps the buy at ${liqCap.toFixed(2)} SOL (max ${cfg.maxImpact ?? 6}% price impact on a ${poolSol != null ? `${poolSol.toFixed(0)} SOL pool` : `${vSol.toFixed(0)} SOL curve`})`, "info", coin);
+  if (rl && rl.room < Math.min(sc.maxSol, want, liqCap)) log(b, "SIZE", `$${rec.symbol}: exposure cap: ${rl.why}`, "info", coin);
   if (size < cfg.minSol * 0.99) {
     log(b, "SIZE", `no room for $${rec.symbol}: ${avail.toFixed(3)} SOL free. ghost desk takes it`, "info", coin);
     await ghostEnter(b, rec, px, real, how, `no paper balance free (${avail.toFixed(3)} SOL)`, cfg, true);
@@ -2864,16 +2883,20 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     if (!fresh || fresh.src === "dex") return log(b, "EXEC", `$${o.symbol}: no fresh price right before the buy. skipped`, "info", coin);
     const avail = state.live ? (walletSol == null ? 0 : liveCash(state)) - 0.02 : state.cash;
     const vSol = 30 + Math.max(0, fresh.real);
-    const liqCap = fresh.grad ? cfg.maxSol : vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
+    // v0.1.121 DESK SCALE: limits grow with the bank; a migrated coin is capped by its pool's SOL reserve
+    const sc = scaleOf(eqValue, cfg as unknown as ScaleCfg);
+    const liqCap = fresh.grad ? (fresh.real > 0 ? poolCap(fresh.real, cfg.maxImpact ?? 6) : cfg.maxSol) : vSol * (Math.sqrt(1 + (cfg.maxImpact ?? 6) / 100) - 1);
+    const rl = roomLeft(Object.values(await loadPositions(K.deskPos)), o.key, sc);
+    const room = rl ? rl.room : Infinity;
     // v0.1.95 COMPOUNDING SIZE: the leader passed its exam, so its own record sets its share of the bank
     const plan = o.probation ? null : sizePlan(o.pcts, cfg as SizeCfg);
     // v0.1.120: a TICK order carries how strong its prediction was (0.5x to 2x the planned size, the caps below still apply)
     const mult = o.mult && Number.isFinite(o.mult) ? Math.max(0.5, Math.min(2, o.mult)) : 1;
     const pct = (plan ? plan.pct : cfg.sizePct) * mult;
     // v0.1.102: a SEER book on probation (passed on 15+ trips, not yet the full exam) trades the minimum size only
-    const size = o.probation ? Math.min(cfg.minSol, liqCap, avail * 0.95) : Math.min(cfg.maxSol, Math.max(cfg.minSol, (eqValue * pct) / 100), liqCap, avail * 0.95);
+    const size = o.probation ? Math.min(cfg.minSol, liqCap, avail * 0.95, room) : Math.min(sc.maxSol, Math.max(cfg.minSol, (eqValue * pct) / 100), liqCap, avail * 0.95, room);
     if (size < cfg.minSol * 0.99) return log(b, "SIZE", `no room for $${o.symbol}: ${avail.toFixed(3)} SOL free`, "info", coin);
-    log(b, "SIZE", `${size.toFixed(3)} SOL on $${o.symbol}: ${pct}% of a ${eqValue.toFixed(2)} SOL bank (${o.probation ? "probation (SEER or FAST LANE): minimum size until the full exam" : plan ? `${plan.n} live trips, ${plan.why}` : `flat ${cfg.sizePct}%, under ${KELLY_MIN_TRIPS} trips`})${size < (eqValue * pct) / 100 - 1e-9 ? `, capped by ${size >= cfg.maxSol - 1e-9 ? `maxSol ${cfg.maxSol}` : size >= liqCap - 1e-9 ? "liquidity" : "free cash"}` : ""}`, "info", coin);
+    log(b, "SIZE", `${size.toFixed(3)} SOL on $${o.symbol}: ${pct}% of a ${eqValue.toFixed(2)} SOL bank (${o.probation ? "probation (SEER or FAST LANE): minimum size until the full exam" : plan ? `${plan.n} live trips, ${plan.why}` : `flat ${cfg.sizePct}%, under ${KELLY_MIN_TRIPS} trips`})${size < (eqValue * pct) / 100 - 1e-9 ? `, capped by ${size >= sc.maxSol - 1e-9 ? `the size cap ${sc.maxSol.toFixed(2)} SOL at this bank` : size >= liqCap - 1e-9 ? "liquidity" : size >= room - 1e-9 && rl ? `exposure (${rl.why})` : "free cash"}` : ""}`, "info", coin);
     // SHIELD, the scam guard, still runs before any money moves
     const known = await getLaunch(o.mint).catch(() => null);
     const sh = await shield({ mint: o.mint, symbol: o.symbol, grad: !!fresh.grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / fresh.px) * 1e6))), tape: known?.tape, ageMs: known ? Date.now() - known.createdAt : undefined }).catch(() => null);
@@ -2928,7 +2951,7 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
     { rule: "holder_spread", ok: top10 == null || top10 <= (c.momoMaxTop10 ?? 35), v: top10 == null ? "not read" : `top 10 hold ${top10}%` },
     { rule: "liquidity_ok", ok: !q.grad || q.real >= (c.momoMinPoolSol ?? 40), v: q.grad ? `${Math.round(q.real)} SOL in the pool` : `on the curve, ${q.curve?.progress ?? "?"}%` },
     { rule: "fresh_signal", ok: now - h.at < 3 * 60_000, v: `${Math.round((now - h.at) / 1000)}s old` },
-    { rule: "open_slots", ok: open < (c.momoMaxOpen ?? 3) && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${c.momoMaxOpen ?? 3} MOMO slots` },
+    { rule: "open_slots", ok: open < scaleOf(eqValue, cfg as unknown as ScaleCfg).momoMaxOpen && !posMap[m], v: posMap[m] ? "already held by the desk" : `${open}/${scaleOf(eqValue, cfg as unknown as ScaleCfg).momoMaxOpen} MOMO slots` },
     { rule: "daily_loss_ok", ok: pct(eqValue, state.dayStart) > -cfg.dailyLoss, v: fmtPct(pct(eqValue, state.dayStart)) },
     {
       rule: "chop_guard",
@@ -2971,6 +2994,7 @@ async function momoEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg,
     log(b, "SIZE", `$${rec.symbol} (MOMO): waiting for a -${dip}% pullback and a bounce, up to ${c.momoStalkMins ?? 10}m`, "info", coin);
     return;
   }
+  poolMark(rec.mint, q);
   await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "momo", null);
 }
 
@@ -3036,6 +3060,7 @@ async function catchEntry(b: Batch, state: DeskState, m: string, q: Px, cfg: Cfg
     return;
   }
   log(b, "VET", `CATCH's $${rec.symbol} clean: ${checks.slice(0, 1).concat(checks.slice(5, 7)).map((x) => x.v).join(", ")}`, "ok", coin);
+  poolMark(rec.mint, q);
   await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "catch", null);
 }
 
@@ -3147,6 +3172,7 @@ async function mindEntry(b: Batch, state: DeskState, rec: Launch, q: Px, cfg: Cf
     return;
   }
   log(b, "VET", `MIND's $${rec.symbol} clean: SEND ${j!.conviction}${q.grad ? `, migrated, ${Math.round(q.real)} SOL pool` : ""}`, "ok", coin);
+  poolMark(rec.mint, q);
   await enter(b, state, rec, q.px, q.grad ? 0 : q.real, eqValue, walletSol, kp, cfg, "mind", null);
 }
 
