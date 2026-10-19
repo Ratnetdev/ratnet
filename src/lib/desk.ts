@@ -2791,11 +2791,11 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
     paperFixed = fixed;
   }
   const now = Date.now();
-  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : rec.call ? `King ${rec.call.verdict} ${rec.call.score}${how === "stalk" ? ", bought the pullback" : ""}` : "GRID LIVE follow";
+  const why = how === "momo" ? `MOMO: ${rec.description || "traction after migration"}` : how === "mind" ? `MIND SEND ${(await mindJudgement(rec.mint).catch(() => null))?.conviction ?? ""}` : how === "wire" ? `@${rec.wire?.h} post (${rec.wire?.how})` : how === "early" ? `early read BOND ${rec.early?.score}` : how === "catch" ? `CATCH: ${rec.outcome === "BONDED" ? "migrated runner" : "hot curve"}` : how === "flash" ? "FLASH: first-seconds read" : GRID_BUYING || !rec.call ? "GRID LIVE follow" : `King ${rec.call.verdict} ${rec.call.score}${how === "stalk" ? ", bought the pullback" : ""}`;
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ v: BUILD, cfg: cfgTag(ALERT_CFG), id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ...(par ? { par } : {}) });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
-  alertOpen({ book: state.live ? "live" : "paper", mint: rec.mint, symbol: rec.symbol, how: !rec.call && how === "direct" ? "grid" : how, sol: sol + paperFixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, sig }, ALERT_CFG);
+  alertOpen({ book: state.live ? "live" : "paper", mint: rec.mint, symbol: rec.symbol, how: (GRID_BUYING || !rec.call) && how === "direct" ? "grid" : how, sol: sol + paperFixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, sig }, ALERT_CFG);
   return {
     build: BUILD,
     cfg: cfgTag(ALERT_CFG),
@@ -2849,7 +2849,7 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
 
 // v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
 // the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
-export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number };
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number };
 // v0.1.108 FLOW EXIT: the worker hands the desk the coin's flow (KOLs that sold, first 20 buyers that sold), so a
 // strategy with a flow exit runs it on live money exactly as its twin ran it on paper
 let DESK_FLOW: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
@@ -2867,6 +2867,14 @@ export function queueGridOrder(o: GridOrder) {
   if (GRID_ORDERS.length > 50) GRID_ORDERS.shift();
 }
 export const gridOrders = () => GRID_ORDERS;
+export const ENTRY_CHASE_DEF = 0.05;
+export const entryChase = () => {
+  const v = Number(process.env.ENTRY_CHASE ?? ENTRY_CHASE_DEF);
+  return Number.isFinite(v) && v >= 0 ? v : ENTRY_CHASE_DEF;
+};
+export let gridChaseSkips = 0;
+// v0.1.124: a GRID follow is logged as one even when the coin also had a King call (it said "King BOND 74")
+let GRID_BUYING = false;
 
 async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null) {
   const r = redis();
@@ -2881,6 +2889,14 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
   try {
     const fresh = (await priceOf([o.mint], true).catch(() => ({} as Record<string, Px>)))[o.mint];
     if (!fresh || fresh.src === "dex") return log(b, "EXEC", `$${o.symbol}: no fresh price right before the buy. skipped`, "info", coin);
+    // v0.1.124 NO CHASING: the price right now against the paper fill. Already ENTRY_CHASE% higher: the burst the
+    // paper bought is over and the desk would buy its top (19 Oct: $Putin and $FROBERT bought 8 to 12% over paper,
+    // both stopped out within 11 seconds). A ratio outside 0.2x to 5x is a unit mismatch, not a price: ignored
+    const chase = o.px0 && o.px0 > 0 ? fresh.px / o.px0 : 1;
+    if (chase < 5 && chase > 0.2 && chase - 1 > entryChase()) {
+      gridChaseSkips++;
+      return log(b, "EXEC", `$${o.symbol}: price already ${((chase - 1) * 100).toFixed(1)}% over GRID's paper fill. not chasing`, "info", coin);
+    }
     const avail = state.live ? (walletSol == null ? 0 : liveCash(state)) - 0.02 : state.cash;
     const vSol = 30 + Math.max(0, fresh.real);
     // v0.1.121 DESK SCALE: limits grow with the bank; a migrated coin is capped by its pool's SOL reserve
@@ -2905,7 +2921,8 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
       return log(b, "VET", `SHIELD stopped $${o.symbol} (GRID): ${f.rule.replace(/_/g, " ")} (${f.v})`, "bad", coin);
     }
     const rec: Launch = known || ({ mint: o.mint, sig: "", createdAt: Date.now(), creator: "", name: o.symbol, symbol: o.symbol, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: Date.now(), dugBy: "GRID", p0: 0, mcap0: 0, cp: {}, outcome: fresh.grad ? "BONDED" : undefined } as Launch);
-    const pos = await buy(b, state, rec, size, fresh.px, cfg.slippageBps, kp, fresh.real, "direct", !!fresh.grad);
+    GRID_BUYING = true;
+    const pos = await buy(b, state, rec, size, fresh.px, cfg.slippageBps, kp, fresh.real, "direct", !!fresh.grad).finally(() => (GRID_BUYING = false));
     if (!pos) return;
     pos.gk = o.key;
     pos.gx = o.exit;

@@ -41,7 +41,7 @@ const ok = (c: boolean, m: string) => {
 
   // ---- 4. GRID buys say what they are
   const d = fs.readFileSync("src/lib/desk.ts", "utf8");
-  ok((d.match(/: "GRID LIVE follow"/g) || []).length === 2 && !/`King \$\{rec\.call\?\.verdict\}/.test(d), "a GRID follow is logged as such (was \"King undefined undefined\")");
+  ok((d.match(/"GRID LIVE follow"/g) || []).length >= 2 && !/`King \$\{rec\.call\?\.verdict\}/.test(d), "a GRID follow is logged as such (was \"King undefined undefined\")");
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
   ok(Number(pkg.version.split(".")[2]) >= 122 && fs.readFileSync("src/config/build.ts", "utf8").includes(`"${pkg.version}"`), "v0.1.122 or later");
   console.log(fail ? `\n${fail} FAILED` : "\nall v0.1.122 checks pass");

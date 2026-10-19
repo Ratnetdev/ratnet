@@ -4,6 +4,8 @@
 import { MockRedis } from "./mockredis";
 const R = new MockRedis();
 (globalThis as any).__rnRedis = R;
+// the hold rule as v0.1.123 had it (v0.1.124 adds a floor on the record without the 2 best, see v124test)
+process.env.HOLD_FLOOR = "1";
 let fail = 0;
 const ok = (c: boolean, m: string) => {
   console.log(c ? "ok  " : "FAIL", m);
@@ -111,7 +113,7 @@ const ok = (c: boolean, m: string) => {
   ok(res.bad && msgs.length === 1 && /worse than paper/.test(msgs[0]), "live sells 14% under paper on 12 trades: alert");
   const ta = fs.readFileSync("src/lib/tradealerts.ts", "utf8");
   const dk = fs.readFileSync("src/lib/desk.ts", "utf8");
-  ok(/grid: "GRID LIVE"/.test(ta) && /alertStats\.sent\+\+/.test(ta) && /how: !rec\.call && how === "direct" \? "grid" : how/.test(dk) && /how: p\.gk \? "grid" : p\.how/.test(dk), "trade alerts: counted on /status, a GRID follow says GRID LIVE (was King)");
+  ok(/grid: "GRID LIVE"/.test(ta) && /alertStats\.sent\+\+/.test(ta) && /how: \(GRID_BUYING \|\| !rec\.call\) && how === "direct" \? "grid" : how/.test(dk) && /how: p\.gk \? "grid" : p\.how/.test(dk), "trade alerts: counted on /status, a GRID follow says GRID LIVE (was King)");
   ok(/liveGapAlert\(/.test(fs.readFileSync("worker/index.ts", "utf8")), "the worker checks live fills every 5 minutes");
 
   // ---- 8. J7: the status shows how long the token has left, and warns an hour before it runs out

@@ -98,7 +98,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -106,6 +106,10 @@ let LEADER: string | null = null;
 // its full exam keeps being followed at the minimum size while its whole record stays in profit. It is dropped only when
 // that total goes negative (the full pass also needs it in profit without its 2 best; a hold does not)
 const EVER = new Set<string>();
+export const HOLD_FLOOR = () => {
+  const v = Number(process.env.HOLD_FLOOR ?? 0.1);
+  return Number.isFinite(v) ? v : 0.1;
+};
 export const _setEver = (keys: string[]) => (EVER.clear(), keys.forEach((k) => EVER.add(k)));
 export const gridLeaderKey = () => LEADER;
 /** The strategy the desk follows: passed live (bookStat), best live P&L first. */
@@ -541,7 +545,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
       const mine = TRIPS.filter((t) => t.k === b.key);
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv, ...(pe.mult ? { mult: pe.mult } : {}) });
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, ...(pe.mult ? { mult: pe.mult } : {}) });
     } catch {}
   }
 }
@@ -726,7 +730,9 @@ export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }
   // probation exam: 15+ trips, in profit, and still in profit without the 2 best. Full size only through the normal exam
   const st = bookStat0(b, trips);
   // v0.1.123 RUNNER HOLD: passed the runner exam before, whole record still in profit: followed at the minimum size
-  if (st.runner && !st.passed && b.key && EVER.has(b.key) && (st.totalPnl ?? 0) > 0) return { ...st, passed: true, probation: true, hold: true };
+  // v0.1.124: and its record without the 2 best (open positions marked now) is not deep under water: at most
+  // HOLD_FLOOR SOL down (19 Oct: the 2x book was held at -0.58 SOL without its 2 best and lost 8 of 9 live trades)
+  if (st.runner && !st.passed && b.key && EVER.has(b.key) && (st.totalPnl ?? 0) > 0 && (st.lessTop2 ?? -1) >= -HOLD_FLOOR()) return { ...st, passed: true, probation: true, hold: true };
   // v0.1.112 FAST LANE: a book GRID proved offline (the test, the plateau, the newest slice and the luck bar) gets the
   // same probation: live at the minimum size after 15 good trips instead of 30
   // v0.1.117: an EARLY book too (its 2-minute momentum books were the only ones in profit on 17 Oct)
@@ -779,7 +785,7 @@ export const earlyLane = (b: { key?: string }) => /^early\d*:/.test(String(b.key
 function bookStat0(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips: LTrip[]): LStat {
   // v0.1.89: a runner is judged on its whole record (few wins, big ones), not on 40% won over its last 30
   const x = b.exit ?? (b.key ? exitOfKey(b.key) : null);
-  if (isRunner(x)) return runnerStat(trips);
+  if (isRunner(x)) return runnerStat(b.key ? [...openMarks(b.key), ...trips] : trips);
   const l = liveStat(trips);
   if (!b.grid?.explore || !l.passed) return l;
   const total = trips.reduce((a, t) => a + t.pnl, 0);
@@ -792,6 +798,29 @@ function bookStat0(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trip
  * over the last 30) would never pass one. It passes on its whole record instead: 60+ trips, in profit after every cost,
  * and still in profit without its 2 best trips (one lucky coin is not a strategy).
  */
+/**
+ * v0.1.124 OPEN MARKS: a runner's record counts its open positions at their value now, less EXIT_HAIRCUT for the
+ * exit costs (19 Oct: the two runner books held 36 open positions, 24 of them up 100%+, and the record only saw the
+ * stopped-out trips). Each open position counts as one trip at what it would bring back if sold now.
+ */
+export const EXIT_HAIRCUT = 0.1;
+let OPEN_AT = 0;
+let OPEN_BY = new Map<string, LTrip[]>();
+export function openMarks(key: string, now = Date.now()): LTrip[] {
+  if (now - OPEN_AT > 5_000) {
+    OPEN_AT = now;
+    OPEN_BY = new Map();
+    for (const p of POS.values()) {
+      if (!(p.lastPx > 0) || !(p.cost > 0)) continue;
+      const value = p.back + p.tokens * p.lastPx * (1 - EXIT_HAIRCUT);
+      const pnl = value - p.cost;
+      const t: LTrip = { k: p.key, mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / p.cost) * 1000) / 10, why: "open (marked now)" };
+      (OPEN_BY.get(p.key) || OPEN_BY.set(p.key, []).get(p.key)!).push(t);
+    }
+  }
+  return OPEN_BY.get(key) || [];
+}
+export const _resetOpenMarks = () => ((OPEN_AT = 0), (OPEN_BY = new Map()));
 export const RUNNER_MIN = 60;
 export const RUNNER_MAX_TRIPS = 120;
 export function runnerStat(trips: LTrip[]): LStat {
