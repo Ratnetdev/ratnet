@@ -48,7 +48,7 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick, GAP_LIMIT, gridLiveBackfill } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick, GAP_LIMIT, gridLiveBackfill, setEntryFeatures } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { trendAt, trendLoad, trendStats, trendTick } from "../src/lib/trend";
 import { tickCreate, tickCurve, tickLoad, tickRun, tickSave, tickStats, tickView } from "../src/lib/tick";
@@ -188,6 +188,12 @@ function revive(name: keyof typeof LOOP_GEN, why: string, now = Date.now()) {
   else if (name === "fast") (fastAt = now), digFastLoop(LOOP_GEN.fast).catch(() => null);
   else (histAt = now), historianLoop(LOOP_GEN.hist).catch(() => null);
   return true;
+}
+// v0.1.126: each launch's dev buy (SOL) and create time, for the RUG GUARD's entry state (newest 20,000)
+const DEV_SOL = new Map<string, { sol: number; at: number }>();
+function noteDevSol(mint: string, sol: number, at: number) {
+  DEV_SOL.set(mint, { sol: Math.round(sol * 1000) / 1000, at });
+  if (DEV_SOL.size > 20_000) DEV_SOL.delete(DEV_SOL.keys().next().value as string);
 }
 let beatSide = false;
 let lagLogAt = 0;
@@ -1010,6 +1016,7 @@ async function main() {
         if (c.solQuote !== false && c.mint) seerOn(c.mint, String(c.name || ""), String(c.symbol || ""), c.at);
         if (c.solQuote !== false && c.mint) originSee(c.mint, String(c.name || ""), String(c.symbol || ""), String(c.creator || ""), c.at); // v0.1.103
         if (c.solQuote !== false && c.mint) earlyCreate(c.mint, c.at, String(c.symbol || ""), String(c.name || "")); // v0.1.115 EARLY
+        if (c.solQuote !== false && c.mint) noteDevSol(c.mint, Number(c.devSol) || 0, c.at); // v0.1.126 RUG GUARD
         if (c.solQuote !== false && c.mint) tickCreate(c.mint, c.at, String(c.symbol || ""), String(c.name || "")); // v0.1.120 TICK
         if (c.solQuote !== false && c.mint && c.sig) {
           if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
@@ -1078,6 +1085,13 @@ async function main() {
       return { kx: kolCount() > 0 ? fl.kx : null, e20: fl.e20 };
     };
     setFlowFeatures(flowOf);
+    // v0.1.126 RUG GUARD: the coin's state at each paper buy (age, dev buy, last minute's flow, dev sold, origin rank)
+    setEntryFeatures((m: string, now: number) => {
+      const created = originCreated(m) ?? DEV_SOL.get(m)?.at ?? null;
+      const f = tapeFeatures(m, now);
+      const og = originAt(m, null, now);
+      return { age: created ? Math.round((now - created) / 1000) : null, dev: DEV_SOL.get(m)?.sol ?? null, u60: f.u60 ?? null, bs60: f.bs60 ?? null, wh: f.wh ?? null, ds: f.ds ?? null, og: og?.rank ?? null };
+    });
     // v0.1.110: every-launch books on the new rules know the coin's origin, DexScreener orders and flow without a call
     setAnySignals((m: string, now: number) => {
       const created = originCreated(m);

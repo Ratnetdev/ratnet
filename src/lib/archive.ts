@@ -333,13 +333,13 @@ export function archiveView() {
 export async function archiveGridTrips(days = 14, per = 400) {
   if (!ready) return null;
   const r = await pool.query(
-    `select book, mint, symbol, opened_at, closed_at, pnl_sol, pnl_pct, exit_reason from (
+    `select book, mint, symbol, opened_at, closed_at, pnl_sol, pnl_pct, exit_reason, data from (
        select *, row_number() over (partition by book order by closed_at desc) as rn from trips
        where book like 'grid:%' and closed_at > now() - ($1 || ' days')::interval) x
      where rn <= $2`,
     [String(days), per],
   );
-  return (r.rows || []).map((x: any) => ({ k: String(x.book).slice(5), mint: x.mint, symbol: x.symbol, openedAt: new Date(x.opened_at).getTime(), closedAt: new Date(x.closed_at).getTime(), pnl: Number(x.pnl_sol) || 0, pnlPct: Number(x.pnl_pct) || 0, why: String(x.exit_reason || "") }));
+  return (r.rows || []).map((x: any) => ({ k: String(x.book).slice(5), mint: x.mint, symbol: x.symbol, openedAt: new Date(x.opened_at).getTime(), closedAt: new Date(x.closed_at).getTime(), pnl: Number(x.pnl_sol) || 0, pnlPct: Number(x.pnl_pct) || 0, why: String(x.exit_reason || ""), ...(x.data?.ef ? { ef: x.data.ef, rug: !!x.data.rug } : {}) }));
 }
 
 export async function archiveGrid(days = 14, opts: { nulls?: number; nullHist?: number[] } = {}) {

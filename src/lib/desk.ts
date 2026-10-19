@@ -2849,7 +2849,7 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
 
 // v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
 // the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
-export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number };
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
 // v0.1.108 FLOW EXIT: the worker hands the desk the coin's flow (KOLs that sold, first 20 buyers that sold), so a
 // strategy with a flow exit runs it on live money exactly as its twin ran it on paper
 let DESK_FLOW: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
@@ -2873,6 +2873,7 @@ export const entryChase = () => {
   return Number.isFinite(v) && v >= 0 ? v : ENTRY_CHASE_DEF;
 };
 export let gridChaseSkips = 0;
+export let gridRugSkips = 0;
 // v0.1.124: a GRID follow is logged as one even when the coin also had a King call (it said "King BOND 74")
 let GRID_BUYING = false;
 
@@ -2881,6 +2882,11 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
   const coin = { mint: o.mint, symbol: o.symbol };
   if (Date.now() - o.at > 30_000) return log(b, "REGIME", `$${o.symbol}: the GRID signal is ${Math.round((Date.now() - o.at) / 1000)}s old. not chasing`, "info", coin);
   if (ENTERING.has(o.mint) || (await loadPositions(K.deskPos))[o.mint]) return;
+  // v0.1.126 RUG GUARD: an entry the rug study rules out (paper still takes it, so the study keeps measuring)
+  if (o.rug) {
+    gridRugSkips++;
+    return log(b, "VET", `$${o.symbol}: RUG GUARD, ${o.rug}. skipped`, "info", coin);
+  }
   if (state.live && !kp) return log(b, "EXEC", `$${o.symbol}: the desk is live and this process has no wallet key. no buy here`, "info", coin);
   if (state.live && Number((await r.hlen(PENDING).catch(() => 0)) || 0) > 0) return log(b, "EXEC", `$${o.symbol}: a previous swap is still being checked against the wallet. no new buy until it is settled`, "info", coin);
   const noRoom = await roomFor("direct", state, eqValue, cfg);

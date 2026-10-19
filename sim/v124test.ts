@@ -51,7 +51,7 @@ const ok = (c: boolean, m: string) => {
   ok(D.entryChase() === 0.05, "the desk skips a GRID entry once the price is 5%+ over the paper fill");
   const dk = fs.readFileSync("src/lib/desk.ts", "utf8");
   ok(/chase - 1 > entryChase\(\)/.test(dk) && /fresh\.px \/ o\.px0/.test(dk), "checked on the fresh price right before the buy");
-  ok(/px0, \.\.\.\(pe\.mult/.test(fs.readFileSync("src/lib/gridlive.ts", "utf8")), "GRID LIVE hands the desk its paper fill price with every order");
+  ok(/fv: b\.fv, px0,/.test(fs.readFileSync("src/lib/gridlive.ts", "utf8")), "GRID LIVE hands the desk its paper fill price with every order");
   ok(/GRID_BUYING \|\| !rec\.call \? "GRID LIVE follow"/.test(dk), "a GRID follow says GRID LIVE even when the coin had a King call");
 
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));

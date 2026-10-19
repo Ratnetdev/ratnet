@@ -41,6 +41,18 @@ export const setLiveFeatures = (f: typeof LIVE_FX) => (LIVE_FX = f);
 // when the early buyers were exiting.) Nothing changes the trades until this record says so.
 let FLOW_FX: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
 export const setFlowFeatures = (f: typeof FLOW_FX) => (FLOW_FX = f);
+// v0.1.126 RUG GUARD: what a coin looked like at the moment a paper position opened (age since launch in seconds, dev
+// buy in SOL, buyers and buy share of the last minute, whale buys, dev sold, origin rank: 1 = the original name)
+export type EntryF = { age: number | null; dev: number | null; u60: number | null; bs60: number | null; wh: number | null; ds: boolean | null; og: number | null };
+let ENTRY_FX: ((mint: string, now: number) => EntryF | null) | null = null;
+export const setEntryFeatures = (f: typeof ENTRY_FX) => (ENTRY_FX = f);
+const entryNow = (mint: string, now: number) => {
+  try {
+    return ENTRY_FX ? ENTRY_FX(mint, now) : null;
+  } catch {
+    return null;
+  }
+};
 export const FLOWX_KEY = "rn:gridlive:flowx";
 let FLOWX: FlowX[] = [];
 export const flowxView = () => flowxStats(FLOWX);
@@ -88,8 +100,8 @@ export type LBook = {
   fxOf?: string;
 };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null; mult?: number };
-export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean };
-export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string };
+export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean; ef?: EntryF | null };
+export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string; ef?: EntryF | null; rug?: boolean };
 
 let BOOKS: LBook[] = [];
 const PEND = new Map<string, Pend>(); // key|mint
@@ -98,7 +110,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -537,7 +549,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const sol = GRID_SOL;
   const inPool = !!last.pool;
   const fillPx = px0 * (1 + slipOf(sol, inPool, last.real));
-  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool, f0: flowNow(pe.mint) };
+  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool, f0: flowNow(pe.mint), ef: entryNow(pe.mint, now) };
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
   if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens, sol, at: now });
@@ -545,7 +557,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
       const mine = TRIPS.filter((t) => t.k === b.key);
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, ...(pe.mult ? { mult: pe.mult } : {}) });
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, rug: rugBlock(pos.ef) ?? undefined, ...(pe.mult ? { mult: pe.mult } : {}) });
     } catch {}
   }
 }
@@ -564,6 +576,8 @@ function close(k: string, pos: LPos, now: number, why: string) {
   POS.delete(k);
   const pnl = pos.back - pos.cost;
   const t: LTrip = { k: pos.key, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / pos.cost) * 1000) / 10, why };
+  // v0.1.126: a rug = stopped out at -30% or worse within 90 seconds of the buy
+  if (pos.ef) (t.ef = pos.ef), (t.rug = now - pos.openedAt <= RUG_SECS * 1000 && t.pnlPct <= -30);
   if (pos.f0 && pos.f0.kx != null) {
     // (a coin whose flow is unknown, not seen from its create, is left out of the record)
     // v0.1.105: the same trip, had it sold when the flow turned. v0.1.108: every flow-watched trip is kept (also those
@@ -574,7 +588,7 @@ function close(k: string, pos: LPos, now: number, why: string) {
   }
   TRIPS = keepTrips([t, ...TRIPS]);
   // v0.1.123: every paper trip also goes to Postgres, so a record can never be lost again (book "grid:<key>")
-  archiveTrip({ book: `grid:${pos.key}` as any, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, costSol: pos.cost, backSol: pos.back, how: pos.key.split(":")[0].split("|")[0].slice(0, 40), reason: why });
+  archiveTrip({ book: `grid:${pos.key}` as any, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, costSol: pos.cost, backSol: pos.back, how: pos.key.split(":")[0].split("|")[0].slice(0, 40), reason: why, data: pos.ef ? { ef: pos.ef, rug: !!t.rug } : undefined });
   const r = redis();
   r.hdel(POS_KEY, k).catch(() => null);
   r.lpush(LIVE_TRIPS, t).then(() => r.ltrim(LIVE_TRIPS, 0, TRIPS_MAX - 1)).catch(() => null);
@@ -834,6 +848,60 @@ export function gridLiveBackfill(rows: LTrip[]): number {
   OPEN_AT = 0;
   return add.length;
 }
+/**
+ * v0.1.126 RUG GUARD. Every paper position notes the coin's state at the buy (EntryF). Each rule below marks a kind of
+ * entry to skip. A rule goes live only when the paper trips it would have skipped lost money, older 70% and newest 30%
+ * alike, at least RUG_MIN_N of them in each, and rugged at 1.5x the rate of the trips it keeps. Until the study has its
+ * own verdict on it, the 45 to 90 second window is skipped live (19 Oct: 6 of 6 live buys at 60 to 70 seconds rugged
+ * within 20 seconds). Paper keeps trading everything, so the study keeps measuring every rule.
+ */
+export const RUG_SECS = 90;
+export const RUG_MIN_N = 20;
+export const RUG_RULES: { id: string; label: string; hit: (f: EntryF) => boolean }[] = [
+  { id: "age45_90", label: "45 to 90 seconds after launch", hit: (f) => f.age != null && f.age >= 45 && f.age < 90 },
+  { id: "age_lt30", label: "under 30 seconds after launch", hit: (f) => f.age != null && f.age < 30 },
+  { id: "dev_lt03", label: "dev bought under 0.3 SOL", hit: (f) => f.dev != null && f.dev < 0.3 },
+  { id: "dev_ge3", label: "dev bought 3+ SOL", hit: (f) => f.dev != null && f.dev >= 3 },
+  { id: "copy", label: "copies an earlier coin's name or ticker", hit: (f) => f.og != null && f.og > 1 },
+  { id: "few_buyers", label: "under 5 buyers in the last minute", hit: (f) => f.u60 != null && f.u60 < 5 },
+  { id: "hot_flow", label: "85%+ of the last minute's SOL was buying", hit: (f) => f.bs60 != null && f.bs60 >= 0.85 },
+  { id: "dev_sold", label: "the dev already sold", hit: (f) => f.ds === true },
+];
+const SAFE_DEFAULT = new Set(["age45_90"]);
+let RUG_AT = 0;
+let RUG_LIVE = new Set<string>(SAFE_DEFAULT);
+type RugSide = { n: number; rugs: number; pnl: number; won: number };
+export type RugRow = { id: string; label: string; train: RugSide; test: RugSide; keptRug: number; skipRug: number; verdict: "live" | "off" | "safety" | "waiting" };
+export function rugStudy(trips: LTrip[], now = Date.now()) {
+  const xs = trips.filter((t) => t.ef).sort((a, z) => a.closedAt - z.closedAt);
+  const cut = Math.floor(xs.length * 0.7);
+  const side = (a: LTrip[]): RugSide => ({ n: a.length, rugs: a.filter((t) => t.rug).length, pnl: Math.round(a.reduce((s, t) => s + t.pnl, 0) * 1e4) / 1e4, won: Math.round(a.filter((t) => t.pnl > 0).reduce((s, t) => s + t.pnl, 0) * 1e4) / 1e4 });
+  const rate = (a: LTrip[]) => (a.length ? a.filter((t) => t.rug).length / a.length : 0);
+  const live = new Set<string>();
+  const rows: RugRow[] = RUG_RULES.map((r) => {
+    const tr = xs.slice(0, cut), te = xs.slice(cut);
+    const trS = tr.filter((t) => r.hit(t.ef!)), teS = te.filter((t) => r.hit(t.ef!));
+    const teK = te.filter((t) => !r.hit(t.ef!));
+    const enough = trS.length >= RUG_MIN_N && teS.length >= RUG_MIN_N;
+    // most paper trips lose, so "the skipped trips lost" alone would block anything: they must also do worse per trip
+    // than the trips kept, on both halves
+    const avg = (a: LTrip[]) => (a.length ? a.reduce((x, t) => x + t.pnl, 0) / a.length : 0);
+    const trK = tr.filter((t) => !r.hit(t.ef!));
+    const good = enough && side(trS).pnl < 0 && side(teS).pnl < 0 && avg(trS) < avg(trK) && avg(teS) < avg(teK) && rate(teS) >= 1.5 * rate(teK);
+    const verdict: RugRow["verdict"] = good ? "live" : enough ? "off" : SAFE_DEFAULT.has(r.id) ? "safety" : "waiting";
+    if (verdict === "live" || verdict === "safety") live.add(r.id);
+    return { id: r.id, label: r.label, train: side(trS), test: side(teS), keptRug: Math.round(rate(teK) * 1000) / 10, skipRug: Math.round(rate(teS) * 1000) / 10, verdict };
+  });
+  RUG_LIVE = live;
+  return { at: now, trips: xs.length, rugs: xs.filter((t) => t.rug).length, live: [...live], rows };
+}
+/** The live rule a coin's entry state breaks, or null (an unknown state never blocks). */
+export function rugBlock(ef: EntryF | null | undefined): string | null {
+  if (!ef) return null;
+  for (const r of RUG_RULES) if (RUG_LIVE.has(r.id) && r.hit(ef)) return r.label;
+  return null;
+}
+export const _setRugLive = (ids: string[]) => (RUG_LIVE = new Set(ids));
 export const _resetOpenMarks = () => ((OPEN_AT = 0), (OPEN_BY = new Map()));
 export const RUNNER_MIN = 60;
 export const RUNNER_MAX_TRIPS = 120;
@@ -875,6 +943,11 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
     if (fresh) await send(`⚠️ <b>GRID LIVE: passed on paper, but real fills are too far off</b>\n${b.label.replace(/[<>&]/g, " ")}\nJupiter vs paper: buy ${b.fills.buyGap}% (${b.fills.buyN}), sell ${b.fills.sellGap}% (${b.fills.sellN}).\nThe desk does not follow it.`).catch(() => null);
   }
   if (FILLS.size) await redis().hset(FILLS_KEY, Object.fromEntries(FILLS)).catch(() => null);
+  if (now - RUG_AT > 10 * 60_000) {
+    RUG_AT = now;
+    const rv = rugStudy(TRIPS, now);
+    redis().set("rn:rug:view", rv, { ex: 2 * 86400 }).catch(() => null);
+  }
   const lead = gridLeader();
   const leadChanged = (lead?.key ?? null) !== LEADER;
   LEADER = lead?.key ?? null;
@@ -1458,6 +1531,8 @@ export function gridLiveReset() {
   SPAWNED = [];
   LEADER = null;
   EVER.clear();
+  RUG_LIVE = new Set(SAFE_DEFAULT);
+  RUG_AT = 0;
   FLOWX = [];
   FLOW_PICKS = { picks: [FLOW_SEED], learned: false, at: 0 };
   loaded = true;
