@@ -820,6 +820,20 @@ export function openMarks(key: string, now = Date.now()): LTrip[] {
   }
   return OPEN_BY.get(key) || [];
 }
+/**
+ * v0.1.124b: merge trips from the archive into the record (a restart reloads only what the Redis list still held).
+ * Same trip = same book, coin and close time (to the second). Returns how many were added.
+ */
+export function gridLiveBackfill(rows: LTrip[]): number {
+  if (!rows?.length) return 0;
+  const sec = (t: number) => Math.round(t / 1000);
+  const have = new Set(TRIPS.map((t) => `${t.k}|${t.mint}|${sec(t.closedAt)}`));
+  const add = rows.filter((t) => t && t.k && !have.has(`${t.k}|${t.mint}|${sec(t.closedAt)}`));
+  if (!add.length) return 0;
+  TRIPS = keepTrips([...TRIPS, ...add].sort((a, z) => z.closedAt - a.closedAt));
+  OPEN_AT = 0;
+  return add.length;
+}
 export const _resetOpenMarks = () => ((OPEN_AT = 0), (OPEN_BY = new Map()));
 export const RUNNER_MIN = 60;
 export const RUNNER_MAX_TRIPS = 120;

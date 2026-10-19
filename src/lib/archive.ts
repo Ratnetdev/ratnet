@@ -325,6 +325,23 @@ export function archiveView() {
 
 /** REPLAY over the archive (v0.1.59): every King call with its curve path, every entry rule x exit setting. */
 /** v0.1.71: GRID, the big strategy search (lib/grid.ts). */
+/**
+ * v0.1.124b: GRID LIVE's paper trips from the archive (book "grid:<key>"), the newest per book first, at most `per`
+ * per book. The worker merges them in at boot, so a restart never shortens a strategy's record again (19 Oct: the
+ * shared Redis list was trimmed by the parked EARLY books and the 2x runner came back with 63 of its 121 trips).
+ */
+export async function archiveGridTrips(days = 14, per = 400) {
+  if (!ready) return null;
+  const r = await pool.query(
+    `select book, mint, symbol, opened_at, closed_at, pnl_sol, pnl_pct, exit_reason from (
+       select *, row_number() over (partition by book order by closed_at desc) as rn from trips
+       where book like 'grid:%' and closed_at > now() - ($1 || ' days')::interval) x
+     where rn <= $2`,
+    [String(days), per],
+  );
+  return (r.rows || []).map((x: any) => ({ k: String(x.book).slice(5), mint: x.mint, symbol: x.symbol, openedAt: new Date(x.opened_at).getTime(), closedAt: new Date(x.closed_at).getTime(), pnl: Number(x.pnl_sol) || 0, pnlPct: Number(x.pnl_pct) || 0, why: String(x.exit_reason || "") }));
+}
+
 export async function archiveGrid(days = 14, opts: { nulls?: number; nullHist?: number[] } = {}) {
   if (!ready) return null;
   const { loadGrid, runGrid } = await import("./grid");

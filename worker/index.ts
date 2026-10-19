@@ -22,7 +22,7 @@ import { loopLag, startLoopLag } from "../src/lib/looplag";
 import { tapeStats } from "../src/lib/tape";
 import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
-import { archiveBoard, archiveEarlyGrid, archiveFlush, archiveGrid, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
+import { archiveBoard, archiveEarlyGrid, archiveFlush, archiveGrid, archiveGridTrips, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
 import { priceOf } from "../src/lib/desk";
 import { stallAlerts } from "../src/lib/alive";
@@ -48,7 +48,7 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick, GAP_LIMIT } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick, GAP_LIMIT, gridLiveBackfill } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { trendAt, trendLoad, trendStats, trendTick } from "../src/lib/trend";
 import { tickCreate, tickCurve, tickLoad, tickRun, tickSave, tickStats, tickView } from "../src/lib/tick";
@@ -1198,6 +1198,14 @@ async function main() {
       return;
     }
     console.log("archive: connected, tables ready");
+    // v0.1.124b: GRID LIVE's records reloaded from the archive (every paper trip since v0.1.123 is there)
+    archiveGridTrips(14, 400)
+      .then((rows) => {
+        const n = rows ? gridLiveBackfill(rows as any) : 0;
+        console.log(`grid live: ${n} trips restored from the archive (${rows?.length ?? 0} read)`);
+        redis().set("rn:gridlive:backfill", { at: Date.now(), read: rows?.length ?? 0, added: n }, { ex: 7 * 86400 }).catch(() => null);
+      })
+      .catch((e) => console.log("grid live backfill error", e?.message || e));
     // v0.1.104 ATTENTION: DexScreener's paid profiles and boosts, live every 10s; order histories for calls (30 a
     // minute, the calls of the last 14 days queued once at boot behind the new ones)
     let dxBusy = false;
