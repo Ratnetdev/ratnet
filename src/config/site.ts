@@ -99,6 +99,9 @@ export const DEFAULT_SETTINGS = {
     needNano: true, // v0.1.43: King buys need nano BOND too (until nano is ready, King calls go to the ghost desk)
     minFlow: 0.55, // share of 1h trades that are buys
     sl: -35, // % loss before initials: sell all
+    // v0.1.127 TP LADDER (lib/ladder.ts): a live GRID follow sells in these steps, "multiple:% of the position". Under 100%
+    // in total leaves a bag on the strategy's trail. "off" = the strategy's own first target (70% at 2x) again
+    tpLadder: "1.5:40,2:30,3:20,5:10",
     timeStop: 45, // minutes without taking initials: sell all
     // exits v0.1.4 (research: take initials at 2x, keep a moonbag, widen the trail as it runs, exit on insider dumps)
     initialsAt: 100, // % gain: sell initialsFrac to get the cost back

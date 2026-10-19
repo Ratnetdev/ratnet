@@ -12,7 +12,7 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
-  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge, ge60, ge180, ge300, tv, tk, rug] = await Promise.all([
+  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge, ge60, ge180, ge300, tv, tk, rug, lad] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     r.get<any>("rn:rpc").catch(() => null),
@@ -28,6 +28,7 @@ export async function reviewView(now = Date.now()) {
     r.get<any>("rn:trend:view").catch(() => null),
     r.get<any>("rn:tick:view").catch(() => null),
     r.get<any>("rn:rug:view").catch(() => null),
+    r.get<any>("rn:ladder:view").catch(() => null),
   ]);
   // v0.1.107: the media read on WIRE's latest posts (posts from before this build carry none)
   const xs = ((xposts || []) as any[]).filter((t) => t && t.md !== undefined);
@@ -87,6 +88,8 @@ export async function reviewView(now = Date.now()) {
     },
     // v0.1.126 RUG GUARD: the entry rules the desk applies live, and each rule's record on the paper trips
     rug: rug ? { trips: rug.trips, rugs: rug.rugs, live: rug.live, rows: (rug.rows || []).map((x: any) => ({ id: x.id, verdict: x.verdict, skipN: x.test?.n ?? 0, skipPnl: x.test?.pnl ?? 0, skipRug: x.skipRug, keptRug: x.keptRug })) } : null,
+    // v0.1.127 TP LADDER: each take-profit ladder run as a shadow on every paper trip (gross % a trip, before costs)
+    ladder: lad ? { at: lad.at, desk: lad.desk, lead: lad.lead, all: lad.all, low: lad.low, rest: lad.rest, leader: lad.leader } : null,
     // v0.1.120 TICK MODEL
     tick: tk ? { models: (tk.models || []).map((m: any) => ({ h: m.h, n: m.n, ready: m.ready, ic: m.ic, act: m.act, top: (m.top || []).slice(0, 4) })), warm: tk.warm, coins: tk.stats?.coins ?? 0 } : null,
     // v0.1.119 TREND: TikTok and Instagram
@@ -132,6 +135,8 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `<b>Flow exit learner</b>: ${v.flowLearn.learned ? "learned" : "starting suggestion"}: ${v.flowLearn.picks.map((p) => p.text).join("; ")}${v.flowLearn.top[0]?.n ? `\n• best on record: ${variantText(v.flowLearn.top[0].v)}, ${v.flowLearn.top[0].uplift >= 0 ? "+" : ""}${v.flowLearn.top[0].uplift} pts a trip over ${v.flowLearn.top[0].n} trips (fired ${v.flowLearn.top[0].fired})` : ""}`,
     "",
     v.rug ? `<b>RUG GUARD</b> (${v.rug.trips} paper trips with an entry state, ${v.rug.rugs} rugged within 90s); live: ${v.rug.live.join(", ") || "none"}\n${v.rug.rows.map((x: any) => `• ${x.id}: ${x.verdict}, newest ${x.skipN} it would skip ${x.skipPnl >= 0 ? "+" : ""}${x.skipPnl} SOL, rugged ${x.skipRug}% vs ${x.keptRug}% of the rest`).join("\n")}` : "<b>RUG GUARD</b>: no study yet",
+    "",
+    v.ladder ? `<b>TP LADDER</b> (live: ${esc(v.ladder.desk)}; each ladder run on every paper trip, gross % a trip, older 70% / newest 30%)\n${([["all", v.ladder.all], ["under 5 SOL at the buy", v.ladder.low], ["5 SOL+", v.ladder.rest], ["the strategy the desk follows", v.ladder.leader]] as [string, any][]).filter(([, g]) => g?.n).map(([l, g]) => `• ${l} (${g.n} trips): ${g.rows.map((r: any) => `${r.id} ${r.all ?? "-"}% (${r.old ?? "-"}/${r.new ?? "-"})`).join(", ")}${g.best ? `; beats the strategy's own exit on both halves: ${g.best}` : ""}`).join("\n") || "• no paper trip has closed with the ladders yet"}` : "<b>TP LADDER</b>: no study yet",
     "",
     v.tick ? `<b>TICK MODEL</b> (every live coin, every 20s; ${v.tick.coins} coins last pass):\n${v.tick.models.map((m: any) => `• ${m.h} min: ${m.n} graded${m.ready ? "" : ` (warming up to ${v.tick?.warm})`}, out-of-sample correlation ${m.ic ?? "-"}${m.act?.n ? `; acting on it after costs: ${m.act.avgPct}% a trade over ${m.act.n} (${m.act.winRate}% won)` : ""}; top: ${m.top.map((t: any) => `${t.f} ${t.w > 0 ? "+" : ""}${t.w}`).join(", ")}`).join("\n")}` : "<b>TICK MODEL</b>: not started yet",
     "",

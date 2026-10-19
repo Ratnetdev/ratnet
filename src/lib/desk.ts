@@ -55,6 +55,7 @@ import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
 import { HOLD_MS, firstSell, holdMax, isRunner, type GExit } from "./grid";
+import { ladderHit, ladderText, parseLadder, setDeskLadder, type Step } from "./ladder";
 import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE" | "REGIME";
@@ -117,6 +118,8 @@ export type Pos = {
   gk?: string; // v0.1.75: the GRID LIVE strategy (key) the desk followed into this trade
   gx?: GExit; // v0.1.75: that strategy's exits (exactly as GRID tested them; lib/grid.ts)
   gf?: { v: string; f0: { kx: number | null; e20: number | null } | null; done?: boolean }; // v0.1.108: its flow exit
+  ld?: Step[]; // v0.1.127 TP LADDER: the take-profit steps this position sells in (set at the buy)
+  li?: number; // the next step
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
   watch?: Watch[]; // insider token accounts and their balance at entry
@@ -1746,6 +1749,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
 
       const caseAdds: Case[] = [];
       // the exit rules (RISK), shared by the real desk and the ghost desk so both trade exactly alike
+      setDeskLadder(parseLadder(cfg.tpLadder)); // v0.1.127: GRID LIVE runs the desk's ladder as a shadow on paper
       const decide = (p: Pos, q: Px, gt = "") => {
         // v0.1.75: a trade following a GRID LIVE strategy runs that strategy's exits, exactly as GRID tested them
         if (p.gx && !closeAll) {
@@ -1767,7 +1771,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             }
           }
           if (g.frac > 0 && q.grad) p.gradSeen = true;
-          return { sellFrac: g.frac, reason: g.why, tunable: false, lv: p.msHi ?? -1 };
+          return { sellFrac: g.frac, reason: g.why, tunable: false, lv: p.msHi ?? -1, li: g.li };
         }
         p.noPxSince = undefined;
         p.lastPx = q.px;
@@ -1927,10 +1931,11 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
             } else await savePos(K.deskPos, p);
             continue;
           }
-          const { sellFrac, reason, tunable, lv } = decide(p, q);
+          const { sellFrac, reason, tunable, lv, li } = decide(p, q) as ReturnType<typeof decide> & { li?: number };
           if (sellFrac > 0) {
             const peakHeld = p.peakPx;
             const ok = await sell(b, state, p, sellFrac, q.px, reason, cfg.slippageBps, kp);
+            if (ok && li != null) p.li = li; // v0.1.127: a ladder step that sold
             if (ok && !p.tp1Done && sellFrac < 1) {
               p.tp1Done = true;
               p.msHi = lv; // the ladder only acts on milestones reached after initials
@@ -2834,13 +2839,21 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
  * off the peak; a stop; out after the time limit without initials; at the migration either out ("sell") or on into the
  * pool ("hold", up to 6 hours). Pure: { frac, why } (frac 0 = hold).
  */
-export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | "openedAt" | "gradSeen">, q: { px: number; grad: boolean }, now: number): { frac: number; why: string } {
+export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | "openedAt" | "gradSeen"> & Partial<Pick<Pos, "ld" | "li" | "tokens" | "tokens0">>, q: { px: number; grad: boolean }, now: number): { frac: number; why: string; li?: number } {
   const x = p.gx!;
   const xr = q.px / p.entryPx;
   if (q.grad && !p.gradSeen && x.mig !== "hold") return { frac: 1, why: `GRID: migrated, sold at the migration (${xr.toFixed(2)}x)` };
   // v0.1.89: runner exits (up to `hours`, most sold at the first target, the rest rides a wide trail)
   if (now - p.openedAt >= holdMax(x)) return { frac: 1, why: `GRID: ${isRunner(x) ? `${x.hours} hours` : x.mig === "hold" ? "6 hours" : "the hour"} over, out at ${xr.toFixed(2)}x` };
-  if (!p.tp1Done && xr >= x.initials) return { frac: firstSell(x), why: `GRID: ${isRunner(x) ? `${Math.round(firstSell(x) * 100)}%` : "half"} at ${xr.toFixed(2)}x (target ${x.initials}x)` };
+  // v0.1.127 TP LADDER: fixed take-profit steps instead of the strategy's first target
+  if (p.ld?.length) {
+    const left = p.tokens != null && p.tokens0 ? p.tokens / p.tokens0 : 1;
+    const h = ladderHit(p.ld, p.li ?? 0, xr, left);
+    if (h) {
+      const lv = p.ld.slice(p.li ?? 0, h.to).map((s) => `${s[0]}x`).join("+");
+      return { frac: h.frac, why: `GRID: take profit ${Math.round(h.share * 100)}% at ${xr.toFixed(2)}x (step ${lv})`, li: h.to };
+    }
+  } else if (!p.tp1Done && xr >= x.initials) return { frac: firstSell(x), why: `GRID: ${isRunner(x) ? `${Math.round(firstSell(x) * 100)}%` : "half"} at ${xr.toFixed(2)}x (target ${x.initials}x)` };
   if (xr <= 1 - x.stop) return { frac: 1, why: `GRID: stop ${((xr - 1) * 100).toFixed(0)}%` };
   if (p.tp1Done && q.px <= p.peakPx * (1 - x.trail)) return { frac: 1, why: `GRID: trail ${Math.round(x.trail * 100)}% off the peak, out at ${xr.toFixed(2)}x` };
   if (now - p.openedAt >= x.timeMin * 60_000 && (!p.tp1Done || (!isRunner(x) && xr < 1.1))) return { frac: 1, why: `GRID: ${x.timeMin} minutes without initials, out at ${xr.toFixed(2)}x` };
@@ -2932,9 +2945,12 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     if (!pos) return;
     pos.gk = o.key;
     pos.gx = o.exit;
+    // v0.1.127 TP LADDER: the steps are fixed at the buy (a settings change applies to the next trades)
+    const ld = parseLadder(cfg.tpLadder);
+    if (ld) (pos.ld = ld), (pos.li = 0);
     if (o.fv) pos.gf = { v: o.fv, f0: deskFlow(o.mint) };
     await savePos(K.deskPos, pos, true);
-    log(b, "REGIME", `$${o.symbol}: following GRID LIVE's "${o.label}" (${size.toFixed(3)} SOL), its exits run the position`, "ok", coin);
+    log(b, "REGIME", `$${o.symbol}: following GRID LIVE's "${o.label}" (${size.toFixed(3)} SOL), its exits run the position${pos.ld ? `, take profit ${ladderText(pos.ld)}` : ""}`, "ok", coin);
   } finally {
     ENTERING.delete(o.mint);
   }

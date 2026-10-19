@@ -1,4 +1,5 @@
 import { BOUNDS } from "@/lib/deskbounds";
+import { parseLadder } from "@/lib/ladder";
 import { isAdmin } from "@/lib/admin";
 import { DEFAULT_SETTINGS } from "@/config/site";
 import { fail, json } from "@/lib/http";
@@ -96,7 +97,12 @@ function cleanDesk(raw: Record<string, unknown>): Record<string, unknown> | stri
   for (const [k, v] of Object.entries(raw)) {
     if (!(k in def)) continue; // unknown keys are dropped
     const d0 = def[k];
-    if (ENUMS[k]) {
+    if (k === "tpLadder") {
+      // v0.1.127: "1.5:40,2:30,3:20,5:10" or "off"
+      const t = String(v ?? "").trim();
+      if (t.toLowerCase() !== "off" && !parseLadder(t)) return "tpLadder: steps like 1.5:40,2:30,3:20,5:10 (multiple:% of the position, up to 8 steps, 100% at most), or off";
+      out[k] = t;
+    } else if (ENUMS[k]) {
       if (!ENUMS[k].includes(String(v))) return `Bad value for ${k}`;
       out[k] = String(v);
     } else if (typeof d0 === "boolean") out[k] = v === true || v === "true";

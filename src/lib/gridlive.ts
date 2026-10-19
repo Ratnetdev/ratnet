@@ -13,6 +13,7 @@ import { paperPriority } from "./livecost";
 import { HORIZONS, tickReady } from "./tick";
 import { redis } from "./redis";
 import { archiveTrip } from "./archive";
+import { ladderStudy, newShadows, shadowClose, shadowTick, type Shadow } from "./ladder";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
 import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, profitModel, winModel, withScoreModels, asModels, type Models, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
@@ -100,8 +101,8 @@ export type LBook = {
   fxOf?: string;
 };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null; mult?: number };
-export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean; ef?: EntryF | null };
-export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string; ef?: EntryF | null; rug?: boolean };
+export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean; ef?: EntryF | null; sh?: Record<string, Shadow> };
+export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string; ef?: EntryF | null; rug?: boolean; sh?: Record<string, number>; mc0?: number };
 
 let BOOKS: LBook[] = [];
 const PEND = new Map<string, Pend>(); // key|mint
@@ -578,6 +579,8 @@ function close(k: string, pos: LPos, now: number, why: string) {
   const t: LTrip = { k: pos.key, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / pos.cost) * 1000) / 10, why };
   // v0.1.126: a rug = stopped out at -30% or worse within 90 seconds of the buy
   if (pos.ef) (t.ef = pos.ef), (t.rug = now - pos.openedAt <= RUG_SECS * 1000 && t.pnlPct <= -30);
+  // v0.1.127: what each take-profit ladder would have made on this trip, and the market cap (SOL) at the buy
+  if (pos.sh && pos.fillPx > 0) (t.sh = shadowClose(pos.sh, pos.lastPx / pos.fillPx)), (t.mc0 = Math.round(pos.fillPx * 1e9 * 1000) / 1000);
   if (pos.f0 && pos.f0.kx != null) {
     // (a coin whose flow is unknown, not seen from its create, is left out of the record)
     // v0.1.105: the same trip, had it sold when the flow turned. v0.1.108: every flow-watched trip is kept (also those
@@ -588,7 +591,7 @@ function close(k: string, pos: LPos, now: number, why: string) {
   }
   TRIPS = keepTrips([t, ...TRIPS]);
   // v0.1.123: every paper trip also goes to Postgres, so a record can never be lost again (book "grid:<key>")
-  archiveTrip({ book: `grid:${pos.key}` as any, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, costSol: pos.cost, backSol: pos.back, how: pos.key.split(":")[0].split("|")[0].slice(0, 40), reason: why, data: pos.ef ? { ef: pos.ef, rug: !!t.rug } : undefined });
+  archiveTrip({ book: `grid:${pos.key}` as any, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, costSol: pos.cost, backSol: pos.back, how: pos.key.split(":")[0].split("|")[0].slice(0, 40), reason: why, data: pos.ef || t.sh ? { ...(pos.ef ? { ef: pos.ef, rug: !!t.rug } : {}), ...(t.sh ? { sh: t.sh, mc0: t.mc0 } : {}) } : undefined });
   const r = redis();
   r.hdel(POS_KEY, k).catch(() => null);
   r.lpush(LIVE_TRIPS, t).then(() => r.ltrim(LIVE_TRIPS, 0, TRIPS_MAX - 1)).catch(() => null);
@@ -654,6 +657,9 @@ function stepPos(k: string, pos: LPos, now: number) {
   }
   if (px > pos.peak) pos.peak = px;
   const xr = px / pos.fillPx;
+  // v0.1.127: every take-profit ladder runs as a shadow on the same ticks
+  if (!pos.sh) pos.sh = newShadows();
+  shadowTick(pos.sh, x, firstSell(x), xr, pos.peak / pos.fillPx);
   if (!pos.initials && xr >= x.initials) {
     sell(pos, firstSell(x), px, last.real);
     pos.initials = true;
@@ -947,6 +953,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
     RUG_AT = now;
     const rv = rugStudy(TRIPS, now);
     redis().set("rn:rug:view", rv, { ex: 2 * 86400 }).catch(() => null);
+    redis().set("rn:ladder:view", ladderStudy(TRIPS, LEADER, now), { ex: 2 * 86400 }).catch(() => null);
   }
   const lead = gridLeader();
   const leadChanged = (lead?.key ?? null) !== LEADER;
