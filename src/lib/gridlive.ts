@@ -44,7 +44,20 @@ let FLOW_FX: ((mint: string) => { kx: number | null; e20: number | null } | null
 export const setFlowFeatures = (f: typeof FLOW_FX) => (FLOW_FX = f);
 // v0.1.126 RUG GUARD: what a coin looked like at the moment a paper position opened (age since launch in seconds, dev
 // buy in SOL, buyers and buy share of the last minute, whale buys, dev sold, origin rank: 1 = the original name)
-export type EntryF = { age: number | null; dev: number | null; u60: number | null; bs60: number | null; wh: number | null; ds: boolean | null; og: number | null };
+export type EntryF = {
+  age: number | null;
+  dev: number | null;
+  u60: number | null;
+  bs60: number | null;
+  wh: number | null;
+  ds: boolean | null;
+  og: number | null;
+  // v0.1.128 (lib/smartbuy.ts): FOMO crowd, earners and proven wallets in the last minute, crews counted once
+  fc?: number | null;
+  ea?: number | null;
+  pwi?: number | null;
+  pwr?: number | null;
+};
 let ENTRY_FX: ((mint: string, now: number) => EntryF | null) | null = null;
 export const setEntryFeatures = (f: typeof ENTRY_FX) => (ENTRY_FX = f);
 const entryNow = (mint: string, now: number) => {
@@ -863,7 +876,9 @@ export function gridLiveBackfill(rows: LTrip[]): number {
  */
 export const RUG_SECS = 90;
 export const RUG_MIN_N = 20;
-export const RUG_RULES: { id: string; label: string; hit: (f: EntryF) => boolean }[] = [
+// v0.1.128: `sig` rules are about who is buying, not rugs: they need the money tests only (not the 1.5x rug rate), and
+// only trips whose state has that field count for them
+export const RUG_RULES: { id: string; label: string; hit: (f: EntryF) => boolean; sig?: true; known?: (f: EntryF) => boolean }[] = [
   { id: "age45_90", label: "45 to 90 seconds after launch", hit: (f) => f.age != null && f.age >= 45 && f.age < 90 },
   { id: "age_lt30", label: "under 30 seconds after launch", hit: (f) => f.age != null && f.age < 30 },
   { id: "dev_lt03", label: "dev bought under 0.3 SOL", hit: (f) => f.dev != null && f.dev < 0.3 },
@@ -872,20 +887,27 @@ export const RUG_RULES: { id: string; label: string; hit: (f: EntryF) => boolean
   { id: "few_buyers", label: "under 5 buyers in the last minute", hit: (f) => f.u60 != null && f.u60 < 5 },
   { id: "hot_flow", label: "85%+ of the last minute's SOL was buying", hit: (f) => f.bs60 != null && f.bs60 >= 0.85 },
   { id: "dev_sold", label: "the dev already sold", hit: (f) => f.ds === true },
+  { id: "no_fomo", label: "no FOMO trader bought in the last minute", hit: (f) => f.fc === 0, sig: true, known: (f) => f.fc != null },
+  { id: "fomo_late", label: "5+ FOMO traders already bought in the last minute", hit: (f) => (f.fc ?? 0) >= 5, sig: true, known: (f) => f.fc != null },
+  { id: "no_earner", label: "no earner (a wallet with a profitable record) bought in the last minute", hit: (f) => f.ea === 0, sig: true, known: (f) => f.ea != null },
+  { id: "one_crew", label: "2+ proven wallets bought, but they are one crew", hit: (f) => (f.pwr ?? 0) >= 2 && (f.pwi ?? 0) <= 1, sig: true, known: (f) => f.pwi != null },
 ];
 const SAFE_DEFAULT = new Set(["age45_90"]);
 let RUG_AT = 0;
 let RUG_LIVE = new Set<string>(SAFE_DEFAULT);
 type RugSide = { n: number; rugs: number; pnl: number; won: number };
 export type RugRow = { id: string; label: string; train: RugSide; test: RugSide; keptRug: number; skipRug: number; verdict: "live" | "off" | "safety" | "waiting" };
+// v0.1.128: a rule that would skip most trips is not a guard, it is the whole strategy: never live
+export const SKIP_MAX = 0.6;
 export function rugStudy(trips: LTrip[], now = Date.now()) {
   const xs = trips.filter((t) => t.ef).sort((a, z) => a.closedAt - z.closedAt);
-  const cut = Math.floor(xs.length * 0.7);
   const side = (a: LTrip[]): RugSide => ({ n: a.length, rugs: a.filter((t) => t.rug).length, pnl: Math.round(a.reduce((s, t) => s + t.pnl, 0) * 1e4) / 1e4, won: Math.round(a.filter((t) => t.pnl > 0).reduce((s, t) => s + t.pnl, 0) * 1e4) / 1e4 });
   const rate = (a: LTrip[]) => (a.length ? a.filter((t) => t.rug).length / a.length : 0);
   const live = new Set<string>();
   const rows: RugRow[] = RUG_RULES.map((r) => {
-    const tr = xs.slice(0, cut), te = xs.slice(cut);
+    const ys = r.known ? xs.filter((t) => r.known!(t.ef!)) : xs;
+    const cut = Math.floor(ys.length * 0.7);
+    const tr = ys.slice(0, cut), te = ys.slice(cut);
     const trS = tr.filter((t) => r.hit(t.ef!)), teS = te.filter((t) => r.hit(t.ef!));
     const teK = te.filter((t) => !r.hit(t.ef!));
     const enough = trS.length >= RUG_MIN_N && teS.length >= RUG_MIN_N;
@@ -893,7 +915,7 @@ export function rugStudy(trips: LTrip[], now = Date.now()) {
     // than the trips kept, on both halves
     const avg = (a: LTrip[]) => (a.length ? a.reduce((x, t) => x + t.pnl, 0) / a.length : 0);
     const trK = tr.filter((t) => !r.hit(t.ef!));
-    const good = enough && side(trS).pnl < 0 && side(teS).pnl < 0 && avg(trS) < avg(trK) && avg(teS) < avg(teK) && rate(teS) >= 1.5 * rate(teK);
+    const good = enough && side(trS).pnl < 0 && side(teS).pnl < 0 && avg(trS) < avg(trK) && avg(teS) < avg(teK) && (!!r.sig || rate(teS) >= 1.5 * rate(teK)) && teS.length <= SKIP_MAX * te.length;
     const verdict: RugRow["verdict"] = good ? "live" : enough ? "off" : SAFE_DEFAULT.has(r.id) ? "safety" : "waiting";
     if (verdict === "live" || verdict === "safety") live.add(r.id);
     return { id: r.id, label: r.label, train: side(trS), test: side(teS), keptRug: Math.round(rate(teK) * 1000) / 10, skipRug: Math.round(rate(teS) * 1000) / 10, verdict };

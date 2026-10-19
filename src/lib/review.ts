@@ -12,7 +12,7 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
-  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge, ge60, ge180, ge300, tv, tk, rug, lad] = await Promise.all([
+  const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge, ge60, ge180, ge300, tv, tk, rug, lad, sm] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     r.get<any>("rn:rpc").catch(() => null),
@@ -29,6 +29,7 @@ export async function reviewView(now = Date.now()) {
     r.get<any>("rn:tick:view").catch(() => null),
     r.get<any>("rn:rug:view").catch(() => null),
     r.get<any>("rn:ladder:view").catch(() => null),
+    r.get<any>("rn:smart:view").catch(() => null),
   ]);
   // v0.1.107: the media read on WIRE's latest posts (posts from before this build carry none)
   const xs = ((xposts || []) as any[]).filter((t) => t && t.md !== undefined);
@@ -90,6 +91,8 @@ export async function reviewView(now = Date.now()) {
     rug: rug ? { trips: rug.trips, rugs: rug.rugs, live: rug.live, rows: (rug.rows || []).map((x: any) => ({ id: x.id, verdict: x.verdict, skipN: x.test?.n ?? 0, skipPnl: x.test?.pnl ?? 0, skipRug: x.skipRug, keptRug: x.keptRug })) } : null,
     // v0.1.127 TP LADDER: each take-profit ladder run as a shadow on every paper trip (gross % a trip, before costs)
     ladder: lad ? { at: lad.at, desk: lad.desk, lead: lad.lead, all: lad.all, low: lad.low, rest: lad.rest, leader: lad.leader } : null,
+    // v0.1.128 FOMO TAP, EARNERS, CREWS
+    smart: sm ? { at: sm.at, fomo: { known: sm.fomo?.known ?? 0, wallets: sm.fomo?.wallets ?? 0, print: sm.fomo?.print ?? [], printBy: sm.fomo?.printBy ?? null, knownTx: sm.fomo?.knownTx ?? 0, fomoTrades: sm.fomo?.fomoTrades ?? 0, learned: sm.fomo?.learned ?? 0, candidates: (sm.fomo?.candidates || []).slice(0, 3) }, hot: (sm.hot || []).slice(0, 5), earners: { wallets: sm.earners?.wallets ?? 0, recorded: sm.earners?.recorded ?? 0, earners: sm.earners?.earners ?? 0, trips: sm.earners?.trips ?? 0, top: (sm.earners?.top || []).slice(0, 3) }, crews: sm.crews ?? null, buys: sm.buys ?? null } : null,
     // v0.1.120 TICK MODEL
     tick: tk ? { models: (tk.models || []).map((m: any) => ({ h: m.h, n: m.n, ready: m.ready, ic: m.ic, act: m.act, top: (m.top || []).slice(0, 4) })), warm: tk.warm, coins: tk.stats?.coins ?? 0 } : null,
     // v0.1.119 TREND: TikTok and Instagram
@@ -135,6 +138,8 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `<b>Flow exit learner</b>: ${v.flowLearn.learned ? "learned" : "starting suggestion"}: ${v.flowLearn.picks.map((p) => p.text).join("; ")}${v.flowLearn.top[0]?.n ? `\n• best on record: ${variantText(v.flowLearn.top[0].v)}, ${v.flowLearn.top[0].uplift >= 0 ? "+" : ""}${v.flowLearn.top[0].uplift} pts a trip over ${v.flowLearn.top[0].n} trips (fired ${v.flowLearn.top[0].fired})` : ""}`,
     "",
     v.rug ? `<b>RUG GUARD</b> (${v.rug.trips} paper trips with an entry state, ${v.rug.rugs} rugged within 90s); live: ${v.rug.live.join(", ") || "none"}\n${v.rug.rows.map((x: any) => `• ${x.id}: ${x.verdict}, newest ${x.skipN} it would skip ${x.skipPnl >= 0 ? "+" : ""}${x.skipPnl} SOL, rugged ${x.skipRug}% vs ${x.keptRug}% of the rest`).join("\n")}` : "<b>RUG GUARD</b>: no study yet",
+    "",
+    v.smart ? `<b>WHO IS BUYING</b> (FOMO tap, earners, crews)\n• FOMO: ${v.smart.fomo.wallets} wallets (${v.smart.fomo.known} from FOMO's leaderboard, ${v.smart.fomo.learned} learned); ${v.smart.fomo.print.length ? `fingerprint ${v.smart.fomo.print.map((a: string) => a.slice(0, 6)).join(", ")} (${v.smart.fomo.printBy}), ${v.smart.fomo.fomoTrades} FOMO trades read` : `fingerprint not found yet (${v.smart.fomo.knownTx} trades by known FOMO wallets seen${v.smart.fomo.candidates.length ? `; best: ${v.smart.fomo.candidates.map((c: any) => `${String(c.account).slice(0, 6)} ${c.share}% of them, ${c.wallets} wallets, ${c.base}% of all`).join("; ")}` : ""})`}\n• EARNERS: ${v.smart.earners.recorded} wallets with 3+ round trips, ${v.smart.earners.earners} earners${v.smart.earners.top.length ? `; best: ${v.smart.earners.top.map((t: any) => `${t.w} +${t.pnl} SOL on ${t.trips} (${t.winRate}% won)`).join(", ")}` : ""}\n• CREWS: ${v.smart.crews ? `${v.smart.crews.crews} crews (${v.smart.crews.wallets} wallets), each counts as one buyer` : "none yet"}` : "<b>WHO IS BUYING</b>: not started yet",
     "",
     v.ladder ? `<b>TP LADDER</b> (live: ${esc(v.ladder.desk)}; each ladder run on every paper trip, gross % a trip, older 70% / newest 30%)\n${([["all", v.ladder.all], ["under 5 SOL at the buy", v.ladder.low], ["5 SOL+", v.ladder.rest], ["the strategy the desk follows", v.ladder.leader]] as [string, any][]).filter(([, g]) => g?.n).map(([l, g]) => `• ${l} (${g.n} trips): ${g.rows.map((r: any) => `${r.id} ${r.all ?? "-"}% (${r.old ?? "-"}/${r.new ?? "-"})`).join(", ")}${g.best ? `; beats the strategy's own exit on both halves: ${g.best}` : ""}`).join("\n") || "• no paper trip has closed with the ladders yet"}` : "<b>TP LADDER</b>: no study yet",
     "",

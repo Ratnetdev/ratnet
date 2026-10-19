@@ -43,6 +43,10 @@ import { fireLive, fireStats, startFirehose } from "../src/lib/firehose";
 import { walletComplete, walletCreate, walletSweep, walletTrade, walletsLoad, walletsSave, walletsView } from "../src/lib/wallets";
 import { flowFeatures, flowSweep, kolCount, setKols, tapeCreate, tapeFeatures, tapeSize, tapeSweep, tapeTrade } from "../src/lib/tapeall";
 import { book } from "../src/lib/hound";
+import { fomoLearn, fomoLoad, fomoNew, fomoSetKnown, fomoTx, fomoView, fomoHot } from "../src/lib/fomotap";
+import { earnDump, earnLoad, earnStats, earnTrade, earnView } from "../src/lib/earners";
+import { crewEdges, crewLoad, crewView } from "../src/lib/crews";
+import { smartFeatures, smartStats, smartTrade } from "../src/lib/smartbuy";
 import { setTapeExtra, solUsdNow } from "../src/lib/digger";
 import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
@@ -992,6 +996,37 @@ async function main() {
   setInterval(() => dailyReview((t) => criticalSend(t)).catch((e) => console.log("review error", e?.message || e)), 10 * 60_000);
   // v0.1.123: live fills vs paper over the last 20 live trades of each side, alert when worse than the fill limit
   setInterval(() => liveGapAlert((t) => criticalSend(t), GAP_LIMIT * 100).catch(() => null), 5 * 60_000);
+  // v0.1.128 FOMO TAP, EARNERS, CREWS: who is buying (after CRAWLNET's Queen x FOMO). Books load at boot, save as they grow
+  {
+    const r = redis();
+    const known = async () => {
+      const b = await book().catch(() => ({}) as Record<string, any>);
+      fomoSetKnown(Object.entries(b).filter(([, x]: [string, any]) => String(x?.cls || "").startsWith("fomo")).map(([w]) => w));
+    };
+    void known();
+    setInterval(() => void known(), 30 * 60_000);
+    r.hgetall<Record<string, number>>("rn:fomo:w").then((x) => fomoLoad(x || {})).catch(() => null);
+    r.hgetall<Record<string, any>>("rn:earn:rec").then((x) => earnLoad(x || {})).catch(() => null);
+    r.get<[string, string][]>("rn:crew:edges").then((x) => crewLoad(x || [])).catch(() => null);
+    setInterval(async () => {
+      try {
+        fomoLearn();
+        const nw = fomoNew();
+        if (nw.length) for (let i = 0; i < nw.length; i += 500) await r.hset("rn:fomo:w", Object.fromEntries(nw.slice(i, i + 500).map((w) => [w, Date.now()])));
+        await r.set("rn:crew:edges", crewEdges(), { ex: 14 * 86400 });
+        await r.set("rn:smart:view", { at: Date.now(), fomo: fomoView(), hot: fomoHot(), earners: earnView(), crews: crewView(), buys: smartStats }, { ex: 86400 });
+      } catch (e: any) {
+        console.log("smart save error", e?.message || e);
+      }
+    }, 5 * 60_000);
+    // the records with 5+ round trips, every 30 minutes (they keep growing across restarts)
+    setInterval(async () => {
+      const d = earnDump(5);
+      const ks = Object.keys(d);
+      for (let i = 0; i < ks.length; i += 1000) await r.hset("rn:earn:rec", Object.fromEntries(ks.slice(i, i + 1000).map((k) => [k, d[k]]))).catch(() => null);
+      earnStats.saved = ks.length;
+    }, 30 * 60_000);
+  }
   // v0.1.81: the FIREHOSE (Shyft gRPC): every pump.fun and PumpSwap trade feeds GRID LIVE, WALLETS and TAPE ALL
   {
     const on = await startFirehose({
@@ -1023,8 +1058,11 @@ async function main() {
           INTAKE.push({ mint: c.mint, sig: c.sig, creator: c.creator, name: String(c.name || "").slice(0, 64), symbol: String(c.symbol || "").slice(0, 16), uri: String(c.uri || ""), devBuySol: Math.round((c.devSol || 0) * 100) / 100, createdAt: c.at });
         }
       },
+      tx: (keys, users) => void fomoTx(keys, users),
       trade: (t) => {
         tapeTrade(t);
+        earnTrade(t); // v0.1.128 EARNERS: every wallet's record
+        smartTrade(t); // v0.1.128: FOMO crowd, earners, crews
         originMc(t.mint, t.mcSol); // v0.1.103 ORIGIN: market caps for alpha/beta
         // v0.1.87: the live tape for the watch list (CATCH bursts, SHIELD), in PumpPortal's message shape
         const fl = t.venue === "curve" ? FLW.get(t.mint) : undefined;
@@ -1090,7 +1128,8 @@ async function main() {
       const created = originCreated(m) ?? DEV_SOL.get(m)?.at ?? null;
       const f = tapeFeatures(m, now);
       const og = originAt(m, null, now);
-      return { age: created ? Math.round((now - created) / 1000) : null, dev: DEV_SOL.get(m)?.sol ?? null, u60: f.u60 ?? null, bs60: f.bs60 ?? null, wh: f.wh ?? null, ds: f.ds ?? null, og: og?.rank ?? null };
+      const sm = smartFeatures(m, now); // v0.1.128
+      return { age: created ? Math.round((now - created) / 1000) : null, dev: DEV_SOL.get(m)?.sol ?? null, u60: f.u60 ?? null, bs60: f.bs60 ?? null, wh: f.wh ?? null, ds: f.ds ?? null, og: og?.rank ?? null, fc: sm.fc, ea: sm.ea, pwi: sm.pwi, pwr: sm.pwr };
     });
     // v0.1.110: every-launch books on the new rules know the coin's origin, DexScreener orders and flow without a call
     setAnySignals((m: string, now: number) => {

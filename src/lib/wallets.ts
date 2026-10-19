@@ -101,6 +101,8 @@ export function walletSweep(now = Date.now()) {
 }
 /** Proven wallets that bought this coin so far (any curve %). */
 export const provenBuyers = (mint: string) => MINTS.get(mint)?.proven.size ?? 0;
+/** v0.1.128: which proven wallets bought it (crews count once: lib/crews.ts) */
+export const provenSet = (mint: string): Set<string> => MINTS.get(mint)?.proven ?? new Set();
 
 /** Postgres: wallet_scores. Load the scored wallets at boot, save the changed ones every few minutes. */
 export const LOAD_MIN = 3;

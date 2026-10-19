@@ -21,6 +21,8 @@ export type FireHandlers = {
   complete?: (mint: string, at: number) => void;
   /** v0.1.87: a trade on a curve quoted in another token (ZEC, PUMP...): not a SOL launch */
   otherQuote?: (mint: string) => void;
+  /** v0.1.128 FOMO TAP: a transaction's account keys (raw, static and looked up) and the wallets that traded in it */
+  tx?: (keys: Uint8Array[], users: string[]) => void;
   /** v0.1.82: a (re)connection: anything kept from before it may have missed trades in the gap */
   connected?: () => void;
 };
@@ -156,6 +158,17 @@ export async function startFirehose(h: FireHandlers): Promise<boolean> {
             const ord = Number(u.transaction.slot || 0) * 100_000 + (Number(tx.index) || 0);
             // v0.1.85: the signature only for creates (the rats' backfill knows a launch by it); encoding every one costs CPU
             const sig = evs.some((e) => e.kind === "create") && tx.signature ? bs58.encode(tx.signature) : undefined;
+            // v0.1.128: the FOMO tap reads the accounts first, so a FOMO wallet is known by the time its trade arrives
+            if (h.tx) {
+              const users = [...new Set(evs.filter((e) => e.kind === "trade" || e.kind === "swap").map((e: any) => String(e.user || "")).filter(Boolean))];
+              if (users.length) {
+                const msg = tx.transaction?.message;
+                const keys: Uint8Array[] = [...(msg?.accountKeys || []), ...(tx.meta.loadedWritableAddresses || []), ...(tx.meta.loadedReadonlyAddresses || [])];
+                try {
+                  h.tx(keys, users);
+                } catch {}
+              }
+            }
             handleTx(evs, mints, h, sig, Date.now(), ord);
           } catch (e: any) {
             fireStats.errors++;
