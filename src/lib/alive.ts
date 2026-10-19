@@ -77,4 +77,32 @@ export async function stallAlerts() {
       await tgSend(chat, `✅ <b>${esc(p.name)}</b> is running again (down ${Math.round((Date.now() - Number(open[p.name])) / 60_000)}m)`).catch(() => null);
     }
   }
+  await errorAlerts(parts, chat, tgSend, esc);
+}
+
+/**
+ * v0.1.123: a part that runs on time but keeps reporting an error (19 Oct: J7 "Invalid token", TREND "403") alerts once
+ * when the error has lasted ERR_GRACE_MIN minutes, and once when it clears. A pass still running is not an error.
+ */
+export const ERR_GRACE_MIN = 10;
+export const isError = (p: { ok: boolean; stalled: boolean; note: string }) => !p.ok && !p.stalled && !/^pass still running/.test(p.note);
+export async function errorAlerts(parts: { name: string; ok: boolean; stalled: boolean; note: string }[], chat: string, send: (c: string, t: string) => Promise<unknown>, esc: (s: string) => string, now = Date.now()) {
+  const r = redis();
+  const seen = ((await r.hgetall<Record<string, number>>("rn:alert:errseen")) || {}) as Record<string, number>;
+  const open = ((await r.hgetall<Record<string, number>>("rn:alert:err")) || {}) as Record<string, number>;
+  for (const p of parts) {
+    if (isError(p)) {
+      if (!seen[p.name]) await r.hset("rn:alert:errseen", { [p.name]: now });
+      else if (!open[p.name] && now - Number(seen[p.name]) >= ERR_GRACE_MIN * 60_000) {
+        await r.hset("rn:alert:err", { [p.name]: now });
+        await send(chat, `⚠️ <b>${esc(p.name)}</b> runs but keeps failing (${Math.round((now - Number(seen[p.name])) / 60_000)}m): ${esc(p.note).slice(0, 160)}`).catch(() => null);
+      }
+    } else {
+      if (seen[p.name]) await r.hdel("rn:alert:errseen", p.name);
+      if (open[p.name]) {
+        await r.hdel("rn:alert:err", p.name);
+        await send(chat, `✅ <b>${esc(p.name)}</b> works again`).catch(() => null);
+      }
+    }
+  }
 }

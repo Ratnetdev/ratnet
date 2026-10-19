@@ -10,6 +10,22 @@ const CORE = "https://core.j7tracker.io";
 const COVER = "rn:x:j7cov"; // handles J7 already watches for us (lowercase), refreshed hourly
 const STATE = "rn:x:j7"; // last session result, for the page
 export const j7On = () => !!process.env.J7_JWT;
+// v0.1.123: a J7 token now lasts about 10 hours (19 Oct: "Invalid token" since the night). J7 renews it only with the
+// browser's own login cookie, so the worker cannot renew it itself. It reads the token's expiry instead: the status
+// shows the minutes left, and from 60 minutes before the end the part reports an error, so the alert comes in time.
+// A fresh token: the copy button on j7tracker.io (Stan), pasted into Railway as J7_JWT. Never logged or shown.
+export function jwtExp(t: string | undefined | null): number {
+  try {
+    const p = JSON.parse(Buffer.from(String(t).split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    return Number(p.exp) * 1000 || 0;
+  } catch {
+    return 0;
+  }
+}
+export const j7Left = (now = Date.now()) => {
+  const e = jwtExp(process.env.J7_JWT);
+  return e ? Math.round((e - now) / 60_000) : null; // minutes
+};
 const head = () => ({ Authorization: `Bearer ${process.env.J7_JWT}`, "content-type": "application/json" });
 
 /** J7 tweet or external post -> WIRE's tweet shape. */
@@ -57,7 +73,7 @@ export async function j7Session(ms: number, onPosts: (t: XTweet[]) => Promise<un
     buf.push(t);
     got++;
   };
-  return new Promise<{ on: true; got: number; error: string | null }>((resolve) => {
+  return new Promise<{ on: true; got: number; error: string | null; minsLeft?: number | null }>((resolve) => {
     const sock = io(host, { transports: ["websocket"], auth: { token }, reconnection: false, timeout: 8000 });
     const flush = setInterval(() => {
       if (buf.length) onPosts(buf.splice(0, buf.length)).catch(() => {});
@@ -70,7 +86,10 @@ export async function j7Session(ms: number, onPosts: (t: XTweet[]) => Promise<un
       sock.close();
       if (buf.length) await onPosts(buf.splice(0, buf.length)).catch(() => {});
       await redis().set(STATE, { at: Date.now(), got, error }).catch(() => {});
-      resolve({ on: true, got, error });
+      const left = j7Left();
+      // the token is about to run out (or has): an error now, so the alert comes before the feed stops
+      const soon = left != null && left < 60 ? (left <= 0 ? "J7 token expired: copy a fresh one on j7tracker.io into Railway (J7_JWT)" : `J7 token runs out in ${left}m: copy a fresh one on j7tracker.io into Railway (J7_JWT)`) : null;
+      resolve({ on: true, got, error: error || soon, minsLeft: left });
     };
     sock.on("connect", () => sock.emit("user_connected", token));
     sock.on("initialTweets", (items: any[]) => (items || []).forEach((x) => push(x)));

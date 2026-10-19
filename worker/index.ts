@@ -2,7 +2,7 @@
 // pump.fun launch the moment PumpPortal announces it. Deploy it on Railway (or any always-on host) from the same
 // GitHub repo with the same environment variables; start command: npm run worker. While it runs, the Vercel minute
 // ping steps aside on its own (it sees the worker's heartbeat) and comes back if the worker stops.
-import { dailyReview } from "../src/lib/review";
+import { dailyReview, liveGapAlert } from "../src/lib/review";
 import { LIVE_FEE, loadLiveFees } from "../src/lib/livecost";
 import { senderStats } from "../src/lib/exec";
 import { runSession } from "../src/lib/session";
@@ -48,7 +48,7 @@ import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick, GAP_LIMIT } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { trendAt, trendLoad, trendStats, trendTick } from "../src/lib/trend";
 import { tickCreate, tickCurve, tickLoad, tickRun, tickSave, tickStats, tickView } from "../src/lib/tick";
@@ -932,7 +932,7 @@ async function main() {
     if (trending) return;
     trending = true;
     trendTick()
-      .then((r) => markAlive("trend", { ...r, rising: trendStats.rising, ...(trendStats.lastErr ? { last: trendStats.lastErr } : {}) }))
+      .then((r: any) => markAlive("trend", { ...r, rising: trendStats.rising, ...(trendStats.lastErr && !trendStats.down ? { last: trendStats.lastErr } : {}), ...(trendStats.down ? { error: trendStats.down } : {}) }))
       .catch((e) => markAlive("trend", { error: String(e?.message || e) }))
       .finally(() => (trending = false));
   };
@@ -984,6 +984,8 @@ async function main() {
   setInterval(() => gridLivePublish((t) => criticalSend(t)).catch(() => null), 60_000);
   // v0.1.97: the daily review on Telegram, 06:50 UTC (08:50 Amsterdam), once a day
   setInterval(() => dailyReview((t) => criticalSend(t)).catch((e) => console.log("review error", e?.message || e)), 10 * 60_000);
+  // v0.1.123: live fills vs paper over the last 20 live trades of each side, alert when worse than the fill limit
+  setInterval(() => liveGapAlert((t) => criticalSend(t), GAP_LIMIT * 100).catch(() => null), 5 * 60_000);
   // v0.1.81: the FIREHOSE (Shyft gRPC): every pump.fun and PumpSwap trade feeds GRID LIVE, WALLETS and TAPE ALL
   {
     const on = await startFirehose({

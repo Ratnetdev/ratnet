@@ -47,7 +47,9 @@ export async function runSession(ms = 55_000, opts: { desk?: boolean; historian?
       if (Date.now() - t0 >= ms - 12_000) break;
       await new Promise((r) => setTimeout(r, 12_000));
     }
-    return { sent };
+    // v0.1.123: trade alerts (open, close, partial) are counted too: sent / failed
+    const { alertStats } = await import("./tradealerts");
+    return { sent, alerts: `${alertStats.sent} sent, ${alertStats.failed} failed${alertStats.lastErr ? ` (${alertStats.lastErr})` : ""}` };
   })();
   // WIRE: grow and prune the account list, push it to twitterapi.io when it changed (at most every 10 minutes)
   const wire = (async () => {

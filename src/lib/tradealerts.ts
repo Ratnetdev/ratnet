@@ -17,7 +17,7 @@ const BOOK: Record<Book, { icon: string; label: string; note: string }> = {
   live: { icon: "💰", label: "LIVE", note: "REAL MONEY" },
 };
 
-const STRAT: Record<string, string> = { direct: "King", stalk: "King pullback", early: "King early read", wire: "WIRE tweet", mind: "MIND", momo: "MOMO", catch: "CATCH", flash: "FLASH" };
+const STRAT: Record<string, string> = { grid: "GRID LIVE", direct: "King", stalk: "King pullback", early: "King early read", wire: "WIRE tweet", mind: "MIND", momo: "MOMO", catch: "CATCH", flash: "FLASH" };
 export const stratName = (how?: string | null) => STRAT[how || "direct"] || String(how || "King");
 
 const chat = () => process.env.TELEGRAM_TRADES_CHAT_ID || ideasChat();
@@ -120,13 +120,18 @@ async function pump() {
     while (Q.length) {
       const c = chat();
       const text = Q.shift()!;
-      if (c) await tgSend(c, text).catch(() => false);
+      // v0.1.123: counted, so /status shows trade alerts going out (the "telegram" line counted only the public call queue)
+      const ok = c ? await tgSend(c, text).catch(() => false) : false;
+      if (ok) alertStats.sent++;
+      else (alertStats.failed++, (alertStats.lastErr = c ? "send refused" : "no chat set"));
+      alertStats.lastAt = Date.now();
       await new Promise((r) => setTimeout(r, 1100));
     }
   } finally {
     pumping = false;
   }
 }
+export const alertStats = { sent: 0, failed: 0, lastErr: "", lastAt: 0 };
 function enabled(book: Book, cfg: any) {
   if (!chat() || !process.env.TELEGRAM_BOT_TOKEN) return false;
   const on = cfg?.tgTrades;

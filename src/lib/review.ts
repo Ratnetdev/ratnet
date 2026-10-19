@@ -48,6 +48,8 @@ export async function reviewView(now = Date.now()) {
   return {
     at: now,
     // the worker's own counters, from its status record (the site never holds them in memory)
+    // v0.1.123: per trade, how far live landed from paper (+ = live better). Sells: SOL out; buys: tokens in
+    liveGaps: day.filter((t) => t.par && (typeof t.par.out === "number" || typeof t.par.tok === "number")).slice(0, 12).map((t) => `${t.side} ${String(t.symbol || "").slice(0, 12)} ${t.par.out ?? t.par.tok}%`),
     live: { trades: day.length, roundTrips: sells.length, won, pnlSol: r4(pnl), sellGapPct: avg(gaps), buyTokGapPct: avg(toks), feeSol: rpc?.exec?.liveFee?.prioritySol ?? null, feeN: rpc?.exec?.liveFee?.n ?? 0, sender: { ok: 0, err: 0, http: 0, last: "", ...(rpc?.exec?.sender || {}) } },
     families: fams.map((f) => ({ family: f.sleeve, live: f.live, bench: f.bench?.why ?? null, ghostSinceBench: f.benchGhost, weight: f.w, pausedUntil: f.paused })),
     grid: { books: books.length, passed: books.filter((b) => b.passed).map((b) => b.label), leader: live?.follow?.label ?? null, closest: close, runners: { books: runners.length, inProfit: runners.filter((b) => b.pnl > 0).length, best: runners.sort((a, z) => z.pnl - a.pnl)[0] ?? null } },
@@ -85,7 +87,7 @@ export async function reviewView(now = Date.now()) {
     // v0.1.120 TICK MODEL
     tick: tk ? { models: (tk.models || []).map((m: any) => ({ h: m.h, n: m.n, ready: m.ready, ic: m.ic, act: m.act, top: (m.top || []).slice(0, 4) })), warm: tk.warm, coins: tk.stats?.coins ?? 0 } : null,
     // v0.1.119 TREND: TikTok and Instagram
-    trend: tv ? { at: tv.at, items: tv.stats?.items ?? 0, terms: tv.stats?.terms ?? 0, rising: (tv.terms || []).filter((t: any) => t.rising).slice(0, 8).map((t: any) => `${t.t} (${t.src.join("+")}, ${Math.round(t.views / 1000)}K views)`), err: tv.stats?.lastErr || "" } : null,
+    trend: tv ? { at: tv.at, items: tv.stats?.items ?? 0, terms: tv.stats?.terms ?? 0, rising: (tv.terms || []).filter((t: any) => t.rising).slice(0, 8).map((t: any) => `${t.t} (${t.src.join("+")}, ${Math.round(t.views / 1000)}K views)`), err: tv.stats?.lastErr || "", src: tv.stats?.src || {} } : null,
     attention: rpc?.dx ?? null,
     theme: rpc?.theme ?? null, // v0.1.109: Claude's labels (asked, made, capped, queue) // v0.1.104: DexScreener reads (live polls, order histories fetched, live read vs truth)
     origin: rpc?.origin ?? null, // v0.1.103: the 7-day name/ticker/image index (rows read at boot, live size)
@@ -106,7 +108,7 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     `📋 <b>RATNET daily review</b> (${new Date(v.at).toISOString().slice(0, 10)})`,
     "",
     `<b>Live money, last 24h</b>: ${L.roundTrips} sells, ${L.won} won, ${sign(L.pnlSol)} SOL`,
-    `Live vs paper: sells ${L.sellGapPct == null ? "n/a" : sign(L.sellGapPct) + "%"}, buys ${L.buyTokGapPct == null ? "n/a" : sign(L.buyTokGapPct) + "%"} tokens. Fee per tx ${L.feeSol != null ? `${L.feeSol} SOL (median of ${L.feeN} live txs)` : `the setting (${L.feeN} of 10 live txs recorded)`}. Sender ${L.sender.ok} ok / ${L.sender.err + L.sender.http} refused${L.sender.last ? ` (${esc(L.sender.last).slice(0, 60)})` : ""}`,
+    `Live vs paper: sells ${L.sellGapPct == null ? "n/a" : sign(L.sellGapPct) + "%"}, buys ${L.buyTokGapPct == null ? "n/a" : sign(L.buyTokGapPct) + "%"} tokens. Fee per tx ${L.feeSol != null ? `${L.feeSol} SOL (median of ${L.feeN} live txs)` : `the setting (${L.feeN} of 10 live txs recorded)`}. Sender ${L.sender.ok} ok / ${L.sender.err + L.sender.http} refused${L.sender.last ? ` (${esc(L.sender.last).slice(0, 60)})` : ""} (every live tx also goes through the normal RPC, so a refused Sender call does not stop a trade)${v.liveGaps?.length ? `\nPer trade (+ = live better than paper): ${v.liveGaps.map(esc).join(", ")}` : ""}`,
     "",
     `<b>Strategy families on live money</b>`,
     fam || "• no live trips on record yet",
@@ -128,7 +130,7 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     "",
     v.tick ? `<b>TICK MODEL</b> (every live coin, every 20s; ${v.tick.coins} coins last pass):\n${v.tick.models.map((m: any) => `• ${m.h} min: ${m.n} graded${m.ready ? "" : ` (warming up to ${v.tick?.warm})`}, out-of-sample correlation ${m.ic ?? "-"}${m.act?.n ? `; acting on it after costs: ${m.act.avgPct}% a trade over ${m.act.n} (${m.act.winRate}% won)` : ""}; top: ${m.top.map((t: any) => `${t.f} ${t.w > 0 ? "+" : ""}${t.w}`).join(", ")}`).join("\n")}` : "<b>TICK MODEL</b>: not started yet",
     "",
-    v.trend ? `<b>TREND</b> (TikTok, Instagram): ${v.trend.items} videos and posts last run, ${v.trend.terms} terms; rising: ${v.trend.rising.map(esc).join(", ") || "none"}${v.trend.err ? ` (last error: ${esc(v.trend.err)})` : ""}` : "<b>TREND</b>: off (set APIFY_TOKEN in Railway)",
+    v.trend ? `<b>TREND</b> (TikTok, Instagram): ${v.trend.items} videos and posts last run, ${v.trend.terms} terms; rising: ${v.trend.rising.map(esc).join(", ") || "none"}${v.trend.err ? ` (last error: ${esc(v.trend.err)})` : ""}${Object.keys(v.trend.src || {}).length ? `\n• per source: ${Object.entries(v.trend.src).map(([k, x]: [string, any]) => `${k} ${x.err ? `failed (${esc(String(x.err)).slice(0, 40)})` : x.n}`).join(", ")}` : ""}` : "<b>TREND</b>: off (set APIFY_TOKEN in Railway)",
     "",
     `<b>SEER</b>: watching for ${v.seer.armed} coins${v.seer.error ? ` (last error: ${esc(v.seer.error).slice(0, 60)})` : ""}; ${v.seer.matches.length} launches matched in 24h`,
     ...v.seer.matches.slice(0, 5).map((m) => `• ${esc(m.sym || "?")} for "${esc(m.title)}" (tier ${m.tier}, #${m.rank}, by ${m.by})`),
@@ -138,6 +140,33 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
 }
 
 /** Once a day at 06:50 UTC (worker, checked every 10 minutes). */
+/**
+ * v0.1.123: the live fills against paper over the last LIVE_GAP_N live trades of each side. Worse than the fill limit
+ * that blocks a strategy on paper (GAP_LIMIT, -10%): one Telegram alert, and one when it is back inside.
+ */
+export const LIVE_GAP_N = 20;
+export function liveGap(trades: any[]) {
+  const live = trades.filter((t) => t && t.live && t.par);
+  const sells = live.filter((t) => t.side === "sell" && typeof t.par.out === "number").slice(0, LIVE_GAP_N).map((t) => t.par.out as number);
+  const buys = live.filter((t) => t.side === "buy" && typeof t.par.tok === "number").slice(0, LIVE_GAP_N).map((t) => t.par.tok as number);
+  const avg = (a: number[]) => (a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : null);
+  return { sellN: sells.length, sell: avg(sells), buyN: buys.length, buy: avg(buys) };
+}
+export async function liveGapAlert(send: (t: string) => Promise<unknown>, limitPct = -10) {
+  const r = redis();
+  const g = liveGap((await r.lrange<any>(K.deskTrades, 0, 499).catch(() => [])) || []);
+  const bad = (g.sellN >= 10 && (g.sell ?? 0) < limitPct) || (g.buyN >= 10 && (g.buy ?? 0) < limitPct);
+  const open = await r.get<number>("rn:alert:livegap").catch(() => null);
+  if (bad && !open) {
+    await r.set("rn:alert:livegap", Date.now());
+    await send(`⚠️ <b>Live fills are worse than paper</b>\nLast ${g.sellN} live sells: ${g.sell}% vs paper. Last ${g.buyN} live buys: ${g.buy}% tokens vs paper. The limit is ${limitPct}%.`).catch(() => null);
+  } else if (!bad && open) {
+    await r.del("rn:alert:livegap");
+    await send(`✅ Live fills are back within ${limitPct}% of paper (sells ${g.sell}%, buys ${g.buy}%)`).catch(() => null);
+  }
+  return { ...g, bad };
+}
+
 export async function dailyReview(send: (t: string) => Promise<unknown>, now = Date.now()) {
   const d = new Date(now);
   if (d.getUTCHours() * 60 + d.getUTCMinutes() < 6 * 60 + 50) return { wait: true };

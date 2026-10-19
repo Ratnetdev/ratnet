@@ -2795,7 +2795,7 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
   const ctx = await entryCtx(rec, fillPx, real, how).catch(() => undefined);
   b.trades.push({ v: BUILD, cfg: cfgTag(ALERT_CFG), id: `${now}${rec.mint.slice(0, 4)}b`, mint: rec.mint, symbol: rec.symbol, side: "buy", at: now, sol: r4(sol), cost: r4(sol + paperFixed), tokens, px: fillPx, reason: why, live: state.live, sig, mc: ctx ? mcUsd(fillPx, ctx.solUsd) : null, ...(par ? { par } : {}) });
   log(b, "EXEC", `bought $${rec.symbol} for ${sol.toFixed(3)} SOL${state.live ? (LAST_EXEC && Date.now() - LAST_EXEC.at < 60_000 ? ` · landed in ${(LAST_EXEC.ms / 1000).toFixed(1)}s (${LAST_EXEC.path} path)` : "") : " (paper)"}`, "ok", coin);
-  alertOpen({ book: state.live ? "live" : "paper", mint: rec.mint, symbol: rec.symbol, how, sol: sol + paperFixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, sig }, ALERT_CFG);
+  alertOpen({ book: state.live ? "live" : "paper", mint: rec.mint, symbol: rec.symbol, how: !rec.call && how === "direct" ? "grid" : how, sol: sol + paperFixed, mcUsd: ctx ? mcUsd(fillPx, ctx.solUsd) : null, curve: ctx?.curve ?? null, ageMs: ctx?.ageMs ?? null, why, king: rec.call?.score ?? rec.early?.score ?? null, nano: rec.call?.nano?.score ?? null, sig }, ALERT_CFG);
   return {
     build: BUILD,
     cfg: cfgTag(ALERT_CFG),
@@ -3273,8 +3273,8 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     if (total > 0) state.wins++;
     log(b, "LEDGER", `closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))})`, total >= 0 ? "win" : "loss", coin);
     archiveTrip({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), costSol: p.costSol, backSol: p.soldSol, how: p.how, king: p.king, nano: p.nano, peakX: Math.max(p.peakPx || 0, px) / p.entryPx, reason, build: p.build, cfg: p.cfg, data: { entryPx: p.entryPx, avgExitPx: avgExitPx(p, px), sells: p.sells, ctx: p.ctx } });
-    alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(avgExitPx(p, px), sol$), lastMc: mcUsd(px, sol$), sells: sellCount(p), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason, sig }, ALERT_CFG);
-  } else alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, sig, partial: { frac: amt / p.tokens0, sol: proceeds, mc: mcUsd(px, sol$) } }, ALERT_CFG);
+    alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.gk ? "grid" : p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(avgExitPx(p, px), sol$), lastMc: mcUsd(px, sol$), sells: sellCount(p), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason, sig }, ALERT_CFG);
+  } else alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.gk ? "grid" : p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, sig, partial: { frac: amt / p.tokens0, sol: proceeds, mc: mcUsd(px, sol$) } }, ALERT_CFG);
   return true;
 }
 

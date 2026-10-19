@@ -12,6 +12,7 @@ import { chooseVariants, fired, FLOW_SEED, flowxStats, learnTable, parseVariant,
 import { paperPriority } from "./livecost";
 import { HORIZONS, tickReady } from "./tick";
 import { redis } from "./redis";
+import { archiveTrip } from "./archive";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
 import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, profitModel, winModel, withScoreModels, asModels, type Models, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
@@ -76,7 +77,7 @@ export type LBook = {
   /** v0.1.117: the reading age it trades (seconds; 120 when not set) */
   earlySec?: number;
   /** v0.1.120 NO QUICK KILLS: its record says drop, but it is younger than BOOK_KEEP_DAYS: it keeps trading on paper (outside the slot counts) until then */
-  cold?: { at: number; why: string } | null;
+  cold?: { at: number; why: string; room?: boolean } | null;
   /** v0.1.120 TICK: a TICK MODEL book (horizon minutes, margin over cost) */
   tick?: { h: number; m: number };
   why?: string;
@@ -101,6 +102,11 @@ type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symb
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
+// v0.1.123 RUNNER HOLD (Stan, 19 Oct: "it's there for a reason, listen to the agents"): a runner book that once passed
+// its full exam keeps being followed at the minimum size while its whole record stays in profit. It is dropped only when
+// that total goes negative (the full pass also needs it in profit without its 2 best; a hold does not)
+const EVER = new Set<string>();
+export const _setEver = (keys: string[]) => (EVER.clear(), keys.forEach((k) => EVER.add(k)));
 export const gridLeaderKey = () => LEADER;
 /** The strategy the desk follows: passed live (bookStat), best live P&L first. */
 export function gridLeader(): LBook | null {
@@ -141,13 +147,14 @@ export async function gridLiveLoad(tries = 5, waitMs = 2000) {
   const r = redis();
   for (let i = 0; i < tries; i++) {
     if (i) await new Promise((res) => setTimeout(res, waitMs));
-    const [b, pos, trips, fills, sp, fxs] = await Promise.all([
+    const [b, pos, trips, fills, sp, fxs, ever] = await Promise.all([
       tryRead(() => r.get<LBook[]>(BOOKS_KEY)),
       r.hgetall<Record<string, LPos>>(POS_KEY).catch(() => null),
       tryRead(() => r.lrange<LTrip>(LIVE_TRIPS, 0, TRIPS_MAX - 1)),
       r.hgetall<Record<string, Fill>>(FILLS_KEY).catch(() => null),
       r.get<string[]>(SPAWNED_KEY).catch(() => null),
       r.lrange<FlowX>(FLOWX_KEY, 0, 1999).catch(() => null), // v0.1.108: the learner's record survives a restart
+      r.hgetall<Record<string, unknown>>(PASSED_KEY).catch(() => null), // v0.1.123: every full pass on record (RUNNER HOLD)
     ]);
     if (b === FAIL || trips === FAIL) continue;
     loaded = true;
@@ -160,6 +167,7 @@ export async function gridLiveLoad(tries = 5, waitMs = 2000) {
       else if (f.bn >= 8 && f.sn >= 8 && f.bg + f.sg <= GAP_LIMIT) RECHECK.add(k);
     }
     SPAWNED = Array.isArray(sp) ? sp : SPAWNED;
+    for (const k of Object.keys(ever || {})) if (!k.endsWith("#probation")) EVER.add(k);
     if (Array.isArray(fxs) && !FLOWX.length) FLOWX = (fxs as FlowX[]).filter(Boolean);
     // books added while the read was failing (a GRID run, RESEARCHER) join the saved ones instead of replacing them
     const saved = Array.isArray(b) ? (b as LBook[]) : [];
@@ -227,7 +235,8 @@ function coolOff(now: number) {
   for (const b of BOOKS) {
     const why = dropReason(statOf(b.key));
     if (!why) {
-      if (b.cold) b.cold = null;
+      // v0.1.123: a book benched to make room for a passed one stays cold (paper) until a slot frees or it passes
+      if (b.cold && !b.cold.room) b.cold = null;
       continue;
     }
     if (young(b, now)) {
@@ -239,6 +248,24 @@ function coolOff(now: number) {
   for (const b of cold.slice(0, Math.max(0, cold.length - COLD_MAX()))) out.push(b);
   return out;
 }
+/**
+ * v0.1.123: make room for passed rows. The weakest warm books that never passed (lowest total on their record) go cold:
+ * they keep trading on paper, nothing is deleted. Returns how many slots were freed.
+ */
+export function benchForRoom(pool: LBook[], need: number, now: number): number {
+  const cands = pool
+    .filter((b) => !b.cold && !b.grid?.pass)
+    .map((b) => ({ b, s: statOf(b.key) }))
+    .filter((x) => !x.s.passed)
+    .sort((a, z) => (a.s.totalPnl ?? a.s.pnl ?? 0) - (z.s.totalPnl ?? z.s.pnl ?? 0));
+  let n = 0;
+  for (const { b } of cands) {
+    if (n >= need) break;
+    b.cold = { at: now, why: "benched: its slot went to a strategy that passed", room: true };
+    n++;
+  }
+  return n;
+}
 /** v0.1.82: near the exam on its last 30 trips: worth more trips (a rolling window, the next trades can pass it). */
 export const closeToPass = (l: LStat) => l.winRate >= 40 && l.pnl > 0 && l.pfLessBest >= 1.0;
 const statOf = (key: string) => bookStat(BOOKS.find((b) => b.key === key) ?? { grid: { testN: 0, testAvg: 0, pass: false } }, TRIPS.filter((t) => t.k === key));
@@ -248,12 +275,18 @@ export async function gridLiveSetBooks(rows: GRow[], now = Date.now()) {
   const out = coolOff(now); // v0.1.120: young ruled-out books go cold, they are not dropped
   const keep = BOOKS.filter((b) => !out.includes(b));
   const dropped = out.map((b) => ({ key: b.key, why: dropReason(statOf(b.key)) }));
-  const fresh = rows
+  const cand = rows
     .filter((r) => !keep.some((b) => b.key === r.key))
     // never bring back a strategy its own live record already ruled out
-    .filter((r) => !dropReason(statOf(r.key)))
-    // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16 (v0.1.82: RESEARCHER's too)
-    .slice(0, Math.max(0, LIVE_MAX_BOOKS - keep.filter((b) => !b.cold && !b.parent && !b.by && !b.back && !b.fv).length))
+    .filter((r) => !dropReason(statOf(r.key)));
+  // v0.1.78: spawned books (variants, twins) have their own slots on top of GRID's 16 (v0.1.82: RESEARCHER's too)
+  const base = keep.filter((b) => !b.cold && !b.parent && !b.by && !b.back && !b.fv);
+  let room = Math.max(0, LIVE_MAX_BOOKS - base.length);
+  // v0.1.123: a row that passed GRID always gets a book. With the slots full, the weakest book that never passed goes cold
+  const passedN = cand.filter((r) => r.pass).length;
+  if (passedN > room) room += benchForRoom(base, passedN - room, now);
+  const fresh = [...cand.filter((r) => r.pass), ...cand.filter((r) => !r.pass)]
+    .slice(0, room)
     .map((r) => ({
       key: r.key,
       label: `${r.filterLabel}, buy ${r.modeLabel}`,
@@ -536,6 +569,8 @@ function close(k: string, pos: LPos, now: number, why: string) {
     redis().lpush(FLOWX_KEY, fx).then(() => redis().ltrim(FLOWX_KEY, 0, 1999)).catch(() => null);
   }
   TRIPS = keepTrips([t, ...TRIPS]);
+  // v0.1.123: every paper trip also goes to Postgres, so a record can never be lost again (book "grid:<key>")
+  archiveTrip({ book: `grid:${pos.key}` as any, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, costSol: pos.cost, backSol: pos.back, how: pos.key.split(":")[0].split("|")[0].slice(0, 40), reason: why });
   const r = redis();
   r.hdel(POS_KEY, k).catch(() => null);
   r.lpush(LIVE_TRIPS, t).then(() => r.ltrim(LIVE_TRIPS, 0, TRIPS_MAX - 1)).catch(() => null);
@@ -661,7 +696,7 @@ export function gridLiveSweep(now = Date.now()) {
   }
 }
 
-export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean; total?: number; totalPnl?: number; runner?: boolean; lessTop2?: number; probation?: boolean };
+export type LStat = { n: number; wins: number; winRate: number; avgPct: number; pnl: number; pfLessBest: number; passed: boolean; pending?: boolean; total?: number; totalPnl?: number; runner?: boolean; lessTop2?: number; probation?: boolean; hold?: boolean };
 /** The desk's exam on a strategy's last 30 live trips (a 1 SOL desk at 0.05 SOL a trade: +10% = +0.1 SOL). */
 export function liveStat(trips: LTrip[]): LStat {
   const last = trips.slice(0, 30);
@@ -690,6 +725,8 @@ export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }
   // v0.1.102 SEER: event trips are rare (a few to 20 a day), so its books may trade live at the minimum size on a
   // probation exam: 15+ trips, in profit, and still in profit without the 2 best. Full size only through the normal exam
   const st = bookStat0(b, trips);
+  // v0.1.123 RUNNER HOLD: passed the runner exam before, whole record still in profit: followed at the minimum size
+  if (st.runner && !st.passed && b.key && EVER.has(b.key) && (st.totalPnl ?? 0) > 0) return { ...st, passed: true, probation: true, hold: true };
   // v0.1.112 FAST LANE: a book GRID proved offline (the test, the plateau, the newest slice and the luck bar) gets the
   // same probation: live at the minimum size after 15 good trips instead of 30
   // v0.1.117: an EARLY book too (its 2-minute momentum books were the only ones in profit on 17 Oct)
@@ -717,14 +754,19 @@ export function tStat(trips: LTrip[]): number {
 }
 // v0.1.122: the trip record kept per book, so one busy family (TICK: 1,348 trips in 16 hours) can't push every other
 // book's record out of a shared buffer (it held 3,000, about 20 hours, and the exams read what was left)
-export const TRIPS_MAX = 20_000;
+// v0.1.123: 150 cold EARLY books filled the 20,000 in a day and pushed TICK's whole record out. Cold books and books no
+// longer listed keep their last 60 (enough for the revive check and their screen line); active books keep 400
+export const TRIPS_MAX = 40_000;
 export const TRIPS_PER_BOOK = 400;
-export function keepTrips(ts: LTrip[]): LTrip[] {
+export const TRIPS_PER_COLD = 60;
+export function keepTrips(ts: LTrip[], capOf?: (k: string) => number): LTrip[] {
+  const warm = capOf ? null : new Set(BOOKS.filter((b) => !b.cold).map((b) => b.key));
+  const cap = capOf || ((k: string) => (!BOOKS.length || warm!.has(k) ? TRIPS_PER_BOOK : TRIPS_PER_COLD));
   const per = new Map<string, number>();
   const out: LTrip[] = [];
   for (const t of ts) {
     const n = per.get(t.k) || 0;
-    if (n >= TRIPS_PER_BOOK) continue;
+    if (n >= cap(t.k)) continue;
     per.set(t.k, n + 1);
     out.push(t);
     if (out.length >= TRIPS_MAX) break;
@@ -776,6 +818,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   for (const b of books) {
     if (!b.live.passed || !send) continue;
     // v0.1.102: a SEER probation pass has its own mark, so the full pass later still gets its message
+    if (!b.live.probation) EVER.add(b.key);
     const fresh = await redis().hsetnx(PASSED_KEY, b.live.probation ? `${b.key}#probation` : b.key, { at: now, ...b.live }).catch(() => 0);
     const tp = b.live.totalPnl ?? 0;
     const l2 = b.live.lessTop2 ?? 0;
@@ -1173,6 +1216,10 @@ export async function gridLiveEarlyBooks(rows: GRow[], explore: GRow[] = [], now
   }
   const ranked = [...rows.filter((r) => r.pass), ...rows.filter((r) => !r.pass && r.test.n >= 10 && r.test.avgPct > 0), ...explore];
   let room = (sec === 120 ? EARLY_MAX : EARLY_MAX_OTHER) - mine.length;
+  // v0.1.123: a row that passed the EARLY search always gets a book (19 Oct: the 60s pass found no free slot)
+  const passedNew = rows.filter((r) => r.pass && !BOOKS.some((b) => b.key === `${pre}${r.key}`)).length;
+  room = Math.max(0, room);
+  if (passedNew > room) room += benchForRoom(mine, passedNew - room, now);
   const out: LBook[] = [];
   for (const r of ranked) {
     if (room <= 0) break;
@@ -1367,6 +1414,7 @@ export function gridLiveReset() {
   QUEUE.length = 0;
   SPAWNED = [];
   LEADER = null;
+  EVER.clear();
   FLOWX = [];
   FLOW_PICKS = { picks: [FLOW_SEED], learned: false, at: 0 };
   loaded = true;

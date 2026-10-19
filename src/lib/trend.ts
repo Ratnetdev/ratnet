@@ -32,7 +32,10 @@ export const STOP = new Set(
 
 export type Hit = { id: string; src: "tiktok" | "instagram"; text: string; tags: string[]; sound: string | null; views: number; likes: number; at: number | null; url: string };
 export type Term = { t: string; src: string[]; score: number; views: number; n: number; first: number; last: number; rising: boolean };
-export const trendStats = { runs: 0, items: 0, terms: 0, rising: 0, lastAt: 0, lastErr: "", capped: 0, byActor: {} as Record<string, number> };
+// v0.1.123: per source (TikTok trend charts, TikTok videos, Instagram posts): what came back and the error, so one
+// failing source (19 Oct: TikTok 403, Apify credits) shows by name while the others keep running. `down` is set when
+// every source failed on the last run: the status page then shows TREND as failing, not as fine
+export const trendStats = { runs: 0, items: 0, terms: 0, rising: 0, lastAt: 0, lastErr: "", capped: 0, byActor: {} as Record<string, number>, src: {} as Record<string, { n: number; err: string | null; at: number }>, down: "" };
 
 async function runActor(actor: string, input: unknown, maxItems: number): Promise<any[]> {
   const token = process.env.APIFY_TOKEN;
@@ -153,15 +156,21 @@ export async function trendTick(now = Date.now(), run = runActor) {
   const igN = Math.min(Math.max(0, left - ttN), num("TREND_IG_PER_RUN", 60));
   const hits: Hit[] = [];
   const jobs: Promise<void>[] = [];
-  const note = (k: string, n: number) => (trendStats.byActor[k] = n);
-  const fail = (k: string) => (e: any) => void (trendStats.lastErr = `${k}: ${String(e?.message || e).slice(0, 80)}`);
+  trendStats.lastErr = "";
+  const note = (k: string, n: number) => ((trendStats.byActor[k] = n), (trendStats.src[k] = { n, err: null, at: now }));
+  const fail = (k: string) => (e: any) => {
+    const m = String(e?.message || e).slice(0, 80);
+    trendStats.lastErr = `${k}: ${m}`;
+    trendStats.src[k] = { n: 0, err: m, at: now };
+  };
   // TikTok: the Creative Center's top hashtags (US, 7 days) join the meme tags
   jobs.push(
     (async () => {
       let tags = TT_TAGS();
-      const cc = await run(TT_CC_ACTOR(), { trendTypes: ["hashtag"], region: "US", periodDays: 7, maxResults: 3 }, 3).catch((e) => (fail("tiktok trends")(e), [] as any[]));
+      let ccOk = true;
+      const cc = await run(TT_CC_ACTOR(), { trendTypes: ["hashtag"], region: "US", periodDays: 7, maxResults: 3 }, 3).catch((e) => ((ccOk = false), fail("tiktok-cc")(e), [] as any[]));
       const top = cc.filter((x: any) => x?.ok && x.hashtag).map((x: any) => String(x.hashtag).replace(/^#/, ""));
-      note("tiktok-cc", top.length);
+      if (ccOk) note("tiktok-cc", top.length);
       tags = [...new Set([...top, ...tags])];
       if (!ttN) return;
       const vids = await run(TT_ACTOR(), { hashtags: tags, resultsPerPage: Math.max(5, Math.ceil(ttN / tags.length)), shouldDownloadCovers: false, shouldDownloadSlideshowImages: false, shouldDownloadSubtitles: false, shouldDownloadVideos: false }, ttN);
@@ -184,6 +193,8 @@ export async function trendTick(now = Date.now(), run = runActor) {
       })().catch(fail("instagram")),
     );
   await Promise.all(jobs);
+  const ran = Object.values(trendStats.src).filter((x) => x.at === now);
+  trendStats.down = ran.length && ran.every((x) => x.err) ? `every source failed: ${ran.map((x) => x.err).join("; ").slice(0, 160)}` : "";
   await r.incrby(DAYK(day), hits.length + 3).catch(() => 0);
   r.expire(DAYK(day), 2 * 86400).catch(() => null);
   const prev = ((await r.hgetall<Record<string, any>>(HIST_KEY).catch(() => null)) || {}) as Record<string, { first: number; last: number; score: number }>;
@@ -193,8 +204,11 @@ export async function trendTick(now = Date.now(), run = runActor) {
     reindex(terms);
   }
   Object.assign(trendStats, { runs: trendStats.runs + 1, items: hits.length, terms: terms.length, rising: RISING.length, lastAt: now });
-  await r.set(VIEW_KEY, { at: now, stats: { ...trendStats }, terms: terms.slice(0, 120), top: hits.sort((a, b) => b.views - a.views).slice(0, 12) }, { ex: 2 * 86400 }).catch(() => null);
-  return { items: hits.length, terms: terms.length, rising: RISING.length };
+  // a run where nothing came back keeps the last terms on screen (they were wiped on 19 Oct when TikTok answered 403)
+  const prevView = terms.length ? null : ((await r.get<any>(VIEW_KEY).catch(() => null)) as any);
+  await r.set(VIEW_KEY, { at: now, stats: { ...trendStats }, terms: terms.length ? terms.slice(0, 120) : prevView?.terms || [], top: hits.length ? hits.sort((a, b) => b.views - a.views).slice(0, 12) : prevView?.top || [] }, { ex: 2 * 86400 }).catch(() => null);
+  const src = Object.fromEntries(Object.entries(trendStats.src).map(([k, v]) => [k, v.err ? `error ${v.err.slice(0, 40)}` : v.n]));
+  return { items: hits.length, terms: terms.length, rising: RISING.length, src, ...(trendStats.down ? { error: trendStats.down } : {}) };
 }
 
 /** SEER: the rising terms as items (the forecaster arms the coin names). */
@@ -206,5 +220,5 @@ export async function fromTrend() {
 export function _trendReset(terms: Term[] = []) {
   reindex(terms);
   lastRun = 0;
-  Object.assign(trendStats, { runs: 0, items: 0, terms: 0, rising: 0, lastAt: 0, lastErr: "", capped: 0, byActor: {} });
+  Object.assign(trendStats, { runs: 0, items: 0, terms: 0, rising: 0, lastAt: 0, lastErr: "", capped: 0, byActor: {}, src: {}, down: "" });
 }

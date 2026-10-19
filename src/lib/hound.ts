@@ -114,8 +114,10 @@ async function upsert(list: Wallet[]) {
 const FOMO = "https://api.fomoapi.io";
 const fomoOn = () => !!process.env.FOMO_API_KEY;
 let fomoErr: string | null = null;
+let fomoStatus = 0; // v0.1.123: the last answer's status (429 = slow down)
 async function fomo<T = any>(path: string): Promise<T | null> {
   const r = await fetch(`${FOMO}${path}`, { headers: { authorization: `Bearer ${process.env.FOMO_API_KEY}` }, cache: "no-store", signal: AbortSignal.timeout(15_000) }).catch((e) => ({ ok: false, status: 0, e }) as any);
+  fomoStatus = Number(r?.status || 0);
   if (!r?.ok) {
     fomoErr = r?.status === 402 ? "out of FOMO API credits (402)" : r?.status === 401 ? "FOMO API key rejected (401)" : `FOMO API answered ${r?.status || "nothing"} on ${path.split("?")[0]}`;
     return null;
@@ -171,12 +173,25 @@ async function fomoSync() {
   const profiles = ((await r.hgetall<Record<string, any>>(FOMO_P)) || {}) as Record<string, any>;
   const have = await book();
   // profile up to 20 traders per run that have no fresh profile (each costs one API call), top traders first
-  const todo = [...seen.values()].filter((t) => !profiles[t.handle] || Date.now() - profiles[t.handle].at > 7 * 86400_000).sort((a, b) => Number(top.has(b.handle)) - Number(top.has(a.handle))).slice(0, 20);
+  // v0.1.123: a profile saved empty (n 0) is redone after a day: until now a rate-limited call (429) saved an empty
+  // profile, and the trader counted as "not worth tracking" for 7 days
+  const stale = (p: any) => !p || Date.now() - p.at > 7 * 86400_000 || (!p.n && Date.now() - p.at > 86400_000);
+  const todo = [...seen.values()].filter((t) => stale(profiles[t.handle])).sort((a, b) => Number(top.has(b.handle)) - Number(top.has(a.handle))).slice(0, 20);
   const add: Wallet[] = [];
   let n = 0;
+  let limited = false;
   for (const t of todo) {
     await live(`profiling FOMO trader @${t.handle}: win rate, average win and loss, expected value`);
     const res = await fomo<any>(`/v2/users/${encodeURIComponent(t.userId || t.handle)}/positions?limit=200`);
+    if (res == null) {
+      // an error is not an empty record: nothing is saved. A 429 ends this run; the rest goes in 15 minutes
+      if (fomoStatus === 429) {
+        limited = true;
+        break;
+      }
+      continue;
+    }
+    await new Promise((res2) => setTimeout(res2, 1500)); // paced: the profile calls ran back to back and hit 429
     const trades = Array.isArray(res) ? res : res?.positions || res?.trades || res?.data || [];
     const p = profileOf(trades);
     const cls = classify(p);
@@ -196,7 +211,8 @@ async function fomoSync() {
     add.push({ w: sol, cls: "fomo-top", name: t.displayName || h, handle: h, conf: "confirmed", proof: [`FOMO leaderboard top 25 (rank ${t.rank}, $${Math.round(Number(t.pnlUsd) || 0).toLocaleString("en-US")} PnL)`], src: ["fomo"], stats: pr && pr.n ? { n: pr.n, wr: pr.wr, avgWin: pr.avgWin, avgLoss: pr.avgLoss, ev: pr.ev, best: pr.best, big: pr.big } : null, at: Date.now() });
   }
   await upsert(add);
-  await status("fomo", { ok: true, traders: seen.size, profiled: n, added: add.length, error: fomoErr });
+  if (limited) await r.set(FOMO_AT, Date.now() - 6 * 3600_000 + 15 * 60_000);
+  await status("fomo", { ok: true, traders: seen.size, profiled: n, added: add.length, error: limited ? `rate limited (429) after ${n} profiles: the rest in 15 minutes` : fomoErr });
   if (add.length) {
     const p = r.pipeline();
     agentLog(p, add.slice(0, 12).map((x) => ({ agent: "HOUND", at: Date.now(), text: x.stats ? `tracking FOMO trader ${x.name} (${CLASS_LABEL[x.cls]}): ${Math.round(x.stats.wr * 100)}% win rate, avg win +${Math.round(x.stats.avgWin * 100)}%, avg loss ${Math.round(x.stats.avgLoss * 100)}%, EV ${x.stats.ev > 0 ? "+" : ""}${Math.round(x.stats.ev * 100)}% per trade` : `tracking FOMO trader ${x.name} (${CLASS_LABEL[x.cls]})`, tone: "ok" })));
