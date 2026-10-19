@@ -1061,7 +1061,9 @@ async function main() {
       tx: (keys, users) => void fomoTx(keys, users),
       trade: (t) => {
         tapeTrade(t);
-        earnTrade(t); // v0.1.128 EARNERS: every wallet's record
+        // v0.1.128 EARNERS: every wallet's record. v0.1.129: curve trades and the coin's own SOL pool only (a PumpSwap pool
+        // quoted in USDC or another token reported its amounts as SOL: one wallet showed +1.3M SOL)
+        if (t.venue === "curve" || t.mcSol != null) earnTrade(t);
         smartTrade(t); // v0.1.128: FOMO crowd, earners, crews
         originMc(t.mint, t.mcSol); // v0.1.103 ORIGIN: market caps for alpha/beta
         // v0.1.87: the live tape for the watch list (CATCH bursts, SHIELD), in PumpPortal's message shape

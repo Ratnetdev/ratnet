@@ -10,6 +10,7 @@
 // at boot, so they keep growing across restarts.
 
 export const MIN_BUY = 0.02; // SOL: smaller buys are not booked (dust bots)
+export const MAX_SOL = 500; // v0.1.129: no single pump.fun trade is this big: a bigger amount is a misread quote
 const MAX_WALLETS = 150_000;
 const MAX_POS = 40;
 export const EARN = { n: 10, pnl: 0.5, wr: 0.25, per: 0.03 };
@@ -47,7 +48,7 @@ export const earnRec = (w: string) => WL.get(w)?.r ?? null;
 
 /** One trade from the firehose. */
 export function earnTrade(t: { mint: string; user: string; isBuy: boolean; sol: number; tokens: number; at: number }) {
-  if (!t.user || !(t.tokens > 0)) return;
+  if (!t.user || !(t.tokens > 0) || !(t.sol >= 0) || t.sol > MAX_SOL) return;
   earnStats.trades++;
   if (t.isBuy) {
     if (t.sol < MIN_BUY) return;
@@ -91,7 +92,7 @@ export function earnDump(min = 3) {
 }
 export function earnLoad(recs: Record<string, Rec>) {
   for (const [w, r] of Object.entries(recs || {})) {
-    if (!r || typeof r.n !== "number") continue;
+    if (!r || typeof r.n !== "number" || !(Math.abs(r.pnl) <= MAX_SOL * r.n)) continue; // v0.1.129: drop misread records
     const x = WL.get(w);
     if (x && x.r.n >= r.n) continue;
     WL.set(w, { pos: x?.pos ?? new Map(), r: { n: r.n, w: r.w || 0, pnl: r.pnl || 0, gw: r.gw || 0, gl: r.gl || 0, at: r.at || 0 } });
