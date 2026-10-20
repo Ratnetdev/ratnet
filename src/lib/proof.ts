@@ -1,7 +1,7 @@
 // v0.1.138 PROOF BOARD: what the live desk did against its own paper twin, how fast it fills, and how the King's
 // calls are graded. Everything here is read from the records the desk and the rats already keep.
 import { redis } from "./redis";
-import { FILLS_LOG, type FillRec } from "./desk";
+import { FILLS_LOG, ORDERS_KEY, type FillRec } from "./desk";
 import type { LivePair } from "./gridlive";
 
 const med = (xs: number[]) => {
@@ -55,12 +55,13 @@ export async function proofView() {
   const r = redis();
   const { getRecord } = await import("./desk");
   const { getStats } = await import("./stats");
-  const [pairs, fills, gv, stats, rec] = await Promise.all([
+  const [pairs, fills, gv, stats, rec, orders] = await Promise.all([
     r.get<LivePair[]>("rn:grid:pairs").catch(() => null),
     r.lrange<FillRec>(FILLS_LOG, 0, 199).catch(() => [] as FillRec[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
     getStats().catch(() => null as any),
     getRecord(undefined, "real").catch(() => null as any),
+    r.get<any>(ORDERS_KEY).catch(() => null),
   ]);
   const s = rec?.summary || {};
   return {
@@ -68,6 +69,7 @@ export async function proofView() {
     desk: { live: !!rec?.live, start: s.start ?? null, equity: s.equity ?? null, returnPct: s.returnPct ?? null, sessionPct: s.sessionPct ?? null, trips: s.closed ?? s.trips ?? null, winRate: s.winRate ?? null },
     gap: gv?.realGap ?? null,
     pairs: pairRows(pairs || []),
+    orders: orders ? { since: orders.since, recv: orders.recv, bought: orders.bought, why: Object.entries(orders.why || {}).sort((x: any, z: any) => z[1] - x[1]).slice(0, 8).map(([why, n]) => ({ why, n })), last: (orders.last || []).slice(0, 10) } : null,
     fills: fillSummary(fills || []),
     recentFills: (fills || []).slice(0, 15).map((f) => ({ at: f.at, mint: f.mint, symbol: f.symbol, path: f.path, early: f.early, total: f.total, slip: f.slip })),
     grid: gv ? { books: gv.books?.length ?? 0, passed: (gv.books || []).filter((b: any) => b.live?.passed).length, trips: gv.trips ?? null, keep: gv.keep ?? null, bags: gv.bags ? { n: gv.bags.n, best: gv.bags.best, live: gv.bags.live, desk: gv.bags.desk, rows: gv.bags.rows } : null, ladder: gv.ladder?.all ? { n: gv.ladder.all.n, best: gv.ladder.all.best, rows: gv.ladder.all.rows } : null } : null,

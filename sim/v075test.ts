@@ -65,7 +65,7 @@ const ok = (c: boolean, m: string) => {
   const fs = await import("fs");
   const dk = fs.readFileSync(new URL("../src/lib/desk.ts", import.meta.url), "utf8");
   ok(/if \(p\.gx && !closeAll\)/.test(dk) && /gridExit\(p,/.test(dk), "desk positions following GRID run GRID's exits");
-  ok(/while \(GRID_ORDERS\.length\)[\s\S]{0,200}gridEntry\(/.test(dk), "the desk buys GRID orders first in every beat");
+  ok(/while \(GRID_ORDERS\.length\)[\s\S]{0,200}(gridEntry|runOrder)\(/.test(dk), "the desk buys GRID orders first in every beat");
   ok(/await shield\(\{ mint: o\.mint/.test(dk), "SHIELD still checks every GRID buy");
   const wk = fs.readFileSync(new URL("../worker/index.ts", import.meta.url), "utf8");
   ok(/setGridFollow\(\(o\) => queueGridOrder\(o\)\)/.test(wk), "the worker connects GRID LIVE to the desk");

@@ -13,6 +13,7 @@ type Proof = {
   pairs: Row[];
   fills: { n: number; live: number; ms: number | null; p90: number | null; wait: number | null; prep: number | null; land: number | null; slip: number | null; early: number; fast: { n: number; ms: number | null }; beat: { n: number; ms: number | null } };
   recentFills: Fill[];
+  orders: { since: number; recv: number; bought: number; why: { why: string; n: number }[]; last: { at: number; mint: string; symbol: string; path: string; early: boolean; out: string; why: string }[] } | null;
   grid: { books: number; passed: number; trips: number | null; keep: { k: number; n: number } | null; bags: { n: number; best: string | null; live: number | null; desk: Shadow; rows: (Shadow & { ran: number })[] } | null; ladder: { n: number; best: string | null; rows: Shadow[] } | null } | null;
   king: { dug: number; resolved: number; baseRate: number; bond: { n: number; hit: number; rate: number } | null } | null;
 };
@@ -101,6 +102,18 @@ export default function ProofBoard() {
                   {!p?.recentFills?.length && <tr><td colSpan={4} className="muted">The ledger starts with the next GRID buy.</td></tr>}
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="ph"><span><b>orders the desk received</b> · since {p?.orders ? ago(p.orders.since) : "–"}</span></div>
+            <div className="pb small">
+              <div className="row between"><span className="muted">GRID orders</span><span>{num(p?.orders?.recv ?? 0)}</span></div>
+              <div className="row between"><span className="green">bought</span><span>{num(p?.orders?.bought ?? 0)}</span></div>
+              {(p?.orders?.why || []).map((w) => (
+                <div key={w.why} className="row between" style={{ gap: 10 }}><span className="muted" style={{ minWidth: 0 }}>skipped: {w.why}</span><span>{num(w.n)}</span></div>
+              ))}
+              {!p?.orders && <div className="muted">Counting starts with the next GRID order.</div>}
             </div>
           </div>
 

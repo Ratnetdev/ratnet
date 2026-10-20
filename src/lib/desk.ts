@@ -122,6 +122,9 @@ export type Pos = {
   gf?: { v: string; f0: { kx: number | null; e20: number | null } | null; done?: boolean }; // v0.1.108: its flow exit
   ld?: Step[]; // v0.1.127 TP LADDER: the take-profit steps this position sells in (set at the buy)
   li?: number; // the next step
+  nrN?: number; // v0.1.140: sells that found no route in a row
+  nrNext?: number; // the next try after 3 misses
+  nrLog?: number;
   fill?: { total: number; slip: number | null }; // v0.1.138 FILL LEDGER: signal to landed (ms), fill vs the signal price (%)
   bag?: number; // v0.1.137 BAG: the share kept after the ladder's last step (it rides BAG_TRAIL for up to BAG_HOURS)
   trail?: number; // current trailing stop width %
@@ -2077,7 +2080,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       while (GRID_ORDERS.length) {
         const o = GRID_ORDERS.shift()!;
         fastFill.beat++;
-        await gridEntry(b, state, o, cfg, eq.value, walletSol, kp).catch((e) => log(b, "REGIME", `GRID order $${o.symbol}: ${safeErr(e)}`, "bad"));
+        await runOrder({ b, state, cfg, eqValue: eq.value, walletSol, kp }, o);
       }
       for (const q0 of queued) {
         // v0.1.45: entries never hold the exits back for long. Each entry can take seconds (VET, FLOW, the falling-knife
@@ -2963,6 +2966,30 @@ type FastCtx = { b: Batch; state: DeskState; cfg: Cfg; eqValue: number; walletSo
 let FAST_CTX: FastCtx | null = null;
 let FAST_CHAIN: Promise<unknown> = Promise.resolve();
 export const fastFill = { fast: 0, beat: 0 };
+// v0.1.140 ORDER OUTCOMES: every GRID order the desk receives ends as "bought" or with the reason it was skipped (the
+// last thing the desk logged for that coin). Counts by reason plus the last 50, in Redis for /api/desk/fills and /proof
+export const ORDERS_KEY = "rn:desk:orders";
+type OrderOut = { at: number; mint: string; symbol: string; path: string; early: boolean; out: "bought" | "skipped"; why: string };
+const ORDER_STATS: { since: number; recv: number; bought: number; why: Record<string, number>; last: OrderOut[] } = { since: Date.now(), recv: 0, bought: 0, why: {}, last: [] };
+export const orderReason = (t: string) =>
+  t.replace(/\$\S+/g, "").replace(/[0-9][0-9.,]*\s*(%|◎|SOL|s|ms|m)?/g, "#").replace(/\s+/g, " ").replace(/^[\s:.,]+/, "").trim().slice(0, 80) || "no reason logged";
+async function runOrder(c: { b: Batch; state: DeskState; cfg: Cfg; eqValue: number; walletSol: number | null; kp: Keypair | null }, o: GridOrder) {
+  const ev0 = c.b.ev;
+  const n0 = ev0.length;
+  const had = !!(await loadPositions(K.deskPos))[o.mint];
+  await gridEntry(c.b, c.state, o, c.cfg, c.eqValue, c.walletSol, c.kp).catch((e) => log(c.b, "REGIME", `GRID order $${o.symbol}: ${safeErr(e)}`, "bad", { mint: o.mint, symbol: o.symbol }));
+  try {
+    const has = !!(await loadPositions(K.deskPos))[o.mint];
+    const evs = (c.b.ev === ev0 ? ev0.slice(n0) : [...ev0.slice(n0), ...c.b.ev]).filter((e) => e.mint === o.mint);
+    const bought = has && !had;
+    const why = bought ? "bought" : had ? "already holding the coin" : orderReason(evs[evs.length - 1]?.text || "");
+    ORDER_STATS.recv++;
+    if (bought) ORDER_STATS.bought++;
+    else ORDER_STATS.why[why] = (ORDER_STATS.why[why] || 0) + 1;
+    ORDER_STATS.last = [{ at: Date.now(), mint: o.mint, symbol: o.symbol, path: o.path || "beat", early: !!o.early, out: bought ? "bought" as const : "skipped" as const, why: bought ? "bought" : evs[evs.length - 1]?.text?.slice(0, 160) || why }, ...ORDER_STATS.last].slice(0, 50);
+    await redis().set(ORDERS_KEY, ORDER_STATS, { ex: 7 * 86400 }).catch(() => null);
+  } catch {}
+}
 function kickFast() {
   if (!FAST_CTX || Date.now() > FAST_CTX.until) return;
   FAST_CHAIN = FAST_CHAIN.then(async () => {
@@ -2970,7 +2997,7 @@ function kickFast() {
     while (c && Date.now() <= c.until && GRID_ORDERS.length) {
       const o = GRID_ORDERS.shift()!;
       fastFill.fast++;
-      await gridEntry(c.b, c.state, { ...o, path: "fast" }, c.cfg, c.eqValue, c.walletSol, c.kp).catch((e) => log(c.b, "REGIME", `GRID order $${o.symbol}: ${safeErr(e)}`, "bad"));
+      await runOrder(c, { ...o, path: "fast" });
     }
   }).catch(() => null);
 }
@@ -3359,6 +3386,9 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     return false;
   }
   if (p.live && kp) {
+    // v0.1.140: a coin with no sell route is retried every 10 minutes after 3 misses, not every beat (20 Oct: $pokeball
+    // failed every beat for hours and filled 45 of the 60 log lines the site shows)
+    if (p.nrNext && Date.now() < p.nrNext) return false;
     // v0.1.100 (audit): a sell of this coin whose fate is unknown (it may have landed) waits for the wallet check. Before,
     // the next beat sold again: a full exit found 0 tokens and dropped the position unbooked, and the initials sold
     // their share of what was left a second time
@@ -3387,9 +3417,20 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
       LIVE_FLOW += proceeds;
       FLOW_SINCE_BAL += proceeds;
     } catch (e) {
-      log(b, "RISK", `sell $${p.symbol} failed, retrying next beat: ${safeErr(e)}`, "bad", coin);
+      const msg = safeErr(e);
+      if (/no route/i.test(msg)) {
+        p.nrN = (p.nrN || 0) + 1;
+        if (p.nrN >= 3) p.nrNext = Date.now() + 10 * 60_000;
+        if (p.nrN <= 3 || Date.now() - (p.nrLog || 0) > 3600_000) {
+          p.nrLog = Date.now();
+          log(b, "RISK", `sell $${p.symbol} failed: ${msg}${p.nrN >= 3 ? ` (${p.nrN} tries: retrying every 10 minutes)` : ", retrying next beat"}`, "bad", coin);
+        }
+        return false;
+      }
+      log(b, "RISK", `sell $${p.symbol} failed, retrying next beat: ${msg}`, "bad", coin);
       return false;
     }
+    if (p.nrN) (p.nrN = 0), (p.nrNext = undefined);
   } else {
     proceeds = sellProceeds(amt, px, p.mkt?.grad ?? !!p.gradSeen, p.mkt?.real ?? 0, COST, frac >= 1 || amt >= p.tokens - 1e-9);
     state.cash += proceeds;
