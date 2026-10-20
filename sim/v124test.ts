@@ -23,6 +23,7 @@ const ok = (c: boolean, m: string) => {
   // ---- 1. the 19 Oct case: +0.17 total, -0.58 without the 2 best: no longer held
   L.gridLiveReset();
   L._resetOpenMarks();
+  L._setKeep(1); // v0.1.138: this test checks the marks themselves; the kept share is tested in v138test
   const rec = [trip(0.42, 0), trip(0.33, 1), ...Array.from({ length: 119 }, (_, i) => trip(-0.58 / 119, i + 2))];
   L._setEver([key]);
   const st = L.bookStat(B, rec);

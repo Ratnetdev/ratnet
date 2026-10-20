@@ -17,6 +17,7 @@ const PAGES: Item[] = [
   { label: "Rats", hint: "spawn a rat", href: "/rats" },
   { label: "Sniff", hint: "score any CA", href: "/sniff" },
   { label: "Extension", hint: "the King on pump.fun, Axiom, GMGN", href: "/extension" },
+  { label: "Proof", hint: "live vs paper, fill speed", href: "/proof" },
   { label: "Ledger", hint: "burns + payouts", href: "/ledger" },
   { label: "Dataset", hint: "daily drops", href: "/dataset" },
   { label: "Docs", hint: "how it all works", href: "/docs" },

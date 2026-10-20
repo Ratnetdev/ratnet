@@ -9,6 +9,8 @@ const EPS: [string, string, string][] = [
   ["GET", "/api/graduations", "The last 100 launches that bonded, time to bond, and what the King said at 5 minutes."],
   ["GET", "/api/check?ca={CA}", "The Rat King check: bond score and report plus who is buying (FOMO traders, earners, proven wallets, bots, callout front-runners), copies, the dev's week and the desk's record at that size. Free before launch, 10 an hour."],
   ["POST", "/api/mcp", "The same check as an MCP server for Claude, Cursor and any MCP client. Tools: rat_check, king_calls, rat_desk."],
+  ["GET", "/api/proof", "The proof board: the live desk against its paper twin trade by trade, the real gap, fill speed, the King's record."],
+  ["GET", "/api/desk/fills", "Every GRID buy: signal to start, checks, send to landed (ms) and the fill against the price at the signal."],
   ["GET", "/api/coin/{CA}", "Everything the rats dug on one launch: metadata, dev history, checkpoints, call, outcome."],
   ["GET", "/api/king/weights", "Rat King nano's sample count, loss and training log."],
   ["GET", "/api/ledger", "Payout rounds, burns and the public dataset drops."],

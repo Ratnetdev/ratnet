@@ -80,7 +80,7 @@ const ok = (c: boolean, m: string) => {
   // ---- 6. FOLLOW 3 and class sizing
   ok(/FOLLOW_N = \(\) => Math\.max\(1, Math\.min\(5, Number\(process\.env\.GRID_FOLLOW_N \?\? 3\)/.test(src), "the desk follows the top 3 passed books (GRID_FOLLOW_N, 1 to 5)");
   ok(/\.filter\(\(x\) => x\.s\.passed && !gapBlock\(x\.b\.key\) && \(x\.s\.lessTop2 \?\? x\.s\.pnl\) > 0\)/.test(src), "never a book whose record is negative without its 2 best trades");
-  ok(/LEADERS\.size \? LEADERS\.has\(b\.key\) : LEADER === b\.key/.test(src), "every followed book's entries reach the desk");
+  ok((/LEADERS\.size \? LEADERS\.has\(b\.key\) : LEADER === b\.key/.test(src) || /LEADERS\.size \? LEADERS\.has\(k\) : LEADER === k/.test(src)), "every followed book's entries reach the desk");
   const C = await import("../src/lib/classgate");
   C._gateReset();
   C.setClassPaper(() => Array.from({ length: 40 }, (_, i) => ({ mc0: 150, sh: { desk: i % 2 ? 1.5 : 0.9 }, closedAt: now - i * 1000 })));

@@ -122,6 +122,7 @@ export type Pos = {
   gf?: { v: string; f0: { kx: number | null; e20: number | null } | null; done?: boolean }; // v0.1.108: its flow exit
   ld?: Step[]; // v0.1.127 TP LADDER: the take-profit steps this position sells in (set at the buy)
   li?: number; // the next step
+  fill?: { total: number; slip: number | null }; // v0.1.138 FILL LEDGER: signal to landed (ms), fill vs the signal price (%)
   bag?: number; // v0.1.137 BAG: the share kept after the ladder's last step (it rides BAG_TRAIL for up to BAG_HOURS)
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
@@ -937,8 +938,14 @@ type Batch = { ev: DeskEv[]; trades: Trade[]; ghost?: Trade[] };
 function log(b: Batch, agent: Agent, text: string, tone: Tone = "info", coin?: { mint: string; symbol: string }) {
   b.ev.push({ agent, at: Date.now(), text, tone, mint: coin?.mint, symbol: coin?.symbol });
 }
-async function flushLog(b: Batch) {
-  if (!b.ev.length && !b.trades.length && !b.ghost?.length) return;
+async function flushLog(b0: Batch) {
+  if (!b0.ev.length && !b0.trades.length && !b0.ghost?.length) return;
+  // v0.1.138: take the batch's contents first (FAST FILL entries log while this write is in flight; before, anything
+  // logged during the write was cleared with it)
+  const b: Batch = { ev: b0.ev, trades: b0.trades, ghost: b0.ghost };
+  b0.ev = [];
+  b0.trades = [];
+  b0.ghost = [];
   const p = redis().pipeline();
   if (b.ev.length) {
     p.lpush(K.deskEv, ...b.ev);
@@ -967,9 +974,6 @@ async function flushLog(b: Batch) {
     p.incr(SEQ.gtrades);
   }
   await p.exec();
-  b.ev = [];
-  b.trades = [];
-  b.ghost = [];
 }
 
 const pct = (a: number, b: number) => (b ? ((a - b) / b) * 100 : 0);
@@ -2066,9 +2070,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         GRID_ORDERS.length = 0;
         queued.length = 0;
       }
+      // v0.1.138 FAST FILL: the next orders are bought on arrival with this beat's books
+      FAST_CTX = PROMO_WAIT ? null : { b, state, cfg, eqValue: eq.value, walletSol, kp, until: Date.now() + 10_000 };
+      await FAST_CHAIN;
       // v0.1.75: GRID LIVE's leader first (its entries are time-critical: the strategy was tested with a 2-second fill)
       while (GRID_ORDERS.length) {
         const o = GRID_ORDERS.shift()!;
+        fastFill.beat++;
         await gridEntry(b, state, o, cfg, eq.value, walletSol, kp).catch((e) => log(b, "REGIME", `GRID order $${o.symbol}: ${safeErr(e)}`, "bad"));
       }
       for (const q0 of queued) {
@@ -2525,6 +2533,13 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     }
     if (digging) await digging;
     if (learning) await learning;
+    // v0.1.138: no fast entry on this session's books once it ends; one in flight finishes and is saved here
+    FAST_CTX = null;
+    await FAST_CHAIN.catch(() => null);
+    if (!DESK_LOST) {
+      await flushLog(b).catch(() => {});
+      await r.set(K.deskState, state);
+    }
     if (!DESK_LOST) await r.set(K.deskLearn, learnS);
     return { loops };
   } catch (e) {
@@ -2532,6 +2547,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     await flushLog(b).catch(() => {});
     return { error: safeErr(e), loops };
   } finally {
+    FAST_CTX = null;
     clearInterval(lockTimer);
     if (process.env.VERCEL) await alertsFlush().catch(() => null);
     if (!DESK_LOST) await flushPositions();
@@ -2916,7 +2932,7 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
 
 // v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
 // the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
-export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; xp?: "book" | "desk"; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; early?: boolean; path?: string; xp?: "book" | "desk"; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
 // v0.1.108 FLOW EXIT: the worker hands the desk the coin's flow (KOLs that sold, first 20 buyers that sold), so a
 // strategy with a flow exit runs it on live money exactly as its twin ran it on paper
 let DESK_FLOW: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
@@ -2938,7 +2954,30 @@ const GRID_ORDERS: GridOrder[] = [];
 export function queueGridOrder(o: GridOrder) {
   GRID_ORDERS.push(o);
   if (GRID_ORDERS.length > 50) GRID_ORDERS.shift();
+  kickFast();
 }
+// v0.1.138 FAST FILL: a GRID order is bought the moment it arrives, on the running session's books, instead of on the
+// desk's next beat (a beat runs every exit and can take seconds). One order at a time, in arrival order; the beat
+// still picks up anything left. The session refreshes the context every beat; a stale one (10 s) is not used
+type FastCtx = { b: Batch; state: DeskState; cfg: Cfg; eqValue: number; walletSol: number | null; kp: Keypair | null; until: number };
+let FAST_CTX: FastCtx | null = null;
+let FAST_CHAIN: Promise<unknown> = Promise.resolve();
+export const fastFill = { fast: 0, beat: 0 };
+function kickFast() {
+  if (!FAST_CTX || Date.now() > FAST_CTX.until) return;
+  FAST_CHAIN = FAST_CHAIN.then(async () => {
+    const c = FAST_CTX;
+    while (c && Date.now() <= c.until && GRID_ORDERS.length) {
+      const o = GRID_ORDERS.shift()!;
+      fastFill.fast++;
+      await gridEntry(c.b, c.state, { ...o, path: "fast" }, c.cfg, c.eqValue, c.walletSol, c.kp).catch((e) => log(c.b, "REGIME", `GRID order $${o.symbol}: ${safeErr(e)}`, "bad"));
+    }
+  }).catch(() => null);
+}
+// v0.1.138 FILL LEDGER: every live GRID buy: signal to start, start to send, send to landed (ms), and the real fill
+// against the price at the signal. Public (/api/desk/fills) and in the review
+export const FILLS_LOG = "rn:desk:fills";
+export type FillRec = { at: number; mint: string; symbol: string; path: string; early: boolean; wait: number; prep: number; land: number; total: number; slip: number | null; live: boolean };
 export const gridOrders = () => GRID_ORDERS;
 export const ENTRY_CHASE_DEF = 0.05;
 export const entryChase = () => {
@@ -2953,6 +2992,9 @@ let GRID_BUYING = false;
 async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null) {
   const r = redis();
   const coin = { mint: o.mint, symbol: o.symbol };
+  const tStart = Date.now();
+  // v0.1.138: the coin's record is read next to the price, not after it
+  const knownP = getLaunch(o.mint).catch(() => null);
   if (Date.now() - o.at > 30_000) return log(b, "REGIME", `$${o.symbol}: the GRID signal is ${Math.round((Date.now() - o.at) / 1000)}s old. not chasing`, "info", coin);
   if (ENTERING.has(o.mint) || (await loadPositions(K.deskPos))[o.mint]) return;
   // v0.1.126 RUG GUARD: an entry the rug study rules out (paper still takes it, so the study keeps measuring)
@@ -3008,7 +3050,7 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     if (size < cfg.minSol * 0.99) return log(b, "SIZE", `no room for $${o.symbol}: ${avail.toFixed(3)} SOL free`, "info", coin);
     log(b, "SIZE", `${size.toFixed(3)} SOL on $${o.symbol}: ${pct}% of a ${eqValue.toFixed(2)} SOL bank (${o.probation ? "probation (SEER or FAST LANE): minimum size until the full exam" : plan ? `${plan.n} live trips, ${plan.why}` : `flat ${cfg.sizePct}%, under ${KELLY_MIN_TRIPS} trips`})${size < (eqValue * pct) / 100 - 1e-9 ? `, capped by ${size >= sc.maxSol - 1e-9 ? `the size cap ${sc.maxSol.toFixed(2)} SOL at this bank` : size >= liqCap - 1e-9 ? "liquidity" : size >= room - 1e-9 && rl ? `exposure (${rl.why})` : "free cash"}` : ""}`, "info", coin);
     // SHIELD, the scam guard, still runs before any money moves
-    const known = await getLaunch(o.mint).catch(() => null);
+    const known = await knownP;
     const sh = await shield({ mint: o.mint, symbol: o.symbol, grad: !!fresh.grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / fresh.px) * 1e6))), tape: known?.tape, ageMs: known ? Date.now() - known.createdAt : undefined }).catch(() => null);
     if (sh && !sh.ok) {
       const f = (sh.hardFail || sh.softFail)!;
@@ -3016,8 +3058,15 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     }
     const rec: Launch = known || ({ mint: o.mint, sig: "", createdAt: Date.now(), creator: "", name: o.symbol, symbol: o.symbol, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: Date.now(), dugBy: "GRID", p0: 0, mcap0: 0, cp: {}, outcome: fresh.grad ? "BONDED" : undefined } as Launch);
     GRID_BUYING = true;
+    const tSend = Date.now();
     const pos = await buy(b, state, rec, size, fresh.px, cfg.slippageBps, kp, fresh.real, "direct", !!fresh.grad).finally(() => (GRID_BUYING = false));
     if (!pos) return;
+    try {
+      const tLand = Date.now();
+      const f: FillRec = { at: tLand, mint: o.mint, symbol: o.symbol, path: o.path || "beat", early: !!o.early, wait: tStart - o.at, prep: tSend - tStart, land: tLand - tSend, total: tLand - o.at, slip: o.px0 && o.px0 > 0 && pos.entryPx > 0 ? Math.round((pos.entryPx / o.px0 - 1) * 1000) / 10 : null, live: !!state.live };
+      pos.fill = { total: f.total, slip: f.slip };
+      await r.lpush(FILLS_LOG, f).then(() => r.ltrim(FILLS_LOG, 0, 499)).catch(() => null);
+    } catch {}
     pos.gk = o.key;
     pos.gx = o.exit;
     // v0.1.127 TP LADDER: the steps are fixed at the buy (a settings change applies to the next trades)

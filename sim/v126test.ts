@@ -38,7 +38,7 @@ const ok = (c: boolean, m: string) => {
   // ---- 3. wiring
   const g = fs.readFileSync("src/lib/gridlive.ts", "utf8");
   ok(/ef: entryNow\(pe\.mint, now\)/.test(g) && /t\.rug = now - pos\.openedAt <= RUG_SECS \* 1000 && t\.pnlPct <= -30/.test(g), "each paper buy keeps the coin's state; a stop at -30% or worse within 90 seconds counts as a rug");
-  ok(/rug: rugBlock\(pos\.ef\)/.test(g) && /pos\.ef \? \{ ef: pos\.ef, rug: !!t\.rug \}/.test(g), "GRID orders carry the guard's verdict; the state goes to the archive with the trip");
+  ok((/rug: rugBlock\(pos\.ef\)/.test(g) || /emitFollow\(b, pe, px0, inPool, rugBlock\(pos\.ef\) \?\? undefined/.test(g)) && /pos\.ef \? \{ ef: pos\.ef, rug: !!t\.rug \}/.test(g), "GRID orders carry the guard's verdict; the state goes to the archive with the trip");
   const d = fs.readFileSync("src/lib/desk.ts", "utf8");
   ok(/if \(o\.rug\) \{/.test(d) && /RUG GUARD, \$\{o\.rug\}/.test(d), "the desk skips a guarded entry and says why");
   const wk = fs.readFileSync("worker/index.ts", "utf8");

@@ -117,9 +117,9 @@ export type LBook = {
   fv?: string;
   fxOf?: string;
 };
-type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null; mult?: number };
+type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null; mult?: number; sent?: number };
 export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean; ef?: EntryF | null; sh?: Record<string, Shadow> };
-export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string; ef?: EntryF | null; rug?: boolean; sh?: Record<string, number>; mc0?: number };
+export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string; ef?: EntryF | null; rug?: boolean; sh?: Record<string, number>; mc0?: number; pk?: number };
 
 let BOOKS: LBook[] = [];
 const PEND = new Map<string, Pend>(); // key|mint
@@ -128,7 +128,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; xp?: "book" | "desk"; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; early?: boolean; xp?: "book" | "desk"; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -748,10 +748,21 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     else if (m.kind === "dip" && last.px <= pe.px0 * (1 - m.a)) pe.fillAfter = now + 2_000;
     return;
   }
+  const capOf = () => (b.tick ? MAX_OPEN_TICK : b.any || b.early ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN);
+  // v0.1.138 FAST FILL: the paper fills 2 seconds after the signal (its model of a real buy's delay). The live desk
+  // gets the order AT the signal, so its real buy lands about when the paper fills, not 2 seconds plus a desk beat later
+  // (20 Oct overnight: 48 of 79 live stops came within 10 seconds of the buy: the desk bought the top of the burst)
+  if (!pe.sent && now < pe.fillAfter && followed(b.key) && [...POS.values()].filter((p) => p.key === b.key).length < capOf()) {
+    const sx = last.px / 1e9;
+    if (sx > 0) {
+      pe.sent = now;
+      emitFollow(b, pe, sx, !!last.pool, rugBlock(entryNow(pe.mint, now)) ?? undefined, now, true);
+    }
+  }
   if (now < pe.fillAfter) return;
   PEND.delete(k);
   const open = [...POS.values()].filter((p) => p.key === b.key).length;
-  if (open >= (b.tick ? MAX_OPEN_TICK : b.any || b.early ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN)) return;
+  if (open >= capOf()) return;
   const px0 = last.px / 1e9;
   if (!(px0 > 0)) return;
   const sol = GRID_SOL;
@@ -761,13 +772,19 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
   if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens, sol, at: now });
-  if (FOLLOW && (LEADERS.size ? LEADERS.has(b.key) : LEADER === b.key)) {
-    try {
-      // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
-      const mine = TRIPS.filter((t) => t.k === b.key);
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, xp: exitPick(b.key).pick, pcts: (() => { const e = edgeAdj(b.key); return mine.map((t) => Math.round(e.adj(t) * 10) / 10); })(), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, rug: rugBlock(pos.ef) ?? undefined, ...(pe.mult ? { mult: pe.mult } : {}) });
-    } catch {}
-  }
+  if (!pe.sent && followed(b.key)) emitFollow(b, pe, px0, inPool, rugBlock(pos.ef) ?? undefined, now, false);
+}
+const followed = (k: string) => !!FOLLOW && (LEADERS.size ? LEADERS.has(k) : LEADER === k);
+export const fastStats = { early: 0, atFill: 0 };
+function emitFollow(b: LBook, pe: Pend, px0: number, inPool: boolean, rug: string | undefined, now: number, early: boolean) {
+  if (!FOLLOW) return;
+  try {
+    // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
+    const mine = TRIPS.filter((t) => t.k === b.key);
+    FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, xp: exitPick(b.key).pick, pcts: (() => { const e = edgeAdj(b.key); return mine.map((t) => Math.round(e.adj(t) * 10) / 10); })(), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, rug, early, ...(pe.mult ? { mult: pe.mult } : {}) });
+    if (early) fastStats.early++;
+    else fastStats.atFill++;
+  } catch {}
 }
 
 function sell(pos: LPos, frac: number, px: number, real: number) {
@@ -784,6 +801,7 @@ function close(k: string, pos: LPos, now: number, why: string) {
   POS.delete(k);
   const pnl = pos.back - pos.cost;
   const t: LTrip = { k: pos.key, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / pos.cost) * 1000) / 10, why };
+  if (pos.fillPx > 0 && pos.peak > 0) t.pk = Math.round((pos.peak / pos.fillPx) * 1000) / 1000; // v0.1.138: its peak
   // v0.1.126: a rug = stopped out at -30% or worse within 90 seconds of the buy
   if (pos.ef) (t.ef = pos.ef), (t.rug = now - pos.openedAt <= RUG_SECS * 1000 && t.pnlPct <= -30);
   // v0.1.127: what each take-profit ladder would have made on this trip, and the market cap (SOL) at the buy
@@ -1035,6 +1053,24 @@ function bookStat0(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trip
  * stopped-out trips). Each open position counts as one trip at what it would bring back if sold now.
  */
 export const EXIT_HAIRCUT = 0.1;
+// v0.1.138 KEEP SHARE: an open position up on paper is not money yet. Of the gain a closed trip had at its peak, how
+// much did it keep at the close? Learned on the last 500 closed trips that ran 30%+ (30 needed, else KEEP_DEF). An
+// open gain counts at that share: a runner book can no longer pass on one hot hour of marks (20 Oct: 10 runner books
+// passed at 15:55 on 20+ open positions each and failed again at 16:10 once the marks came down).
+export const KEEP_DEF = 0.5;
+let KEEP_AT = 0;
+let KEEP: { k: number; n: number } = { k: KEEP_DEF, n: 0 };
+export function keepShare(now = Date.now()) {
+  if (now - KEEP_AT < 60_000) return KEEP;
+  KEEP_AT = now;
+  const xs = TRIPS.filter((t) => t.pk != null && t.pk >= 1.3 && t.why !== "open (marked now)").slice(0, 500);
+  if (xs.length < 30) return (KEEP = { k: KEEP_DEF, n: xs.length });
+  const v = xs.reduce((a, t) => a + Math.max(-1, Math.min(1, (t.pnlPct / 100) / (t.pk! - 1))), 0) / xs.length;
+  return (KEEP = { k: Math.round(Math.max(0, Math.min(1, v)) * 1000) / 1000, n: xs.length });
+}
+export const _keepReset = () => ((KEEP_AT = 0), (KEEP = { k: KEEP_DEF, n: 0 }));
+/** Tests: pin the share (Infinity holds it until the next reset). */
+export const _setKeep = (k: number) => ((KEEP = { k, n: 0 }), (KEEP_AT = Number.MAX_SAFE_INTEGER));
 let OPEN_AT = 0;
 let OPEN_BY = new Map<string, LTrip[]>();
 export function openMarks(key: string, now = Date.now()): LTrip[] {
@@ -1044,7 +1080,8 @@ export function openMarks(key: string, now = Date.now()): LTrip[] {
     for (const p of POS.values()) {
       if (!(p.lastPx > 0) || !(p.cost > 0)) continue;
       const value = p.back + p.tokens * p.lastPx * (1 - EXIT_HAIRCUT);
-      const pnl = value - p.cost;
+      // v0.1.138: an open gain counts at the share closed trips kept of theirs
+      const pnl = value > p.cost ? (value - p.cost) * keepShare(now).k : value - p.cost;
       const t: LTrip = { k: p.key, mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: now, pnl: Math.round(pnl * 1e6) / 1e6, pnlPct: Math.round((pnl / p.cost) * 1000) / 10, why: "open (marked now)" };
       (OPEN_BY.get(p.key) || OPEN_BY.set(p.key, []).get(p.key)!).push(t);
     }
@@ -1195,7 +1232,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   if (leadChanged && send) await send(lead ? `🧭 <b>The desk now follows GRID LIVE's "${lead.label.replace(/[<>&]/g, " ")}"</b>\n${exitText(lead.exit)}\nIts entries go to the desk the moment they fill. Desk mode decides paper or live money.` : "🧭 The desk stopped following GRID LIVE (no passed strategy right now).").catch(() => null);
   refreshCheck();
   const hot = hotBook();
-  const view = { at: now, books, past, follow, hot: hot?.key ?? null, gapLimit: GAP_LIMIT * 100, edgeMin: EDGE_MIN(), realGap: pairsView(), bags: { ...bagStudy(), live: bagPick() }, ladder: LADDER_VIEW, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
+  const view = { at: now, books, past, follow, hot: hot?.key ?? null, gapLimit: GAP_LIMIT * 100, edgeMin: EDGE_MIN(), keep: keepShare(), fast: fastStats, realGap: pairsView(), bags: { ...bagStudy(), live: bagPick() }, ladder: LADDER_VIEW, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
   await redis().set(LIVE_VIEW, view, { ex: 2 * 86400 }).catch(() => null);
   return view;
 }
@@ -1290,7 +1327,7 @@ export const EDGE_MIN = () => {
   const v = Number(process.env.GRID_EDGE_MIN ?? 5);
   return Number.isFinite(v) ? v : 5;
 };
-export type LivePair = { k: string; mint: string; at: number; live: number; paper: number; exact: boolean };
+export type LivePair = { k: string; mint: string; at: number; live: number; paper: number; exact: boolean; sym?: string };
 const PAIRS_KEY = "rn:grid:pairs";
 let PAIRS: LivePair[] = [];
 const PAIR_SEEN = new Set<string>();
@@ -1321,7 +1358,7 @@ export function gridNoteLive(x: { k?: string; mint: string; openedAt: number; pc
   for (const t of ts) {
     if (seenK.has(t.k)) continue;
     seenK.add(t.k);
-    if (addPair({ k: t.k, mint: x.mint, at: x.openedAt, live: Math.round(x.pct * 10) / 10, paper: paperPct(t), exact: !!x.k })) n++;
+    if (addPair({ k: t.k, mint: x.mint, at: x.openedAt, live: Math.round(x.pct * 10) / 10, paper: paperPct(t), exact: !!x.k, sym: t.symbol })) n++;
   }
   return n;
 }
@@ -1329,7 +1366,7 @@ function pairPending(t: LTrip) {
   if (!LIVE_WAIT.length) return;
   const now = Date.now();
   LIVE_WAIT = LIVE_WAIT.filter((w) => now - w.at < 6 * 3600_000);
-  for (const w of LIVE_WAIT) if (w.mint === t.mint && (!w.k || w.k === t.k) && Math.abs(t.openedAt - w.openedAt) <= PAIR_SECS * 1000) addPair({ k: t.k, mint: w.mint, at: w.openedAt, live: Math.round(w.pct * 10) / 10, paper: paperPct(t), exact: !!w.k });
+  for (const w of LIVE_WAIT) if (w.mint === t.mint && (!w.k || w.k === t.k) && Math.abs(t.openedAt - w.openedAt) <= PAIR_SECS * 1000) addPair({ k: t.k, mint: w.mint, at: w.openedAt, live: Math.round(w.pct * 10) / 10, paper: paperPct(t), exact: !!w.k, sym: t.symbol });
   if (LIVE_WAIT.some((w) => w.mint === t.mint && w.k === t.k)) LIVE_WAIT = LIVE_WAIT.filter((w) => !(w.mint === t.mint && w.k === t.k));
 }
 // v0.1.136: evidence counts in distinct LIVE trades (an older trade pairs with every book that held the coin: 8 live
@@ -1938,4 +1975,5 @@ export function _gridLiveUnload() {
 export const gridLiveState = () => ({ pend: PEND, pos: POS, trips: TRIPS, fills: FILLS, check: CHECK, queue: QUEUE });
 /** Tests: set the books directly. */
 export const _setBooks = (b: LBook[]) => (BOOKS = b);
+export const _setLeaders = (ks: string[]) => ((LEADERS = new Set(ks)), (LEADER = ks[0] ?? null));
 export const _setTrips = (t: LTrip[]) => (TRIPS = t);

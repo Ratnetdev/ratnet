@@ -12,6 +12,12 @@ const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 export async function reviewView(now = Date.now()) {
   const r = redis();
+  // v0.1.138 FILL LEDGER
+  const fillsum = await (async () => {
+    const { FILLS_LOG } = await import("./desk");
+    const { fillSummary } = await import("./proof");
+    return fillSummary(((await r.lrange<any>(FILLS_LOG, 0, 499).catch(() => [])) || []) as any);
+  })().catch(() => null);
   const [trades, live, rpc, seer, seerHits, flowx, xposts, gv, ge, ge60, ge180, ge300, tv, tk, rug, lad, sm] = await Promise.all([
     r.lrange<any>(K.deskTrades, 0, 499).catch(() => [] as any[]),
     r.get<any>("rn:gridlive:view").catch(() => null),
@@ -91,6 +97,7 @@ export async function reviewView(now = Date.now()) {
     rug: rug ? { trips: rug.trips, rugs: rug.rugs, live: rug.live, rows: (rug.rows || []).map((x: any) => ({ id: x.id, verdict: x.verdict, skipN: x.test?.n ?? 0, skipPnl: x.test?.pnl ?? 0, skipRug: x.skipRug, keptRug: x.keptRug })) } : null,
     // v0.1.127 TP LADDER: each take-profit ladder run as a shadow on every paper trip (gross % a trip, before costs)
     bags: live?.bags ?? null, // v0.1.137
+    fills: fillsum, // v0.1.138
     ladder: lad ? { at: lad.at, desk: lad.desk, lead: lad.lead, all: lad.all, low: lad.low, rest: lad.rest, leader: lad.leader } : null,
     // v0.1.128 FOMO TAP, EARNERS, CREWS
     smart: sm ? { at: sm.at, fomo: { known: sm.fomo?.known ?? 0, wallets: sm.fomo?.wallets ?? 0, print: sm.fomo?.print ?? [], printBy: sm.fomo?.printBy ?? null, knownTx: sm.fomo?.knownTx ?? 0, fomoTrades: sm.fomo?.fomoTrades ?? 0, learned: sm.fomo?.learned ?? 0, candidates: (sm.fomo?.candidates || []).slice(0, 3) }, hot: (sm.hot || []).slice(0, 5), earners: { wallets: sm.earners?.wallets ?? 0, recorded: sm.earners?.recorded ?? 0, earners: sm.earners?.earners ?? 0, trips: sm.earners?.trips ?? 0, top: (sm.earners?.top || []).slice(0, 3) }, crews: sm.crews ?? null, buys: sm.buys ?? null, gate: sm.gate ?? null, bots: sm.earners?.bots ?? 0, front: sm.front ?? null, stories: sm.stories ?? null, fomoRegime: sm.fomoRegime ?? null, smartLive: sm.smartLive ?? null, realGap: sm.realGap ?? null } : null,
@@ -141,6 +148,7 @@ export function reviewText(v: Awaited<ReturnType<typeof reviewView>>) {
     v.rug ? `<b>RUG GUARD</b> (${v.rug.trips} paper trips with an entry state, ${v.rug.rugs} rugged within 90s); live: ${v.rug.live.join(", ") || "none"}\n${v.rug.rows.map((x: any) => `• ${x.id}: ${x.verdict}, newest ${x.skipN} it would skip ${x.skipPnl >= 0 ? "+" : ""}${x.skipPnl} SOL, rugged ${x.skipRug}% vs ${x.keptRug}% of the rest`).join("\n")}` : "<b>RUG GUARD</b>: no study yet",
     "",
     v.smart ? `<b>WHO IS BUYING</b> (FOMO tap, earners, crews)\n• FOMO: ${v.smart.fomo.wallets} wallets (${v.smart.fomo.known} from FOMO's leaderboard, ${v.smart.fomo.learned} learned); ${v.smart.fomo.print.length ? `fingerprint ${v.smart.fomo.print.map((a: string) => a.slice(0, 6)).join(", ")} (${v.smart.fomo.printBy}), ${v.smart.fomo.fomoTrades} FOMO trades read` : `fingerprint not found yet (${v.smart.fomo.knownTx} trades by known FOMO wallets seen${v.smart.fomo.candidates.length ? `; best: ${v.smart.fomo.candidates.map((c: any) => `${String(c.account).slice(0, 6)} ${c.share}% of them, ${c.wallets} wallets, ${c.base}% of all`).join("; ")}` : ""})`}\n• EARNERS: ${v.smart.earners.recorded} wallets with 3+ round trips, ${v.smart.earners.earners} earners${v.smart.earners.top.length ? `; best: ${v.smart.earners.top.map((t: any) => `${t.w} +${t.pnl} SOL on ${t.trips} (${t.winRate}% won)`).join(", ")}` : ""}\n• CREWS: ${v.smart.crews ? `${v.smart.crews.crews} crews (${v.smart.crews.wallets} wallets, max 20), each counts as one buyer` : "none yet"}; bots (30+ round trips a day): ${v.smart.bots}` : "<b>WHO IS BUYING</b>: not started yet",
+    v.fills?.n ? `<b>FILL LEDGER</b>: ${v.fills.n} GRID buys, signal to fill ${v.fills.ms ?? "-"} ms median (90% under ${v.fills.p90 ?? "-"} ms), fill vs the signal price ${v.fills.slip ?? "-"}%; on arrival ${v.fills.fast.n} (${v.fills.fast.ms ?? "-"} ms), next beat ${v.fills.beat.n} (${v.fills.beat.ms ?? "-"} ms); ordered at the signal ${v.fills.early}` : "<b>FILL LEDGER</b>: no GRID buy since v0.1.138",
     v.smart?.realGap ? `<b>REAL GAP</b>: ${v.smart.realGap.trades} live GRID follows paired with paper (${v.smart.realGap.exact} exact): real money made ${v.smart.realGap.gap >= 0 ? "+" : ""}${v.smart.realGap.gap} points a trade vs paper at the desk's ladder. Books are followed only while paper plus that gap makes 5%+ a trade` : "",
     v.smart?.front ? `<b>SMART</b> (after CRAWLNET): ${v.smart.front.callouts} callouts read, ${v.smart.front.matched} with buys in the 90s before; ${v.smart.front.frontRunners} front-runners (3+ callouts front-run)${v.smart.front.top?.length ? `, top: ${v.smart.front.top.map((t: any) => `${t.w} ${t.callouts} (${(t.callers || []).map((h: string) => "@" + esc(h)).join(", ")})`).join("; ")}` : ""}\n• running stories (a name or ticker that migrated a coin in 24h): ${v.smart.stories ?? 0}; FOMO retail money now vs its 6h average: ${v.smart.fomoRegime ?? "warming up"}\n• SMART books: ${v.smart.smartLive?.signals ?? 0} signals, ${v.smart.smartLive?.fired ?? 0} paper entries` : "<b>SMART</b>: not started yet",
     v.smart?.gate ? `<b>CLASS GATE</b> (live buys by market cap at the buy; ${v.smart.gate.skips} skipped since boot)\n${(v.smart.gate.classes || []).map((c: any) => `• ${c.label}: ${c.on ? "ON" : "OFF"}, ${esc(c.why)}`).join("\n")}` : "<b>CLASS GATE</b>: not started yet",
