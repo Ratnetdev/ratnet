@@ -155,7 +155,9 @@ export const gridLeaderKeys = () => [...LEADERS];
 export function gridLeaders(n = FOLLOW_N()): LBook[] {
   return BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) }))
     .filter((x) => x.s.passed && !gapBlock(x.b.key) && (x.s.lessTop2 ?? x.s.pnl) > 0)
-    .sort((a, z) => Number(!!a.s.probation) - Number(!!z.s.probation) || (z.s.lessTop2 ?? z.s.pnl) - (a.s.lessTop2 ?? a.s.pnl))
+    // v0.1.135: ranked by the record after the real gap (what real money would have made), when one is measured
+    .map((x) => ({ ...x, e: edgeOf(x.b.key).lessTop2, m: edgeAdj(x.b.key).src !== "none" }))
+    .sort((a, z) => Number(!!a.s.probation) - Number(!!z.s.probation) || (z.m ? z.e : (z.s.lessTop2 ?? z.s.pnl)) - (a.m ? a.e : (a.s.lessTop2 ?? a.s.pnl)))
     .slice(0, n)
     .map((x) => x.b);
 }
@@ -658,7 +660,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
       const mine = TRIPS.filter((t) => t.k === b.key);
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: mine.map((t) => t.pnlPct), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, rug: rugBlock(pos.ef) ?? undefined, ...(pe.mult ? { mult: pe.mult } : {}) });
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: (() => { const e = edgeAdj(b.key); return mine.map((t) => Math.round(e.adj(t) * 10) / 10); })(), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, rug: rugBlock(pos.ef) ?? undefined, ...(pe.mult ? { mult: pe.mult } : {}) });
     } catch {}
   }
 }
@@ -690,6 +692,7 @@ function close(k: string, pos: LPos, now: number, why: string) {
     redis().lpush(FLOWX_KEY, fx).then(() => redis().ltrim(FLOWX_KEY, 0, 1999)).catch(() => null);
   }
   TRIPS = keepTrips([t, ...TRIPS]);
+  pairPending(t); // v0.1.135: a live follow waiting for this paper trip
   // v0.1.123: every paper trip also goes to Postgres, so a record can never be lost again (book "grid:<key>")
   archiveTrip({ book: `grid:${pos.key}` as any, mint: pos.mint, symbol: pos.symbol, openedAt: pos.openedAt, closedAt: now, costSol: pos.cost, backSol: pos.back, how: pos.key.split(":")[0].split("|")[0].slice(0, 40), reason: why, data: pos.ef || t.sh ? { ...(pos.ef ? { ef: pos.ef, rug: !!t.rug } : {}), ...(t.sh ? { sh: t.sh, mc0: t.mc0 } : {}) } : undefined });
   const r = redis();
@@ -1059,9 +1062,11 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   for (const b of books) {
     if (!b.live.passed || !b.fills?.blocked || !send) continue;
     const fresh = await redis().hsetnx(GAPBLOCK_KEY, b.key, { at: now, ...b.fills }).catch(() => 0);
-    if (fresh) await send(`⚠️ <b>GRID LIVE: passed on paper, but real fills are too far off</b>\n${b.label.replace(/[<>&]/g, " ")}\nJupiter vs paper: buy ${b.fills.buyGap}% (${b.fills.buyN}), sell ${b.fills.sellGap}% (${b.fills.sellN}).\nThe desk does not follow it.`).catch(() => null);
+    const ed = b.fills.edge;
+    if (fresh) await send(`⚠️ <b>GRID LIVE: passed on paper, but not with real money</b>\n${b.label.replace(/[<>&]/g, " ")}\n${ed ? `After the real gap (${ed.gap ?? "-"} points, ${ed.src}${ed.pairs ? `, ${ed.pairs} measured` : ""}): ${ed.avg}% a trade, ${ed.lessTop2} SOL without the 2 best.` : `Jupiter vs paper: buy ${b.fills.buyGap}% (${b.fills.buyN}), sell ${b.fills.sellGap}% (${b.fills.sellN}).`}\nThe desk does not follow it.`).catch(() => null);
   }
   if (FILLS.size) await redis().hset(FILLS_KEY, Object.fromEntries(FILLS)).catch(() => null);
+  await pairsSave(); // v0.1.135
   if (now - RUG_AT > 10 * 60_000) {
     RUG_AT = now;
     const rv = rugStudy(TRIPS, now);
@@ -1079,7 +1084,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   if (leadChanged && send) await send(lead ? `🧭 <b>The desk now follows GRID LIVE's "${lead.label.replace(/[<>&]/g, " ")}"</b>\n${exitText(lead.exit)}\nIts entries go to the desk the moment they fill. Desk mode decides paper or live money.` : "🧭 The desk stopped following GRID LIVE (no passed strategy right now).").catch(() => null);
   refreshCheck();
   const hot = hotBook();
-  const view = { at: now, books, past, follow, hot: hot?.key ?? null, gapLimit: GAP_LIMIT * 100, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
+  const view = { at: now, books, past, follow, hot: hot?.key ?? null, gapLimit: GAP_LIMIT * 100, edgeMin: EDGE_MIN(), realGap: pairsView(), recent: TRIPS.slice(0, 15), trips: TRIPS.length };
   await redis().set(LIVE_VIEW, view, { ex: 2 * 86400 }).catch(() => null);
   return view;
 }
@@ -1158,18 +1163,137 @@ async function drain() {
 }
 /** A strategy whose real fills run 10%+ worse than paper over a round trip (8+ checks each way) is not followed. */
 export const GAP_LIMIT = -0.1;
+
+// v0.1.135 REAL GAP and EDGE AFTER FILLS. The Jupiter quote measures the route, not the whole gap: the live desk buys
+// a moment after the paper fill, on a coin that is moving. So every live GRID follow is paired with its book's paper
+// trip on the same coin (opened within PAIR_SECS), and the real gap = live % minus paper % (paper at the desk's own
+// take-profit ladder when it has one). A book is then judged on its paper record PLUS its real gap:
+//   its own pairs (8+), else its family's (same filter and entry, 8+), else every pair (8+), else the Jupiter quotes.
+// It is followed only while that adjusted record makes EDGE_MIN % a trade and stays positive without its 2 best trips.
+// This replaces the flat 10% gap limit, which blocked the best books (+51% a trade on paper, 17% gap) for nothing,
+// and missed the gap that cost the desk overnight (entries 48 of 79 stopped within 10 seconds).
+export const PAIR_SECS = 180;
+export const PAIR_MIN = 8;
+export const EDGE_MIN = () => {
+  const v = Number(process.env.GRID_EDGE_MIN ?? 5);
+  return Number.isFinite(v) ? v : 5;
+};
+export type LivePair = { k: string; mint: string; at: number; live: number; paper: number; exact: boolean };
+const PAIRS_KEY = "rn:grid:pairs";
+let PAIRS: LivePair[] = [];
+const PAIR_SEEN = new Set<string>();
+let LIVE_WAIT: { k?: string; mint: string; openedAt: number; pct: number; at: number }[] = [];
+let PAIRS_DIRTY = false;
+const paperPct = (t: LTrip) => (t.sh && typeof t.sh.desk === "number" ? Math.round((t.sh.desk - 1) * 1000) / 10 : t.pnlPct);
+export const familyOf = (k: string) => k.replace(/~.*$/, "").split("|").slice(0, 2).join("|");
+function addPair(x: LivePair) {
+  const id = `${x.k}|${x.mint}|${Math.round(x.at / 1000)}`;
+  if (PAIR_SEEN.has(id)) return false;
+  PAIR_SEEN.add(id);
+  PAIRS = [x, ...PAIRS].slice(0, 2000);
+  PAIRS_DIRTY = true;
+  return true;
+}
+function matchPaper(x: { k?: string; mint: string; openedAt: number }) {
+  return TRIPS.filter((t) => t.mint === x.mint && (!x.k || t.k === x.k) && Math.abs(t.openedAt - x.openedAt) <= PAIR_SECS * 1000 && t.why !== "open (marked now)");
+}
+/** A closed live follow (desk). k unknown (older trades): paired with every book that traded the coin then. */
+export function gridNoteLive(x: { k?: string; mint: string; openedAt: number; pct: number }, now = Date.now()) {
+  const ts = matchPaper(x);
+  if (!ts.length) {
+    if (now - x.openedAt < 6 * 3600_000) LIVE_WAIT = [{ ...x, at: now }, ...LIVE_WAIT].slice(0, 300);
+    return 0;
+  }
+  let n = 0;
+  const seenK = new Set<string>();
+  for (const t of ts) {
+    if (seenK.has(t.k)) continue;
+    seenK.add(t.k);
+    if (addPair({ k: t.k, mint: x.mint, at: x.openedAt, live: Math.round(x.pct * 10) / 10, paper: paperPct(t), exact: !!x.k })) n++;
+  }
+  return n;
+}
+function pairPending(t: LTrip) {
+  if (!LIVE_WAIT.length) return;
+  const now = Date.now();
+  LIVE_WAIT = LIVE_WAIT.filter((w) => now - w.at < 6 * 3600_000);
+  for (const w of LIVE_WAIT) if (w.mint === t.mint && (!w.k || w.k === t.k) && Math.abs(t.openedAt - w.openedAt) <= PAIR_SECS * 1000) addPair({ k: t.k, mint: w.mint, at: w.openedAt, live: Math.round(w.pct * 10) / 10, paper: paperPct(t), exact: !!w.k });
+  if (LIVE_WAIT.some((w) => w.mint === t.mint && w.k === t.k)) LIVE_WAIT = LIVE_WAIT.filter((w) => !(w.mint === t.mint && w.k === t.k));
+}
+const avgGap = (ps: LivePair[]) => ({ n: ps.length, gap: ps.length ? Math.round((ps.reduce((a, p) => a + (p.live - p.paper), 0) / ps.length) * 10) / 10 : 0 });
+/** The real gap (live minus paper, in % points a trade) for a book: its own, its family's, or all pairs. */
+export function realGap(k: string): { n: number; gap: number; src: "book" | "family" | "all" } | null {
+  const own = avgGap(PAIRS.filter((p) => p.k === k));
+  if (own.n >= PAIR_MIN) return { ...own, src: "book" };
+  const fam = familyOf(k);
+  const f = avgGap(PAIRS.filter((p) => familyOf(p.k) === fam));
+  if (f.n >= PAIR_MIN) return { ...f, src: "family" };
+  // all pairs: one live trade counts once (older trades pair with every book that held the coin)
+  const one = new Map<string, LivePair>();
+  for (const p of PAIRS) if (!one.has(`${p.mint}|${p.at}`)) one.set(`${p.mint}|${p.at}`, p);
+  const all = avgGap([...one.values()]);
+  return all.n >= PAIR_MIN ? { ...all, src: "all" } : null;
+}
+/** How a book's paper % a trip turns into a real-money % a trip. */
+// adj takes a paper TRIP: with a real gap, the base is the trip at the desk's own ladder (what the gap was measured
+// against: live follows sell on the desk's ladder); with quotes or nothing, the book's own net %
+export function edgeAdj(k: string): { adj: (t: LTrip) => number; src: string; gap: number | null; n: number } {
+  const rg = realGap(k);
+  if (rg) return { adj: (t) => paperPct(t) + rg.gap, src: rg.src, gap: rg.gap, n: rg.n };
+  const f = FILLS.get(k);
+  if (f && f.bn >= 8 && f.sn >= 8) return { adj: (t) => ((1 + t.pnlPct / 100) * (1 + f.bg) * (1 + f.sg) - 1) * 100, src: "quotes", gap: Math.round((f.bg + f.sg) * 1000) / 10, n: Math.min(f.bn, f.sn) };
+  return { adj: (t) => t.pnlPct, src: "none", gap: null, n: 0 };
+}
+/** The book's last 30 trips after the real gap: average % a trade and SOL without the 2 best (0.05 SOL trades). */
+export function edgeOf(k: string, trips?: LTrip[]) {
+  const e = edgeAdj(k);
+  const ts = (trips ?? TRIPS.filter((t) => t.k === k)).slice(0, 30);
+  const ps = ts.map((t) => e.adj(t));
+  const sol = ps.map((p) => (GRID_SOL * p) / 100).sort((a, z) => z - a);
+  const l2 = sol.reduce((a, v) => a + v, 0) - Math.max(0, sol[0] ?? 0) - Math.max(0, sol[1] ?? 0);
+  const avg = ps.length ? ps.reduce((a, v) => a + v, 0) / ps.length : 0;
+  return { n: ps.length, avg: Math.round(avg * 10) / 10, lessTop2: Math.round(l2 * 1e4) / 1e4, src: e.src, gap: e.gap, pairs: e.n, ok: ps.length > 0 && avg >= EDGE_MIN() && l2 > 0 };
+}
+export const pairsView = () => {
+  const one = new Map<string, LivePair>();
+  for (const p of PAIRS) if (!one.has(`${p.mint}|${p.at}`)) one.set(`${p.mint}|${p.at}`, p);
+  const u = [...one.values()];
+  return { pairs: PAIRS.length, trades: u.length, exact: PAIRS.filter((p) => p.exact).length, gap: avgGap(u).gap, waiting: LIVE_WAIT.length };
+};
+export async function pairsLoad() {
+  const xs = (await redis().get<LivePair[]>(PAIRS_KEY).catch(() => null)) || [];
+  for (const x of xs.reverse()) addPair(x);
+  PAIRS_DIRTY = false;
+  return PAIRS.length;
+}
+export async function pairsSave() {
+  if (!PAIRS_DIRTY) return;
+  PAIRS_DIRTY = false;
+  await redis().set(PAIRS_KEY, PAIRS.slice(0, 2000)).catch(() => null);
+}
+export const _pairsReset = () => ((PAIRS = []), PAIR_SEEN.clear(), (LIVE_WAIT = []), (PAIRS_DIRTY = false));
 const RECHECK = new Set<string>();
 export function gapBlock(key: string) {
   const f = FILLS.get(key);
-  if (RECHECK.has(key) && (!f || f.bn < 8 || f.sn < 8)) return true;
-  if (!f || f.bn < 8 || f.sn < 8) return false;
-  return f.bg + f.sg <= GAP_LIMIT;
+  const quoted = !!f && f.bn >= 8 && f.sn >= 8;
+  if (RECHECK.has(key) && !quoted) return true; // an old blocking record waits for the new check
+  // v0.1.135: with a real gap (live follows) or 8+ quotes each way, the book is judged on its edge after that gap
+  // (no trips yet: the old flat rule on the quotes holds until there is a record to judge)
+  if (quoted || realGap(key)) {
+    const e = edgeOf(key);
+    if (!e.n) return quoted && f!.bg + f!.sg <= GAP_LIMIT;
+    return !e.ok;
+  }
+  return false;
 }
+export const _gbClear = () => {};
+export const _setFill = (k: string, f: { bn: number; bg: number; sn: number; sg: number }) => FILLS.set(k, { nr: 0, v: FILL_V, lag: 0, ...f } as any);
 const fillView = (key: string) => {
   const f = FILLS.get(key);
   if (!f) return null;
   const r = (x: number) => Math.round(x * 1000) / 10;
-  return { buyN: f.bn, buyGap: r(f.bg), sellN: f.sn, sellGap: r(f.sg), noRoute: f.nr, blocked: gapBlock(key), lagMs: f.lag ?? null };
+  const e = edgeOf(key);
+  return { buyN: f.bn, buyGap: r(f.bg), sellN: f.sn, sellGap: r(f.sg), noRoute: f.nr, blocked: gapBlock(key), lagMs: f.lag ?? null, edge: { avg: e.avg, lessTop2: e.lessTop2, src: e.src, gap: e.gap, pairs: e.pairs } };
 };
 
 // ---------------------------------------------------------------- v0.1.78: spawn (variants and every-launch twin)

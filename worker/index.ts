@@ -24,7 +24,8 @@ import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
 import { archiveBoard, archiveEarlyGrid, archiveFlush, archiveGrid, archiveGridTrips, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
-import { classBoot, priceOf } from "../src/lib/desk";
+import { classBoot, getRecord, priceOf, setFollowClose } from "../src/lib/desk";
+import { gridNoteLive, pairsLoad, pairsSave, pairsView } from "../src/lib/gridlive";
 import { gateStats, gateView } from "../src/lib/classgate";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
@@ -934,6 +935,17 @@ async function main() {
   setInterval(() => pruneCurves(), 5_000);
   // v0.1.71: GRID LIVE: GRID's best strategies trade on live coins (paper), the books loaded from the last run
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
+  // v0.1.135 REAL GAP: every closed live GRID follow is paired with its book's paper trip; past live follows are
+  // matched by coin and time (they did not record the book)
+  setFollowClose((x) => void gridNoteLive(x));
+  (async () => {
+    await pairsLoad().catch(() => 0);
+    const rec: any = await getRecord(undefined, "real").catch(() => null);
+    let n = 0;
+    for (const t of rec?.trips || []) if (t.live && !t.open && /GRID LIVE follow/.test(t.why || "")) n += gridNoteLive({ mint: t.mint, openedAt: t.openedAt, pct: t.pnlPct });
+    await pairsSave().catch(() => null);
+    console.log(`real gap: ${n} pairs from past live follows`, JSON.stringify(pairsView()));
+  })().catch(() => null);
   // v0.1.112 GRID SCORE: the last run's model scores live calls until the next GRID run fits a new one
   await redis()
     .get<any>("rn:grid:view")
@@ -1046,7 +1058,7 @@ async function main() {
         const nw = fomoNew();
         if (nw.length) for (let i = 0; i < nw.length; i += 500) await r.hset("rn:fomo:w", Object.fromEntries(nw.slice(i, i + 500).map((w) => [w, Date.now()])));
         await r.set("rn:crew:edges", crewEdges(), { ex: 14 * 86400 });
-        await r.set("rn:smart:view", { at: Date.now(), fomo: fomoView(), hot: fomoHot(), earners: earnView(), crews: crewView(), buys: smartStats, gate: { classes: gateView(), ...gateStats }, front: frView(), stories: originStories(), fomoRegime: fomoRegime(), smartLive: smartLiveStats }, { ex: 86400 });
+        await r.set("rn:smart:view", { at: Date.now(), fomo: fomoView(), hot: fomoHot(), earners: earnView(), crews: crewView(), buys: smartStats, gate: { classes: gateView(), ...gateStats }, front: frView(), stories: originStories(), fomoRegime: fomoRegime(), smartLive: smartLiveStats, realGap: pairsView() }, { ex: 86400 });
       } catch (e: any) {
         console.log("smart save error", e?.message || e);
       }

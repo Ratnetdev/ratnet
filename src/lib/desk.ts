@@ -2914,6 +2914,9 @@ export type GridOrder = { key: string; label: string; exit: GExit; mint: string;
 // strategy with a flow exit runs it on live money exactly as its twin ran it on paper
 let DESK_FLOW: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
 export const setDeskFlow = (f: typeof DESK_FLOW) => (DESK_FLOW = f);
+// v0.1.135: the worker passes each closed live GRID follow to GRID LIVE (no import cycle)
+let FOLLOW_CLOSE: ((x: { k: string; mint: string; openedAt: number; pct: number }) => void) | null = null;
+export const setFollowClose = (f: typeof FOLLOW_CLOSE) => (FOLLOW_CLOSE = f);
 const deskFlow = (mint: string) => {
   try {
     return DESK_FLOW ? DESK_FLOW(mint) : null;
@@ -3355,6 +3358,12 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
       }
     }
     await noteStageResult(p).catch(() => {});
+    // v0.1.135 REAL GAP: a live GRID follow is paired with its book's paper trip on the same coin (lib/gridlive.ts)
+    if (p.live && p.gk && FOLLOW_CLOSE) {
+      try {
+        FOLLOW_CLOSE({ k: p.gk, mint: p.mint, openedAt: p.openedAt, pct: (p.soldSol / Math.max(1e-9, p.costSol) - 1) * 100 });
+      } catch {}
+    }
     // keep the whole trade for the public track record: chart, the call behind it, peak while held
     const step = Math.max(1, Math.ceil((p.series?.length || 0) / 90));
     const series = (p.series || []).filter((_, i, a) => i % step === 0 || i === a.length - 1).map(([t, x]) => [t, x] as [number, number]);
