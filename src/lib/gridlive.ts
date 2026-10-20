@@ -1174,6 +1174,7 @@ export const GAP_LIMIT = -0.1;
 // and missed the gap that cost the desk overnight (entries 48 of 79 stopped within 10 seconds).
 export const PAIR_SECS = 180;
 export const PAIR_MIN = 8;
+export const GAP_COST = 6; // % points: fees and slippage of a round trip (as the class gate)
 export const EDGE_MIN = () => {
   const v = Number(process.env.GRID_EDGE_MIN ?? 5);
   return Number.isFinite(v) ? v : 5;
@@ -1220,18 +1221,26 @@ function pairPending(t: LTrip) {
   for (const w of LIVE_WAIT) if (w.mint === t.mint && (!w.k || w.k === t.k) && Math.abs(t.openedAt - w.openedAt) <= PAIR_SECS * 1000) addPair({ k: t.k, mint: w.mint, at: w.openedAt, live: Math.round(w.pct * 10) / 10, paper: paperPct(t), exact: !!w.k });
   if (LIVE_WAIT.some((w) => w.mint === t.mint && w.k === t.k)) LIVE_WAIT = LIVE_WAIT.filter((w) => !(w.mint === t.mint && w.k === t.k));
 }
-const avgGap = (ps: LivePair[]) => ({ n: ps.length, gap: ps.length ? Math.round((ps.reduce((a, p) => a + (p.live - p.paper), 0) / ps.length) * 10) / 10 : 0 });
-/** The real gap (live minus paper, in % points a trade) for a book: its own, its family's, or all pairs. */
-export function realGap(k: string): { n: number; gap: number; src: "book" | "family" | "all" } | null {
+// v0.1.136: evidence counts in distinct LIVE trades (an older trade pairs with every book that held the coin: 8 live
+// trades made 85 pairs on 20 Oct), each live trade once per level (its pairs averaged). And the gap never adds edge:
+// real money cannot beat paper by design, so a positive gap is noise (20 Oct: +69 points on 8 trades made a book at
+// -1.4% a trade on paper look like +29% and the desk followed it)
+const avgGap = (ps: LivePair[]) => {
+  const by = new Map<string, number[]>();
+  for (const p of ps) (by.get(`${p.mint}|${p.at}`) || by.set(`${p.mint}|${p.at}`, []).get(`${p.mint}|${p.at}`)!).push(p.live - p.paper);
+  const per = [...by.values()].map((v) => v.reduce((a, x) => a + x, 0) / v.length);
+  const raw = per.length ? per.reduce((a, x) => a + x, 0) / per.length : 0;
+  // paper here is gross (the desk's ladder before costs), so the gap is at least the cost of a trade
+  return { n: per.length, gap: Math.round(Math.min(-GAP_COST, raw) * 10) / 10, raw: Math.round(raw * 10) / 10 };
+};
+/** The real gap (live minus paper, in % points a trade, never above -GAP_COST) for a book: its own, its family's, or all. */
+export function realGap(k: string): { n: number; gap: number; raw: number; src: "book" | "family" | "all" } | null {
   const own = avgGap(PAIRS.filter((p) => p.k === k));
   if (own.n >= PAIR_MIN) return { ...own, src: "book" };
   const fam = familyOf(k);
   const f = avgGap(PAIRS.filter((p) => familyOf(p.k) === fam));
   if (f.n >= PAIR_MIN) return { ...f, src: "family" };
-  // all pairs: one live trade counts once (older trades pair with every book that held the coin)
-  const one = new Map<string, LivePair>();
-  for (const p of PAIRS) if (!one.has(`${p.mint}|${p.at}`)) one.set(`${p.mint}|${p.at}`, p);
-  const all = avgGap([...one.values()]);
+  const all = avgGap(PAIRS);
   return all.n >= PAIR_MIN ? { ...all, src: "all" } : null;
 }
 /** How a book's paper % a trip turns into a real-money % a trip. */
@@ -1258,7 +1267,8 @@ export const pairsView = () => {
   const one = new Map<string, LivePair>();
   for (const p of PAIRS) if (!one.has(`${p.mint}|${p.at}`)) one.set(`${p.mint}|${p.at}`, p);
   const u = [...one.values()];
-  return { pairs: PAIRS.length, trades: u.length, exact: PAIRS.filter((p) => p.exact).length, gap: avgGap(u).gap, waiting: LIVE_WAIT.length };
+  const g = avgGap(PAIRS);
+  return { pairs: PAIRS.length, trades: u.length, exact: PAIRS.filter((p) => p.exact).length, gap: g.gap, raw: g.raw, waiting: LIVE_WAIT.length };
 };
 export async function pairsLoad() {
   const xs = (await redis().get<LivePair[]>(PAIRS_KEY).catch(() => null)) || [];

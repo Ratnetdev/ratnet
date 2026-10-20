@@ -59,6 +59,16 @@ const ok = (c: boolean, m: string) => {
   const fp = L.realGap(K2)!;
   ok(fp && fp.src === "all", `a book with no pairs of its own falls back on every live follow (${fp.src}, ${fp.gap})`);
 
+  // ---- 3b. v0.1.136: noise can't add edge, and evidence counts live trades
+  L._pairsReset();
+  for (let i = 0; i < 3; i++) L.gridNoteLive({ mint: `m${i + 20}`, openedAt: now - (i + 21) * 600_000 + 5_000, pct: 200 });
+  const pv2 = L.pairsView();
+  ok(pv2.pairs === 6 && pv2.trades === 3 && L.realGap(K1b) === null, `3 live trades make ${pv2.pairs} pairs but count as 3: no gap yet`);
+  for (let i = 3; i < 10; i++) L.gridNoteLive({ mint: `m${i + 20}`, openedAt: now - (i + 21) * 600_000 + 5_000, pct: 200 });
+  const pos = L.realGap(K1b)!;
+  ok(pos.raw > 0 && pos.gap === -L.GAP_COST, `live beating paper by ${pos.raw} points is noise: the gap stays at the cost of a trade (${pos.gap})`);
+  for (let i = 3; i < 12; i++) L.gridNoteLive({ k: K1, mint: `m${i}`, openedAt: now - (i + 1) * 600_000 + 10_000, pct: -35 });
+
   // ---- 4. persistence
   await L.pairsSave();
   const n0 = L.pairsView().pairs;
