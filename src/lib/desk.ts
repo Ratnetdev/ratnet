@@ -56,7 +56,7 @@ import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
 import { HOLD_MS, firstSell, holdMax, isRunner, type GExit } from "./grid";
 import { ladderHit, ladderText, parseLadder, setDeskLadder, type Step } from "./ladder";
-import { classGate, classOf, gateStats, loadLiveClass, noteLiveClass, type LiveCls } from "./classgate";
+import { classGate, classOf, classPaperPcts, gateStats, loadLiveClass, noteLiveClass, type LiveCls } from "./classgate";
 export const CLS_KEY = "rn:desk:cls"; // v0.1.130: closed live round trips by market-cap class
 import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
 
@@ -2980,7 +2980,13 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     const rl = roomLeft(Object.values(await loadPositions(K.deskPos)), o.key, sc);
     const room = rl ? rl.room : Infinity;
     // v0.1.95 COMPOUNDING SIZE: the leader passed its exam, so its own record sets its share of the bank
-    const plan = o.probation ? null : sizePlan(o.pcts, cfg as SizeCfg);
+    const bookPlan = o.probation ? null : sizePlan(o.pcts, cfg as SizeCfg);
+    // v0.1.132: size up where it pays: the followed strategies' paper record in this coin's market-cap class (after
+    // costs, with the desk's take-profit steps) sets a Kelly share too; the bigger of the two plans applies, inside the
+    // same caps. A class without 30 trips or without an edge adds nothing
+    const cls = classOf(fresh.px * 1e9);
+    const clsPlan = o.probation ? null : sizePlan(classPaperPcts(cls), cfg as SizeCfg);
+    const plan = clsPlan && clsPlan.kelly > 0 && (!bookPlan || clsPlan.pct > bookPlan.pct) ? { ...clsPlan, why: `${cls} class: ${clsPlan.why}` } : bookPlan;
     // v0.1.120: a TICK order carries how strong its prediction was (0.5x to 2x the planned size, the caps below still apply)
     const mult = o.mult && Number.isFinite(o.mult) ? Math.max(0.5, Math.min(2, o.mult)) : 1;
     const pct = (plan ? plan.pct : cfg.sizePct) * mult;

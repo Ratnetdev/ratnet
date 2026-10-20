@@ -6,7 +6,12 @@
 // RUG GUARD tests rules on them like on every other part of the state (lib/gridlive.ts RUG_RULES).
 import { crewBuy, independent } from "./crews";
 import { isBot, isEarner } from "./earners";
-import { fomoBuy, fomoCrowd, isFomo } from "./fomotap";
+import { fomoBuy, fomoCrowd, fomoRegime, isFomo } from "./fomotap";
+import { frBuy, frRecent } from "./frontrun";
+// v0.1.132: SMART signals go to GRID LIVE's SMART family (set by the worker; no import cycle)
+let SIGNAL: ((mint: string, sx: { fr?: number; fc?: number; st?: number }) => void) | null = null;
+export const setSmartSignal = (f: typeof SIGNAL) => (SIGNAL = f);
+const FC_FIRED = new Set<string>();
 import { isProven, provenSet } from "./wallets";
 
 const WIN_MS = 60_000;
@@ -25,9 +30,13 @@ const note = (m: Map<string, { w: string; at: number }[]>, mint: string, w: stri
 const recent = (m: Map<string, { w: string; at: number }[]>, mint: string, now: number) => [...new Set((m.get(mint) || []).filter((x) => now - x.at <= WIN_MS).map((x) => x.w))];
 export const smartStats = { fomoBuys: 0, earnerBuys: 0, provenBuys: 0, botBuys: 0 };
 
-export function smartTrade(t: { mint: string; user: string; isBuy: boolean; at: number }) {
+export function smartTrade(t: { mint: string; user: string; isBuy: boolean; at: number; sol?: number }) {
   if (!t.isBuy || !t.user) return;
-  if (isBot(t.user)) {
+  // v0.1.132 FRONT-RUNNERS: every real buy is kept 4 minutes (callouts are matched against it); a known front-runner's
+  // buy is a SMART signal
+  const bot = isBot(t.user);
+  if (frBuy(t.mint, t.user, t.sol ?? 0, t.at, bot) && SIGNAL) SIGNAL(t.mint, { fr: independent(frRecent(t.mint, t.at)) });
+  if (bot) {
     note(BOTS, t.mint, t.user, t.at);
     smartStats.botBuys++;
     return; // a bot is never FOMO crowd, an earner or in a crew
@@ -36,7 +45,18 @@ export function smartTrade(t: { mint: string; user: string; isBuy: boolean; at: 
   const e = isEarner(t.user);
   const p = isProven(t.user);
   if (!f && !e && !p) return;
-  if (f) (fomoBuy(t.mint, t.user, t.at), smartStats.fomoBuys++);
+  if (f) {
+    fomoBuy(t.mint, t.user, t.at);
+    smartStats.fomoBuys++;
+    // v0.1.132: the FOMO crowd arriving (5+ independent FOMO traders in a minute) is a SMART signal, once per coin
+    const fw = fomoCrowd(t.mint, t.at);
+    const fc = fw ? independent(fw) : 0;
+    if (fc >= 5 && SIGNAL && !FC_FIRED.has(t.mint)) {
+      FC_FIRED.add(t.mint);
+      if (FC_FIRED.size > 20_000) FC_FIRED.delete(FC_FIRED.values().next().value as string);
+      SIGNAL(t.mint, { fc });
+    }
+  }
   if (e) {
     let a = EARN.get(t.mint);
     if (!a) {
@@ -52,10 +72,10 @@ export function smartTrade(t: { mint: string; user: string; isBuy: boolean; at: 
   crewBuy(t.mint, t.user, t.at);
 }
 
-export function smartFeatures(mint: string, now = Date.now()): { fc: number | null; ea: number; pwi: number; pwr: number; bt: number } {
+export function smartFeatures(mint: string, now = Date.now()): { fc: number | null; ea: number; pwi: number; pwr: number; bt: number; fr: number; fm: number | null } {
   const fw = fomoCrowd(mint, now);
   const ew = [...new Set((EARN.get(mint) || []).filter((x) => now - x.at <= WIN_MS).map((x) => x.w))];
   const pw = provenSet(mint);
-  return { fc: fw ? independent(fw) : null, ea: independent(ew), pwi: independent(pw), pwr: pw.size, bt: recent(BOTS, mint, now).length };
+  return { fc: fw ? independent(fw) : null, ea: independent(ew), pwi: independent(pw), pwr: pw.size, bt: recent(BOTS, mint, now).length, fr: independent(frRecent(mint, now)), fm: fomoRegime(now) };
 }
 export const _smartReset = () => (EARN.clear(), BOTS.clear(), (smartStats.fomoBuys = smartStats.earnerBuys = smartStats.provenBuys = smartStats.botBuys = 0));

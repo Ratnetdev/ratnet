@@ -50,6 +50,8 @@ function paperBy(now: number) {
   return by;
 }
 
+/** v0.1.132: the followed strategies' paper returns in this class, after costs, in % (for sizing). */
+export const classPaperPcts = (c: Cls, now = Date.now()) => (paperBy(now)[c] || []).map((x) => x * 100);
 export function classGate(c: Cls, now = Date.now()) {
   const lv = LIVE.filter((x) => x.c === c && now - x.at <= GATE.liveDays * 86_400_000);
   const live = { n: lv.length, pnl: Math.round(lv.reduce((s, x) => s + x.pnl, 0) * 1e4) / 1e4 };

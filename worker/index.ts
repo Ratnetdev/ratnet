@@ -47,13 +47,16 @@ import { book } from "../src/lib/hound";
 import { fomoLearn, fomoLoad, fomoNew, fomoSetKnown, fomoTx, fomoView, fomoHot } from "../src/lib/fomotap";
 import { earnDump, earnLoad, earnStats, earnTrade, earnView } from "../src/lib/earners";
 import { crewEdges, crewLoad, crewView } from "../src/lib/crews";
-import { smartFeatures, smartStats, smartTrade } from "../src/lib/smartbuy";
+import { setSmartSignal, smartFeatures, smartStats, smartTrade } from "../src/lib/smartbuy";
+import { frCallout, frDump, frLoad, frView } from "../src/lib/frontrun";
+import { originMigrated, originStories, originStory } from "../src/lib/origin";
+import { fomoRegime } from "../src/lib/fomotap";
 import { setTapeExtra, solUsdNow } from "../src/lib/digger";
 import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
 import { fcPrice, fcSize } from "../src/lib/firecache";
-import { setLiveFeatures, gridLiveSeer, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick, GAP_LIMIT, gridLiveBackfill, setEntryFeatures } from "../src/lib/gridlive";
+import { setLiveFeatures, gridLiveSeer, gridLiveSmart, smartLiveStats, setFlowFeatures, gridLiveRelabel, gridLiveSignals, setAnySignals, gridLiveEarly, gridLiveEarlyBooks, setEarlyModels, gridLiveTick, GAP_LIMIT, gridLiveBackfill, setEntryFeatures } from "../src/lib/gridlive";
 import { seerLoad, seerSee, seerTick } from "../src/lib/seer";
 import { trendAt, trendLoad, trendStats, trendTick } from "../src/lib/trend";
 import { tickCreate, tickCurve, tickLoad, tickRun, tickSave, tickStats, tickView } from "../src/lib/tick";
@@ -1007,6 +1010,18 @@ async function main() {
     void known();
     setInterval(() => void known(), 30 * 60_000);
     fomoLearn(); // v0.1.130: the pinned FOMO account from the first second
+    // v0.1.132 SMART: front-runner buys and the FOMO crowd arriving go to GRID LIVE's SMART books
+    setSmartSignal((m, sx) => gridLiveSmart(m, sx));
+    r.hgetall<Record<string, any>>("rn:fr:w").then((x) => frLoad(x || {})).catch(() => null);
+    // the callouts WIRE saw (Vercel or worker), matched against the last 4 minutes of buys
+    setInterval(async () => {
+      const cs = ((await r.lrange<{ mint: string; h: string; at: number }>("rn:callouts", 0, 199).catch(() => [])) || []) as { mint: string; h: string; at: number }[];
+      for (const c of cs) if (c && c.mint && c.h && Date.now() - Number(c.at) < 10 * 60_000) frCallout(c.mint, c.h, Number(c.at));
+    }, 20_000);
+    setInterval(() => {
+      const d = frDump(2);
+      if (Object.keys(d).length) r.hset("rn:fr:w", d).catch(() => null);
+    }, 5 * 60_000);
     classBoot().then((n) => console.log(`class gate: ${n} live round trips by market-cap class`)).catch((e) => console.log("class gate boot error", e?.message || e));
     void (async () => {
       // v0.1.130: once, drop the books built with the shared accounts (FOMO), the 1,755-wallet bot crew and records with
@@ -1022,7 +1037,7 @@ async function main() {
         const nw = fomoNew();
         if (nw.length) for (let i = 0; i < nw.length; i += 500) await r.hset("rn:fomo:w", Object.fromEntries(nw.slice(i, i + 500).map((w) => [w, Date.now()])));
         await r.set("rn:crew:edges", crewEdges(), { ex: 14 * 86400 });
-        await r.set("rn:smart:view", { at: Date.now(), fomo: fomoView(), hot: fomoHot(), earners: earnView(), crews: crewView(), buys: smartStats, gate: { classes: gateView(), ...gateStats } }, { ex: 86400 });
+        await r.set("rn:smart:view", { at: Date.now(), fomo: fomoView(), hot: fomoHot(), earners: earnView(), crews: crewView(), buys: smartStats, gate: { classes: gateView(), ...gateStats }, front: frView(), stories: originStories(), fomoRegime: fomoRegime(), smartLive: smartLiveStats }, { ex: 86400 });
       } catch (e: any) {
         console.log("smart save error", e?.message || e);
       }
@@ -1060,6 +1075,11 @@ async function main() {
         if (c.solQuote !== false && c.mint) originSee(c.mint, String(c.name || ""), String(c.symbol || ""), String(c.creator || ""), c.at); // v0.1.103
         if (c.solQuote !== false && c.mint) earlyCreate(c.mint, c.at, String(c.symbol || ""), String(c.name || "")); // v0.1.115 EARLY
         if (c.solQuote !== false && c.mint) noteDevSol(c.mint, Number(c.devSol) || 0, c.at); // v0.1.126 RUG GUARD
+        if (c.solQuote !== false && c.mint) {
+          // v0.1.132 STORIES: a new coin in a name/ticker group that migrated another coin in the last 24h
+          const st = originStory(c.mint, c.at);
+          if (st > 0) gridLiveSmart(c.mint, { st }, c.at);
+        }
         if (c.solQuote !== false && c.mint) tickCreate(c.mint, c.at, String(c.symbol || ""), String(c.name || "")); // v0.1.120 TICK
         if (c.solQuote !== false && c.mint && c.sig) {
           if (INTAKE.length >= INTAKE_MAX) INTAKE.shift(), intakeStats.dropped++; // never grows without end
@@ -1101,7 +1121,7 @@ async function main() {
         earlyPool(mint, { mcSol: q.mcSol, real: q.real }); // v0.1.115
         archiveRunTick(mint, { mcSol: q.mcSol, real: q.real, progress: 100, pool: true });
       },
-      complete: (mint, at) => (walletComplete(mint, at), themeBond(mint, at)),
+      complete: (mint, at) => (walletComplete(mint, at), themeBond(mint, at), originMigrated(mint, at)),
       otherQuote: (mint) => noteOtherQuote(mint),
     }).catch((e) => (console.log("firehose start error", e?.message || e), false));
     console.log(on ? "firehose: starting (Shyft gRPC)" : "firehose: off (set SHYFT_GRPC_URL and SHYFT_GRPC_TOKEN)");
@@ -1139,7 +1159,7 @@ async function main() {
       const f = tapeFeatures(m, now);
       const og = originAt(m, null, now);
       const sm = smartFeatures(m, now); // v0.1.128
-      return { age: created ? Math.round((now - created) / 1000) : null, dev: DEV_SOL.get(m)?.sol ?? null, u60: f.u60 ?? null, bs60: f.bs60 ?? null, wh: f.wh ?? null, ds: f.ds ?? null, og: og?.rank ?? null, fc: sm.fc, ea: sm.ea, pwi: sm.pwi, pwr: sm.pwr, bt: sm.bt };
+      return { age: created ? Math.round((now - created) / 1000) : null, dev: DEV_SOL.get(m)?.sol ?? null, u60: f.u60 ?? null, bs60: f.bs60 ?? null, wh: f.wh ?? null, ds: f.ds ?? null, og: og?.rank ?? null, fc: sm.fc, ea: sm.ea, pwi: sm.pwi, pwr: sm.pwr, bt: sm.bt, fr: sm.fr, fm: sm.fm };
     });
     // v0.1.110: every-launch books on the new rules know the coin's origin, DexScreener orders and flow without a call
     setAnySignals((m: string, now: number) => {

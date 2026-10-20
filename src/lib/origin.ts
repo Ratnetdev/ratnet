@@ -140,6 +140,28 @@ export function originAt(mint: string, creator?: string | null, now = Date.now()
   const known = n > 0 && mx > 0 && mine > 0;
   return { rank, cr: crBefore(creator || v.c || "", v.t), alpha: known ? (mine >= mx ? 1 : 0) : null, beta: known ? (mine < mx * 0.1 ? 1 : 0) : null };
 }
+// v0.1.132 STORIES (after CRAWLNET's "every migration of the last 24h grouped by story"): a name or ticker group that
+// migrated a coin in the last 24 hours is a running story; a new coin in it is the story's next chance
+const GROUP_MIG = new Map<string, { m: string; at: number }>();
+export function originMigrated(mint: string, at = Date.now()) {
+  const v = KEYS.get(mint);
+  if (!v) return;
+  for (const k of v.k) if (!k.startsWith("i:")) GROUP_MIG.set(k, { m: mint, at });
+  if (GROUP_MIG.size > 50_000) GROUP_MIG.delete(GROUP_MIG.keys().next().value as string);
+}
+/** How many of the coin's name/ticker groups migrated ANOTHER coin in the last 24 hours (0 = no running story). */
+export function originStory(mint: string, now = Date.now()) {
+  const v = KEYS.get(mint);
+  if (!v) return 0;
+  let n = 0;
+  for (const k of v.k) {
+    if (k.startsWith("i:")) continue;
+    const g = GROUP_MIG.get(k);
+    if (g && g.m !== mint && now - g.at <= 86_400_000) n++;
+  }
+  return n;
+}
+export const originStories = (now = Date.now()) => [...GROUP_MIG.values()].filter((g) => now - g.at <= 86_400_000).length;
 /** Older calls (GRID): their rank and creator count, as of their creation. */
 export const originHist = (mint: string) => HIST.get(mint) || null;
 export const originLoaded = () => loaded;

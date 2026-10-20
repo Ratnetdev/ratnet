@@ -59,6 +59,8 @@ export type EntryF = {
   pwi?: number | null;
   pwr?: number | null;
   bt?: number | null; // v0.1.130: bots (30+ round trips a day) that bought in the last minute
+  fr?: number | null; // v0.1.132: callout front-runners that bought in the last minute
+  fm?: number | null; // v0.1.132: FOMO retail money now vs its 6-hour average (1 = normal)
 };
 let ENTRY_FX: ((mint: string, now: number) => EntryF | null) | null = null;
 export const setEntryFeatures = (f: typeof ENTRY_FX) => (ENTRY_FX = f);
@@ -99,7 +101,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick" | "smart";
   /** v0.1.115: an EARLY book: trades the 2-minute read of every launch (lib/early.ts), never a King call */
   early?: boolean;
   /** v0.1.117: the reading age it trades (seconds; 120 when not set) */
@@ -135,7 +137,7 @@ let LEADER: string | null = null;
 // that total goes negative (the full pass also needs it in profit without its 2 best; a hold does not)
 const EVER = new Set<string>();
 // v0.1.130 CLASS GATE: the paper trips of the strategies the desk follows (ever passed, or leading now)
-setClassPaper(() => TRIPS.filter((t) => t.sh && (EVER.has(t.k) || t.k === LEADER)));
+setClassPaper(() => TRIPS.filter((t) => t.sh && (EVER.has(t.k) || t.k === LEADER || LEADERS.has(t.k))));
 export const HOLD_FLOOR = () => {
   const v = Number(process.env.HOLD_FLOOR ?? 0.1);
   return Number.isFinite(v) ? v : 0.1;
@@ -143,6 +145,20 @@ export const HOLD_FLOOR = () => {
 export const _setEver = (keys: string[]) => (EVER.clear(), keys.forEach((k) => EVER.add(k)));
 export const gridLeaderKey = () => LEADER;
 /** The strategy the desk follows: passed live (bookStat), best live P&L first. */
+// v0.1.132 FOLLOW 3: the desk follows the best FOLLOW_N strategies at once, ranked on their whole record without its
+// 2 best trips (lessTop2), full passes before probation and holds. A strategy whose record is negative without its 2
+// best never leads (20 Oct: the desk followed pw1|c5 at -0.064 SOL without its 2 best while 3 passed books were
+// above +0.2). More trades in proven setups means the bank compounds faster.
+export const FOLLOW_N = () => Math.max(1, Math.min(5, Number(process.env.GRID_FOLLOW_N ?? 3) || 3));
+let LEADERS = new Set<string>();
+export const gridLeaderKeys = () => [...LEADERS];
+export function gridLeaders(n = FOLLOW_N()): LBook[] {
+  return BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) }))
+    .filter((x) => x.s.passed && !gapBlock(x.b.key) && (x.s.lessTop2 ?? x.s.pnl) > 0)
+    .sort((a, z) => Number(!!a.s.probation) - Number(!!z.s.probation) || (z.s.lessTop2 ?? z.s.pnl) - (a.s.lessTop2 ?? a.s.pnl))
+    .slice(0, n)
+    .map((x) => x.b);
+}
 export function gridLeader(): LBook | null {
   const passed = BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) }))
     .filter((x) => x.s.passed && !gapBlock(x.b.key))
@@ -455,6 +471,66 @@ function seerFire(mint: string, p: number, px: number, now: number) {
     PEND.set(k, { key: b.key, mint, symbol: SYM.get(mint) || mint.slice(0, 4), callAt: now, p0: p, px0: px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
   }
 }
+// v0.1.132 SMART family: callout front-runners, the FOMO crowd arriving, a running story. Each signal arrives with the
+// coin (worker: lib/frontrun.ts, lib/smartbuy.ts, lib/origin.ts); the books buy on paper at the next price and the
+// exam decides, like every other family. A signal before the coin has a price waits for its first one (2 minutes).
+const SMART_SX = new Map<string, { fr?: number; fc?: number; st?: number; at: number }>();
+const SMART_Q = new Map<string, number>();
+export const smartLiveStats = { signals: 0, fired: 0 };
+export function gridLiveSmart(mint: string, sx: { fr?: number; fc?: number; st?: number }, now = Date.now()) {
+  const prev = SMART_SX.get(mint);
+  SMART_SX.set(mint, { ...(prev && now - prev.at < 600_000 ? prev : {}), ...sx, at: now });
+  if (SMART_SX.size > 5000) SMART_SX.delete(SMART_SX.keys().next().value as string);
+  smartLiveStats.signals++;
+  const last = LAST.get(mint);
+  if (last && last.px > 0 && !last.done) return smartFire(mint, last.p, last.px, now);
+  SMART_Q.set(mint, now);
+  if (SMART_Q.size > 2000) SMART_Q.delete(SMART_Q.keys().next().value as string);
+}
+function smartFire(mint: string, p: number, px: number, now: number) {
+  SMART_Q.delete(mint);
+  const sm = SMART_SX.get(mint);
+  if (!sm || now - sm.at > 120_000) return;
+  const fx = LIVE_FX ? LIVE_FX(mint) : null;
+  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: 0, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null, sx: { fr: sm.fr ?? null, fc: sm.fc ?? null, st: sm.st ?? null } } as unknown as GCoin;
+  for (const b of BOOKS) {
+    if (!b.any || b.by !== "smart") continue;
+    const k = id(b.key, mint);
+    if (TRIG.has(k) || PEND.has(k) || POS.has(k)) continue;
+    if (!filterOk(b.filter, c)) continue;
+    const m = MODES.find((x) => x.id === b.mode);
+    if (!m || m.kind === "mig") continue;
+    TRIG.add(k);
+    smartLiveStats.fired++;
+    PEND.set(k, { key: b.key, mint, symbol: SYM.get(mint) || mint.slice(0, 4), callAt: now, p0: p, px0: px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
+  }
+}
+export const SMART_MAX = 6;
+export const SMART_SEEDS: string[] = [
+  `any:${keyOf("front", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("front2", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("front", "now", { initials: 2, trail: 0.25, stop: 0.25, timeMin: 30, mig: "hold" })}`,
+  `any:${keyOf("fomohot", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("story", "now", RUNNER_EXITS[0])}`,
+  `any:${keyOf("story+first", "now", RUNNER_EXITS[0])}`,
+];
+function seedSmart(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = SMART_MAX - BOOKS.filter((b) => !b.cold && b.by === "smart" && !b.fv).length;
+  for (const k of SMART_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const inner = bookFromKey(k.replace(/^any:/, ""), now);
+    if (!inner) continue;
+    const b: LBook = { ...inner, key: k, label: `every launch: ${inner.label}`, any: true, by: "smart" };
+    const ts = TRIPS.filter((t) => t.k === k);
+    if (ts.length && dropReason(bookStat(b, ts))) continue;
+    out.push(b);
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
 export const SEER_MAX = 8;
 export const SEER_SEEDS: string[] = [
   `any:${keyOf("seer", "now", RUNNER_EXITS[0])}`,
@@ -489,6 +565,7 @@ export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: nu
   if (LAST.get(mint)?.pool) return; // migrated: the pool prices (gridLiveQuote) lead from here
   LAST.set(mint, { at: now, px, real: Number(v.realSol) || 0, p, done: !!v.complete });
   if (SEER_Q.has(mint) && px > 0 && !v.complete) seerFire(mint, p, px, now); // v0.1.102: a foreseen coin's first price
+  if (SMART_Q.has(mint) && px > 0 && !v.complete) smartFire(mint, p, px, now); // v0.1.132
   const h = HIST.get(mint) || [];
   h.push({ t: now, p });
   while (h.length && h[0].t < now - 180_000) h.shift();
@@ -571,7 +648,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
   if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens, sol, at: now });
-  if (FOLLOW && LEADER === b.key) {
+  if (FOLLOW && (LEADERS.size ? LEADERS.has(b.key) : LEADER === b.key)) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
       const mine = TRIPS.filter((t) => t.k === b.key);
@@ -898,6 +975,7 @@ export const RUG_RULES: { id: string; label: string; hit: (f: EntryF) => boolean
   { id: "no_earner", label: "no earner (a wallet with a profitable record) bought in the last minute", hit: (f) => f.ea === 0, sig: true, known: (f) => f.ea != null && f.bt != null },
   { id: "one_crew", label: "2+ proven wallets bought, but they are one crew", hit: (f) => (f.pwr ?? 0) >= 2 && (f.pwi ?? 0) <= 1, sig: true, known: (f) => f.pwi != null && f.bt != null },
   { id: "bots_in", label: "2+ bots (30+ round trips a day) bought in the last minute", hit: (f) => (f.bt ?? 0) >= 2, sig: true, known: (f) => f.bt != null },
+  { id: "fomo_cold", label: "FOMO retail money is under 60% of its 6-hour average", hit: (f) => f.fm != null && f.fm < 0.6, sig: true, known: (f) => f.fm != null },
 ];
 const SAFE_DEFAULT = new Set(["age45_90"]);
 let RUG_AT = 0;
@@ -984,11 +1062,13 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
     redis().set("rn:rug:view", rv, { ex: 2 * 86400 }).catch(() => null);
     redis().set("rn:ladder:view", ladderStudy(TRIPS, LEADER, now), { ex: 2 * 86400 }).catch(() => null);
   }
-  const lead = gridLeader();
+  const leads = gridLeaders();
+  LEADERS = new Set(leads.map((x) => x.key));
+  const lead = leads[0] ?? null;
   const leadChanged = (lead?.key ?? null) !== LEADER;
   LEADER = lead?.key ?? null;
   const follow = lead ? { key: lead.key, label: lead.label, exit: lead.exit, exitLabel: exitText(lead.exit), live: bookStat(lead, byKey.get(lead.key) || []), at: now } : null;
-  if (follow) await redis().set("rn:grid:follow", follow, { ex: 3600 }).catch(() => null);
+  if (follow) await redis().set("rn:grid:follow", { ...follow, all: leads.map((x) => ({ key: x.key, label: x.label, live: bookStat(x, byKey.get(x.key) || []) })) }, { ex: 3600 }).catch(() => null);
   else await redis().del("rn:grid:follow").catch(() => null);
   if (leadChanged && send) await send(lead ? `🧭 <b>The desk now follows GRID LIVE's "${lead.label.replace(/[<>&]/g, " ")}"</b>\n${exitText(lead.exit)}\nIts entries go to the desk the moment they fill. Desk mode decides paper or live money.` : "🧭 The desk stopped following GRID LIVE (no passed strategy right now).").catch(() => null);
   refreshCheck();
@@ -1165,6 +1245,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const wals = seedWallets(now);
   // v0.1.102: the SEER family: coins on the watchlist before they were launched, bought in their first seconds
   const seers = seedSeer(now);
+  // v0.1.132: the SMART family (front-runners, FOMO crowd, stories)
+  const smarts = seedSmart(now);
+  if (smarts.length && send) await send(`🧠 <b>GRID LIVE: SMART books</b>\n${smarts.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nWallets that buy before KOL callouts, the FOMO crowd arriving, stories that already migrated a coin. Paper on live coins; the exam decides.`).catch(() => null);
   // v0.1.110: the SIGNALS family follows GRID's lift table
   const sigs = seedSignals(now);
   // v0.1.120: the TICK family, once a horizon's model is warm

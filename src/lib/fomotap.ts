@@ -152,8 +152,28 @@ export function fomoLearn() {
   return [...FOMO_SEED];
 }
 
+// v0.1.132 FOMO RETAIL MONEY (after CRAWLNET's "fomo's retail money in 1h/6h"): FOMO buys per minute, for 6 hours.
+// The regime = the last 10 minutes against the 6-hour average for 10 minutes (1 = normal, 0.5 = half, 2 = twice)
+const MINUTES = new Map<number, number>();
+export function fomoRegime(now = Date.now()): number | null {
+  const m = Math.floor(now / 60_000);
+  let last10 = 0;
+  let all = 0;
+  let mins = 0;
+  for (const [k, v] of MINUTES) {
+    if (k < m - 360) continue;
+    all += v;
+    mins++;
+    if (k > m - 10) last10 += v;
+  }
+  if (mins < 60 || !all) return null; // an hour of data before it says anything
+  return Math.round((last10 / ((all / mins) * 10)) * 100) / 100;
+}
 /** A FOMO wallet bought this coin. */
 export function fomoBuy(mint: string, w: string, at: number) {
+  const mk = Math.floor(at / 60_000);
+  MINUTES.set(mk, (MINUTES.get(mk) || 0) + 1);
+  if (MINUTES.size > 400) for (const k of [...MINUTES.keys()]) if (k < mk - 360) MINUTES.delete(k);
   let a = CROWD.get(mint);
   if (!a) {
     a = [];

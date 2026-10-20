@@ -188,6 +188,8 @@ export async function ingest(tweets: XTweet[]) {
   for (const t of cas) {
     const acc = accs[t.h.toLowerCase()] || newAccs[t.h.toLowerCase()];
     if (!t.ca || acc?.tier === "muted" || !(CALLERS.has(acc?.cat || "") || t.f >= 10_000)) continue;
+    // v0.1.132 FRONT-RUNNERS: every callout goes to the worker, which checks who bought the coin just before it
+    await r.lpush("rn:callouts", { mint: t.ca, h: t.h, at: t.at || Date.now() }).then(() => r.ltrim("rn:callouts", 0, 999)).catch(() => null);
     const rec: any = await getLaunch(t.ca).catch(() => null);
     await noteKolCall(t.h, t.ca, !!rec && !rec.outcome).catch(() => {});
     if (rec) {

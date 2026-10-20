@@ -110,7 +110,7 @@ const ok = (c: boolean, m: string) => {
   ok(!L.bookStat(B, good.slice(0, 14) as any).passed, "14 trips: not yet");
   ok(!L.bookStat({ ...B, key: "any:bond|now|2/0.25/0.25/15/sell" }, good as any).probation, "probation is for SEER books only");
   const dk = fs.readFileSync("src/lib/desk.ts", "utf8");
-  ok(/o\.probation \? Math\.min\(cfg\.minSol, liqCap, avail \* 0\.95(, room)?\)/.test(dk) && /const plan = o\.probation \? null/.test(dk), "the desk trades a probation book at the minimum size, no compounding");
+  ok(/o\.probation \? Math\.min\(cfg\.minSol, liqCap, avail \* 0\.95(, room)?\)/.test(dk) && /const bookPlan = o\.probation \? null/.test(dk) && /const clsPlan = o\.probation \? null/.test(dk), "the desk trades a probation book at the minimum size, no compounding");
   const gl = fs.readFileSync("src/lib/gridlive.ts", "utf8");
   ok(/Number\(!!a\.s\.probation\) - Number\(!!z\.s\.probation\)/.test(gl), "a fully passed book leads before a probation one");
 

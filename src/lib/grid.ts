@@ -79,7 +79,7 @@ export type GCoin = {
  * the dig, also in the archive for older calls); lens/xf/tg (LENS), kol/ftop (HOUND) and mind (MIND) only exist on
  * calls from this build on, and only when that agent had read the coin by minute 5 (never looked ahead).
  */
-export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null; ev?: { rank: number | null; md: 0 | 1 | null; rep: number | null; f: number } | null; th?: { m: number; t: string; heat: number } | null; tr?: { tt: 0 | 1; ig: 0 | 1; term: string | null } | null };
+export type Sx = { post: 0 | 1 | null; bigpost: 0 | 1 | null; pulse: 0 | 1 | null; lens: number | null; xf: number | null; tg: number | null; kol: number | null; ftop: number | null; mind: string | null; seer?: { tier: number; rank: number } | null; og?: { rank: number; cr: number; alpha: 0 | 1 | null; beta: 0 | 1 | null } | null; dx?: { paid: 0 | 1 | null; boost: number | null } | null; ev?: { rank: number | null; md: 0 | 1 | null; rep: number | null; f: number } | null; th?: { m: number; t: string; heat: number } | null; tr?: { tt: 0 | 1; ig: 0 | 1; term: string | null } | null; fr?: number | null; fc?: number | null; st?: number | null };
 export type Pred = { id: string; label: string; ok: (c: GCoin) => boolean };
 export const PREDS: Pred[] = [
   { id: "bond", label: "King BOND", ok: (c) => c.verdict === "BOND" },
@@ -123,6 +123,11 @@ export const PREDS: Pred[] = [
   { id: "seer", label: "SEER foresaw it (on the watchlist before launch)", ok: (c) => !!c.sx?.seer },
   { id: "seertop", label: "SEER foresaw it, a tier-1 event or person", ok: (c) => c.sx?.seer?.tier === 1 },
   { id: "seerfirst", label: "the first coin for a SEER watchlist entry", ok: (c) => c.sx?.seer?.rank === 1 },
+  // v0.1.132 SMART family (after CRAWLNET's "front-run calls", "fomo crowd" and "narratives"): live books only
+  { id: "front", label: "a callout front-runner bought it in the last minute", ok: (c) => (c.sx?.fr ?? 0) >= 1 },
+  { id: "front2", label: "2+ independent callout front-runners bought it in the last minute", ok: (c) => (c.sx?.fr ?? 0) >= 2 },
+  { id: "fomohot", label: "5+ FOMO traders bought it in the last minute (the crowd is arriving)", ok: (c) => (c.sx?.fc ?? 0) >= 5 },
+  { id: "story", label: "its name or ticker already migrated another coin in the last 24h (a running story)", ok: (c) => (c.sx?.st ?? 0) >= 1 },
   // v0.1.103 ORIGIN (lib/origin.ts): first of its name, ticker and image in 7 days, or a copy; the biggest of its
   // name group or a beta under 10% of it; the creator's launches in the 7 days before. Unknown never passes
   { id: "first", label: "the first coin of its name, ticker and image (7 days)", ok: (c) => c.sx?.og?.rank === 1 },
