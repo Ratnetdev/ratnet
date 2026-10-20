@@ -165,7 +165,7 @@ export default function DeskNow({ now, live, open, closed, exam, pm = [] }: { no
           <div className="dn-next">
             <div className="dn-k">Next</div>
             {live ? (
-              <p className="dn-p">Stays live while drawdown is under 40%. Past that it drops back to paper and re-takes the exam.</p>
+              <p className="dn-p">Stays live. A day that loses 25% pauses new buys for an hour, then it trades on.</p>
             ) : (
               <p className="dn-p">
                 Pass the exam, then it can trade its own wallet once the owner switches it on.

@@ -16,7 +16,7 @@ import GridLiveBoard, { GridLiveView } from "./GridLiveBoard";
 
 type Rec = {
   live: boolean;
-  summary: { trips: number; open: number; closed: number; wins: number; winRate: number | null; realizedSol: number; openSol: number; start: number; equity: number; returnPct: number | null; best: { symbol: string; mint: string; pnlPct: number } | null; worst: { symbol: string; mint: string; pnlPct: number } | null; avgHoldMs: number | null; since: number | null };
+  summary: { trips: number; open: number; closed: number; wins: number; winRate: number | null; realizedSol: number; openSol: number; start: number; equity: number | null; returnPct: number | null; sessionStart?: number | null; sessionPct?: number | null; paperTrips?: number; best: { symbol: string; mint: string; pnlPct: number } | null; worst: { symbol: string; mint: string; pnlPct: number } | null; avgHoldMs: number | null; since: number | null };
   trips: Trip[];
 };
 
@@ -184,7 +184,7 @@ export default function TrackRecord({ compact = false }: { compact?: boolean }) 
       <div className="rec-stats">
         {/* v0.1.100 (audit): the ghost book has no equity series of its own (the chart drew the main desk's equity over the
             ghost's total stake), so its return is a number only */}
-        <div {...(isGhost ? {} : st("return"))}><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity.toFixed(3)} ◎` : ""}</em></div>
+        <div {...(isGhost ? {} : st("return"))}><span className="k">{isGhost ? "Return on staked" : "Return"}</span><b style={{ color: col(s?.returnPct ?? 0) }}>{s?.returnPct != null ? `${sgn(s.returnPct)}%` : "–"}</b><em>{s ? `${s.start.toFixed(3)} → ${s.equity != null ? s.equity.toFixed(3) : "–"} ◎${!isGhost && s.sessionPct != null ? ` · since last restart ${sgn(s.sessionPct)}%` : ""}` : ""}</em></div>
         <div {...st("trades")}><span className="k">Trades closed</span><b>{s?.closed ?? 0}</b><em>{s ? `${s.open} open now` : ""}</em></div>
         <div {...st("winrate")}><span className="k">Win rate</span><b>{s?.winRate != null ? `${s.winRate}%` : "–"}</b><em>{s ? `${s.wins} of ${s.closed} in profit` : ""}</em></div>
         <div {...st("realized")}><span className="k">Realized</span><b style={{ color: col(s?.realizedSol ?? 0) }}>{s ? `${sgn(s.realizedSol, 3)} ◎` : "–"}</b><em>{s && s.open ? `${sgn(s.openSol, 3)} ◎ open` : "closed trades"}</em></div>

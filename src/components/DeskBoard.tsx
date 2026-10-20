@@ -183,7 +183,8 @@ export default function DeskBoard() {
   const now = Date.now();
   const st = d?.state;
   const eq = st?.equity ?? 0;
-  const base = d?.live ? st?.liveStart ?? st?.start ?? 0 : st?.start ?? 0;
+  // v0.1.131: live, the return is measured against what was put into the live wallet, not the balance at the last restart
+  const base = d?.live ? (st as any)?.liveFunded || st?.liveStart || st?.start || 0 : st?.start ?? 0;
   const total = pct(eq, base);
   const today = st ? pct(eq, st.dayStart) : 0;
   const winRate = st?.closed ? (st.wins / st.closed) * 100 : null;

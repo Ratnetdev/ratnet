@@ -90,7 +90,7 @@ const ok = (c: boolean, m: string) => {
   ok(/CLASS GATE/.test(fs.readFileSync("src/lib/review.ts", "utf8")), "the review shows the gate per class");
 
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-  ok(pkg.version === "0.1.130" && fs.readFileSync("src/config/build.ts", "utf8").includes('"0.1.130"'), "v0.1.130");
+  ok(Number(pkg.version.split(".")[2]) >= 130 && fs.readFileSync("src/config/build.ts", "utf8").includes(`"${pkg.version}"`), "v0.1.130 or later");
   console.log(fail ? `\n${fail} FAILED` : "\nall v0.1.130 checks pass");
   process.exit(fail ? 1 : 0);
 })();

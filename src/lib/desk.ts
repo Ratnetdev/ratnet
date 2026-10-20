@@ -213,6 +213,7 @@ export type DeskState = {
   funded?: number | null; // its balance as last booked (deposits and withdrawals move the start, not the P&L)
   liveBal?: number | null; // live: wallet balance at the last reconcile (deposits and withdrawals are told apart from trades)
   demotedAt?: number | null; // v0.1.45: last time the live drawdown sent the desk back to paper
+  liveFunded?: number; // v0.1.131: SOL put into the live wallet (desk setting liveFundedSol), for the page's return
   lossPauseUntil?: number | null; // v0.1.130: the daily loss limit pauses new buys until then, then a fresh baseline
 };
 export type Exam = { trades: number; winRate: number; pnlPct: number; maxDD: number; walletSol: number | null; checks: { label: string; need: string; now: string; ok: boolean }[]; passed: boolean };
@@ -2463,6 +2464,10 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const dd = state.peakEq ? -pct(eq2.value, state.peakEq) : 0;
       state.maxDD = Math.max(state.maxDD, dd);
       // only on a fresh balance read: a stale or failed read is never a reason to demote
+      // v0.1.131: live, the paper fields are never used for money, but a negative leftover (-0.73 on 20 Oct) made the
+      // page and the record read nonsense: they follow the wallet
+      if (state.live && walletSol != null && walletSol > 0 && (state.start < 0 || state.cash < 0)) (state.start = walletSol), (state.cash = walletSol);
+      state.liveFunded = Number((cfg as any).liveFundedSol ?? 0) || undefined;
       // v0.1.130: liveMaxDD in the desk settings (0 = off, the default: Stan, 20 Oct, keep it trading)
       const liveMaxDD = Number((cfg as any).liveMaxDD ?? 0);
       if (liveMaxDD > 0 && state.live && state.liveStart && LAST_BAL && now - LAST_BAL.at < 60_000 && pct(eq2.value, state.liveStart) <= -liveMaxDD) {
@@ -2483,7 +2488,9 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       }
       if (now - state.lastEqAt >= 60_000) {
         state.lastEqAt = now;
-        await r.rpush(K.deskEq, { t: now, eq: r4(eq2.value), live: state.live });
+        // v0.1.131: once the desk trades its own wallet, the line is that wallet's value only (a paper stretch after a
+        // demotion is not money and drew -0.73 SOL for 8 hours on 20 Oct)
+        if (eq2.value > 0 && (state.live || !state.liveWallet)) await r.rpush(K.deskEq, { t: now, eq: r4(eq2.value), live: state.live });
         await r.ltrim(K.deskEq, -3000, -1);
       }
       // only the lock holder writes the books (a desk that lost its lock must not overwrite the new holder's state)
@@ -3508,8 +3515,10 @@ const DAY_KEY = (t: number) => `rn:desk:day:${new Date(t).toISOString().slice(0,
 /** The equity line for the desk page: the last 12 hours, one point every ~5 minutes (the full line is /api/desk/equity). */
 async function equityForPage() {
   const xs = ((await redis().lrange<{ t: number; eq: number; live?: boolean }>(K.deskEq, -720, -1)) || []) as { t: number; eq: number; live?: boolean }[];
-  const step = Math.max(1, Math.ceil(xs.length / 150));
-  return xs.filter((_, i) => i % step === 0 || i === xs.length - 1);
+  // v0.1.131: a point at or under 0 SOL is broken paper bookkeeping (20 Oct: -0.73 for 8 hours), never a balance
+  const ok = xs.filter((x) => x && x.eq > 0);
+  const step = Math.max(1, Math.ceil(ok.length / 150));
+  return ok.filter((_, i) => i % step === 0 || i === ok.length - 1);
 }
 
 /** What the desk is doing right now, what it is waiting for, and what unlocks next. */
@@ -3915,6 +3924,42 @@ export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "rea
   const best = closed.reduce<Trip | null>((b, t) => (!b || t.pnlPct > b.pnlPct ? t : b), null);
   const worst = closed.reduce<Trip | null>((b, t) => (!b || t.pnlPct < b.pnlPct ? t : b), null);
   const start = st?.live ? st.liveStart ?? st.start : st?.start ?? 0;
+  // v0.1.131: the live record counts live trades only and measures against what was put into the live wallet
+  // (liveFundedSol, 2 SOL), not the balance at the last restart: after a restart at 0.62 SOL it read "+9.1%" while
+  // the desk was down 1.26 SOL since it went live
+  const liveOn = !!st?.live || !!st?.liveWallet;
+  const funded = Number(((await getSettings().catch(() => null)) as any)?.desk?.liveFundedSol ?? 0);
+  if (!ghost && liveOn && funded > 0) {
+    const lc = closed.filter((t) => t.live);
+    const lw = lc.filter((t) => t.pnlSol > 0);
+    const lb = lc.reduce<Trip | null>((b, t) => (!b || t.pnlPct > b.pnlPct ? t : b), null);
+    const lwst = lc.reduce<Trip | null>((b, t) => (!b || t.pnlPct < b.pnlPct ? t : b), null);
+    const lt = trips.filter((t) => t.live);
+    const eqNow = st?.equity && st.equity > 0 ? st.equity : null;
+    return {
+      live: !!st?.live,
+      summary: {
+        trips: lt.length,
+        open: lt.filter((t) => t.open).length,
+        closed: lc.length,
+        wins: lw.length,
+        winRate: lc.length ? Math.round((lw.length / lc.length) * 1000) / 10 : null,
+        realizedSol: r4(sum(lc, (t) => t.pnlSol)),
+        openSol: r4(sum(lt.filter((t) => t.open), (t) => t.pnlSol)),
+        start: r4(funded),
+        equity: eqNow != null ? r4(eqNow) : null,
+        returnPct: eqNow != null ? Math.round((eqNow / funded - 1) * 1000) / 10 : null,
+        sessionStart: st?.liveStart != null ? r4(st.liveStart) : null,
+        sessionPct: eqNow != null && st?.liveStart ? Math.round((eqNow / st.liveStart - 1) * 1000) / 10 : null,
+        best: lb ? { symbol: lb.symbol, mint: lb.mint, pnlPct: lb.pnlPct } : null,
+        worst: lwst ? { symbol: lwst.symbol, mint: lwst.mint, pnlPct: lwst.pnlPct } : null,
+        avgHoldMs: lc.length ? Math.round(sum(lc, (t) => t.holdMs) / lc.length) : null,
+        since: lt.length ? Math.min(...lt.map((t) => t.openedAt)) : st?.promotedAt ?? null,
+        paperTrips: closed.length - lc.length,
+      },
+      trips: onlyMint ? trips.reverse().filter((t) => t.mint === onlyMint) : trips.reverse().slice(0, 300).map((t, i) => (i < 60 ? t : { ...t, series: undefined, ctx: undefined })),
+    };
+  }
   if (ghost) {
     // the ghost book has no balance: its return is on what it staked
     const staked = sum(trips, (t) => t.costSol);

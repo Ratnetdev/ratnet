@@ -122,6 +122,7 @@ export const DEFAULT_SETTINGS = {
     stalkMins: 15, // how long a stalk waits for its pullback
     dailyLoss: 25, // % from day start: stop opening
     lossPauseMin: 60, // v0.1.130: the daily loss limit pauses new buys this many minutes, then a fresh baseline (0 = rest of the day)
+    liveFundedSol: 2, // v0.1.131: SOL put into the live wallet in total (raise it when you add SOL): the live record's return is measured against it
     liveMaxDD: 0, // v0.1.130: % live drawdown that sends the desk back to paper; 0 = never (Stan, 20 Oct)
     maxBags: 12, // positions held at once in total, house-money bags included; past it the quietest bag is sold
     bagStaleMin: 120, // house-money bag with no new high for this long (and under 3x) is sold
