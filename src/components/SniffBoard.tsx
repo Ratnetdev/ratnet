@@ -158,9 +158,12 @@ export default function SniffBoard() {
   const [busy, setBusy] = useState(false);
   const isLive = !!live?.live.mint;
   const liveKnown = !!live; // v0.1.100 (audit): until /api/live answers, the free path is not offered (after launch it is refused)
+  const [autoGo, setAutoGo] = useState(false);
   useEffect(() => {
-    const ca = new URLSearchParams(window.location.search).get("ca");
+    const sp = new URLSearchParams(window.location.search);
+    const ca = sp.get("ca");
     if (ca) setCa(ca);
+    if (ca && sp.get("go") === "1") setAutoGo(true); // v0.1.134: from the extension's "Ask the Rat King"
   }, []);
 
   const go = async () => {
@@ -188,6 +191,13 @@ export default function SniffBoard() {
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (!autoGo || !liveKnown || isLive || busy || ca.trim().length < 32) return;
+    setAutoGo(false);
+    go();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoGo, liveKnown, isLive, ca]);
 
   return (
     <section className="grid g-main">

@@ -53,6 +53,7 @@ import { originMigrated, originStories, originStory } from "../src/lib/origin";
 import { fomoRegime } from "../src/lib/fomotap";
 import { setTapeExtra, solUsdNow } from "../src/lib/digger";
 import { callLines, serveChecks } from "../src/lib/ratlive";
+import { tallyDump, tallyLoad } from "../src/lib/smartbuy";
 import { setCallExtra } from "../src/lib/tg";
 import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
@@ -663,6 +664,9 @@ function pumpportal() {
   setInterval(() => flushTape().catch(() => null), 1_000);
   // v0.1.133 RAT KING CHECK: answer the site's live reads (Sniff, /api/check, MCP, the Telegram bot)
   setInterval(() => serveChecks().catch(() => null), 1_000);
+  // v0.1.134: who bought each coin survives restarts
+  redis().get<any>("rn:tally").then((d) => console.log(`tally: ${tallyLoad(d)} coins loaded`)).catch(() => null);
+  setInterval(() => redis().set("rn:tally", tallyDump(), { ex: 3 * 3600 }).catch(() => null), 5 * 60_000);
   setInterval(() => flushIntake().catch(() => null), 300);
   setInterval(flashTick, 500);
 }

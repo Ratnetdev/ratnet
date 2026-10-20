@@ -120,6 +120,7 @@ export async function checkGate(who: string, perHour = 10): Promise<string | nul
 /** The King's recent BOND calls with what happened since (MCP, Telegram /calls). */
 export async function recentCalls(n = 8) {
   const { getCalls } = await import("./stats");
-  const cs = (await getCalls(Math.min(60, n * 4))).filter((c) => c.verdict === "BOND" && c.counted !== false).slice(0, n);
+  // v0.1.134: BOND is a few % of calls, so read the last 300 (like /api/king?verdict=BOND); v1's nano verdict counts too
+  const cs = (await getCalls(300)).filter((c) => (c.verdict === "BOND" || c.nano?.verdict === "BOND") && c.counted !== false).slice(0, n);
   return cs.map((c) => ({ mint: c.mint, symbol: c.symbol, score: c.score, at: c.at, outcome: c.outcome ?? "LIVE" }));
 }

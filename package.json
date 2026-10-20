@@ -1,13 +1,14 @@
 {
   "name": "ratnet",
-  "version": "0.1.133",
+  "version": "0.1.134",
   "description": "",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "worker": "tsx worker/index.ts",
-    "rest": "tsx rest/index.ts"
+    "rest": "tsx rest/index.ts",
+    "ext": "rm -f public/ratnet-extension.zip && cd extension && zip -qr ../public/ratnet-extension.zip . -x '.*'"
   },
   "keywords": [],
   "author": "",

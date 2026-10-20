@@ -20,6 +20,7 @@ const GROUPS: Group[] = [
       { href: "/explore", label: "Explore", desc: "Filter every BOND and WATCH call of the last 24h" },
       { href: "/king#runners", label: "Runners", desc: "How far called coins ran after the call" },
       { href: "/sniff", label: "Sniff a coin", desc: "Paste any CA and get the King's read" },
+      { href: "/extension", label: "Extension", desc: "The King's read on every coin page you open", tag: "new" },
     ],
   },
   {

@@ -32,7 +32,7 @@ export const smartStats = { fomoBuys: 0, earnerBuys: 0, provenBuys: 0, botBuys: 
 
 // v0.1.133 RAT KING CHECK: who bought each coin since the worker first saw it (capped sets, last 20K coins), so a check
 // of any live coin can say who is in it, not only who bought in the last minute
-type Tally = { at0: number; n: number; sol: number; u: Set<string>; fomo: Set<string>; earn: Set<string>; proven: Set<string>; bot: Set<string>; fr: Set<string> };
+type Tally = { at0: number; n: number; sol: number; u0?: number; last?: number; u: Set<string>; fomo: Set<string>; earn: Set<string>; proven: Set<string>; bot: Set<string>; fr: Set<string> };
 const TALLY = new Map<string, Tally>();
 const TALLY_MAX = 20_000;
 const CAP = 300;
@@ -45,6 +45,7 @@ function tally(t: { mint: string; user: string; at: number; sol?: number }, kind
     if (TALLY.size > TALLY_MAX) TALLY.delete(TALLY.keys().next().value as string);
   }
   x.n++;
+  x.last = t.at;
   x.sol += Math.min(t.sol ?? 0, 500);
   put(x.u, t.user);
   if (kind.bot) put(x.bot, t.user);
@@ -61,8 +62,8 @@ export function smartRead(mint: string, now = Date.now()) {
   return {
     since: x.at0,
     buys: x.n,
-    buyers: x.u.size,
-    buyersCapped: x.u.size >= CAP,
+    buyers: Math.min(CAP, x.u.size + (x.u0 || 0)),
+    buyersCapped: x.u.size + (x.u0 || 0) >= CAP,
     sol: Math.round(x.sol * 100) / 100,
     fomo: independent(x.fomo),
     earners: independent(x.earn),
@@ -73,6 +74,25 @@ export function smartRead(mint: string, now = Date.now()) {
     smartCrews: independent(smart),
     now: smartFeatures(mint, now),
   };
+}
+// v0.1.134: the tally survives a worker restart (Redis, every 5 minutes): coins traded in the last 3 hours, the watched
+// wallets kept (to dedupe after a load), plain buyers kept as a count
+type TallyDump = Record<string, { a: number; l: number; n: number; s: number; u: number; f: string[]; e: string[]; p: string[]; b: string[]; r: string[] }>;
+export function tallyDump(now = Date.now(), max = 4000, ageMs = 3 * 3600_000): TallyDump {
+  const out: TallyDump = {};
+  const xs = [...TALLY.entries()].filter(([, x]) => now - (x.last ?? x.at0) <= ageMs).sort((a, z) => (z[1].last ?? z[1].at0) - (a[1].last ?? a[1].at0)).slice(0, max);
+  const cut = (s: Set<string>) => [...s].slice(0, 60);
+  for (const [m, x] of xs) out[m] = { a: x.at0, l: x.last ?? x.at0, n: x.n, s: Math.round(x.sol * 100) / 100, u: Math.min(CAP, x.u.size + (x.u0 || 0)), f: cut(x.fomo), e: cut(x.earn), p: cut(x.proven), b: cut(x.bot), r: cut(x.fr) };
+  return out;
+}
+export function tallyLoad(d: TallyDump | null | undefined) {
+  let n = 0;
+  for (const [m, v] of Object.entries(d || {})) {
+    if (!v || TALLY.has(m) || typeof v.n !== "number") continue;
+    TALLY.set(m, { at0: v.a, last: v.l, n: v.n, sol: v.s || 0, u0: v.u || 0, u: new Set(), fomo: new Set(v.f || []), earn: new Set(v.e || []), proven: new Set(v.p || []), bot: new Set(v.b || []), fr: new Set(v.r || []) });
+    n++;
+  }
+  return n;
 }
 export type SmartRead = NonNullable<ReturnType<typeof smartRead>>;
 

@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     const text = `THE CHECK (taken ${Math.round((Date.now() - rep.at) / 60000)} minutes ago):\n${checkText(rep)}\n\n${past ? `EARLIER IN THIS CHAT:\n${past}\n\n` : ""}TRADER ASKS: ${question}`;
     const a = await ask(SYSTEM, [{ type: "text", text }], 350, 20_000, process.env.CHECK_MODEL || "claude-haiku-4-5");
     if (!a) return fail("The King did not answer. Try again.", 502);
-    return json({ answer: a.replace(/\u2014/g, ",").trim() });
+    return json({ answer: a.replace(/\s*\u2014\s*/g, ", ").trim() });
   } catch (e) {
     return fail(e, 500);
   }

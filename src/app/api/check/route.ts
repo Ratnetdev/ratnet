@@ -13,7 +13,9 @@ export async function GET(req: Request) {
   if (!isPubkey(ca)) return fail("Pass ?ca=<a Solana token address>");
   if (!memLimit(`check:${ipOf(req)}`, 20, 60)) return tooMany();
   try {
-    const no = await checkGate(ipOf(req));
+    // v0.1.134: the browser extension checks every coin page you open, so it gets a bigger hourly allowance
+    const ext = /^ext\//.test(req.headers.get("x-ratnet-client") || "");
+    const no = await checkGate(ext ? `ext:${ipOf(req)}` : ipOf(req), ext ? 60 : 10);
     if (no) return fail(no, 429);
     const rep = await memo(`api:check:${ca}`, 15_000, () => kingCheck(ca, { free: true }));
     return json({ report: rep });
