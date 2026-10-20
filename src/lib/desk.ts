@@ -56,6 +56,8 @@ import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
 import { HOLD_MS, firstSell, holdMax, isRunner, type GExit } from "./grid";
 import { ladderHit, ladderText, parseLadder, setDeskLadder, type Step } from "./ladder";
+import { classGate, classOf, gateStats, loadLiveClass, noteLiveClass, type LiveCls } from "./classgate";
+export const CLS_KEY = "rn:desk:cls"; // v0.1.130: closed live round trips by market-cap class
 import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
 
 export type Agent = "HISTORIAN" | "SCOUT" | "KING" | "TAPE" | "GRAPH" | "VET" | "FLOW" | "BUZZ" | "SIZE" | "EXEC" | "RISK" | "COACH" | "LEDGER" | "FILM" | "WIRE" | "PM" | "PULSE" | "REGIME";
@@ -211,6 +213,7 @@ export type DeskState = {
   funded?: number | null; // its balance as last booked (deposits and withdrawals move the start, not the P&L)
   liveBal?: number | null; // live: wallet balance at the last reconcile (deposits and withdrawals are told apart from trades)
   demotedAt?: number | null; // v0.1.45: last time the live drawdown sent the desk back to paper
+  lossPauseUntil?: number | null; // v0.1.130: the daily loss limit pauses new buys until then, then a fresh baseline
 };
 export type Exam = { trades: number; winRate: number; pnlPct: number; maxDD: number; walletSol: number | null; checks: { label: string; need: string; now: string; ok: boolean }[]; passed: boolean };
 
@@ -1643,6 +1646,23 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           }
         }
       }
+      // v0.1.130: with the drawdown rule off (liveMaxDD 0, the default), a desk the rule had put on paper goes straight
+      // back live on its own wallet (20 Oct: it sat on paper from 05:03 with no way back)
+      if (!state.live && state.demotedAt && kp && walletSol != null && walletSol >= EXAM.minWallet && Number((cfg as any).liveMaxDD ?? 0) <= 0 && (cfg.mode === "live" || cfg.mode === "auto") && positions.every((p) => p.live)) {
+        state.live = true;
+        state.liveStart = walletSol;
+        state.liveBal = walletSol;
+        LIVE_FLOW = 0;
+        FLOW_SINCE_BAL = 0;
+        state.promotedAt = now;
+        state.peakEq = walletSol;
+        state.dayStart = walletSol;
+        state.demotedAt = null;
+        state.lossPauseUntil = null;
+        const ws = walletSol;
+        log(b, "LEDGER", `back live with ${ws.toFixed(3)} SOL: the drawdown rule is off (liveMaxDD 0)`, "win");
+        import("./critical").then((m) => m.criticalSend(`🟢 <b>RATNET desk is LIVE again</b>\nTrading real money from ${ws.toFixed(3)} SOL. The drawdown rule is off; the daily loss limit pauses new buys for an hour instead.`)).catch(() => null);
+      }
       if (!state.live && (cfg.mode === "live" || cfg.mode === "auto") && kp && !positions.length) {
         const ex = cfg.mode === "live" ? { passed: examWallet(walletSol) != null && examWallet(walletSol)! >= EXAM.minWallet } : await memo("desk:exam", 30_000, () => exam(state, examWallet(walletSol)));
         // v0.1.79: switch to the separate live wallet first (once, for good), then go live on it
@@ -1680,7 +1700,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
           state.dayStart = walletSol || 0; // v0.1.45: the daily loss limit measures live money from the promotion on
           log(b, "LEDGER", `exam passed. going live with ${walletSol?.toFixed(3)} SOL`, "win");
           // v0.1.76: no human in the loop, so a message the moment it happens
-          import("./critical").then((m) => m.criticalSend(`🟢 <b>RATNET desk is LIVE</b>\nThe exam passed. Trading real money from ${walletSol?.toFixed(3)} SOL${switched() ? " on the live wallet (the paper wallet is retired and hidden on the site)" : ""}.\nBack to paper by itself if the wallet falls 40% from here.`)).catch(() => null);
+          import("./critical").then((m) => m.criticalSend(`🟢 <b>RATNET desk is LIVE</b>\nThe exam passed. Trading real money from ${walletSol?.toFixed(3)} SOL${switched() ? " on the live wallet (the paper wallet is retired and hidden on the site)" : ""}.\nThe daily loss limit pauses new buys for an hour; the desk keeps trading after it.`)).catch(() => null);
         }
       }
 
@@ -2024,6 +2044,19 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       if (eq.dayKey !== state.dayKey) {
         state.dayKey = eq.dayKey;
         state.dayStart = eq.value;
+      }
+      // v0.1.130: the daily loss limit is a pause, not the end of the day (Stan, 20 Oct: keep it trading). Hit: no new
+      // buys for lossPauseMin minutes (exits keep running), then the day's baseline starts again from the wallet then
+      const pauseMin = Number((cfg as any).lossPauseMin ?? 60);
+      if (pauseMin > 0 && state.live) {
+        if (!state.lossPauseUntil && pct(eq.value, state.dayStart) <= -cfg.dailyLoss) {
+          state.lossPauseUntil = now + pauseMin * 60_000;
+          log(b, "RISK", `daily loss limit hit (${fmtPct(pct(eq.value, state.dayStart))} today). no new buys for ${pauseMin} minutes, exits keep running`, "loss");
+        } else if (state.lossPauseUntil && now >= state.lossPauseUntil) {
+          state.lossPauseUntil = null;
+          state.dayStart = eq.value;
+          log(b, "RISK", `the loss pause is over: buying again, the day's baseline is now ${eq.value.toFixed(3)} SOL`, "ok");
+        }
       }
       let tried = 0;
       // v0.1.76: going live is waiting for the paper book to empty: no new paper positions until then
@@ -2430,17 +2463,23 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       const dd = state.peakEq ? -pct(eq2.value, state.peakEq) : 0;
       state.maxDD = Math.max(state.maxDD, dd);
       // only on a fresh balance read: a stale or failed read is never a reason to demote
-      if (state.live && state.liveStart && LAST_BAL && now - LAST_BAL.at < 60_000 && pct(eq2.value, state.liveStart) <= -EXAM.liveMaxDD) {
+      // v0.1.130: liveMaxDD in the desk settings (0 = off, the default: Stan, 20 Oct, keep it trading)
+      const liveMaxDD = Number((cfg as any).liveMaxDD ?? 0);
+      if (liveMaxDD > 0 && state.live && state.liveStart && LAST_BAL && now - LAST_BAL.at < 60_000 && pct(eq2.value, state.liveStart) <= -liveMaxDD) {
         state.live = false;
         state.demotions++;
         state.demotedAt = now;
-        state.cash = state.start;
+        // v0.1.130: paper goes on from the real wallet (it went on from state.start, which was -0.25 and later -0.73,
+        // so paper could never buy again and the desk sat frozen for 7 hours on 20 Oct)
+        const base = walletSol != null && walletSol > 0 ? walletSol : Math.max(0, state.start);
+        state.start = base;
+        state.cash = base;
         state.maxDD = 0;
-        state.peakEq = state.start;
-        state.dayStart = state.start;
+        state.peakEq = base;
+        state.dayStart = base;
         memoDrop("desk:exam");
-        log(b, "LEDGER", `live drawdown hit ${EXAM.liveMaxDD}%. back to paper to re-take the exam`, "loss");
-        import("./critical").then((m) => m.criticalSend(`🔴 <b>RATNET desk is back on paper</b>\nThe live wallet fell ${EXAM.liveMaxDD}% from where live trading started. It re-takes the exam before trading real money again.`)).catch(() => null);
+        log(b, "LEDGER", `live drawdown hit ${liveMaxDD}%. back to paper to re-take the exam`, "loss");
+        import("./critical").then((m) => m.criticalSend(`🔴 <b>RATNET desk is back on paper</b>\nThe live wallet fell ${liveMaxDD}% from where live trading started. It re-takes the exam before trading real money again.`)).catch(() => null);
       }
       if (now - state.lastEqAt >= 60_000) {
         state.lastEqAt = now;
@@ -2591,6 +2630,7 @@ let ALERT_CFG: unknown = null; // v0.1.46: the session's desk settings, for the 
  *  re-entries skipped VET, so they used to buy past full slots and past the daily loss limit. */
 export async function roomFor(how: Pos["how"] | string, state: DeskState, eqValue: number, cfg: Cfg): Promise<string | null> {
   if (PROMO_WAIT && !state.live) return "the exam passed: no new paper buys until the desk goes live";
+  if (state.lossPauseUntil && Date.now() < state.lossPauseUntil) return `the daily loss limit paused new buys until ${new Date(state.lossPauseUntil).toISOString().slice(11, 16)} UTC`;
   if (pct(eqValue, state.dayStart) <= -cfg.dailyLoss) return "the daily loss limit is hit";
   const held = Object.values(await loadPositions(K.deskPos));
   const pos = held.filter((p) => takesSlot(p));
@@ -2915,6 +2955,15 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     if (chase < 5 && chase > 0.2 && chase - 1 > entryChase()) {
       gridChaseSkips++;
       return log(b, "EXEC", `$${o.symbol}: price already ${((chase - 1) * 100).toFixed(1)}% over GRID's paper fill. not chasing`, "info", coin);
+    }
+    // v0.1.130 CLASS GATE: live buys only in market-cap classes that make money live (paper keeps trading them all)
+    if (state.live) {
+      const cg = classGate(classOf(fresh.px * 1e9));
+      if (!cg.on) {
+        gateStats.skips++;
+        gateStats.last = `$${o.symbol}: ${cg.why}`;
+        return log(b, "VET", `$${o.symbol}: CLASS GATE, ${cg.why}. skipped live`, "info", coin);
+      }
     }
     const avail = state.live ? (walletSol == null ? 0 : liveCash(state)) - 0.02 : state.cash;
     const vSol = 30 + Math.max(0, fresh.real);
@@ -3311,6 +3360,11 @@ async function sell(b: Batch, state: DeskState, p: Pos, frac: number, px: number
     const total = p.soldSol - p.costSol;
     if (total > 0) state.wins++;
     log(b, "LEDGER", `closed $${p.symbol} ${total >= 0 ? "+" : ""}${total.toFixed(3)} SOL (${fmtPct(pct(p.soldSol, p.costSol))})`, total >= 0 ? "win" : "loss", coin);
+    // v0.1.130 CLASS GATE: every closed live round trip counts for its market-cap class
+    if (p.live && p.entryPx > 0) {
+      const lc = noteLiveClass(p.entryPx * 1e9, p.soldSol - p.costSol);
+      await redis().lpush(CLS_KEY, lc).then(() => redis().ltrim(CLS_KEY, 0, 1999)).catch(() => null);
+    }
     archiveTrip({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, openedAt: p.openedAt, closedAt: Date.now(), costSol: p.costSol, backSol: p.soldSol, how: p.how, king: p.king, nano: p.nano, peakX: Math.max(p.peakPx || 0, px) / p.entryPx, reason, build: p.build, cfg: p.cfg, data: { entryPx: p.entryPx, avgExitPx: avgExitPx(p, px), sells: p.sells, ctx: p.ctx } });
     alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.gk ? "grid" : p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: mcUsd(p.entryPx, sol$), exitMc: mcUsd(avgExitPx(p, px), sol$), lastMc: mcUsd(px, sol$), sells: sellCount(p), peakX: Math.max(p.peakPx || 0, px) / p.entryPx, openedAt: p.openedAt, reason, sig }, ALERT_CFG);
   } else alertClose({ book: p.live ? "live" : "paper", mint: p.mint, symbol: p.symbol, how: p.gk ? "grid" : p.how, costSol: p.costSol, backSol: p.soldSol, entryMc: null, exitMc: null, peakX: 1, openedAt: p.openedAt, reason, sig, partial: { frac: amt / p.tokens0, sol: proceeds, mc: mcUsd(px, sol$) } }, ALERT_CFG);
@@ -3749,6 +3803,18 @@ export type Trip = {
 };
 
 /** Every trade the desk made, grouped into round trips: entry, each exit, result. Open trips at the live price. */
+/** v0.1.130 CLASS GATE at boot: the live round trips by class (from the desk's own record the first time). */
+export async function classBoot() {
+  const r = redis();
+  let xs = ((await r.lrange<LiveCls>(CLS_KEY, 0, 1999).catch(() => [])) || []) as LiveCls[];
+  if (!xs.length) {
+    const rec: any = await getRecord().catch(() => null);
+    xs = ((rec?.trips || []) as any[]).filter((t) => t.live && !t.open && Number(t.entryPx) > 0 && typeof t.pnlSol === "number").map((t) => ({ c: classOf(Number(t.entryPx) * 1e9), pnl: Number(t.pnlSol), at: Number(t.closedAt) || Date.now() }));
+    if (xs.length) await r.lpush(CLS_KEY, ...xs.slice(0, 1999)).catch(() => null);
+  }
+  loadLiveClass(xs);
+  return xs.length;
+}
 export async function getRecord(onlyMint?: string, book: "real" | "ghost" = "real") {
   const r = redis();
   const ghost = book === "ghost";

@@ -24,7 +24,8 @@ import { arenaPublish, arenaRecentTrips } from "../src/lib/arena";
 import { regimeTick } from "../src/lib/regimegate";
 import { archiveBoard, archiveEarlyGrid, archiveFlush, archiveGrid, archiveGridTrips, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
-import { priceOf } from "../src/lib/desk";
+import { classBoot, priceOf } from "../src/lib/desk";
+import { gateStats, gateView } from "../src/lib/classgate";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
 import { gridHistory, gridMessage, liveCandidates, setProfitModel, setScoreModel, setWinModel, withSeen, type GCoin, type GHist, type GridView } from "../src/lib/grid";
@@ -1005,16 +1006,23 @@ async function main() {
     };
     void known();
     setInterval(() => void known(), 30 * 60_000);
-    r.hgetall<Record<string, number>>("rn:fomo:w").then((x) => fomoLoad(x || {})).catch(() => null);
-    r.hgetall<Record<string, any>>("rn:earn:rec").then((x) => earnLoad(x || {})).catch(() => null);
-    r.get<[string, string][]>("rn:crew:edges").then((x) => crewLoad(x || [])).catch(() => null);
+    fomoLearn(); // v0.1.130: the pinned FOMO account from the first second
+    classBoot().then((n) => console.log(`class gate: ${n} live round trips by market-cap class`)).catch((e) => console.log("class gate boot error", e?.message || e));
+    void (async () => {
+      // v0.1.130: once, drop the books built with the shared accounts (FOMO), the 1,755-wallet bot crew and records with
+      // misread amounts; they rebuild from the stream with the new rules
+      if (await r.set("rn:v130:purged", Date.now(), { nx: true }).catch(() => null)) await Promise.all([r.del("rn:fomo:w"), r.del("rn:crew:edges"), r.del("rn:earn:rec")]).catch(() => null);
+      await r.hgetall<Record<string, number>>("rn:fomo:w").then((x) => fomoLoad(x || {})).catch(() => null);
+      await r.hgetall<Record<string, any>>("rn:earn:rec").then((x) => earnLoad(x || {})).catch(() => null);
+      await r.get<[string, string][]>("rn:crew:edges").then((x) => crewLoad(x || [])).catch(() => null);
+    })();
     setInterval(async () => {
       try {
         fomoLearn();
         const nw = fomoNew();
         if (nw.length) for (let i = 0; i < nw.length; i += 500) await r.hset("rn:fomo:w", Object.fromEntries(nw.slice(i, i + 500).map((w) => [w, Date.now()])));
         await r.set("rn:crew:edges", crewEdges(), { ex: 14 * 86400 });
-        await r.set("rn:smart:view", { at: Date.now(), fomo: fomoView(), hot: fomoHot(), earners: earnView(), crews: crewView(), buys: smartStats }, { ex: 86400 });
+        await r.set("rn:smart:view", { at: Date.now(), fomo: fomoView(), hot: fomoHot(), earners: earnView(), crews: crewView(), buys: smartStats, gate: { classes: gateView(), ...gateStats } }, { ex: 86400 });
       } catch (e: any) {
         console.log("smart save error", e?.message || e);
       }
@@ -1131,7 +1139,7 @@ async function main() {
       const f = tapeFeatures(m, now);
       const og = originAt(m, null, now);
       const sm = smartFeatures(m, now); // v0.1.128
-      return { age: created ? Math.round((now - created) / 1000) : null, dev: DEV_SOL.get(m)?.sol ?? null, u60: f.u60 ?? null, bs60: f.bs60 ?? null, wh: f.wh ?? null, ds: f.ds ?? null, og: og?.rank ?? null, fc: sm.fc, ea: sm.ea, pwi: sm.pwi, pwr: sm.pwr };
+      return { age: created ? Math.round((now - created) / 1000) : null, dev: DEV_SOL.get(m)?.sol ?? null, u60: f.u60 ?? null, bs60: f.bs60 ?? null, wh: f.wh ?? null, ds: f.ds ?? null, og: og?.rank ?? null, fc: sm.fc, ea: sm.ea, pwi: sm.pwi, pwr: sm.pwr, bt: sm.bt };
     });
     // v0.1.110: every-launch books on the new rules know the coin's origin, DexScreener orders and flow without a call
     setAnySignals((m: string, now: number) => {

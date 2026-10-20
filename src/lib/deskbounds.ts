@@ -5,7 +5,7 @@ export const BOUNDS: Record<string, [number, number]> = {
   start: [0.01, 1000], sizePct: [0.1, 25], kellyFrac: [0.05, 0.5], kellyMinPct: [0.1, 10], kellyMaxPct: [1, 20], minSol: [0.001, 5], maxSol: [0.001, 5], maxImpact: [0.1, 20], maxOpen: [0, 20],
   scaleBase: [0.1, 1000], scaleSolPct: [1, 25], scaleSolMax: [0.1, 100], scaleOpenMax: [1, 300], deployPct: [10, 100], bookPct: [5, 100],
   slippageBps: [50, 3000], maxPriorityLamports: [0, 20_000_000], jitoTipMinSol: [0, 0.01], jitoTipMaxSol: [0, 0.02],
-  dailyLoss: [1, 60], sl: [-90, -1], momoSl: [-90, -1], ghostSol: [0, 1], flowWaitMs: [0, 10_000], catchFirstFrac: [0.05, 1], catchSendFrac: [0, 1], catchSl: [-90, -1], flashSl: [-90, -1], flashMaxOpen: [0, 10], flashFreshMs: [1000, 60_000], flashMaxCurve: [5, 95], flashMaxChase: [0, 300],
+  dailyLoss: [1, 60], lossPauseMin: [0, 1440], liveMaxDD: [0, 95], sl: [-90, -1], momoSl: [-90, -1], ghostSol: [0, 1], flowWaitMs: [0, 10_000], catchFirstFrac: [0.05, 1], catchSendFrac: [0, 1], catchSl: [-90, -1], flashSl: [-90, -1], flashMaxOpen: [0, 10], flashFreshMs: [1000, 60_000], flashMaxCurve: [5, 95], flashMaxChase: [0, 300],
 };
 
 /** Clamp the desk's numbers into their bounds; a non-number falls back to the default. */

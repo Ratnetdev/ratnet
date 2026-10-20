@@ -61,7 +61,11 @@ const CROWD_SEC = 60;
 let KNOWN = new Set<string>(); // FOMO wallets from HOUND (fomoapi.io)
 const FOMO = new Map<string, number>(); // FOMO wallets (known + learned) -> last trade (ms)
 let PRINT = new Set<string>(); // fingerprint accounts (base64)
-let PRINT_BY: "data" | "env" | null = null;
+let PRINT_BY: "data" | "env" | "seed" | null = null;
+// v0.1.130: the learner found FOMO's own account on 20 Oct: a Jito "don't front" account FOMO named after itself. It
+// is on every FOMO swap and on nothing else. The two other accounts it picked are shared (tip accounts other apps use
+// too) and inflated the book to 27K wallets, so the fingerprint is pinned to this one. FOMO_PRINT still overrides.
+export const FOMO_SEED = ["jitodontfront1111111111111111111TradeonFomo"];
 const KEYS = new Map<string, { n: number; ws: Set<string> }>(); // in FOMO-wallet transactions
 const BASE = new Map<string, number>(); // in sampled transactions
 const CROWD = new Map<string, { w: string; at: number }[]>(); // mint -> FOMO buys
@@ -75,7 +79,7 @@ export function fomoSetKnown(ws: Iterable<string>) {
 export function fomoLoad(ws: Record<string, number>) {
   for (const [w, at] of Object.entries(ws || {})) if (!FOMO.has(w)) FOMO.set(w, Number(at) || 0);
 }
-export function fomoSetPrint(b58s: string[], by: "data" | "env") {
+export function fomoSetPrint(b58s: string[], by: "data" | "env" | "seed") {
   PRINT = new Set(b58s.filter(Boolean).map(b58ToB64));
   PRINT_BY = PRINT.size ? by : null;
 }
@@ -143,10 +147,9 @@ export function fomoLearn() {
     fomoSetPrint(env, "env");
     return [...PRINT].map(b64ToB58);
   }
-  if (fomoStats.knownTx < PRINT_MIN_TX) return [];
-  const ok = fomoCandidates().filter((c) => c.share >= PRINT_SHARE && c.wallets >= PRINT_WALLETS && c.base <= PRINT_BASE);
-  if (ok.length) fomoSetPrint(ok.slice(0, 3).map((c) => b64ToB58(c.k)), "data");
-  return ok.map((c) => b64ToB58(c.k));
+  // the pinned account; the learner keeps measuring candidates for the review, but they no longer change the print
+  if (PRINT_BY !== "seed") fomoSetPrint(FOMO_SEED, "seed");
+  return [...FOMO_SEED];
 }
 
 /** A FOMO wallet bought this coin. */

@@ -14,6 +14,7 @@ import { HORIZONS, tickReady } from "./tick";
 import { redis } from "./redis";
 import { archiveTrip } from "./archive";
 import { ladderStudy, newShadows, shadowClose, shadowTick, type Shadow } from "./ladder";
+import { setClassPaper } from "./classgate";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
 import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, profitModel, winModel, withScoreModels, asModels, type Models, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
@@ -57,6 +58,7 @@ export type EntryF = {
   ea?: number | null;
   pwi?: number | null;
   pwr?: number | null;
+  bt?: number | null; // v0.1.130: bots (30+ round trips a day) that bought in the last minute
 };
 let ENTRY_FX: ((mint: string, now: number) => EntryF | null) | null = null;
 export const setEntryFeatures = (f: typeof ENTRY_FX) => (ENTRY_FX = f);
@@ -132,6 +134,8 @@ let LEADER: string | null = null;
 // its full exam keeps being followed at the minimum size while its whole record stays in profit. It is dropped only when
 // that total goes negative (the full pass also needs it in profit without its 2 best; a hold does not)
 const EVER = new Set<string>();
+// v0.1.130 CLASS GATE: the paper trips of the strategies the desk follows (ever passed, or leading now)
+setClassPaper(() => TRIPS.filter((t) => t.sh && (EVER.has(t.k) || t.k === LEADER)));
 export const HOLD_FLOOR = () => {
   const v = Number(process.env.HOLD_FLOOR ?? 0.1);
   return Number.isFinite(v) ? v : 0.1;
@@ -876,6 +880,8 @@ export function gridLiveBackfill(rows: LTrip[]): number {
  */
 export const RUG_SECS = 90;
 export const RUG_MIN_N = 20;
+// v0.1.130: the who-is-buying rules count only trips from v0.1.130 on (the state carries bt): before it, FOMO counted
+// shared accounts, crews chained 1,755 bots and "earners" were sniper bots
 // v0.1.128: `sig` rules are about who is buying, not rugs: they need the money tests only (not the 1.5x rug rate), and
 // only trips whose state has that field count for them
 export const RUG_RULES: { id: string; label: string; hit: (f: EntryF) => boolean; sig?: true; known?: (f: EntryF) => boolean }[] = [
@@ -887,10 +893,11 @@ export const RUG_RULES: { id: string; label: string; hit: (f: EntryF) => boolean
   { id: "few_buyers", label: "under 5 buyers in the last minute", hit: (f) => f.u60 != null && f.u60 < 5 },
   { id: "hot_flow", label: "85%+ of the last minute's SOL was buying", hit: (f) => f.bs60 != null && f.bs60 >= 0.85 },
   { id: "dev_sold", label: "the dev already sold", hit: (f) => f.ds === true },
-  { id: "no_fomo", label: "no FOMO trader bought in the last minute", hit: (f) => f.fc === 0, sig: true, known: (f) => f.fc != null },
-  { id: "fomo_late", label: "5+ FOMO traders already bought in the last minute", hit: (f) => (f.fc ?? 0) >= 5, sig: true, known: (f) => f.fc != null },
-  { id: "no_earner", label: "no earner (a wallet with a profitable record) bought in the last minute", hit: (f) => f.ea === 0, sig: true, known: (f) => f.ea != null },
-  { id: "one_crew", label: "2+ proven wallets bought, but they are one crew", hit: (f) => (f.pwr ?? 0) >= 2 && (f.pwi ?? 0) <= 1, sig: true, known: (f) => f.pwi != null },
+  { id: "no_fomo", label: "no FOMO trader bought in the last minute", hit: (f) => f.fc === 0, sig: true, known: (f) => f.fc != null && f.bt != null },
+  { id: "fomo_late", label: "5+ FOMO traders already bought in the last minute", hit: (f) => (f.fc ?? 0) >= 5, sig: true, known: (f) => f.fc != null && f.bt != null },
+  { id: "no_earner", label: "no earner (a wallet with a profitable record) bought in the last minute", hit: (f) => f.ea === 0, sig: true, known: (f) => f.ea != null && f.bt != null },
+  { id: "one_crew", label: "2+ proven wallets bought, but they are one crew", hit: (f) => (f.pwr ?? 0) >= 2 && (f.pwi ?? 0) <= 1, sig: true, known: (f) => f.pwi != null && f.bt != null },
+  { id: "bots_in", label: "2+ bots (30+ round trips a day) bought in the last minute", hit: (f) => (f.bt ?? 0) >= 2, sig: true, known: (f) => f.bt != null },
 ];
 const SAFE_DEFAULT = new Set(["age45_90"]);
 let RUG_AT = 0;

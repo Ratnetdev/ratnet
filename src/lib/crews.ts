@@ -8,12 +8,16 @@
 
 export const CO_SEC = 3;
 export const CREW_MIN = 3; // shared quick buys before two wallets are one crew
+// v0.1.130: no crew grows past CREW_MAX (20 Oct: bots chained 1,755 wallets into one crew, which made every proven buyer
+// "one crew"); bots never join (lib/smartbuy.ts)
+export const CREW_MAX = 20;
 const PAIRS_MAX = 300_000;
 const EDGES_MAX = 50_000;
 
 const RECENT = new Map<string, { w: string; at: number }[]>(); // mint -> watched buyers in the last CO_SEC
 const PAIRS = new Map<string, { n: number; last: string }>(); // "a|b" -> shared quick buys (distinct coins)
 const PARENT = new Map<string, string>();
+const SIZE = new Map<string, number>(); // root -> wallets in its crew
 let EDGES: [string, string][] = [];
 export const crewStats = { pairs: 0, joins: 0, crews: 0 };
 
@@ -34,8 +38,13 @@ function union(a: string, b: string) {
   const ra = crewFind(a);
   const rb = crewFind(b);
   if (ra === rb) return false;
+  const sa = SIZE.get(ra) || 1;
+  const sb = SIZE.get(rb) || 1;
+  if (sa + sb > CREW_MAX) return false;
   if (!PARENT.has(ra)) PARENT.set(ra, ra);
   PARENT.set(rb, ra);
+  SIZE.set(ra, sa + sb);
+  SIZE.delete(rb);
   return true;
 }
 
@@ -94,6 +103,7 @@ export function _crewReset() {
   RECENT.clear();
   PAIRS.clear();
   PARENT.clear();
+  SIZE.clear();
   EDGES = [];
   crewStats.pairs = crewStats.joins = crewStats.crews = 0;
 }

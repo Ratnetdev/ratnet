@@ -14,9 +14,13 @@ export const MAX_SOL = 500; // v0.1.129: no single pump.fun trade is this big: a
 const MAX_WALLETS = 150_000;
 const MAX_POS = 40;
 export const EARN = { n: 10, pnl: 0.5, wr: 0.25, per: 0.03 };
+// v0.1.130: a wallet that closes more than BOT_DAY round trips in a UTC day is a bot (snipers, volume bots): never an
+// earner, never in a crew. On paper, coins those wallets buy rugged 48% of the time vs 8% (20 Oct).
+export const BOT_DAY = 30;
+export const TRIP_MAX = 50; // SOL: a round trip bigger than this either way is a misread, not a trade
 
 type P = { tok: number; cost: number; back: number; max: number; at: number };
-export type Rec = { n: number; w: number; pnl: number; gw: number; gl: number; at: number };
+export type Rec = { n: number; w: number; pnl: number; gw: number; gl: number; at: number; dk?: number; dn?: number; pdn?: number; bot?: 1 };
 type Wl = { pos: Map<string, P>; r: Rec };
 const WL = new Map<string, Wl>();
 export const earnStats = { trades: 0, trips: 0, loaded: 0, saved: 0 };
@@ -43,7 +47,11 @@ export function isEarner(w: string) {
   const r = WL.get(w)?.r;
   return !!r && earnerRec(r);
 }
-export const earnerRec = (r: Rec) => r.n >= EARN.n && r.pnl >= EARN.pnl && r.w / r.n >= EARN.wr && r.pnl / r.n >= EARN.per;
+export function isBot(w: string) {
+  const r = WL.get(w)?.r;
+  return !!r && !!r.bot;
+}
+export const earnerRec = (r: Rec) => !r.bot && r.n >= EARN.n && r.pnl >= EARN.pnl && r.w / r.n >= EARN.wr && r.pnl / r.n >= EARN.per;
 export const earnRec = (w: string) => WL.get(w)?.r ?? null;
 
 /** One trade from the firehose. */
@@ -76,6 +84,12 @@ export function earnTrade(t: { mint: string; user: string; isBuy: boolean; sol: 
     x.pos.delete(t.mint);
     const pnl = p.back - p.cost;
     const r = x.r;
+    // trips per UTC day: a wallet over BOT_DAY is a bot from then on
+    const dk = Math.floor(t.at / 86_400_000);
+    if (r.dk !== dk) (r.pdn = r.dk === dk - 1 ? r.dn || 0 : 0), (r.dk = dk), (r.dn = 0);
+    r.dn = (r.dn || 0) + 1;
+    if (r.dn > BOT_DAY) r.bot = 1;
+    if (Math.abs(pnl) > TRIP_MAX || p.cost > TRIP_MAX) return; // misread amounts never count
     r.n++;
     if (pnl > 0) (r.w++, (r.gw = r4(r.gw + pnl)));
     else r.gl = r4(r.gl + pnl);
@@ -93,21 +107,24 @@ export function earnDump(min = 3) {
 export function earnLoad(recs: Record<string, Rec>) {
   for (const [w, r] of Object.entries(recs || {})) {
     if (!r || typeof r.n !== "number" || !(Math.abs(r.pnl) <= MAX_SOL * r.n)) continue; // v0.1.129: drop misread records
+    if (r.n && r.w === r.n && r.gw / r.w > TRIP_MAX / 2) continue; // v0.1.130: "every trip won, 25+ SOL each" was a misread
     const x = WL.get(w);
     if (x && x.r.n >= r.n) continue;
-    WL.set(w, { pos: x?.pos ?? new Map(), r: { n: r.n, w: r.w || 0, pnl: r.pnl || 0, gw: r.gw || 0, gl: r.gl || 0, at: r.at || 0 } });
+    WL.set(w, { pos: x?.pos ?? new Map(), r: { n: r.n, w: r.w || 0, pnl: r.pnl || 0, gw: r.gw || 0, gl: r.gl || 0, at: r.at || 0, ...(r.bot ? { bot: 1 as const } : {}) } });
     earnStats.loaded++;
   }
 }
 export function earnView(top = 10) {
   let n = 0;
   const ers: [string, Rec][] = [];
+  let bots = 0;
   for (const [w, x] of WL) {
     if (x.r.n >= 3) n++;
+    if (x.r.bot) bots++;
     if (earnerRec(x.r)) ers.push([w, x.r]);
   }
   ers.sort((a, z) => z[1].pnl - a[1].pnl);
   const avg = (r: Rec) => ({ trips: r.n, winRate: Math.round((r.w / r.n) * 100), pnl: r.pnl, avgWin: r.w ? r4(r.gw / r.w) : 0, avgLoss: r.n - r.w ? r4(r.gl / (r.n - r.w)) : 0 });
-  return { wallets: WL.size, recorded: n, earners: ers.length, top: ers.slice(0, top).map(([w, r]) => ({ w: `${w.slice(0, 4)}…${w.slice(-4)}`, ...avg(r) })), ...earnStats };
+  return { wallets: WL.size, recorded: n, earners: ers.length, bots, top: ers.slice(0, top).map(([w, r]) => ({ w: `${w.slice(0, 4)}…${w.slice(-4)}`, ...avg(r) })), ...earnStats };
 }
 export const _earnReset = () => (WL.clear(), (earnStats.trades = earnStats.trips = earnStats.loaded = earnStats.saved = 0));

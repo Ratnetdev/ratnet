@@ -31,8 +31,12 @@ const ok = (c: boolean, m: string) => {
   for (let i = 0; i < 60; i++) F.fomoTx([bs58.decode(known[i % 8]), relay, pump, i % 2 ? curve : key()], [known[i % 8]]);
   const before = F.fomoView();
   ok(!before.print.length && before.knownTx === 60, "nothing is FOMO's fingerprint before the learner runs");
-  const learned = F.fomoLearn();
-  ok(learned.length === 1 && learned[0] === bs58.encode(relay), `learned: ${learned[0]?.slice(0, 8)} (in every FOMO trade, 8 wallets, in no other); the pump program and a busy coin's curve are not`);
+  const best = F.fomoCandidates()[0];
+  ok(bs58.encode(Buffer.from(best.k, "base64")) === bs58.encode(relay) && best.wallets === 8 && best.base < F.PRINT_BASE, "the learner ranks FOMO's account first (in every FOMO trade, 8 wallets, in no other); the pump program and a busy coin's curve are not");
+  // v0.1.130: the print is pinned to FOMO's own account; the learner only measures
+  F.fomoLearn();
+  ok(F.fomoView().printBy === "seed" && F.fomoView().print[0] === F.FOMO_SEED[0], "v0.1.130: the print is FOMO's pinned account");
+  F.fomoSetPrint([bs58.encode(relay)], "data");
   const stranger = addr();
   const res = F.fomoTx([relay, pump, key()], [stranger]);
   ok(res.includes(stranger) && F.isFomo(stranger) && F.fomoNew().includes(stranger), "a wallet never seen before, trading with the fingerprint, joins the FOMO book (and is saved)");
@@ -105,13 +109,13 @@ const ok = (c: boolean, m: string) => {
   const trip = (e: any, pnl: number) => ({ k: "b", mint: `T${i}`, symbol: "T", openedAt: i, closedAt: ++i, pnl, pnlPct: pnl * 2000, why: "", ef: e, rug: false }) as any;
   const xs: any[] = [];
   for (let n = 0; n < 300; n++) xs.push(trip(ef({}), 0)); // trips from before this build: no fc, they don't count for it
-  for (let n = 0; n < 200; n++) (xs.push(trip(ef({ fc: 0, ea: 1 }), -0.01)), xs.push(trip(ef({ fc: 2, ea: 1 }), 0.01)));
+  for (let n = 0; n < 200; n++) (xs.push(trip(ef({ fc: 0, ea: 1, bt: 0 }), -0.01)), xs.push(trip(ef({ fc: 2, ea: 1, bt: 0 }), 0.01)));
   const st = L.rugStudy(xs);
   const row = (id: string) => st.rows.find((x: any) => x.id === id)!;
   ok(row("no_fomo").verdict === "live" && row("no_fomo").test.n === 60, `coins with no FOMO trader lost on both halves, no rug rate needed: live (${row("no_fomo").test.n} newest skipped)`);
   ok(row("no_earner").verdict !== "live", "no earner never fired here: not live");
   const ys: any[] = [];
-  for (let n = 0; n < 400; n++) ys.push(trip(ef({ fc: n % 5 ? 0 : 1 }), n % 5 ? -0.01 : 0.01));
+  for (let n = 0; n < 400; n++) ys.push(trip(ef({ fc: n % 5 ? 0 : 1, bt: 0 }), n % 5 ? -0.01 : 0.01));
   ok(L.rugStudy(ys).rows.find((x: any) => x.id === "no_fomo")!.verdict === "off", `a rule that would skip 80% of trips never goes live (cap ${L.SKIP_MAX * 100}%)`);
 
   // ---- 6. wiring
