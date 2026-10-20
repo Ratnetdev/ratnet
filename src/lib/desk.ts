@@ -55,7 +55,7 @@ import { loadModel } from "./digger";
 import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
 import { HOLD_MS, firstSell, holdMax, isRunner, type GExit } from "./grid";
-import { ladderHit, ladderText, parseLadder, setDeskLadder, type Step } from "./ladder";
+import { BAG_HOURS, BAG_TRAIL, bagLadder, ladderHit, ladderText, parseLadder, setDeskLadder, type Step } from "./ladder";
 import { classGate, classOf, classPaperPcts, gateStats, loadLiveClass, noteLiveClass, type LiveCls } from "./classgate";
 export const CLS_KEY = "rn:desk:cls"; // v0.1.130: closed live round trips by market-cap class
 import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
@@ -122,6 +122,7 @@ export type Pos = {
   gf?: { v: string; f0: { kx: number | null; e20: number | null } | null; done?: boolean }; // v0.1.108: its flow exit
   ld?: Step[]; // v0.1.127 TP LADDER: the take-profit steps this position sells in (set at the buy)
   li?: number; // the next step
+  bag?: number; // v0.1.137 BAG: the share kept after the ladder's last step (it rides BAG_TRAIL for up to BAG_HOURS)
   trail?: number; // current trailing stop width %
   usd?: number; // market cap USD now
   watch?: Watch[]; // insider token accounts and their balance at entry
@@ -2886,9 +2887,15 @@ async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: num
  * off the peak; a stop; out after the time limit without initials; at the migration either out ("sell") or on into the
  * pool ("hold", up to 6 hours). Pure: { frac, why } (frac 0 = hold).
  */
-export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | "openedAt" | "gradSeen"> & Partial<Pick<Pos, "ld" | "li" | "tokens" | "tokens0">>, q: { px: number; grad: boolean }, now: number): { frac: number; why: string; li?: number } {
+export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | "openedAt" | "gradSeen"> & Partial<Pick<Pos, "ld" | "li" | "tokens" | "tokens0" | "bag">>, q: { px: number; grad: boolean }, now: number): { frac: number; why: string; li?: number } {
   const x = p.gx!;
   const xr = q.px / p.entryPx;
+  // v0.1.137 BAG: every ladder step sold and a bag kept: it rides a wide trail for up to BAG_HOURS, through the migration
+  if (p.bag && p.ld?.length && (p.li ?? 0) >= p.ld.length) {
+    if (now - p.openedAt >= BAG_HOURS * 3600_000) return { frac: 1, why: `GRID: bag held ${BAG_HOURS} hours, out at ${xr.toFixed(2)}x` };
+    if (q.px <= p.peakPx * (1 - BAG_TRAIL)) return { frac: 1, why: `GRID: bag trail ${Math.round(BAG_TRAIL * 100)}% off the peak, out at ${xr.toFixed(2)}x` };
+    return { frac: 0, why: "" };
+  }
   if (q.grad && !p.gradSeen && x.mig !== "hold") return { frac: 1, why: `GRID: migrated, sold at the migration (${xr.toFixed(2)}x)` };
   // v0.1.89: runner exits (up to `hours`, most sold at the first target, the rest rides a wide trail)
   if (now - p.openedAt >= holdMax(x)) return { frac: 1, why: `GRID: ${isRunner(x) ? `${x.hours} hours` : x.mig === "hold" ? "6 hours" : "the hour"} over, out at ${xr.toFixed(2)}x` };
@@ -2909,7 +2916,7 @@ export function gridExit(p: Pick<Pos, "gx" | "entryPx" | "peakPx" | "tp1Done" | 
 
 // v0.1.75: FOLLOW. GRID LIVE hands the desk every entry of the strategy it follows (the leader: a strategy that passed
 // the exam on live coins). The desk buys the same coin at once and runs that strategy's exits.
-export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
+export type GridOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; xp?: "book" | "desk"; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
 // v0.1.108 FLOW EXIT: the worker hands the desk the coin's flow (KOLs that sold, first 20 buyers that sold), so a
 // strategy with a flow exit runs it on live money exactly as its twin ran it on paper
 let DESK_FLOW: ((mint: string) => { kx: number | null; e20: number | null } | null) | null = null;
@@ -2917,6 +2924,9 @@ export const setDeskFlow = (f: typeof DESK_FLOW) => (DESK_FLOW = f);
 // v0.1.135: the worker passes each closed live GRID follow to GRID LIVE (no import cycle)
 let FOLLOW_CLOSE: ((x: { k: string; mint: string; openedAt: number; pct: number }) => void) | null = null;
 export const setFollowClose = (f: typeof FOLLOW_CLOSE) => (FOLLOW_CLOSE = f);
+// v0.1.137: the bag GRID LIVE's study picked (share of the position), or null (no import cycle)
+let BAG_PICK: (() => number | null) | null = null;
+export const setBagPick = (f: typeof BAG_PICK) => (BAG_PICK = f);
 const deskFlow = (mint: string) => {
   try {
     return DESK_FLOW ? DESK_FLOW(mint) : null;
@@ -3011,11 +3021,19 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     pos.gk = o.key;
     pos.gx = o.exit;
     // v0.1.127 TP LADDER: the steps are fixed at the buy (a settings change applies to the next trades)
-    const ld = parseLadder(cfg.tpLadder);
+    // v0.1.137 EXIT PICK: a strategy whose own exit beat the ladder on its paper trips runs its own exit live
+    const ld0 = o.xp === "book" ? null : parseLadder(cfg.tpLadder);
+    // v0.1.137 BAG: keep a share after the last step only when the BAG study proves it beats the plain ladder
+    let bag: number | null = null;
+    try {
+      bag = ld0 && BAG_PICK ? BAG_PICK() : null;
+    } catch {}
+    const ld = bag ? bagLadder(ld0, bag) : ld0;
     if (ld) (pos.ld = ld), (pos.li = 0);
+    if (ld && bag) pos.bag = bag;
     if (o.fv) pos.gf = { v: o.fv, f0: deskFlow(o.mint) };
     await savePos(K.deskPos, pos, true);
-    log(b, "REGIME", `$${o.symbol}: following GRID LIVE's "${o.label}" (${size.toFixed(3)} SOL), its exits run the position${pos.ld ? `, take profit ${ladderText(pos.ld)}` : ""}`, "ok", coin);
+    log(b, "REGIME", `$${o.symbol}: following GRID LIVE's "${o.label}" (${size.toFixed(3)} SOL), its exits run the position${pos.ld ? `, take profit ${ladderText(pos.ld)}` : ""}${o.xp === "book" ? ", its own exit (it beat the ladder on its paper trips)" : ""}${pos.bag ? `, ${Math.round(pos.bag * 100)}% bag rides a ${Math.round(BAG_TRAIL * 100)}% trail up to ${BAG_HOURS}h` : ""}`, "ok", coin);
   } finally {
     ENTERING.delete(o.mint);
   }

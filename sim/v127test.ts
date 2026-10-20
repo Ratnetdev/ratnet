@@ -58,7 +58,7 @@ const ok = (c: boolean, m: string) => {
   const old: any = { gx, entryPx: 1, peakPx: 2.1, tp1Done: false, openedAt: now, tokens: 1000, tokens0: 1000 };
   ok(/70% at 2.10x/.test(D.gridExit(old, { px: 2.1, grad: false }, now).why), "a position from before the ladder: 70% at 2x as before");
   const dk = fs.readFileSync("src/lib/desk.ts", "utf8");
-  ok(/const ld = parseLadder\(cfg\.tpLadder\);\s*if \(ld\) \(pos\.ld = ld\), \(pos\.li = 0\);/.test(dk) && /if \(ok && li != null\) p\.li = li;/.test(dk), "set at the buy; a step only counts once its sell landed");
+  ok(/const ld = parseLadder\(cfg\.tpLadder\);\s*if \(ld\) \(pos\.ld = ld\), \(pos\.li = 0\);/.test(dk) || /const ld = bag \? bagLadder\(ld0, bag\) : ld0;\s*if \(ld\) \(pos\.ld = ld\), \(pos\.li = 0\);/.test(dk) && /if \(ok && li != null\) p\.li = li;/.test(dk), "set at the buy; a step only counts once its sell landed");
 
   // ---- 3. shadows on paper
   const sh = Ld.newShadows();

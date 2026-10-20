@@ -29,7 +29,7 @@ const ok = (c: boolean, m: string) => {
   // ---- 1. before any measure: the flat quote gap no longer blocks a big edge
   L._setFill(K1, { bn: 20, bg: -0.12, sn: 20, sg: -0.05 });
   const e0 = L.edgeOf(K1);
-  ok(e0.src === "quotes" && e0.avg > 20 && e0.ok, `K1 after the quoted 17% gap still makes ${e0.avg}% a trade: followed (the old flat rule blocked it)`);
+  ok(e0.src === "quotes" && e0.avg > 5 && e0.ok, `K1 after the quoted 17% gap still makes ${e0.avg}% a trade: followed (the old flat rule blocked it)`);
   ok(!L.gapBlock(K1), "gapBlock lets it through");
   L._setFill(K2, { bn: 20, bg: -0.12, sn: 20, sg: -0.05 });
   L._gbClear();

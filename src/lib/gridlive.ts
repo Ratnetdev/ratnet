@@ -13,7 +13,7 @@ import { paperPriority } from "./livecost";
 import { HORIZONS, tickReady } from "./tick";
 import { redis } from "./redis";
 import { archiveTrip } from "./archive";
-import { ladderStudy, newShadows, shadowClose, shadowTick, type Shadow } from "./ladder";
+import { BAG_HOURS, BAG_IDS, bagOf, ladderStudy, newShadows, rideTick, ridingBag, shadowClose, shadowTick, type Shadow } from "./ladder";
 import { setClassPaper } from "./classgate";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
@@ -128,7 +128,7 @@ const LAST = new Map<string, { at: number; px: number; real: number; p: number; 
 const HIST = new Map<string, { t: number; p: number }[]>(); // curve % over the last 3 minutes (curve speed)
 let TRIPS: LTrip[] = [];
 // v0.1.75: FOLLOW. The leader (the best strategy that passed the exam live) hands every entry to the desk
-type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
+type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symbol: string; at: number; pool: boolean; xp?: "book" | "desk"; pcts?: number[]; probation?: boolean; fv?: string; mult?: number; px0?: number; rug?: string };
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
@@ -478,6 +478,110 @@ function seerFire(mint: string, p: number, px: number, now: number) {
 // exam decides, like every other family. A signal before the coin has a price waits for its first one (2 minutes).
 const SMART_SX = new Map<string, { fr?: number; fc?: number; st?: number; at: number }>();
 const SMART_Q = new Map<string, number>();
+// v0.1.137 BAG STUDY. Does keeping a bag pay? Every paper trip of a strategy the desk follows (or followed) runs the
+// desk's ladder with a 10/20/30% bag as shadows (lib/ladder.ts). When the strategy closes, a bag whose ladder steps
+// all sold keeps riding: 50% trail off the peak, up to 24 hours after the buy, on the coin's live price (curve, then
+// pool). Each trip's result is recorded once every bag has settled, next to the desk's ladder on the same trip, so the
+// study compares like with like on every trip (not only the coins that ran).
+type Ride = { k: string; mint: string; fill: number; peak: number; last: number; until: number; opened: number; closedAt: number; mc0?: number; desk: number | null; done: Record<string, number>; open: Record<string, Shadow> };
+export type BagTrip = { k: string; mint: string; closedAt: number; mc0?: number; desk: number; bags: Record<string, number> };
+const RIDES = new Map<string, Ride>(); // key|mint
+let BAGX: BagTrip[] = [];
+const RIDES_KEY = "rn:bag:rides";
+const BAGX_KEY = "rn:bag:trips";
+export const RIDES_MAX = 4000;
+const bagEligible = (k: string) => EVER.has(k) || k === LEADER || LEADERS.has(k);
+function bagStart(pos: LPos, t: LTrip, now: number) {
+  if (typeof t.sh?.desk !== "number") return;
+  const done: Record<string, number> = {};
+  const open: Record<string, Shadow> = {};
+  for (const id of BAG_IDS) {
+    const st = pos.sh?.[id];
+    if (!st) continue;
+    if (ridingBag(id, st)) open[id] = { ...st };
+    else if (typeof t.sh?.[id] === "number") done[id] = t.sh[id];
+  }
+  const r: Ride = { k: pos.key, mint: pos.mint, fill: pos.fillPx, peak: pos.peak, last: pos.lastPx, until: pos.openedAt + BAG_HOURS * 3600_000, opened: pos.openedAt, closedAt: now, mc0: t.mc0, desk: t.sh.desk, done, open };
+  if (!Object.keys(open).length) return bagFinish(r);
+  if (RIDES.size >= RIDES_MAX) return; // full: this trip is left out of the study (both sides), not counted as a loss
+  RIDES.set(`${pos.key}|${pos.mint}`, r);
+}
+function bagFinish(r: Ride) {
+  if (r.desk == null || BAG_IDS.some((id) => typeof r.done[id] !== "number")) return;
+  BAGX = [{ k: r.k, mint: r.mint, closedAt: r.closedAt, mc0: r.mc0, desk: r.desk, bags: r.done }, ...BAGX].slice(0, 3000);
+  BAG_DIRTY = true;
+}
+let BAG_DIRTY = false;
+function rideStep(mint: string, px: number, now: number) {
+  for (const [key, r] of RIDES) {
+    if (r.mint !== mint || !(r.fill > 0)) continue;
+    r.last = px;
+    r.peak = Math.max(r.peak, px);
+    const xr = px / r.fill;
+    for (const [id, st] of Object.entries(r.open)) {
+      if (rideTick(st, xr, r.peak / r.fill)) {
+        r.done[id] = Math.round(st.g * 1000) / 1000;
+        delete r.open[id];
+      }
+    }
+    if (!Object.keys(r.open).length || now >= r.until) rideEnd(key, r);
+  }
+}
+function rideEnd(key: string, r: Ride) {
+  const xr = r.last / r.fill;
+  for (const [id, st] of Object.entries(r.open)) r.done[id] = Math.round((st.g + (1 - st.s) * xr) * 1000) / 1000;
+  r.open = {};
+  RIDES.delete(key);
+  bagFinish(r);
+}
+/** Every sweep: bags past their 24 hours are sold at their last price (a coin that stopped trading included). */
+export function rideSweep(now = Date.now()) {
+  for (const [key, r] of RIDES) if (now >= r.until) rideEnd(key, r);
+}
+export const BAG_MIN = 60;
+let LADDER_VIEW: ReturnType<typeof ladderStudy> | null = null;
+/** Per bag: average % a trip vs the desk's ladder on the same trips, older 70% / newest 30%. The pick beats the
+ *  desk's ladder on both halves (60+ trips); BAG_MODE (off, auto, 10, 20, 30) can override. */
+export function bagStudy() {
+  const xs = [...BAGX].sort((a, z) => a.closedAt - z.closedAt);
+  const cut = Math.floor(xs.length * 0.7);
+  const avg = (a: BagTrip[], f: (t: BagTrip) => number) => (a.length ? Math.round((a.reduce((s, t) => s + f(t), 0) / a.length - 1) * 1000) / 10 : null);
+  const desk = { all: avg(xs, (t) => t.desk), old: avg(xs.slice(0, cut), (t) => t.desk), new: avg(xs.slice(cut), (t) => t.desk) };
+  const rows = BAG_IDS.map((id) => ({ id, bag: bagOf(id)!, all: avg(xs, (t) => t.bags[id]), old: avg(xs.slice(0, cut), (t) => t.bags[id]), new: avg(xs.slice(cut), (t) => t.bags[id]), ran: xs.filter((t) => t.bags[id] > t.desk + 0.05).length }));
+  const best = xs.length >= BAG_MIN ? rows.filter((r) => r.old! > desk.old! && r.new! > desk.new!).sort((a, z) => z.all! - a.all!)[0] ?? null : null;
+  return { n: xs.length, riding: RIDES.size, desk, rows, best: best?.id ?? null };
+}
+/** The bag the live desk keeps (share of the position), or null for none. */
+export function bagPick(): number | null {
+  const m = String(process.env.BAG_MODE ?? "auto").trim().toLowerCase();
+  if (m === "off" || m === "0") return null;
+  if (/^\d+$/.test(m)) {
+    const v = Number(m) / 100;
+    return v > 0 && v < 1 ? v : null;
+  }
+  const b = bagStudy().best;
+  return b ? bagOf(b) : null;
+}
+export async function bagLoad() {
+  const r = redis();
+  const [rides, trips] = await Promise.all([r.get<Ride[]>(RIDES_KEY).catch(() => null), r.get<BagTrip[]>(BAGX_KEY).catch(() => null)]);
+  for (const x of rides || []) if (x?.k && x.mint) RIDES.set(`${x.k}|${x.mint}`, x);
+  if (trips?.length) BAGX = trips;
+  return { rides: RIDES.size, trips: BAGX.length };
+}
+export async function bagSave(force = false) {
+  const r = redis();
+  await r.set(RIDES_KEY, [...RIDES.values()].slice(0, RIDES_MAX), { ex: 2 * 86400 }).catch(() => null);
+  if (BAG_DIRTY || force) {
+    BAG_DIRTY = false;
+    await r.set(BAGX_KEY, BAGX, { ex: 14 * 86400 }).catch(() => null);
+  }
+}
+export const _bagReset = () => (RIDES.clear(), (BAGX = []), (BAG_DIRTY = false));
+export const _bagState = () => ({ rides: RIDES, trips: BAGX });
+export const _bagStart = (pos: LPos, t: LTrip, now: number) => bagStart(pos, t, now);
+export const _setBagTrips = (xs: BagTrip[]) => (BAGX = xs);
+
 /** v0.1.133 RAT KING CHECK: the coin's last curve read and the paper books holding it right now. */
 export function gridLiveHolding(mint: string) {
   const l = LAST.get(mint);
@@ -574,6 +678,7 @@ export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: nu
   LAST.set(mint, { at: now, px, real: Number(v.realSol) || 0, p, done: !!v.complete });
   if (SEER_Q.has(mint) && px > 0 && !v.complete) seerFire(mint, p, px, now); // v0.1.102: a foreseen coin's first price
   if (SMART_Q.has(mint) && px > 0 && !v.complete) smartFire(mint, p, px, now); // v0.1.132
+  if (RIDES.size && px > 0) rideStep(mint, px / 1e9, now); // v0.1.137 bags riding after their strategy closed
   const h = HIST.get(mint) || [];
   h.push({ t: now, p });
   while (h.length && h[0].t < now - 180_000) h.shift();
@@ -660,7 +765,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     try {
       // v0.1.95: its whole live record goes with the order (net % per trip): the desk sizes the trade from it
       const mine = TRIPS.filter((t) => t.k === b.key);
-      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, pcts: (() => { const e = edgeAdj(b.key); return mine.map((t) => Math.round(e.adj(t) * 10) / 10); })(), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, rug: rugBlock(pos.ef) ?? undefined, ...(pe.mult ? { mult: pe.mult } : {}) });
+      FOLLOW({ key: b.key, label: b.label, exit: b.exit, mint: pe.mint, symbol: pe.symbol, at: now, pool: inPool, xp: exitPick(b.key).pick, pcts: (() => { const e = edgeAdj(b.key); return mine.map((t) => Math.round(e.adj(t) * 10) / 10); })(), probation: !!bookStat(b, mine).probation, fv: b.fv, px0, rug: rugBlock(pos.ef) ?? undefined, ...(pe.mult ? { mult: pe.mult } : {}) });
     } catch {}
   }
 }
@@ -682,7 +787,9 @@ function close(k: string, pos: LPos, now: number, why: string) {
   // v0.1.126: a rug = stopped out at -30% or worse within 90 seconds of the buy
   if (pos.ef) (t.ef = pos.ef), (t.rug = now - pos.openedAt <= RUG_SECS * 1000 && t.pnlPct <= -30);
   // v0.1.127: what each take-profit ladder would have made on this trip, and the market cap (SOL) at the buy
-  if (pos.sh && pos.fillPx > 0) (t.sh = shadowClose(pos.sh, pos.lastPx / pos.fillPx)), (t.mc0 = Math.round(pos.fillPx * 1e9 * 1000) / 1000);
+  const bagWatch = !!pos.sh && pos.fillPx > 0 && bagEligible(pos.key);
+  if (pos.sh && pos.fillPx > 0) (t.sh = shadowClose(pos.sh, pos.lastPx / pos.fillPx, bagWatch)), (t.mc0 = Math.round(pos.fillPx * 1e9 * 1000) / 1000);
+  if (bagWatch) bagStart(pos, t, now); // v0.1.137
   if (pos.f0 && pos.f0.kx != null) {
     // (a coin whose flow is unknown, not seen from its create, is left out of the record)
     // v0.1.105: the same trip, had it sold when the flow turned. v0.1.108: every flow-watched trip is kept (also those
@@ -782,6 +889,7 @@ export function gridLiveQuote(mint: string, q: { mcSol: number; real: number }, 
   if (!(q.mcSol > 0)) return;
   LAST.set(mint, { at: now, px: q.mcSol, real: q.real, p: 100, done: true, pool: true });
   evictLast(now);
+  if (RIDES.size) rideStep(mint, q.mcSol / 1e9, now);
   if (!BOOKS.length && !POS.size) return;
   for (const b of BOOKS) {
     const k = id(b.key, mint);
@@ -1067,11 +1175,14 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   }
   if (FILLS.size) await redis().hset(FILLS_KEY, Object.fromEntries(FILLS)).catch(() => null);
   await pairsSave(); // v0.1.135
+  rideSweep(now);
+  await bagSave(); // v0.1.137
   if (now - RUG_AT > 10 * 60_000) {
     RUG_AT = now;
     const rv = rugStudy(TRIPS, now);
     redis().set("rn:rug:view", rv, { ex: 2 * 86400 }).catch(() => null);
-    redis().set("rn:ladder:view", ladderStudy(TRIPS, LEADER, now), { ex: 2 * 86400 }).catch(() => null);
+    LADDER_VIEW = ladderStudy(TRIPS, LEADER, now);
+    redis().set("rn:ladder:view", LADDER_VIEW, { ex: 2 * 86400 }).catch(() => null);
   }
   const leads = gridLeaders();
   LEADERS = new Set(leads.map((x) => x.key));
@@ -1084,7 +1195,7 @@ export async function gridLivePublish(send?: (text: string) => Promise<unknown>)
   if (leadChanged && send) await send(lead ? `🧭 <b>The desk now follows GRID LIVE's "${lead.label.replace(/[<>&]/g, " ")}"</b>\n${exitText(lead.exit)}\nIts entries go to the desk the moment they fill. Desk mode decides paper or live money.` : "🧭 The desk stopped following GRID LIVE (no passed strategy right now).").catch(() => null);
   refreshCheck();
   const hot = hotBook();
-  const view = { at: now, books, past, follow, hot: hot?.key ?? null, gapLimit: GAP_LIMIT * 100, edgeMin: EDGE_MIN(), realGap: pairsView(), recent: TRIPS.slice(0, 15), trips: TRIPS.length };
+  const view = { at: now, books, past, follow, hot: hot?.key ?? null, gapLimit: GAP_LIMIT * 100, edgeMin: EDGE_MIN(), realGap: pairsView(), bags: { ...bagStudy(), live: bagPick() }, ladder: LADDER_VIEW, recent: TRIPS.slice(0, 15), trips: TRIPS.length };
   await redis().set(LIVE_VIEW, view, { ex: 2 * 86400 }).catch(() => null);
   return view;
 }
@@ -1246,12 +1357,33 @@ export function realGap(k: string): { n: number; gap: number; raw: number; src: 
 /** How a book's paper % a trip turns into a real-money % a trip. */
 // adj takes a paper TRIP: with a real gap, the base is the trip at the desk's own ladder (what the gap was measured
 // against: live follows sell on the desk's ladder); with quotes or nothing, the book's own net %
-export function edgeAdj(k: string): { adj: (t: LTrip) => number; src: string; gap: number | null; n: number } {
+// v0.1.137 EXIT PICK: the live desk runs each strategy with the exit that made more on that strategy's own paper
+// trips: its own exit ("book": e.g. 70% at 2x, 30% riding a 50% trail up to 24h) or the desk's ladder. The book's
+// exit is picked when it beats the ladder on both the older and the newer half of its last 60 closed trips (30+).
+// (20 Oct: the passed runner books made +37 to +59% a trade with their own exit, and about 0% with the ladder, which
+// sells everything by 5x: their edge is the part that keeps riding.)
+export function exitPick(k: string): { pick: "book" | "desk"; book: number | null; desk: number | null; n: number } {
+  const ts = TRIPS.filter((t) => t.k === k && typeof t.sh?.book === "number" && typeof t.sh?.desk === "number" && t.why !== "open (marked now)").slice(0, 60);
+  const avg = (a: LTrip[], id: string) => (a.length ? Math.round((a.reduce((s, t) => s + t.sh![id], 0) / a.length - 1) * 1000) / 10 : null);
+  const half = Math.floor(ts.length / 2);
+  const newer = ts.slice(0, half);
+  const older = ts.slice(half);
+  const book = avg(ts, "book");
+  const desk = avg(ts, "desk");
+  const wins = ts.length >= 30 && (avg(newer, "book") ?? -1e9) > (avg(newer, "desk") ?? 1e9) && (avg(older, "book") ?? -1e9) > (avg(older, "desk") ?? 1e9);
+  return { pick: wins ? "book" : "desk", book, desk, n: ts.length };
+}
+export function edgeAdj(k: string): { adj: (t: LTrip) => number; src: string; gap: number | null; n: number; exit: "book" | "desk" } {
   const rg = realGap(k);
-  if (rg) return { adj: (t) => paperPct(t) + rg.gap, src: rg.src, gap: rg.gap, n: rg.n };
+  const xp = exitPick(k).pick;
+  // the gap was measured against paper before costs: the base is the picked exit's gross multiple on the same trip
+  const base = (t: LTrip) => (typeof t.sh?.[xp] === "number" ? Math.round((t.sh[xp] - 1) * 1000) / 10 : paperPct(t));
+  if (rg) return { adj: (t) => base(t) + rg.gap, src: rg.src, gap: rg.gap, n: rg.n, exit: xp };
   const f = FILLS.get(k);
-  if (f && f.bn >= 8 && f.sn >= 8) return { adj: (t) => ((1 + t.pnlPct / 100) * (1 + f.bg) * (1 + f.sg) - 1) * 100, src: "quotes", gap: Math.round((f.bg + f.sg) * 1000) / 10, n: Math.min(f.bn, f.sn) };
-  return { adj: (t) => t.pnlPct, src: "none", gap: null, n: 0 };
+  // net % a trip on the picked exit (the book's own result is net already; the ladder's shadow is gross)
+  const net = (t: LTrip) => (xp === "desk" && typeof t.sh?.desk === "number" ? (t.sh.desk - 1) * 100 - GAP_COST : t.pnlPct);
+  if (f && f.bn >= 8 && f.sn >= 8) return { adj: (t) => ((1 + net(t) / 100) * (1 + f.bg) * (1 + f.sg) - 1) * 100, src: "quotes", gap: Math.round((f.bg + f.sg) * 1000) / 10, n: Math.min(f.bn, f.sn), exit: xp };
+  return { adj: (t) => t.pnlPct, src: "none", gap: null, n: 0, exit: xp };
 }
 /** The book's last 30 trips after the real gap: average % a trade and SOL without the 2 best (0.05 SOL trades). */
 export function edgeOf(k: string, trips?: LTrip[]) {
@@ -1261,7 +1393,7 @@ export function edgeOf(k: string, trips?: LTrip[]) {
   const sol = ps.map((p) => (GRID_SOL * p) / 100).sort((a, z) => z - a);
   const l2 = sol.reduce((a, v) => a + v, 0) - Math.max(0, sol[0] ?? 0) - Math.max(0, sol[1] ?? 0);
   const avg = ps.length ? ps.reduce((a, v) => a + v, 0) / ps.length : 0;
-  return { n: ps.length, avg: Math.round(avg * 10) / 10, lessTop2: Math.round(l2 * 1e4) / 1e4, src: e.src, gap: e.gap, pairs: e.n, ok: ps.length > 0 && avg >= EDGE_MIN() && l2 > 0 };
+  return { n: ps.length, avg: Math.round(avg * 10) / 10, lessTop2: Math.round(l2 * 1e4) / 1e4, src: e.src, gap: e.gap, pairs: e.n, exit: e.exit, ok: ps.length > 0 && avg >= EDGE_MIN() && l2 > 0 };
 }
 export const pairsView = () => {
   const one = new Map<string, LivePair>();
@@ -1303,7 +1435,7 @@ const fillView = (key: string) => {
   if (!f) return null;
   const r = (x: number) => Math.round(x * 1000) / 10;
   const e = edgeOf(key);
-  return { buyN: f.bn, buyGap: r(f.bg), sellN: f.sn, sellGap: r(f.sg), noRoute: f.nr, blocked: gapBlock(key), lagMs: f.lag ?? null, edge: { avg: e.avg, lessTop2: e.lessTop2, src: e.src, gap: e.gap, pairs: e.pairs } };
+  return { buyN: f.bn, buyGap: r(f.bg), sellN: f.sn, sellGap: r(f.sg), noRoute: f.nr, blocked: gapBlock(key), lagMs: f.lag ?? null, edge: { avg: e.avg, lessTop2: e.lessTop2, src: e.src, gap: e.gap, pairs: e.pairs, exit: e.exit, pick: exitPick(key) } };
 };
 
 // ---------------------------------------------------------------- v0.1.78: spawn (variants and every-launch twin)
