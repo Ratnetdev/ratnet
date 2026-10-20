@@ -101,7 +101,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick" | "smart";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick" | "smart" | "king";
   /** v0.1.115: an EARLY book: trades the 2-minute read of every launch (lib/early.ts), never a King call */
   early?: boolean;
   /** v0.1.117: the reading age it trades (seconds; 120 when not set) */
@@ -1562,6 +1562,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const revived = reviveBooks(now);
   // v0.1.89: the RUNNER family trades on live coins from the first tend (its own slots)
   const runners = seedRunners(now);
+  // v0.1.141 KING HOLD: the King's calls, entered later and held for the migration
+  const kings = seedKing(now);
+  if (kings.length && send) await send(`👑 <b>GRID LIVE: KING HOLD books</b>\n${kings.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nThe King's BOND calls migrate 4x as often as the base rate, but buying them at the call (minute 5) lost money on paper. These enter at the migration, on a dip or 2 minutes in, and hold half for the migration. Paper on live calls; the exam decides.`).catch(() => null);
   // v0.1.90: the WALLETS family: proven wallets buying, on every launch (not only King calls)
   const wals = seedWallets(now);
   // v0.1.102: the SEER family: coins on the watchlist before they were launched, bought in their first seconds
@@ -1664,6 +1667,36 @@ function reviveBooks(now: number): LBook[] {
 }
 // v0.1.89: the RUNNER family. The King's BOND call (8.6% of them bond, 4x the base rate), with and without a proven
 // wallet, the hot near-migration rule, and a proven wallet with momentum, each with runner exits.
+// v0.1.141 KING HOLD. The King's BOND calls migrate 9.3% of the time vs 2.1% for all launches, yet the books that buy
+// them AT the call lost (20 Oct, last 30 trips: bond 0% won, -19% a trade; bond + a proven wallet 10% won, -21%).
+// Market caps double most often after the migration ($250K to $500K 30%, $500K to $1M 26%, vs 17% from $50K). So
+// these books enter later: at the migration (pool price), on a 30% dip after the call, or 2 minutes in if still above
+// the call price; and hold: half sold at 2x, the other half rides a 50% trail for up to 24 hours, stop -50%.
+export const KING_MAX = 12;
+export const KING_HOLD: GExit = { initials: 2, trail: 0.5, stop: 0.5, timeMin: 240, mig: "hold", keep: 0.5, hours: 24 };
+export const KING_SEEDS: string[] = [
+  ...["bond", "bond+pw1", "bond+p70"].flatMap((f) => ["mig", "d30", "h2"].map((m) => keyOf(f, m, KING_HOLD))),
+  ...["bond", "bond+pw1", "bond+p70"].map((f) => keyOf(f, "mig", RUNNER_EXITS[2])),
+];
+function seedKing(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = KING_MAX - BOOKS.filter((b) => !b.cold && b.by === "king").length;
+  for (const k of KING_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const ts = TRIPS.filter((t) => t.k === k);
+    if (ts.length && dropReason(runnerStat(ts))) continue;
+    const b = bookFromKey(k, now);
+    if (!b) continue;
+    b.by = "king";
+    out.push(b);
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+export const _seedKing = (now = Date.now()) => seedKing(now);
+
 export const RUNNER_MAX = 8;
 export const RUNNER_SEEDS: string[] = [
   keyOf("bond", "now", RUNNER_EXITS[0]),
