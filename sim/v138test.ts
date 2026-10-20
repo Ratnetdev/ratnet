@@ -26,29 +26,37 @@ const ok = (c: boolean, m: string) => {
   L.gridLiveCurve(M, { progress: 10, mcapSol: 40, realSol: 5 }, now);
   L.gridLiveSmart(M, { fr: 1 }, now);
   L.gridLiveCurve(M, { progress: 11, mcapSol: 41, realSol: 5.2 }, now + 300);
-  ok(orders.length === 1 && orders[0].early === true && orders[0].at === now + 300, "the live order goes out at the signal (0.3 s), before the paper fill");
-  ok(Math.abs(orders[0].px0 - 41 / 1e9) < 1e-15, "it carries the price at the signal, for the desk's no-chasing check");
+  ok(orders.length === 1 && orders[0].early === true && orders[0].at === now, "the live order goes out at the signal itself, before the paper fill");
+  ok(Math.abs(orders[0].px0 - 40 / 1e9) < 1e-15, "it carries the price at the signal, for the desk's no-chasing check");
   L.gridLiveCurve(M, { progress: 12, mcapSol: 42, realSol: 5.4 }, now + 2_500);
   ok(orders.length === 1 && L.gridLiveState().pos.has(`${key}#${M}`), "the paper still fills 2 s later; no second order");
   ok(L.fastStats.early === 1, "counted as an early order");
+  // v0.1.139: a quiet coin (no tick between the signal and the paper fill) still gets its order at the signal
+  L._setLeaders([key]);
+  const MQ = "Quiet11111111111111111111111111111111pump";
+  L.gridLiveCurve(MQ, { progress: 10, mcapSol: 40, realSol: 5 }, now);
+  L.gridLiveSmart(MQ, { fr: 1 }, now + 100);
+  ok(orders.length === 2 && orders[1].early === true && orders[1].at === now + 100, "a quiet coin: the order goes out the moment the entry is armed, not on its next tick");
+  L.gridLiveCurve(MQ, { progress: 12, mcapSol: 42, realSol: 5.4 }, now + 3_000);
+  ok(orders.length === 2, "and only once");
   // not followed: no order
   L._setLeaders(["other"]);
   const M2 = "Slow111111111111111111111111111111111pump";
   L.gridLiveCurve(M2, { progress: 10, mcapSol: 40, realSol: 5 }, now);
   L.gridLiveSmart(M2, { fr: 1 }, now);
   L.gridLiveCurve(M2, { progress: 11, mcapSol: 41, realSol: 5 }, now + 2_500);
-  ok(orders.length === 1, "a strategy the desk does not follow sends nothing");
+  ok(orders.length === 2, "a strategy the desk does not follow sends nothing");
 
   // ---- 2. keep share
   L._keepReset();
   const trips: any[] = [];
-  for (let i = 0; i < 40; i++) trips.push({ k: "x", mint: `k${i}`, symbol: "K", openedAt: now - i * 1000, closedAt: now - i * 1000, pnl: 0, pnlPct: 25, why: "trail", pk: 2 }); // peaked +100%, kept +25%
+  for (let i = 0; i < 200; i++) trips.push({ k: "x", mint: `k${i}`, symbol: "K", openedAt: now - i * 1000, closedAt: now - i * 1000, pnl: 0, pnlPct: 25, why: "trail", pk: 2 }); // peaked +100%, kept +25%
   L._setTrips(trips);
   const ks = L.keepShare(now + 120_000);
-  ok(ks.n === 40 && Math.abs(ks.k - 0.25) < 1e-9, `closed trips kept ${ks.k * 100}% of their peak gain`);
+  ok(ks.n === 200 && Math.abs(ks.k - 0.25) < 1e-9, `closed trips kept ${ks.k * 100}% of their peak gain`);
   L._setTrips(trips.slice(0, 10));
   L._keepReset();
-  ok(L.keepShare(now + 120_000).k === L.KEEP_DEF, "under 30 trips: the default share");
+  ok(L.keepShare(now + 120_000).k === L.KEEP_DEF, "under 150 trips: the default share");
 
   // ---- 3. the proof board's math
   const fills: any[] = [

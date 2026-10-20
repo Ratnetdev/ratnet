@@ -427,6 +427,7 @@ export function gridLiveCall(call: any, now = Date.now()) {
     const m = MODES.find((x) => x.id === b.mode);
     if (!m) continue;
     PEND.set(id(b.key, mint), { key: b.key, mint, symbol: c.symbol, callAt: now, p0: last.p, px0: last.px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
+    earlyFollow(b, PEND.get(id(b.key, mint)), now); // v0.1.138b
   }
   if (PEND.size > 3000) for (const [k, p] of PEND) if (p.until < now) PEND.delete(k);
 }
@@ -471,6 +472,7 @@ function seerFire(mint: string, p: number, px: number, now: number) {
     if (!m || m.kind === "mig") continue;
     TRIG.add(k);
     PEND.set(k, { key: b.key, mint, symbol: SYM.get(mint) || mint.slice(0, 4), callAt: now, p0: p, px0: px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
+    earlyFollow(b, PEND.get(k), now); // v0.1.138b
   }
 }
 // v0.1.132 SMART family: callout front-runners, the FOMO crowd arriving, a running story. Each signal arrives with the
@@ -615,6 +617,7 @@ function smartFire(mint: string, p: number, px: number, now: number) {
     TRIG.add(k);
     smartLiveStats.fired++;
     PEND.set(k, { key: b.key, mint, symbol: SYM.get(mint) || mint.slice(0, 4), callAt: now, p0: p, px0: px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
+    earlyFollow(b, PEND.get(k), now); // v0.1.138b
   }
 }
 export const SMART_MAX = 6;
@@ -717,6 +720,7 @@ function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: numb
     if (!m || m.kind === "mig") continue;
     TRIG.add(k);
     PEND.set(k, { key: b.key, mint, symbol: SYM.get(mint) || mint.slice(0, 4), callAt: now, p0: p, px0: px, until: now + Math.max(30_000, m.win * 60_000), fillAfter: m.kind === "now" ? now + 2_000 : null });
+    earlyFollow(b, PEND.get(k), now); // v0.1.138b
   }
   if (TRIG.size > 20_000) TRIG.clear();
 }
@@ -746,19 +750,11 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
     if (now > pe.until && m.kind !== "hold") return void PEND.delete(k);
     if (m.kind === "climb" && last.p >= pe.p0 + m.a) pe.fillAfter = now + 2_000;
     else if (m.kind === "dip" && last.px <= pe.px0 * (1 - m.a)) pe.fillAfter = now + 2_000;
+    earlyFollow(b, pe, now); // v0.1.138b: the signal is now
     return;
   }
-  const capOf = () => (b.tick ? MAX_OPEN_TICK : b.any || b.early ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN);
-  // v0.1.138 FAST FILL: the paper fills 2 seconds after the signal (its model of a real buy's delay). The live desk
-  // gets the order AT the signal, so its real buy lands about when the paper fills, not 2 seconds plus a desk beat later
-  // (20 Oct overnight: 48 of 79 live stops came within 10 seconds of the buy: the desk bought the top of the burst)
-  if (!pe.sent && now < pe.fillAfter && followed(b.key) && [...POS.values()].filter((p) => p.key === b.key).length < capOf()) {
-    const sx = last.px / 1e9;
-    if (sx > 0) {
-      pe.sent = now;
-      emitFollow(b, pe, sx, !!last.pool, rugBlock(entryNow(pe.mint, now)) ?? undefined, now, true);
-    }
-  }
+  const capOf = () => capOfBook(b);
+  earlyFollow(b, pe, now);
   if (now < pe.fillAfter) return;
   PEND.delete(k);
   const open = [...POS.values()].filter((p) => p.key === b.key).length;
@@ -775,6 +771,20 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (!pe.sent && followed(b.key)) emitFollow(b, pe, px0, inPool, rugBlock(pos.ef) ?? undefined, now, false);
 }
 const followed = (k: string) => !!FOLLOW && (LEADERS.size ? LEADERS.has(k) : LEADER === k);
+const capOfBook = (b: LBook) => (b.tick ? MAX_OPEN_TICK : b.any || b.early ? MAX_OPEN_ANY : isRunner(b.exit) ? MAX_OPEN_RUN : MAX_OPEN);
+// v0.1.138 FAST FILL: the paper fills 2 seconds after the signal (its model of a real buy's delay). The live desk gets
+// the order AT the signal, so its real buy lands about when the paper fills, not 2 seconds plus a desk beat later
+// (20 Oct overnight: 48 of 79 live stops came within 10 seconds of the buy: the desk bought the top of the burst).
+// v0.1.138b: armed where the entry is created (and where a climb or dip fires), not on the coin's next price tick: on a
+// quiet coin that tick came after the paper fill and no order went out early (first 3 orders after the deploy)
+function earlyFollow(b: LBook, pe: Pend | undefined, now: number) {
+  if (!pe || pe.sent || pe.fillAfter == null || now >= pe.fillAfter || !followed(b.key)) return;
+  const last = LAST.get(pe.mint);
+  if (!last || !(last.px > 0) || last.done) return;
+  if ([...POS.values()].filter((p) => p.key === b.key).length >= capOfBook(b)) return;
+  pe.sent = now;
+  emitFollow(b, pe, last.px / 1e9, !!last.pool, rugBlock(entryNow(pe.mint, now)) ?? undefined, now, true);
+}
 export const fastStats = { early: 0, atFill: 0 };
 function emitFollow(b: LBook, pe: Pend, px0: number, inPool: boolean, rug: string | undefined, now: number, early: boolean) {
   if (!FOLLOW) return;
@@ -1054,17 +1064,19 @@ function bookStat0(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trip
  */
 export const EXIT_HAIRCUT = 0.1;
 // v0.1.138 KEEP SHARE: an open position up on paper is not money yet. Of the gain a closed trip had at its peak, how
-// much did it keep at the close? Learned on the last 500 closed trips that ran 30%+ (30 needed, else KEEP_DEF). An
+// much did it keep at the close? Learned on the last 500 closed trips that ran 30%+ (KEEP_MIN needed, else KEEP_DEF). An
 // open gain counts at that share: a runner book can no longer pass on one hot hour of marks (20 Oct: 10 runner books
 // passed at 15:55 on 20+ open positions each and failed again at 16:10 once the marks came down).
 export const KEEP_DEF = 0.5;
+export const KEEP_MIN = 150;
 let KEEP_AT = 0;
 let KEEP: { k: number; n: number } = { k: KEEP_DEF, n: 0 };
 export function keepShare(now = Date.now()) {
   if (now - KEEP_AT < 60_000) return KEEP;
   KEEP_AT = now;
   const xs = TRIPS.filter((t) => t.pk != null && t.pk >= 1.3 && t.why !== "open (marked now)").slice(0, 500);
-  if (xs.length < 30) return (KEEP = { k: KEEP_DEF, n: xs.length });
+  // v0.1.139: 150 needed (the first 39 after a restart were the quick reversals: they read 0%)
+  if (xs.length < KEEP_MIN) return (KEEP = { k: KEEP_DEF, n: xs.length });
   const v = xs.reduce((a, t) => a + Math.max(-1, Math.min(1, (t.pnlPct / 100) / (t.pk! - 1))), 0) / xs.length;
   return (KEEP = { k: Math.round(Math.max(0, Math.min(1, v)) * 1000) / 1000, n: xs.length });
 }
@@ -1791,6 +1803,7 @@ export function gridLiveEarly(mint: string, c: GCoin, now = Date.now(), sec = 12
     if (PEND.has(id(b.key, mint)) || POS.has(id(b.key, mint))) continue;
     if (!withScoreModels(ms, () => filterOk(b.filter, c))) continue;
     PEND.set(id(b.key, mint), { key: b.key, mint, symbol: c.symbol, callAt: now, p0: last.p, px0: last.px, until: now + 30_000, fillAfter: now + 2_000 });
+    earlyFollow(b, PEND.get(id(b.key, mint)), now); // v0.1.138b
     n++;
   }
   return n;
@@ -1850,6 +1863,7 @@ export function gridLiveTick(mint: string, symbol: string, h: number, ev: number
     // sized by the prediction when the desk follows: 1x at the margin, up to 2x for a prediction 10 points above it
     const mult = Math.round(Math.max(0.5, Math.min(2, 1 + (ev - b.tick.m) * 10)) * 100) / 100;
     PEND.set(id(b.key, mint), { key: b.key, mint, symbol, callAt: now, p0: last.p, px0: last.px, until: now + 30_000, fillAfter: now + 2_000, mult });
+    earlyFollow(b, PEND.get(id(b.key, mint)), now); // v0.1.138b
     n++;
   }
   return n;
