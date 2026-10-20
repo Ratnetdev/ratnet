@@ -87,7 +87,28 @@ export async function handleUpdate(u: any) {
   const [cmd0, ...rest] = text.split(/\s+/);
   const cmd = cmd0.toLowerCase().replace(/@\w+$/, "");
   if (cmd === "/id") return tgSend(chat, `chat id: <code>${chat}</code>${m.from?.id ? `\nyour user id: <code>${m.from.id}</code>` : ""}`);
-  if (!allowed(m)) return;
+  // v0.1.133 PUBLIC: anyone can check a coin (/check CA, or a bare CA in a private chat) and see the King's calls
+  const caRe = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  const bare = m.chat?.type === "private" && caRe.test(text) ? text : null;
+  if (cmd === "/check" || cmd === "/rat" || bare) {
+    const ca = bare || rest[0] || "";
+    if (!caRe.test(ca)) return tgSend(chat, "Send <code>/check</code> and a token address. In a private chat with me, just paste the address.");
+    const { checkGate, checkHtml, kingCheck } = await import("./ratcheck");
+    const no = await checkGate(`tg:${m.from?.id ?? chat}`, 10);
+    if (no) return tgSend(chat, esc(no));
+    const rep = await kingCheck(ca, { free: true });
+    return tgSend(chat, checkHtml(rep));
+  }
+  if (cmd === "/calls") {
+    const { recentCalls } = await import("./ratcheck");
+    const cs = await recentCalls(8);
+    const mark = (o: string) => (o === "BONDED" ? "✅ bonded" : o === "DIED" ? "✖ died" : "⏳ live");
+    return tgSend(chat, cs.length ? `<b>The Rat King's last BOND calls</b>\n${cs.map((c) => `$${esc(c.symbol)} · ${c.score} · ${mark(c.outcome)} · <a href="${SITE.url}/c/${c.mint}">open</a>`).join("\n")}` : "No BOND calls yet.");
+  }
+  if (!allowed(m)) {
+    if (cmd === "/start" || cmd === "/help") return tgSend(chat, `🐀 <b>RATNET</b>\nThe rats read every pump.fun launch.\n\n<code>/check CA</code> · the Rat King's read on any coin: score, who is buying (FOMO traders, earners, proven wallets, bots, callout front-runners), copies and the dev's week\n<code>/calls</code> · the King's last BOND calls and how they ended\n\nIn a private chat, just paste a CA.\n${SITE.url}`);
+    return;
+  }
   const { decide, ideasList, ideaText, think } = await import("./overseer");
   if (cmd === "/yes" || cmd === "/no" || cmd === "/later") {
     const id = Number(rest[0]);
@@ -133,7 +154,7 @@ export async function handleUpdate(u: any) {
       return tgSend(chat, `could not add: ${esc(e?.message || e)}`);
     }
   }
-  if (cmd === "/help" || cmd === "/start") return tgSend(chat, "/yes N · /no N why · /later N · /ideas · /think · /status · /teach text · /wallet ADDRESS Name @handle proof-url · /id");
+  if (cmd === "/help" || cmd === "/start") return tgSend(chat, "/check CA · /calls · /yes N · /no N why · /later N · /ideas · /think · /status · /teach text · /wallet ADDRESS Name @handle proof-url · /id");
   // a plain reply to an idea message: your note on that idea
   const ref = m.reply_to_message?.text ? /#(\d+)/.exec(String(m.reply_to_message.text)) : null;
   if (ref && !text.startsWith("/")) {

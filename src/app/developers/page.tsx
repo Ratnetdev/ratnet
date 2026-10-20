@@ -7,6 +7,8 @@ const EPS: [string, string, string][] = [
   ["GET", "/api/radar", "Up to 50 live launches whose curve is filling, sorted by curve %, with the King's call and dev history."],
   ["GET", "/api/king?page=0", "Latest Rat King calls, 60 per page, plus hit rates for v0 and nano. Add &verdict=BOND to filter."],
   ["GET", "/api/graduations", "The last 100 launches that bonded, time to bond, and what the King said at 5 minutes."],
+  ["GET", "/api/check?ca={CA}", "The Rat King check: bond score and report plus who is buying (FOMO traders, earners, proven wallets, bots, callout front-runners), copies, the dev's week and the desk's record at that size. Free before launch, 10 an hour."],
+  ["POST", "/api/mcp", "The same check as an MCP server for Claude, Cursor and any MCP client. Tools: rat_check, king_calls, rat_desk."],
   ["GET", "/api/coin/{CA}", "Everything the rats dug on one launch: metadata, dev history, checkpoints, call, outcome."],
   ["GET", "/api/king/weights", "Rat King nano's sample count, loss and training log."],
   ["GET", "/api/ledger", "Payout rounds, burns and the public dataset drops."],
@@ -41,6 +43,14 @@ export default function Developers() {
           </table>
         </div>
       </div>
+      <h2 id="mcp">The Rat King in your AI (MCP)</h2>
+      <p>Add RATNET as a remote MCP server and ask your assistant about any coin. It calls <code>rat_check</code> and answers with what the rats measured.</p>
+      <ul className="small">
+        <li><b>Claude</b>: Settings, Connectors, Add custom connector, URL <code>{SITE.url}/api/mcp</code></li>
+        <li><b>Claude Code</b>: <code>claude mcp add --transport http ratnet {SITE.url}/api/mcp</code></li>
+        <li><b>Cursor</b>: in <code>~/.cursor/mcp.json</code>: <code>{`{ "mcpServers": { "ratnet": { "url": "${SITE.url}/api/mcp" } } }`}</code></li>
+      </ul>
+      <p className="small muted">Tools: <code>rat_check</code> (any CA), <code>king_calls</code> (recent BOND calls and how they ended), <code>rat_desk</code> (the live desk&apos;s record). No key. Also in Telegram: <code>/check CA</code> and <code>/calls</code> with the RATNET bot.</p>
       <h2>Example: a BOND call bot</h2>
       <pre className="panel pb small" style={{ overflowX: "auto", margin: 0 }}>{`const seen = new Set();
 setInterval(async () => {

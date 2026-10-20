@@ -52,6 +52,8 @@ import { frCallout, frDump, frLoad, frView } from "../src/lib/frontrun";
 import { originMigrated, originStories, originStory } from "../src/lib/origin";
 import { fomoRegime } from "../src/lib/fomotap";
 import { setTapeExtra, solUsdNow } from "../src/lib/digger";
+import { callLines, serveChecks } from "../src/lib/ratlive";
+import { setCallExtra } from "../src/lib/tg";
 import { archivePool } from "../src/lib/archive";
 import { duneBackfill, duneState } from "../src/lib/dune";
 import { RESEARCH_EVERY_MS, researchPass } from "../src/lib/researcher";
@@ -659,6 +661,8 @@ function pumpportal() {
   }, 5_000);
   setInterval(() => resync().catch(() => null), 15_000);
   setInterval(() => flushTape().catch(() => null), 1_000);
+  // v0.1.133 RAT KING CHECK: answer the site's live reads (Sniff, /api/check, MCP, the Telegram bot)
+  setInterval(() => serveChecks().catch(() => null), 1_000);
   setInterval(() => flushIntake().catch(() => null), 300);
   setInterval(flashTick, 500);
 }
@@ -978,6 +982,7 @@ async function main() {
   setInterval(seerRun, 10 * 60_000);
   await loadLiveFees().catch(() => null); // v0.1.96: paper pays what live transactions paid
   await loadRunTrack().catch(() => null); // v0.1.100: the day's runner paths keep going after a restart
+  setCallExtra((mint) => callLines(mint)); // v0.1.133: who is in the coin, on every Telegram call
   setCallHook((call) => {
     gridLiveCall(call);
     // v0.1.89: runner paths: BOND calls and calls already 30%+ up the curve are followed for a day (archive)

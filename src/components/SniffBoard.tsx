@@ -26,6 +26,14 @@ type Report = {
   version: string;
   dev?: { n: number; b: number } | null;
   nano?: { score: number; verdict: string } | null;
+  read?: string;
+  live?: {
+    at: number;
+    who: { buys: number; buyers: number; buyersCapped: boolean; sol: number; fomo: number; earners: number; proven: number; bots: number; front: number } | null;
+    good: string[];
+    bad: string[];
+    info: string[];
+  } | null;
 };
 type Live = { live: { mint: string } };
 
@@ -57,7 +65,83 @@ export function ReportCard({ r }: { r: Report }) {
         <div className="small">{r.plus.map((x) => <div key={x} className="green">+ {x}</div>)}</div>
         <div className="small">{r.minus.map((x) => <div key={x} style={{ color: "var(--dust)" }}>− {x}</div>)}</div>
       </div>
+      {r.live && (
+        <div className="mt">
+          <div className="tiny muted">WHO IS BUYING · read live from the rats&apos; firehose</div>
+          {r.live.who ? (
+            <div className="row wrapx mt" style={{ gap: 14 }}>
+              {([["FOMO traders", r.live.who.fomo], ["earners", r.live.who.earners], ["proven wallets", r.live.who.proven], ["callout front-runners", r.live.who.front], ["bots", r.live.who.bots]] as [string, number][]).map(([l, n]) => (
+                <div key={l}><div style={{ fontSize: 18, color: l === "bots" ? (n ? "var(--dust)" : "var(--dim)") : n ? "var(--bond)" : "var(--dim)" }}>{n}</div><div className="tiny muted">{l}</div></div>
+              ))}
+              <div><div style={{ fontSize: 18 }}>{r.live.who.buyersCapped ? "300+" : r.live.who.buyers}</div><div className="tiny muted">buyers · {r.live.who.sol} ◎</div></div>
+            </div>
+          ) : (
+            <div className="small muted mt">No buys seen by the rats (an older coin, or not traded since the worker started).</div>
+          )}
+          <div className="small mt">
+            {r.live.good.map((x) => <div key={x} className="green">+ {x}</div>)}
+            {r.live.bad.map((x) => <div key={x} style={{ color: "var(--dust)" }}>− {x}</div>)}
+            {r.live.info.map((x) => <div key={x} className="muted">· {x}</div>)}
+          </div>
+        </div>
+      )}
+      {r.read && <div className="mt" style={{ fontSize: 15 }}>🐀 <b>{r.read}</b></div>}
       <div className="tiny muted mt">{r.note}</div>
+    </div>
+  );
+}
+
+type Msg = { who: "you" | "king"; text: string };
+/** v0.1.133 ASK THE RAT KING: questions about the coin just checked, answered from that check only. */
+export function AskKing({ ca }: { ca: string }) {
+  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  useEffect(() => setMsgs([]), [ca]);
+  const send = async (text?: string) => {
+    const question = (text ?? q).trim();
+    if (!question || busy) return;
+    setErr("");
+    setBusy(true);
+    const next: Msg[] = [...msgs, { who: "you", text: question }];
+    setMsgs(next);
+    setQ("");
+    try {
+      const r = await fetch("/api/check/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ca, q: question, hist: msgs }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error);
+      setMsgs([...next, { who: "king", text: j.answer }]);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="panel">
+      <div className="ph"><span><b>ask the rat king</b> · about this coin, from this check only</span></div>
+      <div className="pb">
+        {msgs.map((m, i) => (
+          <div key={i} className="small" style={{ margin: "6px 0", color: m.who === "king" ? "var(--bond)" : undefined }}>
+            <span className="tiny muted">{m.who === "king" ? "RAT KING" : "YOU"}</span>
+            <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+          </div>
+        ))}
+        {!msgs.length && (
+          <div className="row wrapx" style={{ gap: 8 }}>
+            {["Is this a rug?", "Who is really buying?", "What should I watch for?"].map((x) => (
+              <button key={x} className="btn ghost small" disabled={busy} onClick={() => send(x)}>{x}</button>
+            ))}
+          </div>
+        )}
+        <div className="row mt" style={{ gap: 8 }}>
+          <input className="input" placeholder="ask anything about this coin" value={q} maxLength={400} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
+          <button className="btn" disabled={busy || !q.trim()} onClick={() => send()}>{busy ? "…" : "Ask"}</button>
+        </div>
+        {err && <div className="err">{err}</div>}
+        <div className="tiny muted mt">Not financial advice. The King only knows what the check measured.</div>
+      </div>
     </div>
   );
 }
@@ -86,7 +170,7 @@ export default function SniffBoard() {
     try {
       const target = ca.trim();
       if (!isLive) {
-        setStep("the king is sniffing…");
+        setStep("the king is sniffing and the rats are reading who bought…");
         const r = await fetch("/api/sniff", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ca: target, wallet: address }) });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error);
@@ -126,6 +210,7 @@ export default function SniffBoard() {
           </div>
         </div>
         {report && <ReportCard r={report} />}
+        {report && <AskKing ca={report.ca} />}
       </div>
 
       <div className="panel">

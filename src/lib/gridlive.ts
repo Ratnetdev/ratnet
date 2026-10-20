@@ -476,6 +476,12 @@ function seerFire(mint: string, p: number, px: number, now: number) {
 // exam decides, like every other family. A signal before the coin has a price waits for its first one (2 minutes).
 const SMART_SX = new Map<string, { fr?: number; fc?: number; st?: number; at: number }>();
 const SMART_Q = new Map<string, number>();
+/** v0.1.133 RAT KING CHECK: the coin's last curve read and the paper books holding it right now. */
+export function gridLiveHolding(mint: string) {
+  const l = LAST.get(mint);
+  const keys = [...POS.values()].filter((p) => p.mint === mint).map((p) => p.key);
+  return { px: l?.px ?? null, p: l?.p ?? null, done: !!l?.done, pool: !!l?.pool, at: l?.at ?? null, books: keys.length, passed: keys.filter((k) => LEADERS.has(k) || k === LEADER).length };
+}
 export const smartLiveStats = { signals: 0, fired: 0 };
 export function gridLiveSmart(mint: string, sx: { fr?: number; fc?: number; st?: number }, now = Date.now()) {
   const prev = SMART_SX.get(mint);

@@ -7,7 +7,7 @@
 import { crewBuy, independent } from "./crews";
 import { isBot, isEarner } from "./earners";
 import { fomoBuy, fomoCrowd, fomoRegime, isFomo } from "./fomotap";
-import { frBuy, frRecent } from "./frontrun";
+import { frBuy, frRecent, isFrontRunner } from "./frontrun";
 // v0.1.132: SMART signals go to GRID LIVE's SMART family (set by the worker; no import cycle)
 let SIGNAL: ((mint: string, sx: { fr?: number; fc?: number; st?: number }) => void) | null = null;
 export const setSmartSignal = (f: typeof SIGNAL) => (SIGNAL = f);
@@ -30,8 +30,58 @@ const note = (m: Map<string, { w: string; at: number }[]>, mint: string, w: stri
 const recent = (m: Map<string, { w: string; at: number }[]>, mint: string, now: number) => [...new Set((m.get(mint) || []).filter((x) => now - x.at <= WIN_MS).map((x) => x.w))];
 export const smartStats = { fomoBuys: 0, earnerBuys: 0, provenBuys: 0, botBuys: 0 };
 
+// v0.1.133 RAT KING CHECK: who bought each coin since the worker first saw it (capped sets, last 20K coins), so a check
+// of any live coin can say who is in it, not only who bought in the last minute
+type Tally = { at0: number; n: number; sol: number; u: Set<string>; fomo: Set<string>; earn: Set<string>; proven: Set<string>; bot: Set<string>; fr: Set<string> };
+const TALLY = new Map<string, Tally>();
+const TALLY_MAX = 20_000;
+const CAP = 300;
+const put = (s: Set<string>, w: string) => s.size < CAP && s.add(w);
+function tally(t: { mint: string; user: string; at: number; sol?: number }, kind: { bot: boolean; fomo: boolean; earn: boolean; proven: boolean; fr: boolean }) {
+  let x = TALLY.get(t.mint);
+  if (!x) {
+    x = { at0: t.at, n: 0, sol: 0, u: new Set(), fomo: new Set(), earn: new Set(), proven: new Set(), bot: new Set(), fr: new Set() };
+    TALLY.set(t.mint, x);
+    if (TALLY.size > TALLY_MAX) TALLY.delete(TALLY.keys().next().value as string);
+  }
+  x.n++;
+  x.sol += Math.min(t.sol ?? 0, 500);
+  put(x.u, t.user);
+  if (kind.bot) put(x.bot, t.user);
+  if (kind.fomo) put(x.fomo, t.user);
+  if (kind.earn) put(x.earn, t.user);
+  if (kind.proven) put(x.proven, t.user);
+  if (kind.fr) put(x.fr, t.user);
+}
+/** Who bought the coin since the worker first saw it. null = no buys seen. Crews count once (independent). */
+export function smartRead(mint: string, now = Date.now()) {
+  const x = TALLY.get(mint);
+  if (!x) return null;
+  const smart = [...x.fomo, ...x.earn, ...x.proven];
+  return {
+    since: x.at0,
+    buys: x.n,
+    buyers: x.u.size,
+    buyersCapped: x.u.size >= CAP,
+    sol: Math.round(x.sol * 100) / 100,
+    fomo: independent(x.fomo),
+    earners: independent(x.earn),
+    proven: independent(x.proven),
+    bots: x.bot.size,
+    front: independent(x.fr),
+    smart: new Set(smart).size,
+    smartCrews: independent(smart),
+    now: smartFeatures(mint, now),
+  };
+}
+export type SmartRead = NonNullable<ReturnType<typeof smartRead>>;
+
 export function smartTrade(t: { mint: string; user: string; isBuy: boolean; at: number; sol?: number }) {
   if (!t.isBuy || !t.user) return;
+  try {
+    const b0 = isBot(t.user);
+    tally(t, { bot: b0, fomo: !b0 && isFomo(t.user), earn: !b0 && isEarner(t.user), proven: !b0 && isProven(t.user), fr: !b0 && isFrontRunner(t.user) });
+  } catch {}
   // v0.1.132 FRONT-RUNNERS: every real buy is kept 4 minutes (callouts are matched against it); a known front-runner's
   // buy is a SMART signal
   const bot = isBot(t.user);
@@ -78,4 +128,4 @@ export function smartFeatures(mint: string, now = Date.now()): { fc: number | nu
   const pw = provenSet(mint);
   return { fc: fw ? independent(fw) : null, ea: independent(ew), pwi: independent(pw), pwr: pw.size, bt: recent(BOTS, mint, now).length, fr: independent(frRecent(mint, now)), fm: fomoRegime(now) };
 }
-export const _smartReset = () => (EARN.clear(), BOTS.clear(), (smartStats.fomoBuys = smartStats.earnerBuys = smartStats.provenBuys = smartStats.botBuys = 0));
+export const _smartReset = () => (EARN.clear(), BOTS.clear(), TALLY.clear(), (smartStats.fomoBuys = smartStats.earnerBuys = smartStats.provenBuys = smartStats.botBuys = 0));

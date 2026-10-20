@@ -12,6 +12,10 @@ const k$ = (n: number | null | undefined) => (!n ? "–" : n >= 1e6 ? `$${(n / 1
 
 type CallMsg = { mint: string; symbol: string; name: string; score: number; nano: { score: number; verdict: string } | null; progress: number; mc: number | null; plus: string[]; minus: string[] };
 
+// v0.1.133: the worker adds who is in the coin (lib/ratlive.ts callLines) to every call; no import cycle
+let EXTRA: ((mint: string) => string[]) | null = null;
+export const setCallExtra = (f: typeof EXTRA) => (EXTRA = f);
+
 /** Queue on a pipeline (digger) so a call never waits on Telegram. */
 export function queueCall(p: { lpush: Function; ltrim: Function }, c: CallMsg) {
   if (!tgOn()) return;
@@ -21,6 +25,14 @@ export function queueCall(p: { lpush: Function; ltrim: Function }, c: CallMsg) {
     `Minute 5 · curve ${c.progress}% · mc ${k$(c.mc)}`,
     c.plus.length ? `\n+ ${c.plus.map(esc).join("\n+ ")}` : "",
     c.minus.length ? `− ${c.minus.map(esc).join("\n− ")}` : "",
+    ...(() => {
+      try {
+        const x = EXTRA ? EXTRA(c.mint) : [];
+        return x.length ? ["", ...x.map(esc)] : [];
+      } catch {
+        return [];
+      }
+    })(),
     `\n<code>${c.mint}</code>`,
     `${SITE.url.replace(/^https?:\/\//, "")}/c/${c.mint}`,
   ].filter(Boolean);
