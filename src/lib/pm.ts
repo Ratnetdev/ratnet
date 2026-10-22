@@ -258,7 +258,7 @@ export async function benchOnce098() {
 }
 
 /**
- * v0.1.111 LIVE ONLY ON PROOF (Stan, 17 Oct). Nothing on live money had passed an exam, and the families lost 0.18 SOL
+ * v0.1.111 LIVE ONLY ON PROOF (17 Oct). Nothing on live money had passed an exam, and the families lost 0.18 SOL
  * in 24 hours (21 sells, 4 won) while GRID LIVE searched. Once: every family without proof is benched; it keeps trading
  * on the ghost desk (same signals, same costs) and comes back to live money the moment its last 20 ghost trips pass the
  * exam (the LIVE BENCH rule). Proof = its last 20+ trips already pass the exam. GRID LIVE strategies reach live money

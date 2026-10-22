@@ -13,7 +13,7 @@ export const j7On = () => !!process.env.J7_JWT;
 // v0.1.123: a J7 token now lasts about 10 hours (19 Oct: "Invalid token" since the night). J7 renews it only with the
 // browser's own login cookie, so the worker cannot renew it itself. It reads the token's expiry instead: the status
 // shows the minutes left, and from 60 minutes before the end the part reports an error, so the alert comes in time.
-// A fresh token: the copy button on j7tracker.io (Stan), pasted into Railway as J7_JWT. Never logged or shown.
+// A fresh token: the copy button on j7tracker.io, pasted into Railway as J7_JWT. Never logged or shown.
 export function jwtExp(t: string | undefined | null): number {
   try {
     const p = JSON.parse(Buffer.from(String(t).split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));

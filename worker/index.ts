@@ -25,7 +25,7 @@ import { regimeTick } from "../src/lib/regimegate";
 import { archiveBoard, archiveEarlyGrid, archiveFlush, archiveGrid, archiveGridTrips, archiveInit, archivePoolTick, archiveRunTick, runTrack, runTracked, loadRunTrack, archivePrune, archiveReplay, archiveTick, archiveView } from "../src/lib/archive";
 import { refreshPxCache, refreshPxFast } from "../src/lib/pxcache";
 import { classBoot, getRecord, priceOf, setBagPick, setFollowClose } from "../src/lib/desk";
-import { bagLoad, bagPick, gridNoteLive, pairsLoad, pairsSave, pairsView } from "../src/lib/gridlive";
+import { bagLoad, bagPick, gridNoteLive, pairsLoad, pairsSave, pairsView, streakLoad } from "../src/lib/gridlive";
 import { gateStats, gateView } from "../src/lib/classgate";
 import { stallAlerts } from "../src/lib/alive";
 import { criticalChecks, criticalSend, redisDown } from "../src/lib/critical";
@@ -937,6 +937,7 @@ async function main() {
   await gridLiveLoad().catch((e) => console.log("grid live load error", e?.message || e));
   // v0.1.135 REAL GAP: every closed live GRID follow is paired with its book's paper trip; past live follows are
   // matched by coin and time (they did not record the book)
+  await streakLoad().catch(() => null); // v0.1.143 LOSS STREAK
   setFollowClose((x) => void gridNoteLive(x));
   // v0.1.137 BAG STUDY: rides survive restarts; the desk keeps a bag only when the study picks one
   bagLoad().then((x) => console.log(`bag study: ${x.trips} trips, ${x.rides} riding`)).catch(() => null);
@@ -1080,7 +1081,7 @@ async function main() {
       create: (c) => {
         walletCreate(c.mint, c.creator, c.at);
         tapeCreate(c.mint, c.creator, c.at);
-        gridLiveSymbol(c.mint, c.symbol);
+        gridLiveSymbol(c.mint, c.symbol, Number(c.at) > 1e12 ? Number(c.at) : Date.now());
         // v0.1.82: every launch's log from birth (the dev's buy follows as the transaction's first trade): the rats'
         // minute-1 and minute-5 tapes are built from it instead of ~42 chain reads per coin
         // v0.1.87: only SOL launches get a log from birth (another quote's trades are never logged: its tape would be

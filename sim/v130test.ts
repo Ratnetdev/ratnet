@@ -80,7 +80,7 @@ const ok = (c: boolean, m: string) => {
   // ---- 5. keep trading
   const { DEFAULT_SETTINGS } = await import("../src/config/site");
   const d: any = DEFAULT_SETTINGS.desk;
-  ok(d.liveMaxDD === 0 && d.lossPauseMin === 60, "defaults: never back to paper on drawdown; the daily loss limit pauses new buys for 60 minutes");
+  ok(d.liveMaxDD === 0 && d.lossPauseMin === 0, "defaults: never back to paper on drawdown; the daily loss limit stops new buys for the rest of the day (v0.1.143)");
   ok(/liveMaxDD > 0 && state\.live && state\.liveStart/.test(dk), "the drawdown rule only acts when liveMaxDD is set above 0");
   ok(/state\.lossPauseUntil = now \+ pauseMin \* 60_000/.test(dk) && /state\.dayStart = eq\.value;\s*log\(b, "RISK", `the loss pause is over/.test(dk) && /the daily loss limit paused new buys until/.test(dk), "loss limit: a pause, then a fresh baseline");
   ok(/!state\.live && state\.demotedAt && kp && walletSol != null && walletSol >= EXAM\.minWallet && Number\(\(cfg as any\)\.liveMaxDD \?\? 0\) <= 0/.test(dk), "a desk the old rule put on paper goes back live by itself");

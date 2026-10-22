@@ -175,6 +175,10 @@ export const PREDS: Pred[] = [
   // whether it paid (the profit score found more small wins and a worse average trade on 17 Oct)
   { id: "wscore10", label: "WIN SCORE top 10% (every signal, fitted on the size of the win)", ok: (c) => scoreTop(c, "thr10", "win") },
   { id: "wscore20", label: "WIN SCORE top 20% (every signal, fitted on the size of the win)", ok: (c) => scoreTop(c, "thr20", "win") },
+  // v0.1.143 RIP & DIP: a launch that rips fast in its first minutes (every-launch books know the coin's birth time)
+  { id: "r30", label: "curve +30 pts in the minute before (a fast rip)", ok: (c) => c.rise60 >= 30 },
+  { id: "age3", label: "under 3 minutes old", ok: (c) => c.at - c.createdAt <= 180_000 },
+  { id: "age10", label: "under 10 minutes old", ok: (c) => c.at - c.createdAt <= 600_000 },
 ];
 
 // ---------------------------------------------------------------- v0.1.112 GRID SCORE
@@ -493,7 +497,9 @@ export const MODES: Mode[] = [
 
 // v0.1.72: mig = what happens at the migration: "sell" (as before) or "hold" through it into the pool (up to 6 hours,
 // the same initials, trail and stop on the pool price, at pool fees)
-export type GExit = { initials: number; trail: number; stop: number; timeMin: number; mig: "sell" | "hold"; keep?: number; hours?: number };
+// v0.1.143 DCA: add the same size once when the price pulls back `dca` from the first fill (paper only for now; the
+// targets and the stop then run on the average price)
+export type GExit = { initials: number; trail: number; stop: number; timeMin: number; mig: "sell" | "hold"; keep?: number; hours?: number; dca?: number };
 /**
  * v0.1.89: RUNNER exits. The King's edge is in the right tail ($FTR 246x, $Nihilism 138x from the call on 15 Oct), and
  * the regular exits sell half at 1.5 to 3x and are out within the hour (6h in the pool). A runner exit sells most at
@@ -518,16 +524,20 @@ export function exitOfPart(part: string | undefined): GExit | null {
   const v = m.slice(0, 4).map(Number);
   if (!v.every(Number.isFinite)) return null;
   const x: GExit = { initials: v[0], trail: v[1], stop: v[2], timeMin: v[3], mig: m[4] === "hold" ? "hold" : "sell" };
-  const r = /^k([0-9.]+)h([0-9.]+)$/.exec(m[5] || "");
-  if (r) Object.assign(x, { keep: Number(r[1]), hours: Number(r[2]), mig: "hold" });
+  for (const seg of m.slice(5)) {
+    const r = /^k([0-9.]+)h([0-9.]+)$/.exec(seg);
+    if (r) Object.assign(x, { keep: Number(r[1]), hours: Number(r[2]), mig: "hold" });
+    const d = /^d([0-9.]+)$/.exec(seg);
+    if (d && Number(d[1]) > 0 && Number(d[1]) < 1) x.dca = Number(d[1]);
+  }
   return x;
 }
 export const GEXITS: GExit[] = [];
 for (const mig of ["sell", "hold"] as const) for (const initials of [1.5, 2, 3]) for (const trail of [0.25, 0.4]) for (const stop of [0.25, 0.45]) for (const timeMin of [15, 60]) GEXITS.push({ initials, trail, stop, timeMin, mig });
 // v0.1.89: the runner exits on GRID's menu too, after the regular ones (their numbers stay the same for RESEARCHER)
 GEXITS.push(...RUNNER_EXITS);
-export const exitText = (x: GExit) =>
-  isRunner(x)
+export const exitText = (x: GExit): string =>
+  x.dca ? `${exitText({ ...x, dca: undefined })}, adds the same size once on a ${Math.round(x.dca * 100)}% pullback (targets and stop on the average price)` : isRunner(x)
     ? `RUNNER: ${Math.round(firstSell(x) * 100)}% at ${x.initials}x, the rest rides a ${Math.round(x.trail * 100)}% trail for up to ${x.hours}h through the migration, stop -${Math.round(x.stop * 100)}%, out after ${x.timeMin}m without the first target`
     : `half at ${x.initials}x, trail ${Math.round(x.trail * 100)}%, stop -${Math.round(x.stop * 100)}%, out after ${x.timeMin}m without initials, ${x.mig === "hold" ? "holds through the migration (up to 6h)" : "sells at the migration"}`;
 
@@ -674,7 +684,7 @@ export type GRow = {
   // the NULL RUN's luck bar it must beat; plateau = neighbouring exits in profit on the test; recent = the newest third
   checks?: { basic: boolean; t: number; bar: number; plateau: { n: number; up: number; ok: boolean }; recent: { n: number; pnl: number; ok: boolean } };
 };
-export const keyOf = (filter: string, mode: string, x: GExit) => `${filter}|${mode}|${x.initials}/${x.trail}/${x.stop}/${x.timeMin}/${x.mig}${isRunner(x) ? `/k${x.keep ?? 0.5}h${x.hours}` : ""}`;
+export const keyOf = (filter: string, mode: string, x: GExit) => `${filter}|${mode}|${x.initials}/${x.trail}/${x.stop}/${x.timeMin}/${x.mig}${isRunner(x) ? `/k${x.keep ?? 0.5}h${x.hours}` : ""}${x.dca ? `/d${x.dca}` : ""}`;
 
 /**
  * What the senders looked like at their call: of every migrated coin in the sample, how many the King called and how,

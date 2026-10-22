@@ -101,7 +101,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick" | "smart" | "king";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick" | "smart" | "king" | "rip";
   /** v0.1.115: an EARLY book: trades the 2-minute read of every launch (lib/early.ts), never a King call */
   early?: boolean;
   /** v0.1.117: the reading age it trades (seconds; 120 when not set) */
@@ -118,7 +118,7 @@ export type LBook = {
   fxOf?: string;
 };
 type Pend = { key: string; mint: string; symbol: string; callAt: number; p0: number; px0: number; until: number; fillAfter: number | null; mult?: number; sent?: number };
-export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean; ef?: EntryF | null; sh?: Record<string, Shadow> };
+export type LPos = { key: string; mint: string; symbol: string; openedAt: number; fillPx: number; tokens: number; cost: number; back: number; peak: number; initials: boolean; tEnd: number; lastPx: number; lastReal: number; pool?: boolean; sender?: boolean; f0?: { kx: number | null; e20: number | null } | null; fx?: { at: number; pct: number; why: string } | null; fl?: Partial<Record<Trig, number>>; fd?: boolean; ef?: EntryF | null; sh?: Record<string, Shadow>; fill0?: number; dcaDone?: boolean };
 export type LTrip = { k: string; mint: string; symbol: string; openedAt: number; closedAt: number; pnl: number; pnlPct: number; why: string; ef?: EntryF | null; rug?: boolean; sh?: Record<string, number>; mc0?: number; pk?: number };
 
 let BOOKS: LBook[] = [];
@@ -132,7 +132,7 @@ type FollowOrder = { key: string; label: string; exit: GExit; mint: string; symb
 let FOLLOW: ((o: FollowOrder) => void) | null = null;
 export const setGridFollow = (f: ((o: FollowOrder) => void) | null) => (FOLLOW = f);
 let LEADER: string | null = null;
-// v0.1.123 RUNNER HOLD (Stan, 19 Oct: "it's there for a reason, listen to the agents"): a runner book that once passed
+// v0.1.123 RUNNER HOLD (19 Oct: "it's there for a reason, listen to the agents"): a runner book that once passed
 // its full exam keeps being followed at the minimum size while its whole record stays in profit. It is dropped only when
 // that total goes negative (the full pass also needs it in profit without its 2 best; a hold does not)
 const EVER = new Set<string>();
@@ -154,7 +154,7 @@ let LEADERS = new Set<string>();
 export const gridLeaderKeys = () => [...LEADERS];
 export function gridLeaders(n = FOLLOW_N()): LBook[] {
   return BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) }))
-    .filter((x) => x.s.passed && !gapBlock(x.b.key) && (x.s.lessTop2 ?? x.s.pnl) > 0)
+    .filter((x) => x.s.passed && !gapBlock(x.b.key) && !streakBenched(x.b.key) && !x.b.exit.dca && (x.s.lessTop2 ?? x.s.pnl) > 0)
     // v0.1.135: ranked by the record after the real gap (what real money would have made), when one is measured
     .map((x) => ({ ...x, e: edgeOf(x.b.key).lessTop2, m: edgeAdj(x.b.key).src !== "none" }))
     .sort((a, z) => Number(!!a.s.probation) - Number(!!z.s.probation) || (z.m ? z.e : (z.s.lessTop2 ?? z.s.pnl)) - (a.m ? a.e : (a.s.lessTop2 ?? a.s.pnl)))
@@ -163,7 +163,7 @@ export function gridLeaders(n = FOLLOW_N()): LBook[] {
 }
 export function gridLeader(): LBook | null {
   const passed = BOOKS.map((b) => ({ b, s: bookStat(b, TRIPS.filter((t) => t.k === b.key)) }))
-    .filter((x) => x.s.passed && !gapBlock(x.b.key))
+    .filter((x) => x.s.passed && !gapBlock(x.b.key) && !streakBenched(x.b.key) && !x.b.exit.dca)
     .sort((a, z) => Number(!!a.s.probation) - Number(!!z.s.probation) || z.s.pnl - a.s.pnl); // v0.1.102: a full pass leads a SEER probation
   return passed[0]?.b ?? null;
 }
@@ -272,7 +272,7 @@ export function dropReason(l: LStat): string | null {
 }
 export const EXTEND_MAX = 60;
 /**
- * v0.1.120 NO QUICK KILLS (Stan, 17 Oct): a strategy is not thrown out after an hour or a day of bad trips; narratives
+ * v0.1.120 NO QUICK KILLS (17 Oct): a strategy is not thrown out after an hour or a day of bad trips; narratives
  * fade, strategies need time. A book whose record says drop but that is younger than BOOK_KEEP_DAYS (default 7) turns
  * COLD: it keeps trading on paper, outside every family's slot count (new candidates still get their slots), and turns
  * warm again the moment its record recovers. Only after BOOK_KEEP_DAYS is it removed (its trips stay, a revive can bring
@@ -462,7 +462,7 @@ function seerFire(mint: string, p: number, px: number, now: number) {
   const sm = SEER_LIVE.get(mint);
   if (!sm) return;
   const fx = LIVE_FX ? LIVE_FX(mint) : null;
-  const c = { mint, symbol: "", at: now, createdAt: now, verdict: "", score: 0, nano: null, progress: p, rise60: 0, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null, sx: { seer: { tier: sm.tier, rank: sm.rank } } } as unknown as GCoin;
+  const c = { mint, symbol: "", at: now, createdAt: BORN.get(mint) ?? now - 3_600_000, verdict: "", score: 0, nano: null, progress: p, rise60: 0, uniq: null, spb: null, bs: null, sn: null, sm: 0, ds: !!fx?.ds, soc: 0, pw: fx?.pw ?? null, u60: fx?.u60 ?? null, bs60: fx?.bs60 ?? null, wh: fx?.wh ?? null, sx: { seer: { tier: sm.tier, rank: sm.rank } } } as unknown as GCoin;
   for (const b of BOOKS) {
     if (!b.any || b.by !== "seer") continue;
     const k = id(b.key, mint);
@@ -725,9 +725,14 @@ function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: numb
   if (TRIG.size > 20_000) TRIG.clear();
 }
 const SYM = new Map<string, string>();
+// v0.1.143: when each launch was first seen (the worker passes new launches here): every-launch books know its age
+const BORN = new Map<string, number>();
 /** v0.1.78: symbols for the twins' trades (the worker passes them with new launches). */
-export function gridLiveSymbol(mint: string, symbol: string) {
-  if (!mint || !symbol) return;
+export function gridLiveSymbol(mint: string, symbol: string, now = Date.now()) {
+  if (!mint) return;
+  if (!BORN.has(mint)) BORN.set(mint, now);
+  if (BORN.size > 20_000) BORN.delete(BORN.keys().next().value as string);
+  if (!symbol) return;
   SYM.set(mint, symbol);
   if (SYM.size > 8000) SYM.delete(SYM.keys().next().value as string);
 }
@@ -764,7 +769,7 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   const sol = GRID_SOL;
   const inPool = !!last.pool;
   const fillPx = px0 * (1 + slipOf(sol, inPool, last.real));
-  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool, f0: flowNow(pe.mint), ef: entryNow(pe.mint, now) };
+  const pos: LPos = { key: b.key, mint: pe.mint, symbol: pe.symbol, openedAt: now, fillPx, tokens: (sol * (1 - venueFee(inPool, last.px))) / fillPx, cost: sol + txCost(sol, COST) + ATA_RENT, back: 0, peak: px0, initials: false, tEnd: now + b.exit.timeMin * 60_000, lastPx: px0, lastReal: last.real, pool: inPool, f0: flowNow(pe.mint), ef: entryNow(pe.mint, now), fill0: fillPx };
   POS.set(k, pos);
   redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
   if (CHECK.has(b.key)) queueCheck({ side: "buy", key: b.key, mint: pe.mint, amount: BigInt(Math.round(sol * 1e9)), paper: pos.tokens, sol, at: now });
@@ -898,6 +903,18 @@ function stepPos(k: string, pos: LPos, now: number) {
   // v0.1.127: every take-profit ladder runs as a shadow on the same ticks
   if (!pos.sh) pos.sh = newShadows();
   shadowTick(pos.sh, x, firstSell(x), xr, pos.peak / pos.fillPx);
+  // v0.1.143 DCA: one add of the same size on a pullback from the first fill; the average price runs the targets and stop
+  if (x.dca && !pos.dcaDone && !pos.initials && px <= (pos.fill0 ?? pos.fillPx) * (1 - x.dca)) {
+    const sol = GRID_SOL;
+    const f = px * (1 + slipOf(sol, !!pos.pool, last.real));
+    const add = (sol * (1 - venueFee(!!pos.pool, last.px))) / f;
+    pos.fillPx = (pos.tokens * pos.fillPx + add * f) / (pos.tokens + add);
+    pos.tokens += add;
+    pos.cost += sol + txCost(sol, COST);
+    pos.dcaDone = true;
+    redis().hset(POS_KEY, { [k]: pos }).catch(() => null);
+    return;
+  }
   if (!pos.initials && xr >= x.initials) {
     sell(pos, firstSell(x), px, last.real);
     pos.initials = true;
@@ -984,7 +1001,11 @@ export function liveStat(trips: LTrip[]): LStat {
  * and positive over all of them, on top of the exam on its last 30. With 16 books searching, one lucky 30-trip run is
  * the risk this guards against.
  */
-export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips: LTrip[]): LStat {
+export function bookStat(b: Pick<LBook, "grid"> & { key?: string; exit?: GExit }, trips0: LTrip[]): LStat {
+  // v0.1.143 HONEST EXAM: judged only on the trips the live desk would have taken. Paper keeps every trip (the rug
+  // study needs them), but the live rug guard skips some entries, and a book passed on trips real money never makes
+  // (22 Oct: a book passed, sent 22 orders, the guard skipped all 22)
+  const trips = gated(trips0);
   // v0.1.102 SEER: event trips are rare (a few to 20 a day), so its books may trade live at the minimum size on a
   // probation exam: 15+ trips, in profit, and still in profit without the 2 best. Full size only through the normal exam
   const st = bookStat0(b, trips);
@@ -1122,6 +1143,48 @@ export function gridLiveBackfill(rows: LTrip[]): number {
  * within 20 seconds). Paper keeps trading everything, so the study keeps measuring every rule.
  */
 export const RUG_SECS = 90;
+/** v0.1.143: the trips that pass the live rug guard (trips with no entry state recorded count as passing). */
+export function gated(trips: LTrip[]): LTrip[] {
+  if (!RUG_LIVE.size) return trips;
+  const rules = RUG_RULES.filter((r) => RUG_LIVE.has(r.id));
+  return trips.filter((t) => !t.ef || !rules.some((r) => r.hit(t.ef!)));
+}
+
+// v0.1.143 LOSS STREAK: a followed strategy that loses STREAK_MAX live trades in a row is benched from live money for
+// STREAK_HOURS. Live results come in through gridNoteLive (every closed live trade the desk made for a book)
+export const STREAK_KEY = "rn:grid:streak";
+export const STREAK_MAX = () => Math.max(2, Number(process.env.STREAK_MAX ?? 5) || 5);
+export const STREAK_HOURS = 24;
+type Streak = { n: number; until?: number };
+let STREAK: Record<string, Streak> = {};
+export function streakBenched(k: string, now = Date.now()) {
+  const s = STREAK[k];
+  return !!s?.until && now < s.until;
+}
+/** One closed live trade of book k. Returns true when it benched the book. */
+export function streakNote(k: string, pct: number, now = Date.now()): boolean {
+  const s = STREAK[k] || { n: 0 };
+  if (s.until && now >= s.until) delete s.until;
+  s.n = pct < 0 ? s.n + 1 : 0;
+  let benched = false;
+  if (s.n >= STREAK_MAX() && !s.until) {
+    s.until = now + STREAK_HOURS * 3600_000;
+    s.n = 0;
+    benched = true;
+  }
+  STREAK[k] = s;
+  redis().set(STREAK_KEY, STREAK).catch(() => null);
+  return benched;
+}
+export async function streakLoad() {
+  const v = await redis().get<Record<string, Streak>>(STREAK_KEY).catch(() => null);
+  if (v && typeof v === "object") STREAK = v;
+}
+export const streakView = () => STREAK;
+export function _streakReset() {
+  STREAK = {};
+}
+
 export const RUG_MIN_N = 20;
 // v0.1.130: the who-is-buying rules count only trips from v0.1.130 on (the state carries bt): before it, FOMO counted
 // shared accounts, crews chained 1,755 bots and "earners" were sniper bots
@@ -1360,6 +1423,9 @@ function matchPaper(x: { k?: string; mint: string; openedAt: number }) {
 }
 /** A closed live follow (desk). k unknown (older trades): paired with every book that traded the coin then. */
 export function gridNoteLive(x: { k?: string; mint: string; openedAt: number; pct: number }, now = Date.now()) {
+  if (x.k && streakNote(x.k, x.pct, now)) {
+    import("./critical").then((m) => m.criticalSend(`⏸ <b>A strategy lost ${STREAK_MAX()} live trades in a row</b>\nIt is benched from live money for ${STREAK_HOURS}h. Paper keeps testing it.`)).catch(() => null);
+  }
   const ts = matchPaper(x);
   if (!ts.length) {
     if (now - x.openedAt < 6 * 3600_000) LIVE_WAIT = [{ ...x, at: now }, ...LIVE_WAIT].slice(0, 300);
@@ -1564,6 +1630,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const runners = seedRunners(now);
   // v0.1.141 KING HOLD: the King's calls, entered later and held for the migration
   const kings = seedKing(now);
+  // v0.1.143 RIP & DIP: fast rips on new launches, one add on the pullback, half at 2x, the rest rides
+  const rips = seedRip(now);
+  if (rips.length && send) await send(`⚡ <b>GRID LIVE: RIP & DIP books</b>\n${rips.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nLaunches that rip fast in their first minutes: buy, add once on the pullback, half out at 2x the average, the rest rides. Paper on every launch; the exam decides.`).catch(() => null);
   if (kings.length && send) await send(`👑 <b>GRID LIVE: KING HOLD books</b>\n${kings.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nThe King's BOND calls migrate 4x as often as the base rate, but buying them at the call (minute 5) lost money on paper. These enter at the migration, on a dip or 2 minutes in, and hold half for the migration. Paper on live calls; the exam decides.`).catch(() => null);
   // v0.1.90: the WALLETS family: proven wallets buying, on every launch (not only King calls)
   const wals = seedWallets(now);
@@ -1696,6 +1765,39 @@ function seedKing(now: number): LBook[] {
   return out;
 }
 export const _seedKing = (now = Date.now()) => seedKing(now);
+
+// ---------------------------------------------------------------- v0.1.143 RIP & DIP family
+// A launch that rips fast in its first minutes is bought at once (a block-0 bundle is allowed); on a pullback the same
+// size is added once; half is sold at 2x the average price and the rest rides a 50% trail for up to 24 hours. Controls
+// without the add and with a later entry on the first 30% dip. Paper on every launch; a book with the add is not
+// followed live until the desk can add too (the live record must match the paper one).
+export const RIP_MAX = 6;
+const RIP_X = (dca?: number, stop = 0.5): GExit => ({ initials: 2, trail: 0.5, stop, timeMin: 120, mig: "hold", keep: 0.5, hours: 24, ...(dca ? { dca } : {}) });
+export const RIP_SEEDS = [
+  `any:${keyOf("r30+age3", "now", RIP_X(0.35))}`,
+  `any:${keyOf("r30+age3", "now", RIP_X())}`,
+  `any:${keyOf("r15+age3", "now", RIP_X(0.35))}`,
+  `any:${keyOf("r15+age3+u25", "now", RIP_X(0.35))}`,
+  `any:${keyOf("r30+age10", "d30", RIP_X(0.35))}`,
+  `any:${keyOf("r30+age3", "now", RIP_X(0.5, 0.6))}`,
+];
+function seedRip(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = RIP_MAX - BOOKS.filter((b) => !b.cold && b.by === "rip").length;
+  for (const k of RIP_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const ts = TRIPS.filter((t) => t.k === k);
+    if (ts.length && dropReason(runnerStat(ts))) continue;
+    const inner = bookFromKey(k.replace(/^any:/, ""), now);
+    if (!inner) continue;
+    out.push({ ...inner, key: k, label: `RIP & DIP, every launch: ${inner.label}`, any: true, by: "rip" });
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+export const _seedRip = (now = Date.now()) => seedRip(now);
 
 export const RUNNER_MAX = 8;
 export const RUNNER_SEEDS: string[] = [

@@ -593,6 +593,17 @@ export async function fixOnce048() {
   return true;
 }
 
+/** v0.1.143, once: the daily loss limit is 30% of the day's start, and a hit stops new buys for the rest of the UTC day
+ *  (exits keep running). Both stay editable in Admin's desk settings. */
+export async function riskOnce143() {
+  const r = redis();
+  if (!(await r.set("rn:fix:0.1.143", Date.now(), { nx: true }))) return false;
+  const cur = await getSettings();
+  await saveSettings({ desk: { ...cur.desk, dailyLoss: 30, lossPauseMin: 0 } as any });
+  await r.lpush(K.deskEv, { agent: "RISK", at: Date.now(), text: "v0.1.143: daily loss limit 30%, a hit stops new buys for the rest of the day. a strategy that loses 5 live trades in a row is benched for 24h", tone: "info" });
+  return true;
+}
+
 /** v0.1.61, once: the desk takes the rules ARENA backed overnight on 8 to 9 Oct. King calls no longer need nano to agree
  *  (King without nano: 10 trips, 60% won, +8.6% a trade, while 26 such calls were blocked on the desk), and MOMO buys at
  *  the signal instead of waiting for a pullback (MOMO now: +2.7% a trade vs -14.5% for the desk's pullback entries).
@@ -606,7 +617,7 @@ export async function fixOnce061() {
   return true;
 }
 
-/** v0.1.76: once, the desk mode goes to "auto" (Stan, 14 Oct: go live on the exam pass with no human step). A later
+/** v0.1.76: once, the desk mode goes to "auto" (14 Oct: go live on the exam pass with no human step). A later
  *  change in Admin is never overwritten (the flag is set once). */
 export async function autoOnce076() {
   const r = redis();
@@ -1513,6 +1524,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     const proof = await benchOnce111().catch(() => null); // v0.1.111 LIVE ONLY ON PROOF
     if (proof) await redis().lpush(K.deskEv, { agent: "PM", at: Date.now(), text: proof, tone: "info" }).catch(() => 0);
     await autoOnce076().catch(() => false);
+    await riskOnce143().catch(() => false);
     await dropWicksOnce().catch(() => null);
     await slimTradesOnce().catch(() => null);
     const s = await getSettings();
@@ -2073,7 +2085,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
         state.dayKey = eq.dayKey;
         state.dayStart = eq.value;
       }
-      // v0.1.130: the daily loss limit is a pause, not the end of the day (Stan, 20 Oct: keep it trading). Hit: no new
+      // v0.1.130: the daily loss limit is a pause, not the end of the day (20 Oct: keep it trading). Hit: no new
       // buys for lossPauseMin minutes (exits keep running), then the day's baseline starts again from the wallet then
       const pauseMin = Number((cfg as any).lossPauseMin ?? 60);
       if (pauseMin > 0 && state.live) {
@@ -2499,7 +2511,7 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
       // page and the record read nonsense: they follow the wallet
       if (state.live && walletSol != null && walletSol > 0 && (state.start < 0 || state.cash < 0)) (state.start = walletSol), (state.cash = walletSol);
       state.liveFunded = Number((cfg as any).liveFundedSol ?? 0) || undefined;
-      // v0.1.130: liveMaxDD in the desk settings (0 = off, the default: Stan, 20 Oct, keep it trading)
+      // v0.1.130: liveMaxDD in the desk settings (0 = off, the default: 20 Oct, keep it trading)
       const liveMaxDD = Number((cfg as any).liveMaxDD ?? 0);
       if (liveMaxDD > 0 && state.live && state.liveStart && LAST_BAL && now - LAST_BAL.at < 60_000 && pct(eq2.value, state.liveStart) <= -liveMaxDD) {
         state.live = false;
@@ -2991,7 +3003,9 @@ export const ORDERS_KEY = "rn:desk:orders";
 type OrderOut = { at: number; mint: string; symbol: string; path: string; early: boolean; out: "bought" | "skipped"; why: string };
 const ORDER_STATS: { since: number; recv: number; bought: number; why: Record<string, number>; last: OrderOut[] } = { since: Date.now(), recv: 0, bought: 0, why: {}, last: [] };
 export const orderReason = (t: string) =>
-  t.replace(/\$\S+/g, "").replace(/[0-9][0-9.,]*\s*(%|◎|SOL|s|ms|m)?/g, "#").replace(/\s+/g, " ").replace(/^[\s:.,]+/, "").trim().slice(0, 80) || "no reason logged";
+  // v0.1.143: the coin's name up to its colon goes first ("$Elon III: ..."), and units only as whole words ("45 to 90
+  // seconds" read "#to #econds")
+  t.replace(/^\$[^:]*:\s*/, "").replace(/\$\S+/g, "").replace(/[0-9][0-9.,]*(\s*(%|◎|SOL\b|ms\b|s\b|m\b))?/g, "#").replace(/\s+/g, " ").replace(/^[\s:.,]+/, "").trim().slice(0, 80) || "no reason logged";
 async function runOrder(c: { b: Batch; state: DeskState; cfg: Cfg; eqValue: number; walletSol: number | null; kp: Keypair | null }, o: GridOrder) {
   const ev0 = c.b.ev;
   const n0 = ev0.length;
