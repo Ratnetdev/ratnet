@@ -28,7 +28,7 @@ import { streamQuote } from "./streamlog";
 import { Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { createCloseAccountInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import bs58 from "bs58";
-import { deskKey, hiddenWallets, loadSwitch, markSwitch, nextLiveKey, restoreSwitch, switchPending, switched } from "./deskkey";
+import { deskKey, hiddenWallets, loadSwitch, markSwitch, nextLiveKey, restoreSwitch, rotateLive, switchPending, switched } from "./deskkey";
 import { EVK } from "./agents";
 import { K, dayKey, redis } from "./redis";
 import { conn, getCurves, safeErr, CurveView, solUsd, RPS } from "./solana";
@@ -1522,6 +1522,25 @@ export async function deskSession(budgetMs = 50_000, onBeat?: () => Promise<unkn
     let state = await loadState(cfg.start);
     await loadSwitch(true);
     restoreSwitch(state.liveWallet);
+    // v0.1.142: a new live wallet key replaces the old one. Moved before syncWallet, which would read a changed
+    // address as a new paper run and wipe the books
+    // and the desk starts over on a clean sheet: its books are wiped (old trips archived 60 days), the record is
+    // measured from the new wallet's balance, and it goes live again only through the exam. What it learned is kept
+    const rot = await rotateLive().catch(() => null);
+    if (rot) {
+      const nb = await conn().getBalance(new PublicKey(rot.to)).then((x) => x / 1e9).catch(() => null);
+      await resetDesk("new live wallet");
+      await r.del(FILLS_LOG, ORDERS_KEY).catch(() => 0);
+      state = await loadState(cfg.start);
+      state.liveWallet = rot.to;
+      await scrubWallet(rot.from).catch(() => 0);
+      if (nb != null) {
+        const cur = await getSettings();
+        await saveSettings({ desk: { ...cur.desk, liveFundedSol: Math.round(nb * 1000) / 1000 } as any }).catch(() => null);
+      }
+      await r.lpush(K.deskEv, { agent: "LEDGER", at: Date.now(), text: `new live wallet${nb != null ? ` with ${nb.toFixed(3)} SOL` : ""}: the desk starts over on a clean sheet. the old wallet is retired and hidden`, tone: "win" }).catch(() => 0);
+      import("./critical").then((m) => m.criticalSend(`🔁 <b>RATNET desk starts over on a new wallet</b>\n${nb != null ? `${nb.toFixed(3)} SOL. ` : ""}Clean sheet: the record counts from here. It trades real money again once a strategy passes its exam.`)).catch(() => null);
+    }
     // v0.1.45: a live desk is run only by the process with the wallet key. A takeover on Vercel used to book live
     // equity from paper cash (the balance is never read there) into the equity line
     if (state.live && !wallet()) return { skipped: "live desk: only the worker (with the wallet key) runs it" };

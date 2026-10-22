@@ -68,6 +68,23 @@ export async function markSwitch(from: string, to: string) {
   if (from) await r.sadd(HIDDEN_KEY, from);
 }
 
+/** v0.1.142: a new live wallet. When DESK_LIVE_WALLET_SECRET holds a different key than the stored switch (the old
+ *  key was replaced), the desk moves to the new wallet for good and hides the old one everywhere on the site. Never
+ *  to the paper wallet. Its SOL is booked as a deposit by the live reconcile (the baseline moves, not the P&L), and
+ *  open positions the new wallet does not hold are closed in the books. Returns the move, or null. */
+export async function rotateLive(): Promise<Switch | null> {
+  if (!SW) return null;
+  const k = liveKey();
+  if (!k) return null;
+  const to = k.publicKey.toBase58();
+  if (to === SW.to) return null;
+  const p = paperKey();
+  if (p && p.publicKey.equals(k.publicKey)) return null;
+  const from = SW.to;
+  await markSwitch(from, to);
+  return { from, to, at: SW!.at };
+}
+
 let HID: { at: number; v: Set<string> } | null = null;
 /** Wallets that must not appear on the site any more (cached 60s). */
 export async function hiddenWallets(): Promise<Set<string>> {
