@@ -1,6 +1,7 @@
 // v0.1.102 SEER: see the coin before it exists. The FTR replay (a 130K post, "Flying Tesla Roadster" 135s later), the
 // watchlist rules, GRID's SEER rules, the SEER family on GRID LIVE, its probation exam and the sell-the-news exit.
 // Run: npx tsx sim/v102test.ts
+process.env.ENTRY_MIN_MC_SOL = "0"; // v0.1.145: these tests use toy market caps under the entry floor
 import { MockRedis } from "./mockredis";
 const R = new MockRedis();
 (globalThis as any).__rnRedis = R;

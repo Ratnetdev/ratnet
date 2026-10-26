@@ -1,4 +1,5 @@
 // v0.1.71: GRID, the big strategy search. Run: npx tsx sim/v071test.ts
+process.env.ENTRY_MIN_MC_SOL = "0"; // v0.1.145: these tests use toy market caps under the entry floor
 import type { GCoin } from "../src/lib/grid";
 import { MockRedis } from "./mockredis";
 const R = new MockRedis();

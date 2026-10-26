@@ -14,7 +14,7 @@ import { HORIZONS, tickReady } from "./tick";
 import { redis } from "./redis";
 import { archiveTrip } from "./archive";
 import { BAG_HOURS, BAG_IDS, bagOf, ladderStudy, newShadows, rideTick, ridingBag, shadowClose, shadowTick, type Shadow } from "./ladder";
-import { setClassPaper } from "./classgate";
+import { belowFloor, setClassPaper } from "./classgate";
 import { ATA_RENT, sellProceeds, slipOf, txCost, venueFee, type CostCfg } from "./costs";
 import { SITE } from "@/config/site";
 import { GEXITS, GRID_SOL, HOLD_MS, MODES, PREDS, RUNNER_EXITS, exitOfPart, scoreModel, profitModel, winModel, withScoreModels, asModels, type Models, exitText, firstSell, holdMax, isRunner, keyOf, type GCoin, type GExit, type GRow } from "./grid";
@@ -101,7 +101,7 @@ export type LBook = {
   /** v0.1.78: spawned from this hot strategy (an exit variant or the every-launch twin) */
   parent?: string;
   /** v0.1.82: proposed by RESEARCHER (its own slots, on top of GRID's 16), and why */
-  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick" | "smart" | "king" | "rip";
+  by?: "researcher" | "runner" | "wallets" | "seer" | "signals" | "score" | "early" | "tick" | "smart" | "king" | "rip" | "boost";
   /** v0.1.115: an EARLY book: trades the 2-minute read of every launch (lib/early.ts), never a King call */
   early?: boolean;
   /** v0.1.117: the reading age it trades (seconds; 120 when not set) */
@@ -705,6 +705,7 @@ export function gridLiveCurve(mint: string, v: { progress?: number; mcapSol?: nu
 function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: number }[], now: number) {
   const old = h.filter((x) => x.t <= now - 60_000).pop();
   if (!old || !(px > 0)) return;
+  if (belowFloor(px)) return; // v0.1.145 NO SNIPING
   const fx = LIVE_FX ? LIVE_FX(mint) : null;
   const sl = SEER_LIVE.get(mint);
   // v0.1.110: origin, DexScreener and the flow, for every-launch books on the new rules
@@ -724,6 +725,8 @@ function anyTrigger(mint: string, p: number, px: number, h: { t: number; p: numb
   }
   if (TRIG.size > 20_000) TRIG.clear();
 }
+/** v0.1.145: paper entries refused by the market-cap floor (since the worker started). */
+export const FLOOR_SKIPS = { n: 0 };
 const SYM = new Map<string, string>();
 // v0.1.143: when each launch was first seen (the worker passes new launches here): every-launch books know its age
 const BORN = new Map<string, number>();
@@ -766,6 +769,8 @@ function stepPend(b: LBook, pe: Pend, k: string, now: number) {
   if (open >= capOf()) return;
   const px0 = last.px / 1e9;
   if (!(px0 > 0)) return;
+  // v0.1.145 NO SNIPING: no paper entry under the market-cap floor either (the record must be what live may trade)
+  if (belowFloor(last.px)) return void FLOOR_SKIPS.n++;
   const sol = GRID_SOL;
   const inPool = !!last.pool;
   const fillPx = px0 * (1 + slipOf(sol, inPool, last.real));
@@ -786,6 +791,7 @@ function earlyFollow(b: LBook, pe: Pend | undefined, now: number) {
   if (!pe || pe.sent || pe.fillAfter == null || now >= pe.fillAfter || !followed(b.key)) return;
   const last = LAST.get(pe.mint);
   if (!last || !(last.px > 0) || last.done) return;
+  if (belowFloor(last.px)) return; // v0.1.145
   if ([...POS.values()].filter((p) => p.key === b.key).length >= capOfBook(b)) return;
   pe.sent = now;
   emitFollow(b, pe, last.px / 1e9, !!last.pool, rugBlock(entryNow(pe.mint, now)) ?? undefined, now, true);
@@ -1632,6 +1638,9 @@ export async function gridLiveTend(send?: (text: string) => Promise<unknown>, no
   const kings = seedKing(now);
   // v0.1.143 RIP & DIP: fast rips on new launches, one add on the pullback, half at 2x, the rest rides
   const rips = seedRip(now);
+  // v0.1.144 BOOST: the migration's buyback window
+  const boosts = seedBoost(now);
+  if (boosts.length && send) await send(`🚀 <b>GRID LIVE: BOOST books</b>\n${boosts.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\npump.fun buys back graduating coins in their first minutes on PumpSwap. These buy the last stretch of the curve and sell within 10 to 15 minutes of the buy unless the first target hits. Paper on every launch; the exam decides.`).catch(() => null);
   if (rips.length && send) await send(`⚡ <b>GRID LIVE: RIP & DIP books</b>\n${rips.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nLaunches that rip fast in their first minutes: buy, add once on the pullback, half out at 2x the average, the rest rides. Paper on every launch; the exam decides.`).catch(() => null);
   if (kings.length && send) await send(`👑 <b>GRID LIVE: KING HOLD books</b>\n${kings.map((b) => `• ${b.label.replace(/[<>&]/g, " ")}`).join("\n")}\n\nThe King's BOND calls migrate 4x as often as the base rate, but buying them at the call (minute 5) lost money on paper. These enter at the migration, on a dip or 2 minutes in, and hold half for the migration. Paper on live calls; the exam decides.`).catch(() => null);
   // v0.1.90: the WALLETS family: proven wallets buying, on every launch (not only King calls)
@@ -1798,6 +1807,36 @@ function seedRip(now: number): LBook[] {
   return out;
 }
 export const _seedRip = (now = Date.now()) => seedRip(now);
+
+// ---------------------------------------------------------------- v0.1.144 BOOST family
+// Since July 2026 pump.fun spends SOL buying back every graduating coin in its first minutes on PumpSwap (reported, not
+// yet measured here). These books buy the last stretch of the curve (90%+) and hold through
+// the migration for a short window: out after 10 to 15 minutes unless the first target is hit. The exam decides.
+export const BOOST_MAX = 4;
+const BX = (initials: number, stop: number, timeMin: number): GExit => ({ initials, trail: 0.2, stop, timeMin, mig: "hold" });
+export const BOOST_SEEDS = [
+  `any:${keyOf("p90", "now", BX(1.3, 0.2, 10))}`,
+  `any:${keyOf("p90", "now", BX(1.5, 0.25, 10))}`,
+  `any:${keyOf("p90+r5", "now", BX(1.3, 0.2, 10))}`,
+  `any:${keyOf("p90+u25", "now", BX(1.5, 0.3, 15))}`,
+];
+function seedBoost(now: number): LBook[] {
+  const out: LBook[] = [];
+  let room = BOOST_MAX - BOOKS.filter((b) => !b.cold && b.by === "boost").length;
+  for (const k of BOOST_SEEDS) {
+    if (room <= 0) break;
+    if (BOOKS.some((b) => b.key === k)) continue;
+    const ts = TRIPS.filter((t) => t.k === k);
+    if (ts.length && dropReason(liveStat(ts))) continue;
+    const inner = bookFromKey(k.replace(/^any:/, ""), now);
+    if (!inner) continue;
+    out.push({ ...inner, key: k, label: `BOOST, every launch: ${inner.label}`, any: true, by: "boost" });
+    room--;
+  }
+  if (out.length) BOOKS = [...BOOKS, ...out];
+  return out;
+}
+export const _seedBoost = (now = Date.now()) => seedBoost(now);
 
 export const RUNNER_MAX = 8;
 export const RUNNER_SEEDS: string[] = [

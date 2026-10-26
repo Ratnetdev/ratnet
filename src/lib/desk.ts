@@ -56,7 +56,7 @@ import type { Launch } from "./digger";
 import { archiveTrades, archiveTrip, BUILD, cfgTag } from "./archive";
 import { HOLD_MS, firstSell, holdMax, isRunner, type GExit } from "./grid";
 import { BAG_HOURS, BAG_TRAIL, bagLadder, ladderHit, ladderText, parseLadder, setDeskLadder, type Step } from "./ladder";
-import { classGate, classOf, classPaperPcts, gateStats, loadLiveClass, noteLiveClass, type LiveCls } from "./classgate";
+import { belowFloor, classGate, classOf, classPaperPcts, gateStats, loadLiveClass, noteLiveClass, type LiveCls } from "./classgate";
 export const CLS_KEY = "rn:desk:cls"; // v0.1.130: closed live round trips by market-cap class
 import { acceptKing, acceptMomo, acceptedBy, arenaBooks, arenaDrop, arenaSave, arenaTrip, noteAccepted, variantOf, ARENA_MAX_OPEN, ARENA_SOL, VARIANTS, type ArenaPos, type Check as ArenaCheck, type Exo } from "./arena";
 
@@ -2854,6 +2854,9 @@ async function equity(state: DeskState, kp: Keypair | null, px: Record<string, {
 
 async function buy(b: Batch, state: DeskState, rec: Launch, sol: number, px: number, slip: number, kp: Keypair | null, real: number, how: Pos["how"], grad = rec.outcome === "BONDED"): Promise<Pos | null> {
   const coin = { mint: rec.mint, symbol: rec.symbol };
+  // v0.1.145 NO SNIPING: every desk path (GRID, King, FLASH, CATCH, MOMO, WIRE) stops under the market-cap floor
+  const fl = belowFloor(px * 1e9);
+  if (fl) return log(b, "VET", `$${rec.symbol}: ${fl}. skipped`, "info", coin), null;
   let tokens = 0;
   let sig: string | undefined;
   let fillPx = px;
@@ -3049,6 +3052,9 @@ export let gridRugSkips = 0;
 // v0.1.124: a GRID follow is logged as one even when the coin also had a King call (it said "King BOND 74")
 let GRID_BUYING = false;
 
+/** v0.1.144 ONE JUDGE (env GRID_ONE_JUDGE=0 turns it off): a GRID order is judged by its strategy's exam, not again by
+ *  the class gate and SHIELD's soft checks. The rug guard (inside the exam), the chase guard and SHIELD's hard checks stay. */
+const GRID_ONE_JUDGE = process.env.GRID_ONE_JUDGE !== "0";
 async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqValue: number, walletSol: number | null, kp: Keypair | null) {
   const r = redis();
   const coin = { mint: o.mint, symbol: o.symbol };
@@ -3079,7 +3085,10 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
       return log(b, "EXEC", `$${o.symbol}: price already ${((chase - 1) * 100).toFixed(1)}% over GRID's paper fill. not chasing`, "info", coin);
     }
     // v0.1.130 CLASS GATE: live buys only in market-cap classes that make money live (paper keeps trading them all)
-    if (state.live) {
+    // v0.1.144 ONE JUDGE: not on a GRID order. The order comes from a strategy that passed its exam on its own paper
+    // record, and that record includes the coins this gate would skip (22 to 23 Oct: 3 strategies passed at +14 to
+    // +21% a trade, the desk got 40 orders and bought none: 14 stopped here, 13 by SHIELD's soft checks)
+    if (state.live && !GRID_ONE_JUDGE) {
       const cg = classGate(classOf(fresh.px * 1e9));
       if (!cg.on) {
         gateStats.skips++;
@@ -3112,10 +3121,12 @@ async function gridEntry(b: Batch, state: DeskState, o: GridOrder, cfg: Cfg, eqV
     // SHIELD, the scam guard, still runs before any money moves
     const known = await knownP;
     const sh = await shield({ mint: o.mint, symbol: o.symbol, grad: !!fresh.grad, sol: size, tokensRaw: BigInt(Math.max(0, Math.floor((size / fresh.px) * 1e6))), tape: known?.tape, ageMs: known ? Date.now() - known.createdAt : undefined }).catch(() => null);
-    if (sh && !sh.ok) {
-      const f = (sh.hardFail || sh.softFail)!;
-      return log(b, "VET", `SHIELD stopped $${o.symbol} (GRID): ${f.rule.replace(/_/g, " ")} (${f.v})`, "bad", coin);
-    }
+    // v0.1.144 ONE JUDGE: on a GRID order only SHIELD's hard checks stop the buy (mint or freeze authority, can't sell,
+    // traps, no sells, pulled liquidity). Its soft checks (holder spread, block-0 farm, drawn line, volume) are taste the
+    // strategy's paper record already paid for
+    const shFail = sh && !sh.ok ? (GRID_ONE_JUDGE ? sh.hardFail : sh.hardFail || sh.softFail) : null;
+    if (shFail) return log(b, "VET", `SHIELD stopped $${o.symbol} (GRID): ${shFail.rule.replace(/_/g, " ")} (${shFail.v})`, "bad", coin);
+    if (sh && !sh.ok && sh.softFail) log(b, "VET", `$${o.symbol}: SHIELD soft check ${sh.softFail.rule.replace(/_/g, " ")} (${sh.softFail.v}), not a stop on a GRID order`, "info", coin);
     const rec: Launch = known || ({ mint: o.mint, sig: "", createdAt: Date.now(), creator: "", name: o.symbol, symbol: o.symbol, uri: "", image: "", description: "", twitter: "", telegram: "", website: "", devBuySol: 0, devN: 0, devB: 0, dugAt: Date.now(), dugBy: "GRID", p0: 0, mcap0: 0, cp: {}, outcome: fresh.grad ? "BONDED" : undefined } as Launch);
     GRID_BUYING = true;
     const tSend = Date.now();
@@ -3583,6 +3594,7 @@ async function arenaSell(p: ArenaPos, frac: number, px: number, reason: string) 
 
 /** Take a trade in the ghost book: same fill rules as paper, a fixed size, nothing touches the real books. */
 async function ghostEnter(b: Batch, rec: Launch, px: number, real: number, how: Pos["how"], blocked: string, cfg: Cfg, checked = false) {
+  if (belowFloor(px * 1e9)) return; // v0.1.145 NO SNIPING: the ghost desk learns above the floor only
   const r = redis();
   const coin = { mint: rec.mint, symbol: rec.symbol };
   if (!px || (await r.hexists(GHOST_POS, rec.mint))) return;

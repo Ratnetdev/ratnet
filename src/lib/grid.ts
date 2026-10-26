@@ -179,6 +179,8 @@ export const PREDS: Pred[] = [
   { id: "r30", label: "curve +30 pts in the minute before (a fast rip)", ok: (c) => c.rise60 >= 30 },
   { id: "age3", label: "under 3 minutes old", ok: (c) => c.at - c.createdAt <= 180_000 },
   { id: "age10", label: "under 10 minutes old", ok: (c) => c.at - c.createdAt <= 600_000 },
+  // v0.1.144 BOOST: since July 2026 pump.fun buys back a graduating coin for its first minutes in the pool
+  { id: "p90", label: "curve 90%+ (about to migrate)", ok: (c) => c.progress >= 90 },
 ];
 
 // ---------------------------------------------------------------- v0.1.112 GRID SCORE

@@ -21,6 +21,24 @@ export const CLASSES: { id: Cls; lo: number; hi: number; label: string }[] = [
 export const classOf = (mcSol: number): Cls => CLASSES.find((c) => mcSol >= c.lo && mcSol < c.hi)?.id ?? "up";
 export const classLabel = (c: Cls) => CLASSES.find((x) => x.id === c)?.label ?? c;
 
+/**
+ * v0.1.145 NO SNIPING. Entries at the launch price (a curve with no dev buy yet: 27 to 31.5 SOL) or under it (a broken
+ * sub-launch price) are the sniper's game, and the desk has no edge there: 19 to 20 Oct live, under 5 SOL 72 trades
+ * -0.44 SOL, launch price 19 trades 0 won. No book (paper or live), no desk path and no ghost buy under the floor.
+ * ENTRY_MIN_MC_SOL moves it without a build (Railway variable; 96 = the only class in profit live then, 0 = off).
+ * Coins already held keep their exits.
+ */
+export const ENTRY_MIN_MC_SOL = () => {
+  const v = Number(process.env.ENTRY_MIN_MC_SOL ?? 31.5);
+  return Number.isFinite(v) && v >= 0 ? v : 31.5;
+};
+/** Why an entry at this market cap (SOL) is refused, or null. */
+export function belowFloor(mcSol: number | null | undefined): string | null {
+  const f = ENTRY_MIN_MC_SOL();
+  if (!f || mcSol == null || !Number.isFinite(mcSol) || mcSol <= 0) return null;
+  return mcSol < f ? `market cap ${mcSol < 10 ? mcSol.toFixed(1) : Math.round(mcSol)} SOL is under the ${f} SOL entry floor (no sniping)` : null;
+}
+
 export const GATE = { liveN: 8, liveDays: 7, paperN: 30, paperLast: 60, paperMin: 0.05, cost: 0.06 };
 export type LiveCls = { c: Cls; pnl: number; at: number };
 let LIVE: LiveCls[] = [];

@@ -36,7 +36,7 @@ const ok = (c: boolean, m: string) => {
   ok(!G.classGate("early", now).on, "paper +8% gross (+2% after costs) is not enough");
   ok(G.classGate("sub", now + 8 * 86_400_000).on, "a week later the old live record no longer counts");
   const dk = fs.readFileSync("src/lib/desk.ts", "utf8");
-  ok(/if \(state\.live\) \{\s*const cg = classGate\(classOf\(fresh\.px \* 1e9\)\);/.test(dk) && /CLASS GATE, \$\{cg\.why\}\. skipped live/.test(dk), "the desk checks the gate on the fresh price before a live GRID buy");
+  ok(/if \(state\.live && !GRID_ONE_JUDGE\) \{\s*const cg = classGate\(classOf\(fresh\.px \* 1e9\)\);/.test(dk) && /CLASS GATE, \$\{cg\.why\}\. skipped live/.test(dk), "the desk checks the gate on the fresh price before a live GRID buy (off on GRID orders since v0.1.144 ONE JUDGE)");
   ok(/noteLiveClass\(p\.entryPx \* 1e9, p\.soldSol - p\.costSol\)/.test(dk) && /export async function classBoot/.test(dk), "every closed live trip counts for its class; the record is rebuilt from the desk's own trips at boot");
 
   // ---- 2. FOMO pinned
